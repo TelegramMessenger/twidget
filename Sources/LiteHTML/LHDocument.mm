@@ -1110,6 +1110,23 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     return [self copyImageLockedWithRect:rect scale:scale];
 }
 
+- (CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale excluding:(NSSet<NSString *> *)values attribute:(NSString *)attribute
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self layoutLockedWithMaxWidth:maxWidth];
+    NSSet<NSString *> *savedValues    = _exclusions;
+    NSString          *savedAttribute = _exclusionAttribute;
+    NSMutableSet<NSString *> *merged  = [NSMutableSet setWithSet:values];
+    if(savedValues.count > 0 && [savedAttribute isEqualToString:attribute])
+        [merged unionSet:savedValues];
+    _exclusions         = merged;
+    _exclusionAttribute = [attribute copy];
+    CGImageRef image    = [self copyImageLockedWithRect:rect scale:scale];
+    _exclusions         = savedValues;
+    _exclusionAttribute = savedAttribute;
+    return image;
+}
+
 - (CGImageRef)copyImageLockedWithRect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED
 {
     size_t pw = (size_t)std::ceil(rect.size.width * scale);

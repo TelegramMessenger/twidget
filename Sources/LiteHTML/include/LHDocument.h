@@ -36,6 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)drawInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip;
 - (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:));
+- (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale excluding:(NSSet<NSString *> *)values attribute:(NSString *)attribute CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:excluding:attribute:));
 - (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale base:(CGImageRef)base dirty:(CGRect)dirty CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:base:dirty:));
 
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(displayList(maxWidth:));
