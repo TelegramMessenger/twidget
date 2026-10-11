@@ -112,4 +112,18 @@ static NSArray<NSString *> *Seeds(void)
     XCTAssertEqualWithAccuracy(size.height, 46, 0.5);
 }
 
+- (void)testWebKitBlockAndLineMetrics
+{
+    NSDictionary<NSString *, NSNumber *> *cases = @{
+        @"<!doctype html><style>body{margin:0;line-height:20px}</style><div style=\"padding:1px\"><div style=\"margin-bottom:8px\">a</div><div><div style=\"margin:5px 0\">x</div></div></div>": @55,
+        @"<!doctype html><style>body{margin:0}</style><div style=\"line-height:66px\"><span style=\"display:inline-block;width:10px\"></span></div>": @66,
+        @"<!doctype html><style>body{margin:0}</style><table style=\"border-spacing:0\"><tr><td style=\"height:66px;padding:0;border:2px solid red\"></td></tr></table>": @70,
+    };
+    for(NSString *html in cases)
+    {
+        LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+        XCTAssertEqualWithAccuracy([document layoutWithMaxWidth:300].height, cases[html].doubleValue, 0.5, @"%@", html);
+    }
+}
+
 @end
