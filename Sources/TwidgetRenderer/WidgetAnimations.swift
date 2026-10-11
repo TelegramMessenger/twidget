@@ -653,6 +653,45 @@ final class WidgetAnimator {
         }
         return out
     }
+    struct Baked {
+        let spec: CSSAnimationSpec
+        let start: CFTimeInterval
+        let value: (Double) -> (transform: String?, opacity: String?)
+    }
+
+    func bakeable(_ id: Int) -> Baked? {
+        guard transitions[id] == nil, let list = running[id] else {
+            return nil
+        }
+        let live = list.filter { keyframes[$0.spec.name] != nil }
+        guard live.count == 1, let item = live.first, !item.ended, !item.spec.paused, let frames = keyframes[item.spec.name], !frames.isEmpty else {
+            return nil
+        }
+        for frame in frames where frame.declarations.contains(where: { !WidgetAnimator.compositedProperties.contains($0.name) }) {
+            return nil
+        }
+        let base = bases[id] ?? [:]
+        let spec = item.spec
+        return Baked(spec: spec, start: item.start, value: { [unowned self] progress in
+            let values = self.values(frames: frames, base: base, progress: progress, spec: spec)
+            return (values.last { $0.0 == "transform" }?.1, values.last { $0.0 == "opacity" }?.1)
+        })
+    }
+
+    func isActive(excluding driven: Set<Int>) -> Bool {
+        if transitions.keys.contains(where: { !driven.contains($0) }) {
+            return true
+        }
+        return running.contains { id, list in !driven.contains(id) && list.contains { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil } }
+    }
+
+    func endTime(_ id: Int) -> CFTimeInterval? {
+        guard let item = running[id]?.first(where: { !$0.ended && keyframes[$0.spec.name] != nil }), item.spec.iterations.isFinite else {
+            return nil
+        }
+        return item.start + item.spec.delay + item.spec.iterations * max(item.spec.duration, 0.0001)
+    }
+
     private var running: [Int: [Running]] = [:]
     private var transitions: [Int: [String: Transition]] = [:]
     private var bases: [Int: [String: String]] = [:]

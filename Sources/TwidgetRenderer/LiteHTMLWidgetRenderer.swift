@@ -280,18 +280,26 @@ public final class LiteHTMLWidgetRenderer {
             compositor.attach(documentView.layer)
             compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
         }
+        compositor.drive(animator: animator, now: now, enabled: canDrive)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
         if !LiteHTMLWidgetRenderer.same(rest, overrides) || before != compositor.ids {
             overrides = rest
             layout(overrides)
         }
-        if animator.isActive && !frozen {
+        scheduleDrivenEnds(now: now)
+        if needsFrames && !frozen {
             startClock()
         }
     }
 
+    public private(set) var handoffWorst: (geometry: CGFloat, alpha: Float) = (0, 0)
+
     private func renderAnimationFrame() {
         let sampled = animator.sample(now: animationNow)
+        if WidgetDocumentView.verify && !compositor.drivenIDs.isEmpty {
+            let error = compositor.handoffError(sampled, bases: { [animator] in animator.base($0) })
+            handoffWorst = (max(handoffWorst.geometry, error.geometry), max(handoffWorst.alpha, error.alpha))
+        }
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
         if !LiteHTMLWidgetRenderer.same(rest, overrides) {
             overrides = rest
@@ -435,6 +443,35 @@ public final class LiteHTMLWidgetRenderer {
         documentView.document = next
         reportSize()
         reportResize()
+    }
+
+    private var needsFrames: Bool {
+        return WidgetDocumentView.verify ? animator.isActive : animator.isActive(excluding: compositor.drivenIDs)
+    }
+
+    public var drivenCount: Int {
+        return compositor.drivenIDs.count
+    }
+
+    private var canDrive: Bool {
+        return !frozen && isOnScreen && !listened.contains("animationiteration") && !listened.contains("animationend") && WidgetCompositor.handoffEnabled
+    }
+
+    private var drivenEndToken = 0
+
+    private func scheduleDrivenEnds(now: CFTimeInterval) {
+        let ends = compositor.drivenIDs.compactMap { animator.endTime($0) }.filter { $0 > now }
+        guard let next = ends.min() else {
+            return
+        }
+        drivenEndToken += 1
+        let token = drivenEndToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + (next - now) + 0.002) { [weak self] in
+            guard let self = self, self.drivenEndToken == token, !self.destroyed else {
+                return
+            }
+            self.render()
+        }
     }
 
     private func applyExclusions() {
@@ -736,8 +773,13 @@ public final class LiteHTMLWidgetRenderer {
     public func setVisible(_ visible: Bool) {
         hostVisible = visible
         updateAnimationClock()
-        if isOnScreen && (animator.isActive || frameRequested || !pendingMoves.isEmpty) && !frozen {
-            if animator.isActive {
+        if !isOnScreen {
+            compositor.undrive()
+        } else if !compositor.ids.isEmpty && animator.isActive && !frozen {
+            setNeedsRender()
+        }
+        if isOnScreen && (needsFrames || frameRequested || !pendingMoves.isEmpty) && !frozen {
+            if needsFrames {
                 renderAnimationFrame()
             }
             startClock()
@@ -780,14 +822,14 @@ public final class LiteHTMLWidgetRenderer {
                 post(["type": "event", "ev": event])
             }
         }
-        if animator.isActive && !frozen && isOnScreen {
+        if needsFrames && !frozen && isOnScreen {
             renderAnimationFrame()
         }
         if frameRequested {
             frameRequested = false
             post(["type": "frame", "time": (CACurrentMediaTime() - timeOrigin) * 1000])
         }
-        if !frameRequested && pendingMoves.isEmpty && !animator.isActive {
+        if !frameRequested && pendingMoves.isEmpty && !needsFrames {
             clock?.stop()
         }
     }

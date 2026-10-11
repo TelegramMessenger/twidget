@@ -156,6 +156,12 @@ final class WidgetCompositor {
     private var promoted: [Int: Promoted] = [:]
     private weak var host: CALayer?
     private(set) var promotions = 0
+    private var driven: [Int: String] = [:]
+    private(set) var bakes = 0
+
+    var drivenIDs: Set<Int> {
+        return Set(driven.keys)
+    }
 
     var ids: Set<Int> {
         return Set(promoted.keys)
@@ -177,6 +183,185 @@ final class WidgetCompositor {
             item.layer.removeFromSuperlayer()
         }
         promoted.removeAll()
+        driven.removeAll()
+    }
+
+    func undrive() {
+        for id in driven.keys {
+            promoted[id]?.layer.removeAnimation(forKey: "tw.transform")
+            promoted[id]?.layer.removeAnimation(forKey: "tw.opacity")
+        }
+        driven.removeAll()
+    }
+
+    func drive(animator: WidgetAnimator, now: CFTimeInterval, enabled: Bool) {
+        for id in driven.keys where promoted[id] == nil || !enabled {
+            promoted[id]?.layer.removeAnimation(forKey: "tw.transform")
+            promoted[id]?.layer.removeAnimation(forKey: "tw.opacity")
+            driven[id] = nil
+        }
+        guard enabled else {
+            return
+        }
+        for (id, item) in promoted {
+            guard let baked = animator.bakeable(id) else {
+                if driven[id] != nil {
+                    item.layer.removeAnimation(forKey: "tw.transform")
+                    item.layer.removeAnimation(forKey: "tw.opacity")
+                    driven[id] = nil
+                }
+                continue
+            }
+            let spec = baked.spec
+            let signature = "\(spec.name)|\(spec.duration)|\(spec.timingText)|\(spec.delay)|\(spec.iterations)|\(spec.direction)|\(spec.fill)|\(baked.start)|\(item.box)|\(item.origin)"
+            if driven[id] == signature {
+                continue
+            }
+            item.layer.removeAnimation(forKey: "tw.transform")
+            item.layer.removeAnimation(forKey: "tw.opacity")
+            driven[id] = nil
+            let base = animator.base(id)
+            guard let track = WidgetCompositor.bake(baked, base: base, box: item.box.size, origin: item.origin) else {
+                continue
+            }
+            let localNow = item.layer.convertTime(CACurrentMediaTime(), from: nil)
+            var begin = localNow - (now - (baked.start + spec.delay))
+            if begin == 0 {
+                begin = 1e-9
+            }
+            let reversedOrder = spec.direction == "reverse" || spec.direction == "alternate-reverse"
+            let alternate = spec.direction.hasPrefix("alternate")
+            func configure(_ animation: CAKeyframeAnimation, _ values: [Any]) {
+                animation.values = reversedOrder ? values.reversed() : values
+                animation.keyTimes = (reversedOrder ? track.times.reversed().map { 1 - $0 } : track.times).map { NSNumber(value: $0) }
+                animation.calculationMode = .linear
+                animation.duration = max(spec.duration, 0.0001)
+                animation.beginTime = begin
+                animation.autoreverses = alternate
+                let count = alternate ? spec.iterations / 2 : spec.iterations
+                animation.repeatCount = count.isFinite ? Float(count) : .infinity
+                switch spec.fill {
+                case "forwards":
+                    animation.fillMode = .forwards
+                case "backwards":
+                    animation.fillMode = .backwards
+                case "both":
+                    animation.fillMode = .both
+                default:
+                    animation.fillMode = .removed
+                }
+                animation.isRemovedOnCompletion = !(spec.fill == "forwards" || spec.fill == "both")
+            }
+            if track.transforms.contains(where: { $0 != track.transforms[0] }) {
+                let animation = CAKeyframeAnimation(keyPath: "transform")
+                configure(animation, track.transforms.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform($0)) })
+                item.layer.add(animation, forKey: "tw.transform")
+            }
+            if track.opacities.contains(where: { $0 != track.opacities[0] }) {
+                let animation = CAKeyframeAnimation(keyPath: "opacity")
+                configure(animation, track.opacities.map { NSNumber(value: $0) })
+                item.layer.add(animation, forKey: "tw.opacity")
+            }
+            driven[id] = signature
+            bakes += 1
+        }
+    }
+
+    func handoffError(_ sampled: [Int: [(String, String)]], bases: (Int) -> [String: String]) -> (geometry: CGFloat, alpha: Float) {
+        var geometry: CGFloat = 0
+        var alpha: Float = 0
+        for id in driven.keys {
+            guard let item = promoted[id], let shown = item.layer.presentation() else {
+                continue
+            }
+            let values = sampled[id] ?? []
+            let base = bases(id)
+            let transform = CSSTransform.parse(values.last { $0.0 == "transform" }?.1 ?? base["transform"], box: item.box.size) ?? .identity
+            let opacity = Float(Double(values.last { $0.0 == "opacity" }?.1 ?? base["opacity"] ?? "1") ?? 1)
+            let actual = CATransform3DGetAffineTransform(shown.transform)
+            for corner in [CGPoint(x: -item.origin.x, y: -item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: item.box.height - item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: -item.origin.y)] {
+                let a = corner.applying(transform), b = corner.applying(actual)
+                geometry = max(geometry, hypot(a.x - b.x, a.y - b.y))
+            }
+            alpha = max(alpha, abs(opacity - shown.opacity))
+        }
+        return (geometry, alpha)
+    }
+
+    struct Track {
+        var times: [Double]
+        var transforms: [CGAffineTransform]
+        var opacities: [Float]
+    }
+
+    static var handoffEnabled = ProcessInfo.processInfo.environment["TW_NO_HANDOFF"] == nil
+    static let bakeTolerance: CGFloat = 0.05
+    static let maxBakeDepth = 9
+
+    static func bake(_ baked: WidgetAnimator.Baked, base: [String: String], box: CGSize, origin: CGPoint) -> Track? {
+        func eval(_ p: Double) -> (CGAffineTransform, Float)? {
+            let value = baked.value(p)
+            guard let transform = CSSTransform.parse(value.transform ?? base["transform"], box: box) else {
+                return nil
+            }
+            let opacityText = value.opacity ?? base["opacity"] ?? "1"
+            guard let opacity = Double(opacityText.trimmingCharacters(in: .whitespaces)), opacity.isFinite else {
+                return nil
+            }
+            return (transform, Float(max(0, min(1, opacity))))
+        }
+        let corners = [CGPoint(x: -origin.x, y: -origin.y), CGPoint(x: box.width - origin.x, y: -origin.y), CGPoint(x: -origin.x, y: box.height - origin.y), CGPoint(x: box.width - origin.x, y: box.height - origin.y)]
+        func error(_ a: (CGAffineTransform, Float), _ b: (CGAffineTransform, Float), _ mid: (CGAffineTransform, Float)) -> (CGFloat, Float) {
+            var worst: CGFloat = 0
+            for corner in corners {
+                let pa = corner.applying(a.0), pb = corner.applying(b.0), pm = corner.applying(mid.0)
+                worst = max(worst, hypot(pm.x - (pa.x + pb.x) / 2, pm.y - (pa.y + pb.y) / 2))
+            }
+            return (worst, abs(mid.1 - (a.1 + b.1) / 2))
+        }
+        var times: [Double] = []
+        var samples: [(CGAffineTransform, Float)] = []
+        var failed = false
+        func subdivide(_ t0: Double, _ s0: (CGAffineTransform, Float), _ t1: Double, _ s1: (CGAffineTransform, Float), _ depth: Int) {
+            if failed {
+                return
+            }
+            let tm = (t0 + t1) / 2
+            guard let sm = eval(tm) else {
+                failed = true
+                return
+            }
+            let (geometry, alpha) = error(s0, s1, sm)
+            if geometry <= bakeTolerance && alpha <= 0.002 {
+                times.append(t1)
+                samples.append(s1)
+                return
+            }
+            if depth >= maxBakeDepth {
+                failed = true
+                return
+            }
+            subdivide(t0, s0, tm, sm, depth + 1)
+            subdivide(tm, sm, t1, s1, depth + 1)
+        }
+        let initial = 8
+        guard var previous = eval(0) else {
+            return nil
+        }
+        times.append(0)
+        samples.append(previous)
+        for step in 1...initial {
+            let t0 = Double(step - 1) / Double(initial), t1 = Double(step) / Double(initial)
+            guard let next = eval(t1) else {
+                return nil
+            }
+            subdivide(t0, previous, t1, next, 0)
+            previous = next
+        }
+        if failed || times.count > 4096 {
+            return nil
+        }
+        return Track(times: times, transforms: samples.map { $0.0 }, opacities: samples.map { $0.1 })
     }
 
     func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace) {
@@ -262,8 +447,12 @@ final class WidgetCompositor {
     }
 
     func documentPoint(for point: CGPoint) -> CGPoint? {
-        for item in promoted.values where item.layer.opacity > 0 {
-            let local = item.layer.convert(point, from: item.layer.superlayer)
+        for item in promoted.values {
+            let shown = item.layer.presentation() ?? item.layer
+            if shown.opacity <= 0 {
+                continue
+            }
+            let local = shown.convert(point, from: shown.superlayer)
             if item.layer.bounds.contains(local) {
                 let mapped = CGPoint(x: item.ink.minX + local.x, y: item.ink.minY + local.y)
                 if item.box.contains(mapped) {
@@ -280,7 +469,7 @@ final class WidgetCompositor {
                 continue
             }
             let image = contents as! CGImage
-            let layer = item.layer
+            let layer = item.layer.presentation() ?? item.layer
             let size = layer.bounds.size
             ctx.saveGState()
             ctx.translateBy(x: layer.position.x, y: layer.position.y)
@@ -302,7 +491,7 @@ final class WidgetCompositor {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (id, item) in promoted {
-            let values = overrides[id] ?? []
+            let values = driven[id] != nil ? [] : overrides[id] ?? []
             rest[id] = nil
             let base = bases(id)
             let transformText = values.last { $0.0 == "transform" }?.1 ?? base["transform"]
