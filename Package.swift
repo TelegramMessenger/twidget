@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
         .library(name: "HTML3D", targets: ["HTML3D"]),
         .library(name: "TwidgetRenderer", targets: ["TwidgetRenderer"]),
+        .library(name: "CQuickJSNG", targets: ["CQuickJSNG"]),
     ],
     targets: [
         .target(
