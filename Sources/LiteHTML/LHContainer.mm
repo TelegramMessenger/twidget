@@ -406,6 +406,12 @@ void LHRegisterAppImage(NSString* name, NSImage* image)
     store.images[key] = img;
 }
 
+NSImage* (^LHImageProvider(void))(NSString* url)
+{
+    std::lock_guard<std::mutex> guard(g_providerLock);
+    return g_provider;
+}
+
 void LHSetImageProvider(NSImage* (^provider)(NSString* url))
 {
     std::lock_guard<std::mutex> guard(g_providerLock);

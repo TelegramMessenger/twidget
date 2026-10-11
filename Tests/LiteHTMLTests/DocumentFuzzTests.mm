@@ -1,0 +1,90 @@
+#import <XCTest/XCTest.h>
+#import "LHDocument.h"
+#import "LHDocumentPainting.h"
+
+#include <random>
+#include <string>
+#include <vector>
+
+@interface DocumentFuzzTests : XCTestCase
+@end
+
+@implementation DocumentFuzzTests
+
+static NSArray<NSString *> *Seeds(void)
+{
+    NSMutableArray<NSString *> *seeds = [NSMutableArray array];
+    NSString *dir = [[@(__FILE__) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"../../Examples/chats"];
+    for(NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil])
+    {
+        NSString *text = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:name] encoding:NSUTF8StringEncoding error:nil];
+        if(text.length > 0)
+            [seeds addObject:[text substringToIndex:MIN(text.length, (NSUInteger)60000)]];
+    }
+    [seeds addObject:@"<table><tr><td colspan=99999 rowspan=99999>x</td></tr></table><svg viewBox=\"0 0 1e30 1e30\"><path d=\"M0 0 A1e30 1e30 0 1 1 1 1Z\"/><text font-size=\"1e9\" dy=\"1e9em\">t</text><linearGradient id=\"g\"><stop offset=\"NaN\"/></linearGradient><rect fill=\"url(#g)\" width=\"1e38\" height=\"-1\"/></svg>"];
+    [seeds addObject:@"<style>@import url(http://x); *{width:calc(1e308px*1e308);font-size:1e30px;line-height:-1;animation:a 1s;transition:all 1s} @keyframes a{from{}}</style><div style=\"--a:var(--a);color:var(--a);border-radius:1e30px;box-shadow:0 0 1e30px red;transform:scale(1e30) rotate(NaNdeg)\">x</div>"];
+    return seeds;
+}
+
+- (void)testMutatedDocumentsDoNotCrash
+{
+    std::mt19937 rng(20261011);
+    NSArray<NSString *> *seeds = Seeds();
+    XCTAssertGreaterThan(seeds.count, 3u);
+    const std::vector<std::string> inserts = {
+        "<", ">", "</div>", "<div>", "<table>", "<td>", "\"", "'", "<svg>", "</svg>", "<style>", "</style>", "{", "}", ";", ":", "(", ")", "url(", "calc(", "var(",
+        "light-dark(", "&#0;", "&#xFFFFFFFF;", "\xF0\x9F", "\xC0\x80", "\0", "<!--", "-->", "<![CDATA[", "<script>", "<iframe>", "<img src=", " style=\"", "colspan=1000000",
+        "<br>", "<li>", "<ol start=-2147483648>", "<p>", "&nbsp;", "‮", "<math>", "<template>", "<select>", "<option>", "<canvas width=99999999>",
+    };
+    const char  *budget   = getenv("TWIDGET_FUZZ_SECONDS");
+    const double seconds  = budget ? atof(budget) : 15;
+    const auto   deadline = [NSDate dateWithTimeIntervalSinceNow:seconds];
+    int          documents = 0;
+    while([deadline timeIntervalSinceNow] > 0 && documents < (budget ? 1000000 : 400))
+    {
+        @autoreleasepool
+        {
+            std::string text = [seeds[rng() % seeds.count] UTF8String];
+            const int edits = 1 + rng() % 40;
+            for(int e = 0; e < edits && !text.empty(); e++)
+            {
+                size_t at = rng() % text.size();
+                switch(rng() % 4)
+                {
+                case 0:
+                    text.insert(at, inserts[rng() % inserts.size()]);
+                    break;
+                case 1:
+                    text.erase(at, 1 + rng() % 64);
+                    break;
+                case 2:
+                    text[at] = static_cast<char>(rng() % 256);
+                    break;
+                default:
+                {
+                    size_t from = rng() % text.size(), len = std::min<size_t>(1 + rng() % 400, text.size() - from);
+                    text.insert(at, text.substr(from, len));
+                    break;
+                }
+                }
+            }
+            NSString *html = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding] ?: [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSISOLatin1StringEncoding];
+            LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+            CGSize size = [document layoutWithMaxWidth:(CGFloat)(50 + rng() % 600)];
+            XCTAssertTrue(std::isfinite(size.width) && std::isfinite(size.height));
+            CGImageRef image = [document copyImageWithMaxWidth:300 rect:CGRectMake(0, 0, 300, std::min<CGFloat>(size.height, 600)) scale:1];
+            if(image)
+                CGImageRelease(image);
+            [document mouseMoved:CGPointMake(rng() % 300, rng() % 300)];
+            [document mouseDown:CGPointMake(rng() % 300, rng() % 300)];
+            [document mouseUp:CGPointMake(rng() % 300, rng() % 300)];
+            (void)[document textFragmentsWithMaxWidth:300];
+            (void)[document boundsByAttribute:@"id"];
+            documents++;
+        }
+    }
+    NSLog(@"FUZZ documents=%d", documents);
+    XCTAssertGreaterThan(documents, 50);
+}
+
+@end

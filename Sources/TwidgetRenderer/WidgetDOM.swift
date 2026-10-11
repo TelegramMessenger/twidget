@@ -5,6 +5,7 @@ final class WidgetNode {
     let tag: String
     let svg: Bool
     let isText: Bool
+    var synthetic = false
     var text: String
     var attributes: [(name: String, value: String)] = []
     var declarations: [(name: String, value: String, important: Bool)] = []
@@ -56,6 +57,9 @@ final class WidgetNode {
 
     func setProperty(_ name: String, _ value: String, important: Bool) {
         let key = name.hasPrefix("--") ? name : name.lowercased()
+        if !WidgetNames.isProperty(key) {
+            return
+        }
         if value.isEmpty {
             declarations.removeAll { $0.name == key }
             return
@@ -84,6 +88,9 @@ final class WidgetNode {
                 value = value[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
             }
             let key = name.hasPrefix("--") ? name : name.lowercased()
+            if !WidgetNames.isProperty(key) {
+                continue
+            }
             result.removeAll { $0.name == key }
             result.append((key, value, important))
         }
@@ -138,7 +145,43 @@ final class WidgetNode {
     }
 }
 
+enum WidgetNames {
+    static func isTag(_ name: String) -> Bool {
+        return valid(name, maxLength: 64, first: { $0.isASCIILetter }, rest: { $0.isASCIILetter || $0.isASCIIDigit || $0 == "-" })
+    }
+
+    static func isAttribute(_ name: String) -> Bool {
+        return valid(name, maxLength: 64, first: { $0.isASCIILetter || $0 == "_" || $0 == ":" }, rest: { $0.isASCIILetter || $0.isASCIIDigit || $0 == "_" || $0 == ":" || $0 == "." || $0 == "-" })
+    }
+
+    static func isProperty(_ name: String) -> Bool {
+        let body = name.hasPrefix("--") ? String(name.dropFirst(2)) : (name.hasPrefix("-") ? String(name.dropFirst()) : name)
+        return valid(body, maxLength: 128, first: { $0.isASCIILetter || $0.isASCIIDigit || $0 == "-" || $0 == "_" }, rest: { $0.isASCIILetter || $0.isASCIIDigit || $0 == "-" || $0 == "_" })
+    }
+
+    private static func valid(_ name: String, maxLength: Int, first: (Unicode.Scalar) -> Bool, rest: (Unicode.Scalar) -> Bool) -> Bool {
+        let scalars = name.unicodeScalars
+        guard let head = scalars.first, scalars.count <= maxLength, first(head) else {
+            return false
+        }
+        return scalars.dropFirst().allSatisfy(rest)
+    }
+}
+
+private extension Unicode.Scalar {
+    var isASCIILetter: Bool {
+        return (value >= 65 && value <= 90) || (value >= 97 && value <= 122)
+    }
+
+    var isASCIIDigit: Bool {
+        return value >= 48 && value <= 57
+    }
+}
+
 final class WidgetDOM {
+    static let maxNodes = 20000
+    static let maxDepth = 256
+    static let maxTextLength = 1 << 20
     static let blockedElements: Set<String> = ["script", "iframe", "frame", "frameset", "object", "embed", "link", "meta", "base", "portal", "noscript", "set", "template", "audio", "video", "source", "track"]
     static let blockedAttributes: Set<String> = ["srcdoc", "srcset", "action", "formaction", "ping", "background", "nonce", "target", "http-equiv"]
     static let idAttribute = "data-lh-id"
@@ -208,6 +251,10 @@ final class WidgetDOM {
     }
 
     private func setAttribute(_ node: WidgetNode, _ name: String, _ value: String) {
+        if !WidgetNames.isAttribute(name) {
+            violation("attribute name")
+            return
+        }
         let key = name.lowercased()
         if key.hasPrefix("on") || WidgetDOM.blockedAttributes.contains(key) {
             violation("attribute \(name)")
@@ -227,6 +274,14 @@ final class WidgetDOM {
         switch kind {
         case "el":
             let tag = (op["tag"] as? String) ?? "span"
+            if !WidgetNames.isTag(tag) || id <= 0 {
+                violation("element name")
+                return
+            }
+            if nodes[id] == nil && nodes.count >= WidgetDOM.maxNodes {
+                violation("too many nodes")
+                return
+            }
             if WidgetDOM.blockedElements.contains(tag.lowercased()) {
                 violation("element <\(tag)>")
                 return
@@ -251,7 +306,11 @@ final class WidgetDOM {
             }
             return
         case "text":
-            register(id, WidgetNode(id: id, text: (op["data"] as? String) ?? ""))
+            if id <= 0 || (nodes[id] == nil && nodes.count >= WidgetDOM.maxNodes) {
+                violation("too many nodes")
+                return
+            }
+            register(id, WidgetNode(id: id, text: WidgetDOM.clip((op["data"] as? String) ?? "")))
             return
         case "comment":
             return
@@ -271,7 +330,7 @@ final class WidgetDOM {
                 node.removeAttribute(name)
             }
         case "data":
-            node.text = (op["data"] as? String) ?? ""
+            node.text = WidgetDOM.clip((op["data"] as? String) ?? "")
         case "ins":
             if isRoot(node) {
                 return
@@ -290,6 +349,10 @@ final class WidgetDOM {
                     return
                 }
                 ancestor = current.parent
+            }
+            if WidgetDOM.depth(of: parent) + WidgetDOM.height(of: node) >= WidgetDOM.maxDepth {
+                violation("tree too deep")
+                return
             }
             let before = (op["before"] as? NSNumber).flatMap { nodes[$0.intValue] }
             detach(node)
@@ -314,7 +377,8 @@ final class WidgetDOM {
                 for child in node.children {
                     child.parent = nil
                 }
-                let text = WidgetNode(id: Int.min, text: (op["text"] as? String) ?? "")
+                let text = WidgetNode(id: -4, text: WidgetDOM.clip((op["text"] as? String) ?? ""))
+                text.synthetic = true
                 text.parent = node
                 node.children = [text]
             }
@@ -333,6 +397,35 @@ final class WidgetDOM {
         default:
             break
         }
+    }
+
+    static func clip(_ text: String) -> String {
+        return text.utf8.count > maxTextLength ? String(text.prefix(maxTextLength / 4)) : text
+    }
+
+    static func depth(of node: WidgetNode) -> Int {
+        var depth = 0
+        var current: WidgetNode? = node
+        while let next = current?.parent {
+            depth += 1
+            current = next
+        }
+        return depth
+    }
+
+    static func height(of node: WidgetNode) -> Int {
+        var best = 0
+        var stack: [(WidgetNode, Int)] = [(node, 1)]
+        while let (current, level) = stack.popLast() {
+            best = max(best, level)
+            if level > maxDepth {
+                return level
+            }
+            for child in current.children {
+                stack.append((child, level + 1))
+            }
+        }
+        return best
     }
 
     func serialize(theme: String, overrides: [Int: [(String, String)]] = [:], canvasSource: (WidgetNode) -> String? = { _ in nil }) -> String {
@@ -368,6 +461,9 @@ final class WidgetDOM {
             }
             return
         }
+        if !WidgetNames.isTag(node.tag) {
+            return
+        }
         let canvas = node.tag == "canvas" && !node.svg ? canvasSource(node) : nil
         out += "<"
         out += canvas != nil ? "img" : node.tag
@@ -379,7 +475,7 @@ final class WidgetDOM {
             out += source
             out += "\""
         }
-        for attribute in node.attributes where canvas == nil || attribute.name.lowercased() != "src" {
+        for attribute in node.attributes where (canvas == nil || attribute.name.lowercased() != "src") && WidgetNames.isAttribute(attribute.name) {
             out += " "
             out += attribute.name
             out += "=\""
@@ -389,7 +485,7 @@ final class WidgetDOM {
         let animated = overrides[publicId(node)]
         if !node.declarations.isEmpty || animated != nil {
             out += " style=\""
-            for declaration in node.declarations where declaration.name != "--lh-anim" {
+            for declaration in node.declarations where declaration.name != "--lh-anim" && WidgetNames.isProperty(declaration.name) {
                 out += declaration.name
                 out += ":"
                 WidgetDOM.escape(CSSTheme.resolve(declaration.value, theme: theme), into: &out, attribute: true)
@@ -400,7 +496,7 @@ final class WidgetDOM {
             }
             if let animated = animated {
                 out += "--lh-anim:1;"
-                for (name, value) in animated {
+                for (name, value) in animated where WidgetNames.isProperty(name) {
                     out += name
                     out += ":"
                     WidgetDOM.escape(CSSTheme.resolve(value, theme: theme), into: &out, attribute: true)
@@ -442,8 +538,8 @@ final class WidgetDOM {
 }
 
 enum CSSTheme {
-    static func resolve(_ css: String, theme: String) -> String {
-        guard css.range(of: "light-dark(", options: .caseInsensitive) != nil else {
+    static func resolve(_ css: String, theme: String, depth: Int = 0) -> String {
+        guard depth < 8, css.range(of: "light-dark(", options: .caseInsensitive) != nil else {
             return css
         }
         let dark = theme == "dark"
@@ -467,7 +563,7 @@ enum CSSTheme {
             let inner = String(rest[range.upperBound..<index])
             let parts = WidgetNode.splitTopLevel(inner, separator: ",")
             let chosen = parts.count == 2 ? parts[dark ? 1 : 0] : (parts.first ?? "")
-            out += resolve(chosen.trimmingCharacters(in: .whitespaces), theme: theme)
+            out += resolve(chosen.trimmingCharacters(in: .whitespaces), theme: theme, depth: depth + 1)
             rest = index < rest.endIndex ? rest[rest.index(after: index)...] : ""
         }
         out += rest

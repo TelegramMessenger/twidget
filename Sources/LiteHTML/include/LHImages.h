@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (void)registerImage:(NSImage *)image name:(NSString *)name;
 + (void)setProvider:(nullable NSImage *_Nullable (^)(NSString *url))provider;
+@property (class, readonly, nullable) NSImage *_Nullable (^provider)(NSString *url);
 + (void)forgetImageWithURL:(NSString *)url;
 + (void)registerDemoImages;
 

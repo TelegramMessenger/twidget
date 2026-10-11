@@ -28,6 +28,12 @@ final class WidgetCanvas {
         var stops: [(CGFloat, CGColor)] = []
     }
 
+    static let maxPixels = 4096 * 4096
+    static let maxObjects = 4096
+    static let maxStops = 256
+    static let maxStack = 512
+    static let maxText = 4096
+
     private(set) var width = 300
     private(set) var height = 150
     private(set) var version = 0
@@ -40,8 +46,13 @@ final class WidgetCanvas {
     private let space = CGColorSpace(name: CGColorSpace.sRGB)!
     var resolveImage: ((Int) -> CGImage?)?
 
-    init(width: Int, height: Int) {
+    init(width: Int, height: Int, allowance: @escaping () -> Int) {
+        self.allowance = allowance
         resize(width, height)
+    }
+
+    var pixelCount: Int {
+        return width * height
     }
 
     var image: CGImage? {
@@ -52,9 +63,16 @@ final class WidgetCanvas {
         return cachedImage
     }
 
+    var allowance: () -> Int = { WidgetCanvas.maxPixels }
+
     func resize(_ w: Int, _ h: Int) {
         width = max(0, min(w, 8192))
         height = max(0, min(h, 8192))
+        let budget = max(0, min(WidgetCanvas.maxPixels, allowance()))
+        if width * height > budget {
+            width = 0
+            height = 0
+        }
         state = State()
         stack = []
         context = nil
@@ -94,18 +112,21 @@ final class WidgetCanvas {
                 resize(WidgetCanvas.int(command[1]), WidgetCanvas.int(rest.first ?? 0))
             case "g":
                 let id = WidgetCanvas.int(command[1])
-                if let gradientKind = rest.first as? String {
+                if let gradientKind = rest.first as? String, gradients[id] != nil || gradients.count < WidgetCanvas.maxObjects {
                     gradients[id] = Gradient(kind: gradientKind, args: rest.dropFirst().map { WidgetCanvas.number($0) })
                 }
             case "gs":
                 let id = WidgetCanvas.int(command[1])
-                if rest.count >= 2, let color = CSSColor.parse(rest[1] as? String ?? "") {
+                if rest.count >= 2, (gradients[id]?.stops.count ?? 0) < WidgetCanvas.maxStops, let color = CSSColor.parse(rest[1] as? String ?? "") {
                     gradients[id]?.stops.append((WidgetCanvas.number(rest[0]), color))
                 }
             case "pn":
                 let id = WidgetCanvas.int(command[1])
+                if paths[id] == nil && paths.count >= WidgetCanvas.maxObjects {
+                    continue
+                }
                 let path = CGMutablePath()
-                if let d = rest.first as? String {
+                if let d = rest.first as? String, d.utf8.count <= 1 << 20 {
                     SVGPath.append(d, to: path)
                 }
                 paths[id] = path
@@ -161,7 +182,8 @@ final class WidgetCanvas {
     }
 
     static func int(_ value: Any) -> Int {
-        return Int((value as? NSNumber)?.doubleValue ?? 0)
+        let number = (value as? NSNumber)?.doubleValue ?? 0
+        return number.isFinite ? Int(max(-1e9, min(1e9, number))) : 0
     }
 
     static func number(_ value: Any) -> CGFloat {
@@ -216,7 +238,7 @@ final class WidgetCanvas {
         case ("globalCompositeOperation", .string(let s)):
             ctx.setBlendMode(WidgetCanvas.blendMode(s))
         case ("shadowBlur", .number(let v)) where v >= 0:
-            state.shadowBlur = v
+            state.shadowBlur = min(v, 100)
             applyShadow()
         case ("shadowColor", .string(let s)):
             if let color = CSSColor.parse(s) {
@@ -284,6 +306,9 @@ final class WidgetCanvas {
         }
         switch method {
         case "save":
+            if stack.count >= WidgetCanvas.maxStack {
+                return
+            }
             stack.append(state)
             ctx.saveGState()
         case "restore":
@@ -394,11 +419,12 @@ final class WidgetCanvas {
                 restorePath(ctx, saved)
             }
         case "fillText", "strokeText":
-            if case let .string(text)? = a.first {
+            if case let .string(full)? = a.first {
+                let text = String(full.prefix(WidgetCanvas.maxText))
                 drawText(ctx, text, x: n(a, 1), y: n(a, 2), maxWidth: a.count > 3 ? n(a, 3) : nil, stroke: method == "strokeText")
             }
         case "setLineDash":
-            if case let .list(values)? = a.first {
+            if case let .list(values)? = a.first, values.count <= 64, values.allSatisfy({ $0.isFinite && $0 >= 0 }) {
                 state.dash = values.count % 2 == 1 ? values + values : values
                 ctx.setLineDash(phase: state.dashOffset, lengths: state.dash)
             }
@@ -677,8 +703,12 @@ final class WidgetCanvas {
         return state.dash.map(Double.init)
     }
 
-    func pixels(x: Int, y: Int, w: Int, h: Int) -> Data {
-        var data = Data(count: max(0, w) * max(0, h) * 4)
+    func pixels(x: Int, y: Int, w requestedW: Int, h requestedH: Int) -> Data {
+        let w = max(0, min(requestedW, 8192)), h = max(0, min(requestedH, 8192))
+        if w * h > WidgetCanvas.maxPixels {
+            return Data()
+        }
+        var data = Data(count: w * h * 4)
         guard w > 0, h > 0, let image = image else {
             return data
         }
@@ -705,7 +735,7 @@ final class WidgetCanvas {
     }
 
     static func image(rgba: Data, width: Int, height: Int) -> CGImage? {
-        guard width > 0, height > 0, rgba.count >= width * height * 4, let provider = CGDataProvider(data: rgba as CFData) else {
+        guard width > 0, height > 0, width <= 8192, height <= 8192, width * height <= maxPixels, rgba.count >= width * height * 4, let provider = CGDataProvider(data: rgba as CFData) else {
             return nil
         }
         return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)

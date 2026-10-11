@@ -670,7 +670,7 @@ final class WidgetAnimator {
                 onEvent?("animationend", id, spec.name, total)
             }
             if spec.fill == "forwards" || spec.fill == "both" {
-                let lastIteration = max(0, Int(ceil(spec.iterations)) - 1)
+                let lastIteration = max(0, Int(ceil(min(spec.iterations, 1e9))) - 1)
                 var progress = spec.iterations.truncatingRemainder(dividingBy: 1) == 0 ? 1.0 : spec.iterations.truncatingRemainder(dividingBy: 1)
                 if reversed(spec.direction, lastIteration) {
                     progress = 1 - progress
@@ -679,7 +679,7 @@ final class WidgetAnimator {
             }
             return nil
         }
-        let iteration = Int(local / duration)
+        let iteration = Int(min(local / duration, 1e12))
         if iteration != state.iteration {
             state.iteration = iteration
             onEvent?("animationiteration", id, spec.name, local)

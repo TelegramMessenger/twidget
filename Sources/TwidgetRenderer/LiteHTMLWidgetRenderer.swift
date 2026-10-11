@@ -14,9 +14,9 @@ public final class LiteHTMLWidgetRenderer {
     public private(set) var layoutMilliseconds = 0.0
 
     private let documentView: WidgetDocumentView
-    private let dom = WidgetDOM()
+    let dom = WidgetDOM()
     private var theme: String
-    private var document: LHDocument?
+    private(set) var document: LHDocument?
     private var buffered: [String] = []
     private var listened: Set<String> = []
     private var prevented: Set<String> = []
@@ -37,13 +37,16 @@ public final class LiteHTMLWidgetRenderer {
     private var lastClick: (time: CFTimeInterval, point: CGPoint) = (0, .zero)
     private var observedResize: Set<Int> = []
     private let animator = WidgetAnimator()
-    private var canvases: [Int: WidgetCanvas] = [:]
+    private(set) var canvases: [Int: WidgetCanvas] = [:]
     private var canvasAttributeSizes: [Int: (Int, Int)] = [:]
     private var canvasURLs: [Int: String] = [:]
     private let uid = UUID().uuidString.lowercased()
     private var styleSheetKey = ""
     private var overrides: [Int: [(String, String)]] = [:]
     private var lastResize: [Int: CGSize] = [:]
+
+    static let maxCanvases = 64
+    static let maxCanvasPixels = 4096 * 4096
 
     private static let alwaysSent: Set<String> = ["click", "input", "change", "submit", "reset", "load", "error", "toggle"]
     private static let coalesced: Set<String> = ["pointermove", "mousemove", "touchmove", "wheel", "scroll"]
@@ -217,7 +220,16 @@ public final class LiteHTMLWidgetRenderer {
             return canvas
         }
         let size = canvasAttributeSize(node)
-        let canvas = WidgetCanvas(width: size.0, height: size.1)
+        if canvases.count >= LiteHTMLWidgetRenderer.maxCanvases {
+            return WidgetCanvas(width: 0, height: 0, allowance: { 0 })
+        }
+        let canvas = WidgetCanvas(width: size.0, height: size.1, allowance: { [weak self] in
+            guard let self = self else {
+                return 0
+            }
+            let used = self.canvases.filter { $0.key != id }.reduce(0) { $0 + $1.value.pixelCount }
+            return LiteHTMLWidgetRenderer.maxCanvasPixels - used
+        })
         canvasAttributeSizes[id] = size
         canvas.resolveImage = { [weak self] other in
             self?.image(forNode: other)
@@ -519,8 +531,9 @@ public final class LiteHTMLWidgetRenderer {
         return false
     }
 
-    private func measureText(_ text: String, font: String) -> [String: Any] {
-        let ctFont = CSSFont.make(font)
+    private func measureText(_ full: String, font: String) -> [String: Any] {
+        let text = String(full.prefix(4096))
+        let ctFont = CSSFont.make(String(font.prefix(512)))
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): ctFont]))
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
         let width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
@@ -902,8 +915,8 @@ enum CSSFont {
                 bold = true
             } else if t == "italic" || t == "oblique" {
                 italic = true
-            } else if let px = t.split(separator: "/").first, px.hasSuffix("px"), let value = Double(px.dropLast(2)) {
-                size = CGFloat(value)
+            } else if let px = t.split(separator: "/").first, px.hasSuffix("px"), let value = Double(px.dropLast(2)), value.isFinite {
+                size = CGFloat(min(max(value, 1), 1000))
                 familyStart = index + 1
                 break
             }

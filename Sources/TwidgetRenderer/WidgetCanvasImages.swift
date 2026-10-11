@@ -23,11 +23,12 @@ public enum WidgetCanvasImages {
         }
         installed = true
         LHSanitizer.addImageScheme("twcanvas")
+        let previous = LHImages.provider
         LHImages.setProvider { url in
             if url.hasPrefix("twcanvas:") {
                 return WidgetCanvasImages.image(url)
             }
-            return WidgetCanvasImages.fallback?(url)
+            return previous?(url) ?? WidgetCanvasImages.fallback?(url)
         }
     }
 

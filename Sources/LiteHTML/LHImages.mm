@@ -173,6 +173,11 @@ static void RegisterDemoImages(void)
     LHSetImageProvider(provider);
 }
 
++ (NSImage *_Nullable (^)(NSString *url))provider
+{
+    return LHImageProvider();
+}
+
 + (void)forgetImageWithURL:(NSString *)url
 {
     LHForgetImage(url);

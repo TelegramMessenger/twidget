@@ -18,6 +18,7 @@
 @class NSImage;
 void LHRegisterAppImage(NSString* name, NSImage* image);
 void LHSetImageProvider(NSImage* (^provider)(NSString* url));
+NSImage* (^LHImageProvider(void))(NSString* url);
 void LHForgetImage(NSString* url);
 #endif
 

@@ -1,3 +1,4 @@
+#include <cctype>
 #include "html.h"
 #include "el_svg.h"
 #include "render_image.h"
@@ -606,8 +607,13 @@ namespace litehtml
                                 float opacity, document_container* container)
         {
             std::string id = svg_url_id(svg_property(el, name, true));
-            if(id.empty() || id.find_first_of(" \"'[]()") != std::string::npos)
+            if(id.empty() || id.size() > 128)
                 return false;
+            for(char ch : id)
+            {
+                if(!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_')
+                    return false;
+            }
             auto doc = el->get_document();
             if(!doc || !doc->root())
                 return false;
