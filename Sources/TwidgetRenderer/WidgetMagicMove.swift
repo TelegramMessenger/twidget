@@ -13,7 +13,6 @@ final class WidgetMagicMove {
     }
 
     static let attribute = "data-transition"
-    static let structuralOps: Set<String> = ["el", "ins", "rm", "data", "text"]
 
     private let stage: MagicMoveStage
     private(set) var excluded: Set<Int> = []
@@ -32,13 +31,40 @@ final class WidgetMagicMove {
         return stage.isActive
     }
 
-    static func isStructural(_ ops: [[String: Any]]) -> Bool {
+    static func isStructural(_ ops: [[String: Any]], dom: WidgetDOM) -> Bool {
+        func inside(_ id: Any?) -> Bool? {
+            guard let id = (id as? NSNumber)?.intValue, var node = dom.node(id) else {
+                return nil
+            }
+            while true {
+                if node.attribute(attribute) == "move" {
+                    return true
+                }
+                guard let parent = node.parent else {
+                    return false
+                }
+                node = parent
+            }
+        }
         for op in ops {
             guard let kind = op["op"] as? String else {
                 continue
             }
-            if structuralOps.contains(kind) || (kind == "attr" || kind == "rattr") && (op["name"] as? String) == "class" {
-                return true
+            switch kind {
+            case "ins":
+                if inside(op["id"]) == true || inside(op["parent"]) ?? true {
+                    return true
+                }
+            case "rm", "data", "text":
+                if inside(op["id"]) == true {
+                    return true
+                }
+            case "attr", "rattr":
+                if (op["name"] as? String) == "class", inside(op["id"]) == true {
+                    return true
+                }
+            default:
+                break
             }
         }
         return false

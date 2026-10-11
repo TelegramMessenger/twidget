@@ -180,7 +180,7 @@ public final class LiteHTMLWidgetRenderer {
         case "ops":
             let ops = ((message["ops"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
             var capture: WidgetMagicMove.Capture?
-            if dom.usesTransitions, let document = document, !frozen, isOnScreen, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, WidgetMagicMove.isStructural(ops) {
+            if dom.usesTransitions, let document = document, !frozen, isOnScreen, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, WidgetMagicMove.isStructural(ops, dom: dom) {
                 capture = magic.capture(dom: dom, document: document)
             }
             for op in ops {
