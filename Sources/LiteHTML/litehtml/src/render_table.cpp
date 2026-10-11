@@ -76,6 +76,10 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
                     {
                         pixel_t css_w = m_grid->column(col).css_width.calc_percent(self_size.width);
                         pixel_t el_w  = cell->el->render(0_px, 0_px, self_size.new_width(css_w), fmt_ctx).natural_width;
+                        if(cell->el->css().get_box_sizing() == box_sizing_content_box)
+                        {
+                            css_w += cell->el->content_offset_width();
+                        }
                         cell->min_width = cell->max_width = std::max(css_w, el_w);
                         cell->el->pos().width =
                             cell->min_width - cell->el->content_offset_left() - cell->el->content_offset_right();
