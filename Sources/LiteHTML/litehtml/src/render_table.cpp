@@ -1,6 +1,7 @@
 #include "render_table.h"
 #include "document.h"
 #include "iterators.h"
+#include <cmath>
 
 litehtml::render_item_table::render_item_table(std::shared_ptr<element> _src_el) :
     render_item(std::move(_src_el)),
@@ -211,7 +212,18 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
 
                 if(cell->rowspan <= 1)
                 {
-                    m_grid->row(row).height = std::max(m_grid->row(row).height, cell->el->height());
+                    pixel_t     cell_height = cell->el->height();
+                    const auto& css_height  = cell->el->css().get_height();
+                    if(!css_height.is_predefined() && css_height.units() != css_units_percentage)
+                    {
+                        pixel_t specified = static_cast<pixel_t>(css_height.val());
+                        if(std::isfinite(static_cast<double>(specified)) && specified > 0_px)
+                        {
+                            specified   = std::min(specified, pixel_t(1 << 20));
+                            cell_height = std::max(cell_height, specified + cell->el->content_offset_height() - cell->el->box_sizing_height());
+                        }
+                    }
+                    m_grid->row(row).height = std::max(m_grid->row(row).height, cell_height);
                 } else
                 {
                     row_span_found = true;
