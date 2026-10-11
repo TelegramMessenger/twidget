@@ -329,6 +329,16 @@ ImageHandle LoadProvided(const std::string& url)
     NSImage*  image  = string ? provider(string) : nil;
     if(!image)
         return {};
+    if(image.representations.count == 1)
+    {
+        NSImageRep* rep = image.representations.firstObject;
+        if([rep isKindOfClass:[NSBitmapImageRep class]] || [NSStringFromClass([rep class]) isEqualToString:@"NSCGImageSnapshotRep"])
+        {
+            CGImageRef direct = [image CGImageForProposedRect:nullptr context:nil hints:nil];
+            if(direct && CGImageGetWidth(direct) <= 4096 && CGImageGetHeight(direct) <= 4096)
+                return AdoptImage(CGImageRetain(direct), image.size);
+        }
+    }
     return AdoptImage(CreateCGImageFromNSImage(image, image.size, 2.0, nil), image.size);
 }
 
