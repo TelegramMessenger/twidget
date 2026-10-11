@@ -2,6 +2,7 @@
 #include "line_box.h"
 #include "element.h"
 #include "render_item.h"
+#include "document.h"
 #include "types.h"
 #include <algorithm>
 
@@ -539,6 +540,19 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                 current_context = contexts.back();
                 contexts.pop_back();
             }
+        }
+    }
+
+    if(line_max_height.count == 0 && !m_items.empty() &&
+       (inline_boxes_dims.count != 0 || top_aligned_max_height.count != 0 || bottom_aligned_max_height.count != 0) &&
+       m_items.front()->get_el()->src_el()->get_document()->mode() == no_quirks_mode)
+    {
+        line_max_height.top    = -(m_font_metrics.height - m_font_metrics.base_line());
+        line_max_height.bottom = m_font_metrics.base_line();
+        line_max_height.count  = 1;
+        if(!line_height.has_value())
+        {
+            line_height = m_default_line_height.computed_value;
         }
     }
 
