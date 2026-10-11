@@ -1,11 +1,7 @@
-// CPU quota policy: a line-for-line mirror of src/host/cpu-budget.ts (see the
-// comments there). A sliding window of `cpuQuotaWindowMs` in ten buckets; a
-// widget may spend `cpuQuotaMs` of JS time per window, beyond that deferrable
-// tasks are postponed until the oldest busy bucket leaves the window — never
+// CPU quota policy. A sliding window of `cpuQuotaWindowMs` in ten buckets; a
+// script may spend `cpuQuotaMs` of JS time per window, beyond that deferrable
+// tasks are postponed until the oldest busy bucket leaves the window, never
 // dropped or killed. Events always run with a floor of 50 ms.
-//
-// Pure and side-effect free; checked against tests/fixtures/cpu-budget.json
-// (copied to Tests/WidgetSandboxTests/Fixtures by `pnpm build:ios`).
 
 import Foundation
 
@@ -42,7 +38,7 @@ public struct CpuBudget {
     private func bucketIndex(_ now: Double) -> Int { Int(floor(now / bucketMs)) }
     private func oldestStart(_ now: Double) -> Double { Double(bucketIndex(now) - CpuBudget.buckets + 1) * bucketMs }
 
-    /// Account `cpuMs` of widget JS time for a task that ended at `now` (ms).
+    /// Account `cpuMs` of script JS time for a task that ended at `now` (ms).
     public mutating func record(_ kind: String, cpuMs: Double, now: Double) {
         let b = bucketIndex(now)
         let i = ((b % CpuBudget.buckets) + CpuBudget.buckets) % CpuBudget.buckets

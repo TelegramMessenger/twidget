@@ -45,7 +45,7 @@ JSValue qjs_eval(JSContext *ctx, const char *code, size_t len, const char *filen
    refused, not run) and quickjs-ng checks its own bytecode version; on any
    mismatch the result is an exception and the caller falls back to the source.
    Bytecode is only ever read from the host's own bundle: JS_ReadObject has no
-   verifier, so this path never sees widget code. */
+   verifier, so this path never sees untrusted code. */
 uint8_t *qjs_compile_bytecode(JSContext *ctx, const char *code, size_t len, const char *filename, size_t *out_len);
 void qjs_free_bytecode(JSContext *ctx, uint8_t *blob);
 JSValue qjs_eval_bytecode(JSContext *ctx, const uint8_t *blob, size_t blob_len, const char *source, size_t source_len);

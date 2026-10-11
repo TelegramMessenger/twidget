@@ -146,7 +146,7 @@ public final class QuickJSContext {
 
     /// Runs one of our own precompiled bundles (`.qbc`, see qjs_shim.h), checked
     /// against the source it was built from; throws on any mismatch so the caller
-    /// can fall back to `evaluate`. Never for widget code: bytecode is not verified.
+    /// can fall back to `evaluate`. Never for untrusted code: bytecode is not verified.
     @discardableResult
     public func evaluateBytecode(_ blob: Data, source: String) throws -> JSResult {
         enterJS()
