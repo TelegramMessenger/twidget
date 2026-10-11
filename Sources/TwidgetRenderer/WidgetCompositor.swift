@@ -147,7 +147,11 @@ final class WidgetCompositor {
         let layer: CALayer
         var box: CGRect
         var origin: CGPoint
+        var ink: CGRect
     }
+
+    static let maxLayers = 48
+    static let maxPixels = 4096 * 4096
 
     private var promoted: [Int: Promoted] = [:]
     private weak var host: CALayer?
@@ -212,6 +216,18 @@ final class WidgetCompositor {
             }
             wanted[id] = (box, origin, min(maxScale, 3))
         }
+        var budget = WidgetCompositor.maxPixels
+        var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
+        for (id, want) in wanted.sorted(by: { $0.value.box.width * $0.value.box.height < $1.value.box.width * $1.value.box.height }) {
+            let factor = scale * want.maxScale
+            let pixels = Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
+            if admitted.count >= WidgetCompositor.maxLayers || pixels > budget {
+                continue
+            }
+            budget -= pixels
+            admitted[id] = want
+        }
+        wanted = admitted
         for (id, item) in promoted where wanted[id] == nil {
             item.layer.removeFromSuperlayer()
             promoted[id] = nil
@@ -241,8 +257,21 @@ final class WidgetCompositor {
             if promoted[id] == nil {
                 promotions += 1
             }
-            promoted[id] = Promoted(layer: layer, box: border, origin: want.origin)
+            promoted[id] = Promoted(layer: layer, box: border, origin: want.origin, ink: ink)
         }
+    }
+
+    func documentPoint(for point: CGPoint) -> CGPoint? {
+        for item in promoted.values where item.layer.opacity > 0 {
+            let local = item.layer.convert(point, from: item.layer.superlayer)
+            if item.layer.bounds.contains(local) {
+                let mapped = CGPoint(x: item.ink.minX + local.x, y: item.ink.minY + local.y)
+                if item.box.contains(mapped) {
+                    return mapped
+                }
+            }
+        }
+        return nil
     }
 
     func draw(into ctx: CGContext) {

@@ -730,8 +730,10 @@ wholeTiles = !args.contains("--partial")
 incrementalDefault = args.contains("--incremental")
 skipRaster = args.contains("--no-raster")
 if option("--space") == "display" { renderSpace = NSScreen.main?.colorSpace?.cgColorSpace }
+if option("--runtime") == "jsc" { HTMLScript.runtime = JSCScriptRuntime.shared }
 switch args.first {
 case "record":
+    HTML3DSession.register()
     record(seconds: Double(option("--seconds") ?? "4") ?? 4, filter: option("--only"))
 case "bench":
     bench(label: option("--label") ?? "run", filter: option("--only"), verify: args.contains("--verify"), maxFrames: Int(option("--frames") ?? "100000") ?? 100000, savePNG: args.contains("--png"))

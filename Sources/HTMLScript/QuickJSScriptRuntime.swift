@@ -21,6 +21,10 @@ public final class QuickJSScriptContext: HTMLScriptContext {
     init(memoryLimitBytes: Int, callLimit: TimeInterval) {
         context = QuickJSContext(memoryLimitBytes: memoryLimitBytes, maxStackBytes: JSThread.jsStackLimit)
         self.callLimit = callLimit
+        context.registerFunction("__lhIntl") { args in
+            return .string(IntlBridge.handle(args.first ?? ""))
+        }
+        _ = try? context.evaluate(IntlBridge.polyfill, filename: "intl.js")
         context.registerFunction("__lhNative") { [weak self] args in
             guard let self = self, args.count == 2, let native = self.native else {
                 return .undefined

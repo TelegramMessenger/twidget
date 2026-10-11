@@ -630,6 +630,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func target(at point: CGPoint) -> Int {
+        let point = compositor.documentPoint(for: point) ?? point
         guard let value = document?.attribute(WidgetDOM.idAttribute, at: point), let id = Int(value) else {
             return dom.publicId(dom.html)
         }

@@ -200,6 +200,23 @@ final class RendererFuzzTests: XCTestCase {
         XCTAssertEqual(warm.serialize(theme: "dark"), WidgetDOM.invalidatingCaches(cold).serialize(theme: "dark"))
     }
 
+    func testCompositorStaysWithinItsBudget() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        window.contentView?.addSubview(renderer.view)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 400, height: 400)
+        renderer.load()
+        var ops: [[String: Any]] = [["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"], ["op": "el", "id": 2, "tag": "style", "attrs": []], ["op": "css", "id": 2, "text": "@keyframes grow { to { transform: scale(3) } } .big { width: 1000px; height: 1000px; animation: grow 5s infinite; }"], ["op": "ins", "id": 2, "parent": 1]]
+        for i in 0..<60 {
+            ops.append(["op": "el", "id": 100 + i, "tag": "div", "attrs": [["class", "big"]]])
+            ops.append(["op": "ins", "id": 100 + i, "parent": 1])
+        }
+        let data = try! JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops])
+        renderer.send(String(data: data, encoding: .utf8)!)
+        XCTAssertLessThanOrEqual(renderer.compositedCount, WidgetCompositor.maxLayers)
+        renderer.destroy()
+    }
+
     func testDepthAndNodeCaps() {
         let dom = WidgetDOM()
         dom.apply(["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"])
