@@ -29,8 +29,8 @@ struct SanitizerPolicy
     std::unordered_set<std::string> atRules;
     std::unordered_set<std::string> imageFunctions;
     std::unordered_set<std::string> blockedProperties;
-    std::string                     renamedTagAttribute = "data-tg-tag";
-    std::string                     reservedAttributePrefix = "data-tg-";
+    std::string                     renamedTagAttribute = "data-lh-tag";
+    std::string                     reservedAttributePrefix = "data-lh-";
 
     static SanitizerPolicy standard();
 };

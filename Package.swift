@@ -23,7 +23,6 @@ let package = Package(
             ],
             publicHeadersPath: "include",
             cSettings: [
-                .unsafeFlags(["-O2"]),
                 .headerSearchPath("litehtml/include"),
                 .headerSearchPath("litehtml/include/litehtml"),
                 .headerSearchPath("litehtml/src"),
@@ -31,7 +30,6 @@ let package = Package(
                 .headerSearchPath("core"),
             ],
             cxxSettings: [
-                .unsafeFlags(["-O2"]),
                 .headerSearchPath("litehtml/include"),
                 .headerSearchPath("litehtml/include/litehtml"),
                 .headerSearchPath("litehtml/src"),

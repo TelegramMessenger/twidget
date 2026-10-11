@@ -16,6 +16,9 @@ public final class HTMLScript {
 
     public weak var host: HTMLScriptHost?
     public static var runtime: HTMLScriptRuntime = JSCScriptRuntime.shared
+    public static var errorMarkup: (_ escapedMessage: String, _ stopped: Bool) -> String = { message, stopped in
+        return "\n<div class=\"lc-script-error\">⚠︎ \(message)\(stopped ? " · <a href=\"chat:restart-script\">↻ Restart</a>" : "")</div>"
+    }
     public static var libraryFactories: [String: () -> HTMLScriptLibrary] = [:]
     public let libraries: [String: HTMLScriptLibrary]
 
@@ -348,7 +351,7 @@ public final class HTMLScript {
     private func publish() {
         var html: NSString = rendered.map { styles.appending($0 as String) as NSString } ?? staticHTML as NSString
         if let error = error {
-            html = html.appending("\n<div class=\"lc-script-error\">⚠︎ \(HTMLScript.escape(error))\(stopped ? " · <a href=\"chat:restart-script\">↻ Restart</a>" : "")</div>") as NSString
+            html = html.appending(HTMLScript.errorMarkup(HTMLScript.escape(error), stopped)) as NSString
         }
         if pendingTransition != nil, CACurrentMediaTime() - pendingTransitionTime > HTMLScript.transitionWindow {
             pendingTransition = nil

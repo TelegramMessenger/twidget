@@ -291,7 +291,7 @@ public final class HTML3DSession {
     private var radius: CGFloat = 0
     private var pixelRatioHint: Double = 2
 
-    private let renderQueue = DispatchQueue(label: "org.telegram.HTML3D", qos: .userInteractive)
+    private let renderQueue = DispatchQueue(label: "HTML3D", qos: .userInteractive)
     private let inFlight = DispatchSemaphore(value: 3)
     private var working: [Float] = []
     private var ring: [MTLBuffer?] = [nil, nil, nil]
