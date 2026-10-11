@@ -280,7 +280,7 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
             fmt_ctx->clear_floats(self_size.context_idx);
         }
 
-        _render_content(x, y, true, self_size.new_width(m_pos.width), fmt_ctx);
+        _render_content(x, y, true, self_size.new_width(m_pos.width + (static_cast<pixel_t>(self_size.width) - self_size.render_width)), fmt_ctx);
     }
 
     pixel_t content_height = m_pos.height;

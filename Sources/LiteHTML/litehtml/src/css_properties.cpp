@@ -260,11 +260,11 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
         m_line_height.computed_value = m_font_metrics.height;
     } else if(m_line_height.css_value.units() == css_units_none)
     {
-        m_line_height.computed_value = pixel_t(m_line_height.css_value.val() * font_size.value());
+        m_line_height.computed_value = pixel_t(std::floor(m_line_height.css_value.val() * font_size.value()));
     } else
     {
         m_line_height.computed_value =
-            doc->to_pixels(m_line_height.css_value, m_font_metrics, m_font_metrics.font_size);
+            pixel_t(std::floor(doc->to_pixels(m_line_height.css_value, m_font_metrics, m_font_metrics.font_size).value()));
         m_line_height.css_value = static_cast<float>(m_line_height.computed_value);
     }
 
