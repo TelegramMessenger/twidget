@@ -9,7 +9,6 @@ let package = Package(
         .library(name: "LiteHTML", targets: ["LiteHTML"]),
         .library(name: "HTMLScript", targets: ["HTMLScript"]),
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
-        .library(name: "HTMLScriptQuickJS", targets: ["HTMLScriptQuickJS"]),
         .library(name: "HTML3D", targets: ["HTML3D"]),
         .library(name: "TwidgetRenderer", targets: ["TwidgetRenderer"]),
     ],
@@ -47,7 +46,7 @@ let package = Package(
         .target(
             name: "CQuickJSNG",
             path: "Sources/CQuickJSNG",
-            exclude: ["quickjs/LICENSE"],
+            exclude: ["quickjs/LICENSE", "quickjs/docs", "quickjs/examples", "quickjs/tests", "quickjs/test262", "quickjs/gen"],
             sources: ["quickjs/quickjs.c", "quickjs/dtoa.c", "quickjs/libregexp.c", "quickjs/libunicode.c", "shim/qjs_shim.c"],
             publicHeadersPath: "include",
             cSettings: [
@@ -61,13 +60,9 @@ let package = Package(
             path: "Sources/HTMLSandbox"),
         .target(
             name: "HTMLScript",
-            dependencies: ["HTMLSandbox"],
+            dependencies: ["HTMLSandbox", "CQuickJSNG"],
             path: "Sources/HTMLScript",
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("QuartzCore")]),
-        .target(
-            name: "HTMLScriptQuickJS",
-            dependencies: ["CQuickJSNG", "HTMLSandbox", "HTMLScript"],
-            path: "Sources/HTMLScriptQuickJS"),
         .target(
             name: "HTML3D",
             dependencies: ["HTMLScript"],

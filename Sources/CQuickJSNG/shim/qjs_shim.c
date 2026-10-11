@@ -137,3 +137,22 @@ size_t qjs_memory_used(JSRuntime *rt) {
     JS_ComputeMemoryUsage(rt, &u);
     return (size_t)u.memory_used_size;
 }
+
+int qjs_typed_array_bytes(JSContext *ctx, JSValue v, uint8_t **ptr, size_t *len)
+{
+    int type = JS_GetTypedArrayType(v);
+    if (type < 0)
+        return -1;
+    size_t offset = 0, length = 0, element = 0;
+    JSValue buffer = JS_GetTypedArrayBuffer(ctx, v, &offset, &length, &element);
+    if (JS_IsException(buffer))
+        return -1;
+    size_t size = 0;
+    uint8_t *base = JS_GetArrayBuffer(ctx, &size, buffer);
+    JS_FreeValue(ctx, buffer);
+    if (!base || offset > size || length > size - offset)
+        return -1;
+    *ptr = base + offset;
+    *len = length;
+    return type;
+}

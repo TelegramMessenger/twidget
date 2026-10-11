@@ -15,7 +15,7 @@ public final class HTMLScript {
     private static let transitions = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "pop", "none"]
 
     public weak var host: HTMLScriptHost?
-    public static var runtime: HTMLScriptRuntime = JSCScriptRuntime.shared
+    public static var runtime: HTMLScriptRuntime = QuickJSScriptRuntime()
     public static var errorMarkup: (_ escapedMessage: String, _ stopped: Bool) -> String = { message, stopped in
         return "\n<div class=\"lc-script-error\">⚠︎ \(message)\(stopped ? " · <a href=\"chat:restart-script\">↻ Restart</a>" : "")</div>"
     }

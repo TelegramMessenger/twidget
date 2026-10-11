@@ -1,7 +1,7 @@
 import Foundation
 import JavaScriptCore
 import HTMLSandbox
-import HTMLScriptQuickJS
+import HTMLScript
 
 let labRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 let repoRoot = labRoot.deletingLastPathComponent()

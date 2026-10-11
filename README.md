@@ -12,9 +12,8 @@ This repository is the Apple renderer. Validated operations come in, events and 
 |---|---|
 | `TwidgetRenderer` | The twidget renderer: mirror DOM, litehtml layout and drawing, events, layout queries, CSS animations and transitions, canvas 2D on CoreGraphics |
 | `LiteHTML` | The renderer core: parsing, sanitizing, layout, CoreGraphics and Metal drawing, hit testing, text selection |
-| `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it, on JavaScriptCore by default |
-| `HTMLScriptQuickJS` | An alternative JavaScript runtime for `HTMLScript` on QuickJS-ng, with a hard heap limit |
-| `HTML3D` | `<script src="app:three">` for `HTMLScript`: three.js r160 with its WebGL renderer replaced by a Metal one |
+| `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it. Runs on QuickJS by default (hard heap cap, same engine as twidget's sandbox); JavaScriptCore is available as `JSCScriptRuntime` |
+| `HTML3D` | `<script src="app:three">` for `HTMLScript`: three.js r160 with its WebGL renderer replaced by a Metal one, on QuickJS or JavaScriptCore |
 | `HTMLSandbox` | The CPU quota policy and the large-stack script thread |
 
 macOS 10.13+, Swift 5.5+, C++17.
@@ -152,10 +151,10 @@ public protocol HTMLScriptContext: AnyObject {
 - `invoke` calls one of the hooks: `fire`, `frame`, `callRender`, `callAction`, `callInput` or `describe`.
 - An engine throws `HTMLScriptError` with `.timeLimit`, `.outOfMemory` or `.exception`. The sandbox turns those into a stopped script or an error line.
 
-`JSCScriptRuntime` and `QuickJSScriptRuntime` are the two implementations. To switch engines:
+`QuickJSScriptRuntime` (the default) and `JSCScriptRuntime` are the two implementations. QuickJS comes from the [macosswift/quickjs](https://github.com/macosswift/quickjs) submodule; clone with `--recurse-submodules` (SwiftPM fetches it automatically). To switch engines:
 
 ```swift
-import HTMLScriptQuickJS
+HTMLScript.runtime = JSCScriptRuntime.shared
 HTMLScript.runtime = QuickJSScriptRuntime(memoryLimitBytes: 64 << 20)
 ```
 
@@ -198,7 +197,7 @@ const renderer = new THREE.WebGLRenderer();
 - Up to four lights, with a directional shadow map.
 - Transparency sorting.
 
-Call `HTML3DSession.register()` once. Then attach the layer from `script.scene3D?.makeLayer()` to your view. This library needs the JavaScriptCore runtime, because the bridge reads typed arrays without copying them.
+Call `HTML3DSession.register()` once. Then attach the layer from `script.scene3D?.makeLayer()` to your view. The bridge reads typed arrays in place on both runtimes, through the JavaScriptCore C API or the QuickJS typed-array shim.
 
 ## Exactness
 

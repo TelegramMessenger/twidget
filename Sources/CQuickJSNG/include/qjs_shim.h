@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "quickjs.h"
+#include "../quickjs/quickjs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,6 +60,7 @@ bool qjs_is_job_pending(JSRuntime *rt);
 /* >0 job executed, 0 none, <0 error (exception pending in *pctx). */
 int qjs_execute_pending_job(JSRuntime *rt, JSContext **pctx);
 size_t qjs_memory_used(JSRuntime *rt);
+int qjs_typed_array_bytes(JSContext *ctx, JSValue v, uint8_t **ptr, size_t *len);
 
 #ifdef __cplusplus
 }

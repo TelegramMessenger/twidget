@@ -10,12 +10,12 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "LiteHTMLLab",
-            dependencies: [.product(name: "LiteHTML", package: "twidget"), .product(name: "HTMLScript", package: "twidget"), .product(name: "HTMLScriptQuickJS", package: "twidget"), .product(name: "HTML3D", package: "twidget")],
+            dependencies: [.product(name: "LiteHTML", package: "twidget"), .product(name: "HTMLScript", package: "twidget"), .product(name: "HTML3D", package: "twidget")],
             path: "Sources/LiteHTMLLab",
             swiftSettings: [.unsafeFlags(["-Ounchecked"])]),
         .executableTarget(
             name: "EngineLab",
-            dependencies: [.product(name: "HTMLSandbox", package: "twidget"), .product(name: "HTMLScriptQuickJS", package: "twidget")],
+            dependencies: [.product(name: "HTMLSandbox", package: "twidget"), .product(name: "HTMLScript", package: "twidget")],
             path: "Sources/EngineLab",
             swiftSettings: [.unsafeFlags(["-Ounchecked"])],
             linkerSettings: [.linkedFramework("JavaScriptCore")]),

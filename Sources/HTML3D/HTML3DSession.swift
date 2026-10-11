@@ -216,6 +216,19 @@ final class HTML3DGPU {
     }
 }
 
+struct HTML3DArray {
+    enum Kind {
+        case float32
+        case uint16
+        case uint32
+        case other
+    }
+
+    let pointer: UnsafeRawPointer
+    let length: Int
+    let kind: Kind
+}
+
 public final class HTML3DSession {
     private struct Geometry {
         let positions: MTLBuffer
@@ -370,19 +383,19 @@ public final class HTML3DSession {
             self?.configure(radius: radius)
         }
         let geometry: @convention(block) (Int, JSValue, JSValue, JSValue, Int, JSValue) -> Void = { [weak self] id, positions, normals, colors, colorSize, index in
-            self?.defineGeometry(id: id, positions: positions, normals: normals, colors: colors, colorSize: colorSize, index: index)
+            self?.defineGeometry(id: id, positions: HTML3DSession.array(positions), normals: HTML3DSession.array(normals), colors: HTML3DSession.array(colors), colorSize: colorSize, index: HTML3DSession.array(index))
         }
         let release: @convention(block) (Int) -> Void = { [weak self] id in
             self?.releaseGeometry(id: id)
         }
         let instances: @convention(block) (Int, JSValue, Int, JSValue) -> Void = { [weak self] id, matrices, count, colors in
-            self?.defineInstances(id: id, matrices: matrices, count: count, colors: colors)
+            self?.defineInstances(id: id, matrices: HTML3DSession.array(matrices), count: count, colors: HTML3DSession.array(colors))
         }
         let releaseInstances: @convention(block) (Int) -> Void = { [weak self] id in
             self?.releaseInstances(id: id)
         }
         let frame: @convention(block) (JSValue, Int) -> Void = { [weak self] data, count in
-            self?.submit(data: data, count: count)
+            self?.submit(data: HTML3DSession.array(data), count: count)
         }
         native.setObject(size, forKeyedSubscript: "size" as NSString)
         native.setObject(configure, forKeyedSubscript: "configure" as NSString)
@@ -394,13 +407,13 @@ public final class HTML3DSession {
         return native
     }
 
-    private func viewportInfo() -> [Double] {
+    func viewportInfo() -> [Double] {
         lock.lock()
         defer { lock.unlock() }
         return [Double(viewportSize.width), Double(viewportSize.height), Double(viewportScale)]
     }
 
-    private func configure(radius: Double) {
+    func configure(radius: Double) {
         guard radius.isFinite else {
             return
         }
@@ -416,7 +429,7 @@ public final class HTML3DSession {
         return value >= Float(limit) ? limit : Int(value)
     }
 
-    private static func bytes(of value: JSValue) -> (pointer: UnsafeMutableRawPointer, length: Int, type: JSTypedArrayType)? {
+    static func array(_ value: JSValue) -> HTML3DArray? {
         guard let context = value.context?.jsGlobalContextRef, let ref = value.jsValueRef else {
             return nil
         }
@@ -427,30 +440,31 @@ public final class HTML3DSession {
         guard let object = JSValueToObject(context, ref, nil), let pointer = JSObjectGetTypedArrayBytesPtr(context, object, nil) else {
             return nil
         }
-        return (pointer, JSObjectGetTypedArrayByteLength(context, object, nil), type)
+        let kind: HTML3DArray.Kind = type == kJSTypedArrayTypeFloat32Array ? .float32 : type == kJSTypedArrayTypeUint16Array ? .uint16 : type == kJSTypedArrayTypeUint32Array ? .uint32 : .other
+        return HTML3DArray(pointer: UnsafeRawPointer(pointer), length: JSObjectGetTypedArrayByteLength(context, object, nil), kind: kind)
     }
 
-    private func makeBuffer(_ value: JSValue, expected: JSTypedArrayType) -> MTLBuffer? {
-        guard let gpu = gpu, let bytes = HTML3DSession.bytes(of: value), bytes.type == expected, bytes.length > 0 else {
+    private func makeBuffer(_ value: HTML3DArray?, expected: HTML3DArray.Kind) -> MTLBuffer? {
+        guard let gpu = gpu, let bytes = value, bytes.kind == expected, bytes.length > 0 else {
             return nil
         }
         return gpu.device.makeBuffer(bytes: bytes.pointer, length: bytes.length, options: .storageModeShared)
     }
 
-    private func defineGeometry(id: Int, positions: JSValue, normals: JSValue, colors: JSValue, colorSize: Int, index: JSValue) {
-        guard let gpu = gpu, let position = makeBuffer(positions, expected: kJSTypedArrayTypeFloat32Array) else {
+    func defineGeometry(id: Int, positions: HTML3DArray?, normals: HTML3DArray?, colors: HTML3DArray?, colorSize: Int, index: HTML3DArray?) {
+        guard let gpu = gpu, let position = makeBuffer(positions, expected: .float32) else {
             return
         }
-        let normal = makeBuffer(normals, expected: kJSTypedArrayTypeFloat32Array)
-        let color = colorSize == 3 || colorSize == 4 ? makeBuffer(colors, expected: kJSTypedArrayTypeFloat32Array) : nil
+        let normal = makeBuffer(normals, expected: .float32)
+        let color = colorSize == 3 || colorSize == 4 ? makeBuffer(colors, expected: .float32) : nil
         var indexBuffer: MTLBuffer?
         var indexType = MTLIndexType.uint16
         var indexCount = 0
-        if let bytes = HTML3DSession.bytes(of: index), bytes.length > 0 {
-            if bytes.type == kJSTypedArrayTypeUint16Array {
+        if let bytes = index, bytes.length > 0 {
+            if bytes.kind == .uint16 {
                 indexBuffer = gpu.device.makeBuffer(bytes: bytes.pointer, length: bytes.length, options: .storageModeShared)
                 indexCount = bytes.length / 2
-            } else if bytes.type == kJSTypedArrayTypeUint32Array {
+            } else if bytes.kind == .uint32 {
                 indexBuffer = gpu.device.makeBuffer(bytes: bytes.pointer, length: bytes.length, options: .storageModeShared)
                 indexType = .uint32
                 indexCount = bytes.length / 4
@@ -474,7 +488,7 @@ public final class HTML3DSession {
         lock.unlock()
     }
 
-    private func releaseGeometry(id: Int) {
+    func releaseGeometry(id: Int) {
         lock.lock()
         if let geometry = geometries.removeValue(forKey: id) {
             geometryBytes -= geometry.positions.length + (geometry.normals?.length ?? 0) + (geometry.colors?.length ?? 0) + (geometry.index?.length ?? 0)
@@ -482,13 +496,13 @@ public final class HTML3DSession {
         lock.unlock()
     }
 
-    private func defineInstances(id: Int, matrices: JSValue, count: Int, colors: JSValue) {
-        guard let gpu = gpu, let source = HTML3DSession.bytes(of: matrices), source.type == kJSTypedArrayTypeFloat32Array, source.length >= 64 else {
+    func defineInstances(id: Int, matrices: HTML3DArray?, count: Int, colors: HTML3DArray?) {
+        guard let gpu = gpu, let source = matrices, source.kind == .float32, source.length >= 64 else {
             return
         }
         let instanceCount = max(0, min(count, source.length / 64))
-        var colorSource = HTML3DSession.bytes(of: colors)
-        if let bytes = colorSource, bytes.type != kJSTypedArrayTypeFloat32Array || bytes.length < instanceCount * 12 {
+        var colorSource = colors
+        if let bytes = colorSource, bytes.kind != .float32 || bytes.length < instanceCount * 12 {
             colorSource = nil
         }
         lock.lock()
@@ -496,7 +510,7 @@ public final class HTML3DSession {
         var slots = instanceSlots[id] ?? InstanceSlots()
         let slot = slots.next
         slots.next = (slot + 1) % slots.matrices.count
-        func fill(_ buffer: MTLBuffer?, _ bytes: (pointer: UnsafeMutableRawPointer, length: Int, type: JSTypedArrayType)) -> MTLBuffer? {
+        func fill(_ buffer: MTLBuffer?, _ bytes: HTML3DArray) -> MTLBuffer? {
             var target = buffer
             if target == nil || target!.length < bytes.length {
                 let length = bytes.length + bytes.length / 2
@@ -523,7 +537,7 @@ public final class HTML3DSession {
         instanceSets[id] = InstanceSet(matrices: matrixBuffer, colors: colorBuffer, count: instanceCount)
     }
 
-    private func releaseInstances(id: Int) {
+    func releaseInstances(id: Int) {
         lock.lock()
         instanceSets.removeValue(forKey: id)
         if let slots = instanceSlots.removeValue(forKey: id) {
@@ -532,8 +546,8 @@ public final class HTML3DSession {
         lock.unlock()
     }
 
-    private func submit(data: JSValue, count: Int) {
-        guard isSupported, let bytes = HTML3DSession.bytes(of: data), bytes.type == kJSTypedArrayTypeFloat32Array else {
+    func submit(data: HTML3DArray?, count: Int) {
+        guard isSupported, let bytes = data, bytes.kind == .float32 else {
             return
         }
         let floats = min(count, bytes.length / 4, HTML3DSession.maxFloats)

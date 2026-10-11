@@ -1,5 +1,5 @@
 module CQuickJSNG {
     header "qjs_shim.h"
-    header "quickjs.h"
+    header "../quickjs/quickjs.h"
     export *
 }

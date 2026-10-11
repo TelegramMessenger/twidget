@@ -3,7 +3,6 @@ import Metal
 import QuartzCore
 import LiteHTML
 import HTMLScript
-import HTMLScriptQuickJS
 import HTML3D
 
 let labRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -814,35 +813,65 @@ case "live":
     exit(0)
 case "threetest":
     HTML3DSession.register()
+    if option("--runtime") == "jsc" { HTMLScript.runtime = JSCScriptRuntime.shared }
+    NSApplication.shared.setActivationPolicy(.accessory)
+    NSApplication.shared.finishLaunching()
     let html = """
     <script src="app:three"></script>
     <script>
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x101828);
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-    camera.position.z = 4;
-    const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x3390ec }));
-    scene.add(cube, new THREE.AmbientLight(0xffffff, 0.5), new THREE.DirectionalLight(0xffffff, 1));
+    camera.position.set(0, 1.2, 5);
+    camera.lookAt(0, 0, 0);
+    const cubes = [];
+    for (let i = 0; i < 25; i++) {
+      const cube = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(i / 25, 0.7, 0.55) }));
+      cube.position.set((i % 5 - 2) * 0.9, (Math.floor(i / 5) - 2) * 0.9, 0);
+      scene.add(cube);
+      cubes.push(cube);
+    }
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(3, 4, 5);
+    scene.add(sun);
     let frames = 0;
-    requestAnimationFrame(function tick() { cube.rotation.y += 0.02; renderer.render(scene, camera); frames++; requestAnimationFrame(tick); });
+    requestAnimationFrame(function tick() { for (const c of cubes) { c.rotation.x += 0.02; c.rotation.y += 0.03; } renderer.render(scene, camera); frames++; requestAnimationFrame(tick); });
     function render() { return '<p>frames ' + frames + '</p>'; }
     </script>
     """
     let script = HTMLScript.make(html: html)!
     guard let scene = script.scene3D, let layer = scene.makeLayer() else { print("no 3D session"); exit(1) }
-    scene.attach(layer, size: CGSize(width: 200, height: 200), scale: 2)
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+    window.ignoresMouseEvents = true
+    window.level = .floating
+    let host = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 300))
+    host.wantsLayer = true
+    window.contentView = host
+    window.orderFrontRegardless()
+    layer.frame = host.bounds
+    layer.contentsScale = window.backingScaleFactor
+    layer.drawableSize = CGSize(width: 300 * window.backingScaleFactor, height: 300 * window.backingScaleFactor)
+    host.layer?.addSublayer(layer)
+    scene.attach(layer, size: CGSize(width: 300, height: 300), scale: window.backingScaleFactor)
+    HTMLScript.setDisplay(CGMainDisplayID())
     script.setVisible(true)
     _ = script.currentHTML
-    RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+    let seconds = Double(option("--seconds") ?? "3") ?? 3
+    RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     let stats = scene.stats
-    print("three: error=\(script.errorText ?? "none") stopped=\(script.isStopped) frames=\(stats.frames) submitted=\(stats.submitted) draws=\(stats.draws) triangles=\(stats.triangles) html=\(script.currentHTML.suffix(40))")
+    print(String(format: "three (%@): error=%@ frames=%d submitted=%d draws=%d triangles=%d js=%.2f ms/frame gpu=%.2f ms/frame", HTMLScript.runtime is JSCScriptRuntime ? "jsc" : "quickjs", script.errorText ?? "none", stats.frames, stats.submitted, stats.draws, stats.triangles, script.totalMilliseconds / Double(max(1, script.frameCount)), stats.gpuSeconds * 1000 / Double(max(1, stats.frames))))
+    if let out = option("--png"), let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]) {
+        try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: out))
+    }
     exit(script.errorText == nil && stats.submitted > 0 ? 0 : 1)
 case "scripttest":
     final class Probe: HTMLScriptHost {
         var changes = 0
         func scriptDidChange(_ script: HTMLScript) { changes += 1 }
     }
-    if option("--runtime") == "quickjs" { HTMLScript.runtime = QuickJSScriptRuntime() }
+    if option("--runtime") == "jsc" { HTMLScript.runtime = JSCScriptRuntime.shared }
     let cases: [(String, String, Bool)] = [
         ("memory bomb", "<script>let s = ''; setTimeout(() => { s = 'x'.repeat(300 * 1024 * 1024); update(); }, 100); function render() { return '<p>' + s.length + '</p>'; }</script>", true),
         ("infinite loop", "<script>setTimeout(() => { for (;;) {} }, 100); function render() { return '<p>ok</p>'; }</script>", true),

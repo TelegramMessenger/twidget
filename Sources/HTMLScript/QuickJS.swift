@@ -26,6 +26,18 @@ public enum HostReturn {
     case null
 }
 
+/// Argument of a host function registered with `registerArgumentFunction`. Typed array bytes are only valid during the call.
+public enum QuickJSArgument {
+    case number(Double)
+    case string(String)
+    case bytes(UnsafeRawBufferPointer, kind: Int32)
+    case other
+
+    public static let float32: Int32 = Int32(JS_TYPED_ARRAY_FLOAT32.rawValue)
+    public static let uint16: Int32 = Int32(JS_TYPED_ARRAY_UINT16.rawValue)
+    public static let uint32: Int32 = Int32(JS_TYPED_ARRAY_UINT32.rawValue)
+}
+
 /// Result of calling a sandbox function from the host.
 public enum JSResult {
     case undefined
@@ -40,6 +52,7 @@ public final class QuickJSContext {
     let runtime: OpaquePointer
     let context: OpaquePointer
     private var functions: [Int32: ([String]) -> HostReturn] = [:]
+    private var argumentFunctions: [Int32: ([QuickJSArgument]) -> HostReturn] = [:]
 
     /// Interrupt deadline in `ProcessInfo.systemUptime` seconds; `.infinity` disables it.
     public var deadline: TimeInterval = .infinity
@@ -87,6 +100,18 @@ public final class QuickJSContext {
         functions[magic] = handler
         let fn = qjs_new_cfunction_magic(context, hostTrampoline, name, 2, magic)
         _ = qjs_set_global_prop(context, name, fn) // takes ownership of fn
+    }
+
+    /// Exposes `name(...)` with numbers, strings and typed arrays passed through as they are.
+    public func registerArgumentFunction(_ name: String, _ handler: @escaping ([QuickJSArgument]) -> HostReturn) {
+        let magic = Int32(argumentFunctions.count)
+        argumentFunctions[magic] = handler
+        let fn = qjs_new_cfunction_magic(context, argumentTrampoline, name, 0, magic)
+        _ = qjs_set_global_prop(context, name, fn)
+    }
+
+    fileprivate func dispatchArguments(magic: Int32, args: [QuickJSArgument]) -> HostReturn {
+        argumentFunctions[magic]?(args) ?? .undefined
     }
 
     fileprivate func dispatch(magic: Int32, args: [String]) -> HostReturn {
@@ -220,4 +245,30 @@ private func hostTrampoline(_ ctxPtr: OpaquePointer?, _ this: JSValue, _ argc: I
         }
     }
     return ctx.toJS(ctx.dispatch(magic: magic, args: args))
+}
+
+private func argumentTrampoline(_ ctxPtr: OpaquePointer?, _ this: JSValue, _ argc: Int32, _ argv: UnsafeMutablePointer<JSValue>?, _ magic: Int32) -> JSValue {
+    guard let ctxPtr, let opaque = JS_GetContextOpaque(ctxPtr) else { return qjs_undefined() }
+    let ctx = Unmanaged<QuickJSContext>.fromOpaque(opaque).takeUnretainedValue()
+    var args: [QuickJSArgument] = []
+    args.reserveCapacity(Int(argc))
+    for i in 0..<Int(argc) {
+        let v = argv![i]
+        if qjs_is_number(v) {
+            args.append(.number(qjs_to_float64(ctxPtr, v)))
+        } else if qjs_is_string(v), let c = qjs_to_cstring(ctxPtr, v) {
+            args.append(.string(String(cString: c)))
+            qjs_free_cstring(ctxPtr, c)
+        } else {
+            var pointer: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let kind = qjs_typed_array_bytes(ctxPtr, v, &pointer, &length)
+            if kind >= 0, let pointer {
+                args.append(.bytes(UnsafeRawBufferPointer(start: pointer, count: length), kind: kind))
+            } else {
+                args.append(.other)
+            }
+        }
+    }
+    return ctx.toJS(ctx.dispatchArguments(magic: magic, args: args))
 }

@@ -1,6 +1,5 @@
 import Foundation
 import HTMLSandbox
-import HTMLScript
 
 public final class QuickJSScriptRuntime: HTMLScriptRuntime {
     public let memoryLimitBytes: Int
