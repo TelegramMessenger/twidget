@@ -150,6 +150,15 @@ void litehtml::flex_item_row_direction::direction_specific_init(const litehtml::
                        fmt_ctx)
                 .natural_width;
         content_size = min_size;
+        if(!el->css().get_width().is_predefined() && el->css().get_overflow() == overflow_visible)
+        {
+            const pixel_t specified =
+                el->css().get_width().calc_percent(self_size.render_width) + el->render_offset_width();
+            if(specified >= 0_px && specified < min_size)
+            {
+                min_size = specified;
+            }
+        }
     } else
     {
         min_size = el->css().get_min_width().calc_percent(self_size.render_width) + el->render_offset_width();
