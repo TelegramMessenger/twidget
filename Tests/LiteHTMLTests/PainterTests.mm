@@ -195,7 +195,7 @@ struct RecordingPainter : lhx::Painter
 
 - (void)testAnimationLayerIsHiddenFromRawDeclarations
 {
-    for(NSString *style in @[@"opacity:.5;--lh-anim:1;opacity:.9;transform:scale(2)", @"opacity: .5; --lh-anim: 1; opacity: .9; transform: scale(2)"])
+    for(NSString *style in @[@"opacity:.5;-lh-anim:1;opacity:.9;transform:scale(2)", @"opacity: .5; -lh-anim: 1; opacity: .9; transform: scale(2)"])
     {
         NSString *html = [NSString stringWithFormat:@"<style>.a{transform:scale(1)}</style><div class=\"a\" data-lh-id=\"3\" style=\"%@\">x</div>", style];
         LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];

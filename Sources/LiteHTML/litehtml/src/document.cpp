@@ -1,5 +1,7 @@
 #include "html.h"
 #include "document.h"
+#include <string_view>
+#include <unordered_set>
 #include "document_container.h"
 #include "el_anchor.h"
 #include "el_base.h"
@@ -226,6 +228,84 @@ namespace litehtml
     // The document as literal text with holes at its style attribute values and text nodes. A frame that
     // differs only inside the holes is matched without parsing: a quoted attribute value cannot contain its
     // quote and text cannot contain '<', so each hole ends at the first delimiter that starts the next literal.
+    static bool svg_geometry_attribute(const char* name)
+    {
+        static const std::unordered_set<std::string> names = {
+            "points", "d", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "dx", "dy", "transform",
+            "fill", "stroke", "stroke-width", "stroke-dasharray", "stroke-dashoffset", "opacity", "fill-opacity",
+            "stroke-opacity", "offset", "stop-color", "stop-opacity", "text-anchor", "width", "height",
+        };
+        return names.count(name) != 0;
+    }
+
+    static std::vector<std::pair<std::string, std::string>> split_style_declarations(const std::string& text)
+    {
+        std::vector<std::pair<std::string, std::string>> out;
+        size_t start = 0;
+        int    depth = 0;
+        char   quote = 0;
+        for(size_t i = 0; i <= text.size(); i++)
+        {
+            const char c = i < text.size() ? text[i] : ';';
+            if(quote)
+            {
+                if(c == quote)
+                    quote = 0;
+                continue;
+            }
+            if(c == '"' || c == '\'')
+                quote = c;
+            else if(c == '(')
+                depth++;
+            else if(c == ')')
+                depth--;
+            else if(c == ';' && depth <= 0)
+            {
+                std::string decl = text.substr(start, i - start);
+                start = i + 1;
+                size_t colon = decl.find(':');
+                if(colon == std::string::npos)
+                {
+                    if(decl.find_first_not_of(" \t\n") != std::string::npos)
+                        out.emplace_back(decl, std::string());
+                    continue;
+                }
+                size_t a = decl.find_first_not_of(" \t\n"), b = decl.find_last_not_of(" \t\n", colon - 1);
+                std::string name = a == std::string::npos || a >= colon ? std::string() : decl.substr(a, b - a + 1);
+                out.emplace_back(name, decl.substr(colon + 1));
+            }
+        }
+        return out;
+    }
+
+    // A style hole may be patched in place unless the edit touches custom properties, var() or counters,
+    // whose effects reach other elements.
+    static bool style_change_is_local(const std::string& before, const std::string& after)
+    {
+        if(before.find("counter") != std::string::npos || after.find("counter") != std::string::npos)
+            return false;
+        auto a = split_style_declarations(before), b = split_style_declarations(after);
+        auto sensitive = [](const std::pair<std::string, std::string>& d) {
+            return d.first.compare(0, 2, "--") == 0 || d.second.find("var(") != std::string::npos || d.second.find("--") != std::string::npos;
+        };
+        size_t i = 0;
+        while(i < a.size() && i < b.size() && a[i] == b[i])
+            i++;
+        size_t ea = a.size(), eb = b.size();
+        while(ea > i && eb > i && a[ea - 1] == b[eb - 1])
+        {
+            ea--;
+            eb--;
+        }
+        for(size_t k = i; k < ea; k++)
+            if(sensitive(a[k]))
+                return false;
+        for(size_t k = i; k < eb; k++)
+            if(sensitive(b[k]))
+                return false;
+        return true;
+    }
+
     void document::build_template()
     {
         m_template_ok = false;
@@ -242,6 +322,17 @@ namespace litehtml
         };
         std::vector<span> spans;
         bool              ok = true;
+        std::unordered_set<std::string> selected;
+        for(const char* p = static_cast<const char*>(memchr(base, '[', size)); p; p = static_cast<const char*>(memchr(p + 1, '[', base + size - p - 1)))
+        {
+            const char* q = p + 1;
+            while(q < base + size && (isalnum(static_cast<unsigned char>(*q)) || *q == '-' || *q == '_' || *q == ':'))
+                q++;
+            if(q > p + 1)
+                selected.emplace(p + 1, q - p - 1);
+            if(q >= base + size - 1)
+                break;
+        }
         std::function<void(const GumboNode*, bool)> walk = [&](const GumboNode* node, bool raw) {
             if(!ok)
                 return;
@@ -261,7 +352,9 @@ namespace litehtml
                 {
                     auto*      attr = static_cast<const GumboAttribute*>(e.attributes.data[i]);
                     const bool src  = e.tag == GUMBO_TAG_IMG && strcmp(attr->name, "src") == 0;
-                    if(!src && strcmp(attr->name, "style") != 0)
+                    const bool geometry = !src && e.tag_namespace == GUMBO_NAMESPACE_SVG && e.tag != GUMBO_TAG_SVG &&
+                                          svg_geometry_attribute(attr->name) && !selected.count(attr->name);
+                    if(!src && !geometry && strcmp(attr->name, "style") != 0)
                         continue;
                     const GumboStringPiece& v = attr->original_value;
                     auto it = m_node_elements.find(node);
@@ -276,6 +369,8 @@ namespace litehtml
                     s.end         = (size_t)(v.data - base) + v.length - 1;
                     s.hole.close  = v.data[0];
                     s.hole.src    = src;
+                    if(geometry)
+                        s.hole.attr = attr->name;
                     s.hole.owner  = it->second.front();
                     s.hole.value  = std::string(base + s.start, s.end - s.start);
                     spans.push_back(std::move(s));
@@ -424,9 +519,7 @@ namespace litehtml
             {
                 if(v.find_first_not_of(" \t\n\f") == std::string::npos)
                     return -1;
-            } else if(!m_holes[i].src && (v.find("counter") != std::string::npos || m_holes[i].value.find("counter") != std::string::npos ||
-                      v.find("var(") != std::string::npos || m_holes[i].value.find("var(") != std::string::npos ||
-                      v.find("--") != std::string::npos || m_holes[i].value.find("--") != std::string::npos))
+            } else if(!m_holes[i].src && m_holes[i].attr.empty() && !style_change_is_local(m_holes[i].value, v))
             {
                 return -1;
             }
@@ -445,7 +538,7 @@ namespace litehtml
         for(size_t i : dirty)
         {
             html_hole& hole = m_holes[i];
-            if(keep_tree && (hole.text || hole.src || !tree_neutral_change(hole.value, values[i])))
+            if(keep_tree && (hole.text || hole.src || (hole.attr.empty() && !tree_neutral_change(hole.value, values[i]))))
                 keep_tree = false;
             hole.value      = values[i];
             if(hole.src)
@@ -456,6 +549,15 @@ namespace litehtml
                 hole.owner->set_attr("src", keep ? attrs["src"].c_str() : "");
                 if(auto image = std::dynamic_pointer_cast<el_image>(hole.owner))
                     image->update_src();
+                restyle.push_back(hole.owner);
+                continue;
+            }
+            if(!hole.attr.empty())
+            {
+                string_map  attrs = {{hole.attr, hole.value}};
+                std::string tag   = hole.owner->get_tagName();
+                const bool  keep  = m_container->sanitize_element(tag, true, attrs) && attrs.count(hole.attr);
+                hole.owner->set_attr(hole.attr.c_str(), keep ? attrs[hole.attr].c_str() : "");
                 restyle.push_back(hole.owner);
                 continue;
             }

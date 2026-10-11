@@ -1037,6 +1037,8 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
 
     for(const auto& el : m_children)
     {
+        if(!doc->skip_paint.empty() && doc->skip_paint.count(el->src_el().get()))
+            continue;
         if(el->is_visible())
         {
             if(el->src_el()->css().is_paint_group())

@@ -124,7 +124,10 @@ namespace litehtml
 
         bool is_animation_layer(const std::string& txt, size_t start)
         {
-            return txt.compare(start, 9, "--lh-anim") == 0;
+            if(txt.compare(start, 8, "-lh-anim") != 0)
+                return false;
+            const char next = start + 8 < txt.size() ? txt[start + 8] : ':';
+            return next == ':' || isspace(static_cast<unsigned char>(next));
         }
 
         std::mutex                                                   declaration_cache_lock;
@@ -241,7 +244,7 @@ namespace litehtml
         const bool outer = suppress_raw;
         for(auto& decl : decls)
         {
-            if(decl.name == "--lh-anim")
+            if(decl.name == "-lh-anim")
                 suppress_raw = true;
             remove_whitespace(decl.value);
             // Note: decl.value is already componentized, see consume_qualified_rule and consume_style_block_contents.
@@ -304,6 +307,7 @@ namespace litehtml
         "transform", "opacity", "color", "background-color", "background", "width", "height", "top", "left", "right",
         "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
         "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow",
+        "transform-origin",
     };
 
     static const std::map<string_id, string_id>& raw_declaration_ids()
@@ -2251,11 +2255,49 @@ namespace litehtml
         return false;
     }
 
+    static bool resolve_vars(css_token_vector& tokens, const html_tag* el, std::set<string_id>& chain, int depth)
+    {
+        if(depth > 32)
+            return false;
+        for(size_t i = 0; i < tokens.size(); i++)
+        {
+            if(tokens[i].type == CV_FUNCTION && lowcase(tokens[i].name()) == "var")
+            {
+                auto args = tokens[i].value;
+                if(!check_var_syntax(args))
+                    return false;
+                auto name = _id(args[0].name());
+                if(chain.count(name))
+                    return false;
+                css_token_vector value;
+                if(!el->get_custom_property(name, value))
+                {
+                    if(args.size() == 1)
+                        return false;
+                    remove(args, 0, 2);
+                    value = args;
+                }
+                chain.insert(name);
+                const bool ok = resolve_vars(value, el, chain, depth + 1);
+                chain.erase(name);
+                if(!ok)
+                    return false;
+                remove(tokens, static_cast<int>(i));
+                insert(tokens, static_cast<int>(i), value);
+                i += value.size();
+                i--;
+                continue;
+            }
+            if(tokens[i].is_component_value() && !resolve_vars(tokens[i].value, el, chain, depth + 1))
+                return false;
+        }
+        return true;
+    }
+
     void subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el)
     {
-        std::set<string_id> used_vars = {name};
-        while(subst_var(tokens, el, used_vars))
-            ;
+        std::set<string_id> chain = {name};
+        resolve_vars(tokens, el, chain, 0);
     }
 
     void style::subst_vars(const html_tag* el)

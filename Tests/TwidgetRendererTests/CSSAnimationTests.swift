@@ -79,3 +79,52 @@ final class CSSAnimationTests: XCTestCase {
         XCTAssertNil(animator.sample(now: 12.1)[2])
     }
 }
+
+final class CSSTransformTests: XCTestCase {
+    func testParsesTransformFunctions() {
+        let box = CGSize(width: 40, height: 20)
+        XCTAssertEqual(CSSTransform.parse("none", box: box), .identity)
+        XCTAssertEqual(CSSTransform.parse("translateX(10px)", box: box), CGAffineTransform(translationX: 10, y: 0))
+        XCTAssertEqual(CSSTransform.parse("translate(50%, -50%)", box: box), CGAffineTransform(translationX: 20, y: -10))
+        XCTAssertEqual(CSSTransform.parse("scale(2)", box: box), CGAffineTransform(scaleX: 2, y: 2))
+        let rotated = CSSTransform.parse("rotate(90deg)", box: box)!
+        XCTAssertEqual(rotated.b, 1, accuracy: 1e-9)
+        XCTAssertEqual(CSSTransform.parse("rotate(0.25turn)", box: box)!.b, 1, accuracy: 1e-9)
+        let combined = CSSTransform.parse("translateX(10px) scale(2)", box: box)!
+        XCTAssertEqual(CGPoint(x: 1, y: 0).applying(combined).x, 12, accuracy: 1e-9)
+        XCTAssertNil(CSSTransform.parse("rotateX(30deg)", box: box))
+        XCTAssertNil(CSSTransform.parse("translate(calc(1px + 2px))", box: box))
+        XCTAssertNil(CSSTransform.parse("perspective(10px)", box: box))
+    }
+
+    func testParsesTransformOrigin() {
+        let box = CGSize(width: 40, height: 20)
+        XCTAssertEqual(CSSTransform.origin(nil, box: box), CGPoint(x: 20, y: 10))
+        XCTAssertEqual(CSSTransform.origin("left top", box: box), CGPoint(x: 0, y: 0))
+        XCTAssertEqual(CSSTransform.origin("top right", box: box), CGPoint(x: 40, y: 0))
+        XCTAssertEqual(CSSTransform.origin("25% 10px", box: box), CGPoint(x: 10, y: 10))
+        XCTAssertEqual(CSSTransform.origin("bottom", box: box), CGPoint(x: 20, y: 20))
+    }
+}
+
+final class CSSLinearEasingTests: XCTestCase {
+    func testLinearFunctionPoints() {
+        let curve = CSSTiming.parse("linear(0, 0.25, 1)")!
+        XCTAssertEqual(curve.function(0.5), 0.25, accuracy: 1e-9)
+        XCTAssertEqual(curve.function(0.75), 0.625, accuracy: 1e-9)
+        let positioned = CSSTiming.parse("linear(0, 0.9 25%, 1)")!
+        XCTAssertEqual(positioned.function(0.25), 0.9, accuracy: 1e-9)
+        XCTAssertEqual(positioned.function(0.625), 0.95, accuracy: 1e-9)
+        let overshoot = CSSTiming.parse("linear(0, 1.1 80%, 1)")!
+        XCTAssertEqual(overshoot.function(0.8), 1.1, accuracy: 1e-9)
+        XCTAssertEqual(CSSTiming.parse("linear(0,0.030,0.120,1.000)")!.function(1), 1, accuracy: 1e-9)
+        XCTAssertNil(CSSTiming.parse("linear(0, x, 1)"))
+    }
+}
+
+final class CSSOvershootTests: XCTestCase {
+    func testInterpolationExtrapolatesForOvershootingCurves() {
+        XCTAssertEqual(CSSInterpolate.mix("translateX(0px)", "translateX(100px)", 1.1), "translateX(110px)")
+        XCTAssertEqual(CSSInterpolate.mix("0", "1", -0.1), "-0.1")
+    }
+}

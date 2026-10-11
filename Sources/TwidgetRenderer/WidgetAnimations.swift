@@ -116,10 +116,84 @@ struct CSSTiming {
                 return steps(n, start: position == "start" || position == "jump-start")
             }
         }
-        if t.hasPrefix("linear(") {
-            return .linear
+        if t.hasPrefix("linear("), t.hasSuffix(")") {
+            return linearFunction(String(t.dropFirst(7).dropLast()))
         }
         return nil
+    }
+
+    static func linearFunction(_ body: String) -> CSSTiming? {
+        var points: [(output: Double, input: Double?)] = []
+        for item in body.split(separator: ",") {
+            let parts = item.split(separator: " ").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            guard let first = parts.first, let output = Double(first) else {
+                return nil
+            }
+            let inputs = parts.dropFirst().map { part -> Double? in
+                part.hasSuffix("%") ? Double(part.dropLast()).map { $0 / 100 } : nil
+            }
+            if inputs.contains(where: { $0 == nil }) {
+                return nil
+            }
+            if inputs.isEmpty {
+                points.append((output, nil))
+            } else {
+                for input in inputs {
+                    points.append((output, input))
+                }
+            }
+            if points.count > 10_000 {
+                return nil
+            }
+        }
+        guard points.count >= 2 else {
+            return points.first.map { value in CSSTiming { _ in value.output } }
+        }
+        if points[0].input == nil {
+            points[0].input = 0
+        }
+        if points[points.count - 1].input == nil {
+            points[points.count - 1].input = max(1, points.compactMap { $0.input }.max() ?? 1)
+        }
+        var largest = points[0].input!
+        for index in points.indices {
+            if let input = points[index].input {
+                largest = max(largest, input)
+                points[index].input = largest
+            }
+        }
+        var index = 0
+        while index < points.count {
+            if points[index].input == nil {
+                let start = index - 1
+                var end = index
+                while points[end].input == nil {
+                    end += 1
+                }
+                let from = points[start].input!, to = points[end].input!
+                for k in (start + 1)..<end {
+                    points[k].input = from + (to - from) * Double(k - start) / Double(end - start)
+                }
+                index = end
+            }
+            index += 1
+        }
+        let resolved = points.map { (input: $0.input!, output: $0.output) }
+        return CSSTiming { x in
+            if x <= resolved[0].input {
+                let a = resolved[0], b = resolved[1]
+                return b.input == a.input ? a.output : a.output + (b.output - a.output) * (x - a.input) / (b.input - a.input)
+            }
+            for k in 1..<resolved.count where x <= resolved[k].input {
+                let a = resolved[k - 1], b = resolved[k]
+                if b.input == a.input {
+                    return b.output
+                }
+                return a.output + (b.output - a.output) * (x - a.input) / (b.input - a.input)
+            }
+            let a = resolved[resolved.count - 2], b = resolved[resolved.count - 1]
+            return b.input == a.input ? b.output : a.output + (b.output - a.output) * (x - a.input) / (b.input - a.input)
+        }
     }
 
     static func steps(_ n: Int, start: Bool) -> CSSTiming {
@@ -323,10 +397,10 @@ enum CSSInterpolate {
     private static let identityValues: [String: String] = ["scale": "1", "scalex": "1", "scaley": "1", "scale3d": "1,1,1"]
 
     static func mix(_ a: String, _ b: String, _ t: Double) -> String {
-        if t <= 0 {
+        if t == 0 || !t.isFinite {
             return a
         }
-        if t >= 1 {
+        if t == 1 {
             return b
         }
         var from = normalizeColors(a)
@@ -408,7 +482,8 @@ enum CSSInterpolate {
         if value == value.rounded(), abs(value) < 1e9 {
             return String(Int(value))
         }
-        return String(format: "%.4f", value).replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
+        let text = String(format: "%.4f", value).replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
+        return text.hasSuffix(".") ? String(text.dropLast()) : text
     }
 
     private static func identity(of transform: String) -> String {
@@ -524,6 +599,60 @@ final class WidgetAnimator {
     static let initialValues: [String: String] = ["opacity": "1", "transform": "none", "translate": "0px", "scale": "1", "rotate": "0deg", "filter": "none", "letter-spacing": "0px"]
 
     private(set) var keyframes: [String: [CSSKeyframe]] = [:]
+
+    static let compositedProperties: Set<String> = ["transform", "opacity"]
+
+    func base(_ id: Int) -> [String: String] {
+        return bases[id] ?? [:]
+    }
+
+    func animatedIDs() -> Set<Int> {
+        var ids = Set(transitions.keys)
+        for (id, list) in running where list.contains(where: { !$0.ended && keyframes[$0.spec.name] != nil }) {
+            ids.insert(id)
+        }
+        return ids
+    }
+
+    func isCompositable(_ id: Int) -> Bool {
+        if let list = transitions[id], list.keys.contains(where: { !WidgetAnimator.compositedProperties.contains($0) }) {
+            return false
+        }
+        for item in running[id] ?? [] where !item.ended {
+            guard let frames = keyframes[item.spec.name] else {
+                continue
+            }
+            if item.spec.paused {
+                return false
+            }
+            for frame in frames where frame.declarations.contains(where: { !WidgetAnimator.compositedProperties.contains($0.name) }) {
+                return false
+            }
+        }
+        return transitions[id] != nil || running[id]?.contains(where: { !$0.ended && keyframes[$0.spec.name] != nil }) == true
+    }
+
+    func reachableValues(_ id: Int, samples: Int = 48) -> [(transform: String?, opacity: String?)] {
+        var out: [(String?, String?)] = []
+        let base = bases[id] ?? [:]
+        out.append((base["transform"], base["opacity"]))
+        for item in running[id] ?? [] where !item.ended {
+            guard let frames = keyframes[item.spec.name] else {
+                continue
+            }
+            for step in 0...samples {
+                let values = self.values(frames: frames, base: base, progress: Double(step) / Double(samples), spec: item.spec)
+                out.append((values.first { $0.0 == "transform" }?.1, values.first { $0.0 == "opacity" }?.1))
+            }
+        }
+        for (property, transition) in transitions[id] ?? [:] {
+            for step in 0...16 {
+                let value = CSSInterpolate.mix(transition.from, transition.to, Double(step) / 16)
+                out.append(property == "transform" ? (value, nil) : (nil, value))
+            }
+        }
+        return out
+    }
     private var running: [Int: [Running]] = [:]
     private var transitions: [Int: [String: Transition]] = [:]
     private var bases: [Int: [String: String]] = [:]
@@ -537,7 +666,7 @@ final class WidgetAnimator {
         "animation-direction", "animation-fill-mode", "animation-play-state", "transition", "transition-property", "transition-duration",
         "transition-timing-function", "transition-delay", "transform", "opacity", "color", "background-color", "background", "width", "height",
         "top", "left", "right", "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
-        "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow",
+        "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow", "transform-origin",
     ]
 
     var isActive: Bool {

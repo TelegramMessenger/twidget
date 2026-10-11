@@ -11,6 +11,7 @@
 #include <functional>
 #include <unordered_map>
 #include <map>
+#include <unordered_set>
 #include <vector>
 
 using GumboOutput = struct GumboInternalOutput;
@@ -53,6 +54,7 @@ namespace litehtml
     {
       public:
         bool take_table_cells(int count);
+        std::unordered_set<const element*> skip_paint;
         using ptr      = std::shared_ptr<document>;
         using weak_ptr = std::weak_ptr<document>;
 
@@ -95,6 +97,7 @@ namespace litehtml
         {
             bool                                  text  = false;
             bool                                  src   = false;
+            std::string                           attr;
             char                                  close = 0;
             std::string                           value;
             std::shared_ptr<element>              owner;

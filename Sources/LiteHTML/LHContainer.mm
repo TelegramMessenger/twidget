@@ -2438,7 +2438,8 @@ void LHContainer::begin_group(lh::uint_ptr hdc, const lh::paint_group& group)
         if(group.opacity < 1 && !g.hidden && m_hidden_depth == 0)
         {
             CGContextSetAlpha(ctx, group.opacity);
-            CGContextBeginTransparencyLayerWithRect(ctx, CGRectInset(R(group.bounds), -64, -64), nullptr);
+            CGRect layerRect = CGRectIntersection(CGRectInset(R(group.bounds), -64, -64), CGContextGetClipBoundingBox(ctx));
+            CGContextBeginTransparencyLayerWithRect(ctx, CGRectIsNull(layerRect) ? CGRectZero : layerRect, nullptr);
             g.layer = true;
         }
     }

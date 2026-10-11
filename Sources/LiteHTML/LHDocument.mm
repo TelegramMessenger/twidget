@@ -5,6 +5,7 @@
 #include "LHContainer.h"
 #include "render_item.h"
 #include "html_tag.h"
+#include "el_space.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -368,6 +369,8 @@ static CGFloat ChangedBottom(const std::vector<LHDrawOp> &ops, const std::unorde
     BOOL                         _consumedCulling;
     BOOL                         _reusedPrevious;
     CGFloat                      _consumedMaxWidth;
+    NSString                    *_exclusionAttribute;
+    NSSet<NSString *>           *_exclusions;
 }
 
 - (void)bindContainerLocked
@@ -617,11 +620,144 @@ static std::string MasterWithCSS(NSString *css)
     return size;
 }
 
+- (void)resolveExclusionsLocked
+{
+    _doc->skip_paint.clear();
+    if(_exclusions.count == 0 || !_doc->root())
+        return;
+    std::unordered_set<std::string> wanted;
+    for(NSString *value in _exclusions)
+        wanted.insert(value.UTF8String);
+    const char *key = _exclusionAttribute.UTF8String;
+    std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
+        const char *value = el->get_attr(key);
+        if(value && wanted.count(value))
+            _doc->skip_paint.insert(el.get());
+        for(const auto &child : el->children())
+            visit(child);
+    };
+    visit(_doc->root());
+}
+
+- (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _exclusions         = [values copy];
+    _exclusionAttribute = [attribute copy];
+}
+
+- (std::shared_ptr<lh::render_item>)renderItemLockedWithAttribute:(NSString *)attribute value:(NSString *)value
+{
+    if(!_doc || !_doc->root_render())
+        return nullptr;
+    const char                      *key    = attribute.UTF8String;
+    const std::string                wanted = value.UTF8String;
+    std::shared_ptr<lh::render_item> found;
+    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
+        if(found)
+            return;
+        const char *v = ri->src_el()->get_attr(key);
+        if(v && wanted == v)
+        {
+            found = ri;
+            return;
+        }
+        for(const auto &child : ri->children())
+            visit(child);
+    };
+    visit(_doc->root_render());
+    return found;
+}
+
+static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
+{
+    const lh::position p      = ri->get_placement();
+    const CGFloat      left   = ri->padding_left().value() + ri->border_left().value();
+    const CGFloat      top    = ri->padding_top().value() + ri->border_top().value();
+    const CGFloat      right  = ri->padding_right().value() + ri->border_right().value();
+    const CGFloat      bottom = ri->padding_bottom().value() + ri->border_bottom().value();
+    return CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
+}
+
+- (CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkOut borderBox:(CGRect *)boxOut
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri)
+        return nullptr;
+    const CGRect       box       = BorderBox(ri);
+    const lh::position placement = ri->get_placement();
+    const lh::pixel_t  x         = placement.x - ri->pos().x;
+    const lh::pixel_t  y         = placement.y - ri->pos().y;
+    lh::position       redraw(static_cast<float>(box.origin.x), static_cast<float>(box.origin.y), static_cast<float>(box.size.width), static_cast<float>(box.size.height));
+    ri->get_redraw_box(redraw, x, y);
+    CGRect ink = CGRectIntegral(CGRectInset(CGRectUnion(box, CGRectMake(redraw.x.value(), redraw.y.value(), redraw.width.value(), redraw.height.value())), -48, -48));
+    const size_t pw = (size_t)std::ceil(ink.size.width * scale), ph = (size_t)std::ceil(ink.size.height * scale);
+    if(pw == 0 || ph == 0 || pw > 8192 || ph > 8192 || pw * ph > 16u * 1024u * 1024u)
+        return nullptr;
+    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    if(!ctx)
+        return nullptr;
+    CGContextTranslateCTM(ctx, 0, ph);
+    CGContextScaleCTM(ctx, scale, -scale);
+    CGContextTranslateCTM(ctx, -ink.origin.x, -ink.origin.y);
+    CGContextSetAllowsFontSmoothing(ctx, false);
+    CGContextSetShouldAntialias(ctx, true);
+    auto skipped = _doc->skip_paint;
+    [self resolveExclusionsLocked];
+    _doc->skip_paint.erase(ri->src_el().get());
+    ri->src_el()->draw(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, ri);
+    ri->draw_stacking_context(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, true);
+    CGImageRef image = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if(inkOut)
+        *inkOut = ink;
+    if(boxOut)
+        *boxOut = box;
+    return image;
+}
+
+- (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value isolatedInRect:(CGRect)rect
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri || ri->src_el()->is_inline())
+        return NO;
+    std::unordered_set<const lh::render_item *> ancestors;
+    for(auto p = ri->parent(); p; p = p->parent())
+    {
+        ancestors.insert(p.get());
+        if(p->src_el()->css().get_overflow() > lh::overflow_visible || p->src_el()->css().is_paint_group())
+            return NO;
+    }
+    bool isolated = true;
+    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &item) {
+        if(!isolated || item == ri)
+            return;
+        if(!ancestors.count(item.get()) && !std::dynamic_pointer_cast<lh::el_space>(item->src_el()))
+        {
+            CGRect box = BorderBox(item);
+            if(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect))
+            {
+                isolated = false;
+                return;
+            }
+        }
+        for(const auto &child : item->children())
+            visit(child);
+    };
+    visit(_doc->root_render());
+    return isolated;
+}
+
 - (void)drawLockedInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip
 {
     [self restoreLocked];
     if(!_doc)
         return;
+    [self resolveExclusionsLocked];
     CGContextSaveGState(ctx);
     CGContextTranslateCTM(ctx, origin.x, origin.y);
     lh::position c(static_cast<float>(clip.origin.x), static_cast<float>(clip.origin.y),

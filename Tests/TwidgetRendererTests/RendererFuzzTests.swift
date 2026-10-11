@@ -14,7 +14,7 @@ private struct SeededRandom: RandomNumberGenerator {
 final class RendererFuzzTests: XCTestCase {
     private static let hostileNames = [
         "div onclick=alert(1)", "a\" onload=\"x", "img src=x onerror=y", "script", "SCRIPT", "iframe", "style", "x>y", "<b>", "", " ", "data-lh-id",
-        "data-lh-anim", "onmouseover", "srcdoc", "style\"", "color\";background:url(x", "--lh-anim", "-\u{0}", "\u{202e}span", String(repeating: "a", count: 5000),
+        "data-lh-anim", "onmouseover", "srcdoc", "style\"", "color\";background:url(x", "--lh-anim", "-lh-anim", "-\u{0}", "\u{202e}span", String(repeating: "a", count: 5000),
         "svg", "canvas", "linearGradient", "use", "foreignObject", "a", "xlink:href", "href", "src", "width", "height", "class", "id",
     ]
     private static let hostileValues = [
@@ -171,6 +171,33 @@ final class RendererFuzzTests: XCTestCase {
         XCTAssertTrue(html.contains("opacity:0.5"))
         XCTAssertTrue(html.contains("&quot;&gt;&lt;script&gt;"))
         XCTAssertGreaterThanOrEqual(violations, 3)
+    }
+
+    func testCachedSerializationMatchesFresh() {
+        let warm = WidgetDOM()
+        let cold = WidgetDOM()
+        for dom in [warm, cold] {
+            dom.apply(["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"])
+        }
+        for round in 0..<600 {
+            let batch: [[String: Any]] = (0..<Int(random.next() % 12 + 1)).map { _ in
+                var o = op()
+                if o["op"] as? String == "canvas" {
+                    o = ["op": "data", "id": id(), "data": "x"]
+                }
+                return o
+            }
+            for o in batch {
+                warm.apply(o)
+                cold.apply(o)
+            }
+            let theme = round % 97 == 0 ? "dark" : "light"
+            _ = warm.serialize(theme: theme)
+            if round % 25 == 0 {
+                XCTAssertEqual(warm.serialize(theme: theme), WidgetDOM.invalidatingCaches(cold).serialize(theme: theme))
+            }
+        }
+        XCTAssertEqual(warm.serialize(theme: "dark"), WidgetDOM.invalidatingCaches(cold).serialize(theme: "dark"))
     }
 
     func testDepthAndNodeCaps() {

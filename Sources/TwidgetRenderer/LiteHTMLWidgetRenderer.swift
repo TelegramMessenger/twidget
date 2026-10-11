@@ -1,4 +1,5 @@
 import AppKit
+import IOSurface
 import CoreVideo
 import LiteHTML
 
@@ -10,8 +11,23 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
     public var onDiag: ((String, String) -> Void)?
+    public var onSerialized: ((String, Bool) -> Void)?
     public private(set) var layoutCount = 0
     public private(set) var layoutMilliseconds = 0.0
+    public private(set) var layoutMaxMilliseconds = 0.0
+    public private(set) var stageMilliseconds: [String: Double] = [:]
+    public var drawMilliseconds: Double {
+        return documentView.drawMilliseconds
+    }
+    public var drawCount: Int {
+        return documentView.drawCount
+    }
+    public var drawMaxMilliseconds: Double {
+        return documentView.drawMaxMilliseconds
+    }
+    public var verification: (frames: Int, mismatched: Int) {
+        return (documentView.verifiedFrames, documentView.mismatchedFrames)
+    }
 
     private let documentView: WidgetDocumentView
     let dom = WidgetDOM()
@@ -36,7 +52,15 @@ public final class LiteHTMLWidgetRenderer {
     private var clickCount = 0
     private var lastClick: (time: CFTimeInterval, point: CGPoint) = (0, .zero)
     private var observedResize: Set<Int> = []
+    private var displayList: LHDisplayList?
     private let animator = WidgetAnimator()
+    private lazy var compositor = WidgetCompositor(host: documentView.layer)
+    public var compositedCount: Int {
+        return compositor.ids.count
+    }
+    public var promotionCount: Int {
+        return compositor.promotions
+    }
     private(set) var canvases: [Int: WidgetCanvas] = [:]
     private var canvasAttributeSizes: [Int: (Int, Int)] = [:]
     private var canvasURLs: [Int: String] = [:]
@@ -94,7 +118,17 @@ public final class LiteHTMLWidgetRenderer {
         guard let image = document.copyImage(maxWidth: size.width, rect: CGRect(origin: .zero, size: size), scale: scale) else {
             return nil
         }
-        return NSImage(cgImage: image, size: size)
+        if compositor.ids.isEmpty {
+            return NSImage(cgImage: image, size: size)
+        }
+        guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            return NSImage(cgImage: image, size: size)
+        }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        ctx.translateBy(x: 0, y: CGFloat(image.height))
+        ctx.scaleBy(x: scale, y: -scale)
+        compositor.draw(into: ctx)
+        return ctx.makeImage().map { NSImage(cgImage: $0, size: size) } ?? NSImage(cgImage: image, size: size)
     }
 
     public func destroy() {
@@ -200,8 +234,14 @@ public final class LiteHTMLWidgetRenderer {
         }
         animator.update(declarations: declarations, now: now)
         let sampled = animator.sample(now: now)
-        if !LiteHTMLWidgetRenderer.same(sampled, overrides) {
-            overrides = sampled
+        let before = compositor.ids
+        if let document = document {
+            compositor.attach(documentView.layer)
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
+        }
+        let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        if !LiteHTMLWidgetRenderer.same(rest, overrides) || before != compositor.ids {
+            overrides = rest
             layout(overrides)
         }
         if animator.isActive && !frozen {
@@ -210,8 +250,17 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func renderAnimationFrame() {
-        overrides = animator.sample(now: CACurrentMediaTime())
-        layout(overrides)
+        let sampled = animator.sample(now: CACurrentMediaTime())
+        let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        if !LiteHTMLWidgetRenderer.same(rest, overrides) {
+            overrides = rest
+            layout(overrides)
+        } else {
+            stageMilliseconds["composited-only", default: 0] += 1
+        }
+        if !compositor.ids.isEmpty && !animator.animatedIDs().isSuperset(of: compositor.ids) {
+            setNeedsRender()
+        }
     }
 
     private func canvas(for node: WidgetNode) -> WidgetCanvas {
@@ -297,12 +346,44 @@ public final class LiteHTMLWidgetRenderer {
         let start = CACurrentMediaTime()
         defer {
             layoutCount += 1
-            layoutMilliseconds += (CACurrentMediaTime() - start) * 1000
+            let spent = (CACurrentMediaTime() - start) * 1000
+            layoutMilliseconds += spent
+            layoutMaxMilliseconds = max(layoutMaxMilliseconds, spent)
         }
         syncCanvases()
+        var mark = CACurrentMediaTime()
+        func stage(_ name: String) {
+            let now = CACurrentMediaTime()
+            stageMilliseconds[name, default: 0] += (now - mark) * 1000
+            mark = now
+        }
         let html = dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) })
+        stage("serialize")
         let next = LHDocument(html: html, css: nil, previous: document)
+        if !compositor.ids.isEmpty {
+            next.setPaintExclusions(Set(compositor.ids.map { String($0) }), attribute: WidgetDOM.idAttribute)
+        }
+        stage("document")
+        if next.reusedPrevious {
+            stageMilliseconds["reused", default: 0] += 1
+        }
+        onSerialized?(html, next.reusedPrevious)
         _ = next.layout(maxWidth: width, preferredWidth: width)
+        stage("layout")
+        defer { stage("report") }
+        let list = next.displayList(maxWidth: width)
+        let previousList = displayList
+        displayList = list
+        stage("diff-list")
+        if let previous = previousList, documentView.document != nil {
+            let rects = list.changedRects(since: previous).map { $0.rectValue }
+            if !rects.isEmpty {
+                let union = rects.reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -1, dy: -1)
+                documentView.invalidate(union)
+            }
+        } else {
+            documentView.invalidate(nil)
+        }
         document = next
         for url in retiredURLs {
             LHImages.forgetImage(withURL: url)
@@ -310,7 +391,6 @@ public final class LiteHTMLWidgetRenderer {
         retiredURLs.removeAll()
         boundsValid = false
         documentView.document = next
-        documentView.needsDisplay = true
         reportSize()
         reportResize()
     }
@@ -564,9 +644,47 @@ public final class LiteHTMLWidgetRenderer {
         clock?.stop()
         frameRequested = false
         pendingMoves.removeAll()
-        documentView.badge = reason
-        documentView.badgeFatal = fatal
-        documentView.needsDisplay = true
+        documentView.showBadge(reason, fatal: fatal)
+    }
+
+    func screenChanged() {
+        guard let number = documentView.window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return
+        }
+        display = CGDirectDisplayID(number.uint32Value)
+        if let display = display {
+            clock?.setDisplay(display)
+        }
+        reportSize()
+    }
+
+    private var display: CGDirectDisplayID?
+
+    private var hostVisible = true
+
+    var isHostVisible: Bool {
+        return hostVisible
+    }
+
+    public func setVisible(_ visible: Bool) {
+        hostVisible = visible
+        if isOnScreen && (animator.isActive || frameRequested || !pendingMoves.isEmpty) && !frozen {
+            if animator.isActive {
+                renderAnimationFrame()
+            }
+            startClock()
+        }
+    }
+
+    private var isOnScreen: Bool {
+        guard hostVisible, let window = documentView.window, !documentView.isHiddenOrHasHiddenAncestor else {
+            return false
+        }
+        let visible = window.occlusionState.contains(.visible)
+        if visible {
+            documentView.occlusionTrusted = true
+        }
+        return documentView.occlusionTrusted ? visible : window.isVisible
     }
 
     private func startClock() {
@@ -574,11 +692,18 @@ public final class LiteHTMLWidgetRenderer {
             clock = WidgetFrameClock { [weak self] in
                 self?.tick()
             }
+            if let display = display {
+                clock?.setDisplay(display)
+            }
         }
         clock?.start()
     }
 
     private func tick() {
+        if !isOnScreen && pendingMoves.isEmpty && !frameRequested {
+            clock?.stop()
+            return
+        }
         if !pendingMoves.isEmpty {
             let moves = pendingMoves.values
             pendingMoves.removeAll()
@@ -586,7 +711,7 @@ public final class LiteHTMLWidgetRenderer {
                 post(["type": "event", "ev": event])
             }
         }
-        if animator.isActive && !frozen {
+        if animator.isActive && !frozen && isOnScreen {
             renderAnimationFrame()
         }
         if frameRequested {
@@ -762,8 +887,6 @@ public final class LiteHTMLWidgetRenderer {
 final class WidgetDocumentView: NSView {
     weak var owner: LiteHTMLWidgetRenderer?
     var document: LHDocument?
-    var badge: String?
-    var badgeFatal = false
     private var tracking: NSTrackingArea?
 
     override var isFlipped: Bool {
@@ -792,23 +915,224 @@ final class WidgetDocumentView: NSView {
         }
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else {
+    private(set) var drawMilliseconds = 0.0
+    private(set) var drawCount = 0
+    private(set) var drawMaxMilliseconds = 0.0
+    private final class Surface {
+        let surface: IOSurfaceRef
+        let context: CGContext
+        let width: Int
+        let height: Int
+        var stale = CGRect.null
+
+        init?(width: Int, height: Int, space: CGColorSpace) {
+            let properties: [CFString: Any] = [kIOSurfaceWidth: width, kIOSurfaceHeight: height, kIOSurfaceBytesPerElement: 4, kIOSurfacePixelFormat: 0x42475241]
+            guard let surface = IOSurfaceCreate(properties as CFDictionary) else {
+                return nil
+            }
+            if let plist = space.copyPropertyList() {
+                IOSurfaceSetValue(surface, kIOSurfaceColorSpace, plist)
+            }
+            IOSurfaceLock(surface, [], nil)
+            let base = IOSurfaceGetBaseAddress(surface)
+            let context = CGContext(data: base, width: width, height: height, bitsPerComponent: 8, bytesPerRow: IOSurfaceGetBytesPerRow(surface), space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+            IOSurfaceUnlock(surface, [], nil)
+            guard let made = context else {
+                return nil
+            }
+            self.surface = surface
+            self.context = made
+            self.width = width
+            self.height = height
+        }
+    }
+
+    static let cullMargin: CGFloat = 32
+    static let verify = ProcessInfo.processInfo.environment["TW_VERIFY"] != nil
+    private(set) var verifiedFrames = 0
+    private(set) var mismatchedFrames = 0
+
+    private func verifyFrame(_ surface: Surface, document: LHDocument, rect: CGRect, scale: CGFloat, space: CGColorSpace) {
+        guard let fresh = document.copyImage(maxWidth: bounds.width, rect: rect, scale: scale), fresh.width == surface.width, fresh.height == surface.height,
+              let context = CGContext(data: nil, width: surface.width, height: surface.height, bitsPerComponent: 8, bytesPerRow: surface.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
             return
         }
-        document?.draw(in: ctx, origin: .zero, clip: dirtyRect)
-        if let badge = badge, !badge.isEmpty {
-            if badgeFatal {
-                NSColor(white: 0.5, alpha: 0.25).setFill()
-                bounds.fill()
+        context.setBlendMode(.copy)
+        context.draw(fresh, in: CGRect(x: 0, y: 0, width: surface.width, height: surface.height))
+        IOSurfaceLock(surface.surface, .readOnly, nil)
+        defer { IOSurfaceUnlock(surface.surface, .readOnly, nil) }
+        guard let a = context.data, let b = IOSurfaceGetBaseAddress(surface.surface) as UnsafeMutableRawPointer? else {
+            return
+        }
+        let rowA = context.bytesPerRow, rowB = IOSurfaceGetBytesPerRow(surface.surface)
+        var worst = 0
+        for y in 0..<surface.height {
+            let pa = a.advanced(by: y * rowA).assumingMemoryBound(to: UInt8.self)
+            let pb = b.advanced(by: y * rowB).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<(surface.width * 4) {
+                worst = max(worst, abs(Int(pa[x]) - Int(pb[x])))
             }
-            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.white]
-            let text = NSAttributedString(string: badge, attributes: attributes)
-            let size = text.size()
-            let box = NSRect(x: bounds.maxX - size.width - 20, y: bounds.maxY - size.height - 10, width: size.width + 14, height: size.height + 4)
-            NSColor(white: 0.24, alpha: 0.75).setFill()
-            NSBezierPath(roundedRect: box, xRadius: 9, yRadius: 9).fill()
-            text.draw(at: NSPoint(x: box.minX + 7, y: box.minY + 2))
+        }
+        verifiedFrames += 1
+        if worst > 1 {
+            mismatchedFrames += 1
+        }
+    }
+
+    private var surfaces: [Surface] = []
+    private var shown: Surface?
+    private var surfaceSpace: CGColorSpace?
+    private var badgeLayer: CATextLayer?
+
+    override var wantsUpdateLayer: Bool {
+        return true
+    }
+
+    func invalidate(_ rect: CGRect?) {
+        for surface in surfaces {
+            surface.stale = rect.map { surface.stale.union($0) } ?? CGRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude / 4, height: CGFloat.greatestFiniteMagnitude / 4)
+        }
+        needsDisplay = true
+    }
+
+    var scale: CGFloat {
+        return window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        surfaces.removeAll()
+        shown = nil
+        needsDisplay = true
+    }
+
+    override func updateLayer() {
+        guard let layer = layer, let document = document else {
+            return
+        }
+        let start = CACurrentMediaTime()
+        defer {
+            drawCount += 1
+            let spent = (CACurrentMediaTime() - start) * 1000
+            drawMilliseconds += spent
+            drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
+        }
+        let scale = self.scale
+        let space = window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let height = max(1, ceil(document.size.height))
+        let pixelWidth = Int(ceil(bounds.width * scale)), pixelHeight = Int(ceil(height * scale))
+        if pixelWidth <= 0 || pixelHeight <= 0 || pixelWidth > 16384 || pixelHeight > 16384 {
+            return
+        }
+        if surfaceSpace.map({ $0 != space }) ?? true || surfaces.first.map({ $0.width != pixelWidth || $0.height != pixelHeight }) ?? false {
+            surfaces.removeAll()
+            shown = nil
+            surfaceSpace = space
+        }
+        var target = surfaces.first { $0 !== shown && !IOSurfaceIsInUse($0.surface) }
+        if target == nil && surfaces.count < 3, let made = Surface(width: pixelWidth, height: pixelHeight, space: space) {
+            made.stale = CGRect(x: 0, y: 0, width: bounds.width, height: height)
+            surfaces.append(made)
+            target = made
+        }
+        guard let surface = target ?? surfaces.first(where: { $0 !== shown }) ?? shown else {
+            return
+        }
+        document.colorSpace = space
+        let full = CGRect(x: 0, y: 0, width: bounds.width, height: height)
+        let dirty = surface.stale.intersection(full)
+        if !dirty.isNull && !dirty.isEmpty {
+            let x0 = floor(dirty.minX * scale) / scale, y0 = floor(dirty.minY * scale) / scale
+            let x1 = ceil(dirty.maxX * scale) / scale, y1 = ceil(dirty.maxY * scale) / scale
+            let aligned = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+            let ctx = surface.context
+            IOSurfaceLock(surface.surface, [], nil)
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: CGFloat(surface.height))
+            ctx.scaleBy(x: scale, y: -scale)
+            ctx.setAllowsFontSmoothing(false)
+            ctx.setShouldAntialias(true)
+            ctx.clip(to: aligned)
+            ctx.clear(aligned)
+            document.draw(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+            ctx.restoreGState()
+            ctx.flush()
+            IOSurfaceUnlock(surface.surface, [], nil)
+        }
+        if WidgetDocumentView.verify {
+            verifyFrame(surface, document: document, rect: full, scale: scale, space: space)
+        }
+        surface.stale = .null
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.contentsGravity = .topLeft
+        layer.contentsScale = scale
+        if layer.contents as AnyObject? === surface.surface as AnyObject {
+            layer.contents = nil
+        }
+        layer.contents = surface.surface
+        CATransaction.commit()
+        shown = surface
+    }
+
+    func showBadge(_ text: String, fatal: Bool) {
+        guard let layer = layer else {
+            return
+        }
+        if fatal {
+            layer.backgroundColor = NSColor(white: 0.5, alpha: 0.25).cgColor
+        }
+        let badge = badgeLayer ?? CATextLayer()
+        badgeLayer = badge
+        badge.string = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.white])
+        badge.backgroundColor = NSColor(white: 0.24, alpha: 0.75).cgColor
+        badge.cornerRadius = 9
+        badge.alignmentMode = .center
+        badge.contentsScale = scale
+        let width = ceil((text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width) + 14
+        badge.frame = CGRect(x: bounds.maxX - width - 6, y: 6, width: width, height: 17)
+        if badge.superlayer == nil {
+            layer.addSublayer(badge)
+        }
+    }
+
+    private var screenObserver: NSObjectProtocol?
+    private var occlusionObserver: NSObjectProtocol?
+    var occlusionTrusted = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let screenObserver = screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+        }
+        if let occlusionObserver = occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+        }
+        screenObserver = nil
+        occlusionObserver = nil
+        occlusionTrusted = false
+        if let window = window {
+            screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) { [weak self] _ in
+                self?.owner?.screenChanged()
+            }
+            occlusionObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
+                self?.occlusionTrusted = true
+                guard let owner = self?.owner else {
+                    return
+                }
+                owner.setVisible(owner.isHostVisible)
+            }
+        }
+        owner?.screenChanged()
+        owner?.setVisible(owner?.isHostVisible ?? true)
+    }
+
+    deinit {
+        if let screenObserver = screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+        }
+        if let occlusionObserver = occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
         }
     }
 
@@ -1000,6 +1324,12 @@ final class WidgetFrameClock {
             if self.running {
                 self.tick()
             }
+        }
+    }
+
+    func setDisplay(_ display: CGDirectDisplayID) {
+        if let link = link {
+            CVDisplayLinkSetCurrentCGDisplay(link, display)
         }
     }
 

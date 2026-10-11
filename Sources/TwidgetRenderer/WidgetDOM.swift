@@ -6,7 +6,13 @@ final class WidgetNode {
     let svg: Bool
     let isText: Bool
     var synthetic = false
-    var text: String
+    var text: String {
+        didSet {
+            cache = nil
+        }
+    }
+    var cache: [UInt8]?
+    var cacheEpoch = 0
     var attributes: [(name: String, value: String)] = []
     var declarations: [(name: String, value: String, important: Bool)] = []
     var children: [WidgetNode] = []
@@ -34,6 +40,7 @@ final class WidgetNode {
     }
 
     func setAttribute(_ name: String, _ value: String) {
+        cache = nil
         if name.lowercased() == "style" {
             declarations = WidgetNode.parseDeclarations(value)
             return
@@ -47,6 +54,7 @@ final class WidgetNode {
     }
 
     func removeAttribute(_ name: String) {
+        cache = nil
         if name.lowercased() == "style" {
             declarations.removeAll()
             return
@@ -56,6 +64,7 @@ final class WidgetNode {
     }
 
     func setProperty(_ name: String, _ value: String, important: Bool) {
+        cache = nil
         let key = name.hasPrefix("--") ? name : name.lowercased()
         if !WidgetNames.isProperty(key) {
             return
@@ -218,6 +227,7 @@ final class WidgetDOM {
     }
 
     private func register(_ id: Int, _ node: WidgetNode) {
+        node.cache = nil
         nodes[id] = node
         if node.id < 0 {
             rootIds[ObjectIdentifier(node)] = id
@@ -428,12 +438,28 @@ final class WidgetDOM {
         return best
     }
 
-    func serialize(theme: String, overrides: [Int: [(String, String)]] = [:], canvasSource: (WidgetNode) -> String? = { _ in nil }) -> String {
-        var out = "<!DOCTYPE html>"
-        out.reserveCapacity(16 * 1024)
-        write(html, into: &out, theme: theme, overrides: overrides, canvasSource: canvasSource)
-        return out
+    private var epoch = 0
+    private var epochTheme = ""
+
+    static func invalidatingCaches(_ dom: WidgetDOM) -> WidgetDOM {
+        dom.epoch += 1
+        return dom
     }
+
+    func serialize(theme: String, overrides: [Int: [(String, String)]] = [:], canvasSource: (WidgetNode) -> String? = { _ in nil }) -> String {
+        if theme != epochTheme {
+            epochTheme = theme
+            epoch += 1
+        }
+        var out: [UInt8] = []
+        out.reserveCapacity(lastSize + 1024)
+        out.append(contentsOf: Array("<!DOCTYPE html>".utf8))
+        write(html, into: &out, theme: theme, overrides: overrides, canvasSource: canvasSource)
+        lastSize = out.count
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    private var lastSize = 16 * 1024
 
     func styleSheets() -> [String] {
         var texts: [String] = []
@@ -452,86 +478,110 @@ final class WidgetDOM {
 
     private static let voidElements: Set<String> = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]
 
-    private func write(_ node: WidgetNode, into out: inout String, theme: String, overrides: [Int: [(String, String)]], canvasSource: (WidgetNode) -> String?) {
+    private func write(_ node: WidgetNode, into out: inout [UInt8], theme: String, overrides: [Int: [(String, String)]], canvasSource: (WidgetNode) -> String?) {
         if node.isText {
-            if let parent = node.parent, parent.tag == "style" {
-                out += CSSTheme.resolve(node.text, theme: theme).replacingOccurrences(of: "</", with: "<\\/")
-            } else {
-                WidgetDOM.escape(node.text, into: &out, attribute: false)
+            if node.cacheEpoch != epoch || node.cache == nil {
+                var bytes: [UInt8] = []
+                if let parent = node.parent, parent.tag == "style" {
+                    bytes.append(contentsOf: Array(CSSTheme.resolve(node.text, theme: theme).replacingOccurrences(of: "</", with: "<\\/").utf8))
+                } else {
+                    WidgetDOM.escape(node.text, into: &bytes, attribute: false)
+                }
+                node.cache = bytes
+                node.cacheEpoch = epoch
             }
+            out.append(contentsOf: node.cache!)
             return
         }
         if !WidgetNames.isTag(node.tag) {
             return
         }
+        let id = publicId(node)
         let canvas = node.tag == "canvas" && !node.svg ? canvasSource(node) : nil
-        out += "<"
-        out += canvas != nil ? "img" : node.tag
-        out += " data-lh-id=\""
-        out += String(publicId(node))
-        out += "\""
-        if let source = canvas {
-            out += " src=\""
-            out += source
-            out += "\""
-        }
-        for attribute in node.attributes where (canvas == nil || attribute.name.lowercased() != "src") && WidgetNames.isAttribute(attribute.name) {
-            out += " "
-            out += attribute.name
-            out += "=\""
-            WidgetDOM.escape(attribute.value, into: &out, attribute: true)
-            out += "\""
-        }
-        let animated = overrides[publicId(node)]
-        if !node.declarations.isEmpty || animated != nil {
-            out += " style=\""
-            for declaration in node.declarations where declaration.name != "--lh-anim" && WidgetNames.isProperty(declaration.name) {
-                out += declaration.name
-                out += ":"
-                WidgetDOM.escape(CSSTheme.resolve(declaration.value, theme: theme), into: &out, attribute: true)
-                if declaration.important {
-                    out += " !important"
-                }
-                out += ";"
+        let animated = overrides[id]
+        if canvas == nil && animated == nil && node.cacheEpoch == epoch, let cached = node.cache {
+            out.append(contentsOf: cached)
+        } else {
+            var open: [UInt8] = []
+            writeOpenTag(node, id: id, canvas: canvas, animated: animated, theme: theme, into: &open)
+            if canvas == nil && animated == nil {
+                node.cache = open
+                node.cacheEpoch = epoch
+            } else {
+                node.cache = nil
             }
-            if let animated = animated {
-                out += "--lh-anim:1;"
-                for (name, value) in animated where WidgetNames.isProperty(name) {
-                    out += name
-                    out += ":"
-                    WidgetDOM.escape(CSSTheme.resolve(value, theme: theme), into: &out, attribute: true)
-                    out += ";"
-                }
-            }
-            out += "\""
+            out.append(contentsOf: open)
         }
-        out += ">"
         if canvas != nil || !node.svg && WidgetDOM.voidElements.contains(node.tag) {
             return
         }
         for child in node.children {
             write(child, into: &out, theme: theme, overrides: overrides, canvasSource: canvasSource)
         }
-        out += "</"
-        out += node.tag
-        out += ">"
+        out.append(contentsOf: [60, 47])
+        out.append(contentsOf: Array(node.tag.utf8))
+        out.append(62)
     }
 
-    static func escape(_ text: String, into out: inout String, attribute: Bool) {
-        for scalar in text.unicodeScalars {
-            switch scalar {
-            case "&":
-                out += "&amp;"
-            case "<":
-                out += "&lt;"
-            case ">":
-                out += "&gt;"
-            case "\"" where attribute:
-                out += "&quot;"
-            case "\u{a0}":
-                out += "&nbsp;"
+    private func writeOpenTag(_ node: WidgetNode, id: Int, canvas: String?, animated: [(String, String)]?, theme: String, into out: inout [UInt8]) {
+        func put(_ text: String) {
+            out.append(contentsOf: Array(text.utf8))
+        }
+        put("<")
+        put(canvas != nil ? "img" : node.tag)
+        put(" data-lh-id=\"")
+        put(String(id))
+        put("\"")
+        if let source = canvas {
+            put(" src=\"")
+            WidgetDOM.escape(source, into: &out, attribute: true)
+            put("\"")
+        }
+        for attribute in node.attributes where (canvas == nil || attribute.name.lowercased() != "src") && WidgetNames.isAttribute(attribute.name) {
+            put(" ")
+            put(attribute.name)
+            put("=\"")
+            WidgetDOM.escape(attribute.value, into: &out, attribute: true)
+            put("\"")
+        }
+        if !node.declarations.isEmpty || animated != nil {
+            put(" style=\"")
+            for declaration in node.declarations where declaration.name != "-lh-anim" && WidgetNames.isProperty(declaration.name) {
+                put(declaration.name)
+                put(":")
+                WidgetDOM.escape(CSSTheme.resolve(declaration.value, theme: theme), into: &out, attribute: true)
+                if declaration.important {
+                    put(" !important")
+                }
+                put(";")
+            }
+            if let animated = animated {
+                put("-lh-anim:1;")
+                for (name, value) in animated where WidgetNames.isProperty(name) {
+                    put(name)
+                    put(":")
+                    WidgetDOM.escape(CSSTheme.resolve(value, theme: theme), into: &out, attribute: true)
+                    put(";")
+                }
+            }
+            put("\"")
+        }
+        put(">")
+    }
+
+    static func escape(_ text: String, into out: inout [UInt8], attribute: Bool) {
+        for byte in text.utf8 {
+            switch byte {
+            case 38:
+                out.append(contentsOf: [38, 97, 109, 112, 59])
+            case 60:
+                out.append(contentsOf: [38, 108, 116, 59])
+            case 62:
+                out.append(contentsOf: [38, 103, 116, 59])
+            case 34 where attribute:
+                out.append(contentsOf: [38, 113, 117, 111, 116, 59])
             default:
-                out.unicodeScalars.append(scalar)
+                out.append(byte)
             }
         }
     }
