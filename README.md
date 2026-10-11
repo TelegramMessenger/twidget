@@ -1,22 +1,68 @@
 # twidget
 
-A fast, sandboxed HTML/CSS renderer for native Apple apps. It is built on a heavily optimized fork of [litehtml](https://github.com/litehtml/litehtml) and powers the interactive HTML messages in Telegram for macOS.
+Native rendering for [twidget](#twidget-widgets) widgets on Apple platforms, built on a heavily optimized fork of [litehtml](https://github.com/litehtml/litehtml). It powers the interactive HTML messages in Telegram for macOS.
 
-Untrusted HTML never reaches a browser engine. Each document goes through an allowlist validator first. It is laid out by litehtml and drawn with CoreGraphics, or with Metal through a recorded render list. Message scripts run in a sandbox with time, CPU and memory limits, and only see what the host exposes. Nothing touches the network.
+twidget is one framework shared by every client:
+- **The shared parts.** A hostile sandbox runs the widget as written, and a validator checks every DOM operation against one policy.
+- **The per-client parts.** Each client implements the engine glue and a renderer.
+
+This repository is the Apple renderer. Validated operations come in, events and layout answers go out, and pixels come from litehtml instead of a WebView. It speaks the same host protocol as the WebView renderer, so any twidget host can use it. The twidget bundles themselves are not part of this repository.
 
 | Product | What it is |
 |---|---|
-| `LiteHTML` | The renderer: parsing, sanitizing, layout, CoreGraphics and Metal drawing, hit testing, text selection |
-| `HTMLScript` | Scripted documents: `render()` returns HTML, actions and timers drive it, on JavaScriptCore by default |
-| `HTMLScriptQuickJS` | An alternative JavaScript runtime on QuickJS-ng, with a hard heap limit |
-| `HTML3D` | `<script src="app:three">`: three.js r160 with its WebGL renderer replaced by a Metal one |
-| `HTMLSandbox` | The CPU quota policy and the large-stack script thread used by both runtimes |
+| `TwidgetRenderer` | The twidget renderer: mirror DOM, litehtml layout and drawing, events, layout queries, CSS animations and transitions, canvas 2D on CoreGraphics |
+| `LiteHTML` | The renderer core: parsing, sanitizing, layout, CoreGraphics and Metal drawing, hit testing, text selection |
+| `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it, on JavaScriptCore by default |
+| `HTMLScriptQuickJS` | An alternative JavaScript runtime for `HTMLScript` on QuickJS-ng, with a hard heap limit |
+| `HTML3D` | `<script src="app:three">` for `HTMLScript`: three.js r160 with its WebGL renderer replaced by a Metal one |
+| `HTMLSandbox` | The CPU quota policy and the large-stack script thread |
 
 macOS 10.13+, Swift 5.5+, C++17.
 
 ```swift
 .package(url: "https://github.com/macosswift/twidget.git", branch: "main")
 ```
+
+## twidget widgets
+
+`LiteHTMLWidgetRenderer` implements the renderer side of the twidget host protocol:
+- **Host → renderer:** `ops`, `query`, `listen`, `preventDefault`, `requestFrame` and `frozen`.
+- **Renderer → host:** `ready`, `size`, `event`, `gesture`, `result`, `frame`, `resize`, `media` and `violation`.
+
+A host adapter is a few lines:
+
+```swift
+import TwidgetRenderer
+import WidgetSandbox
+
+extension LiteHTMLWidgetRenderer: Renderer {
+    public func evaluate(_ script: String, completion: @escaping (String?) -> Void) { completion(nil) }
+    public func snapshot(completion: @escaping (NSImage?) -> Void) { completion(snapshot()) }
+}
+
+let host = try WidgetHost(html: html, theme: theme, width: width) { _, theme, width in
+    LiteHTMLWidgetRenderer(theme: theme, width: width)
+}
+```
+
+How the protocol maps onto native code:
+
+| Protocol | Native implementation |
+|---|---|
+| DOM operations | A mirror document, serialized and laid out by litehtml. Frames that only change styles or text are patched in place, not parsed again. |
+| `light-dark()`, theme | Resolved for the current theme, re-rendered on `setTheme` |
+| `@keyframes`, `animation`, `transition` | A native animation engine: timing functions, iterations, direction, fill modes, and interpolation of numbers, colors and transforms. It writes into an animation layer that litehtml keeps out of the cascade it reports back. |
+| Canvas 2D | CoreGraphics: paths, Path2D, gradients, text, transforms, clipping, shadows, compositing, `getImageData` and `putImageData` |
+| Layout queries | `rect`, `box`, `cs`, `measureText`, `elementFromPoint`, `matchMedia`, `viewport` and canvas calls, answered synchronously |
+| Events | Pointer, mouse, click, double-click, hover, key and animation events, with per-frame coalescing of moves like the WebView renderer |
+
+Both renderers render the ported demo corpus and Chart.js and D3 widgets. `tools/perflab/TwidgetLab` in the Telegram for macOS repository compares them side by side.
+
+**Known gaps:**
+- Form controls render as static content.
+- No scroll containers.
+- Some flex and percentage edge cases differ from WebKit.
+- WebGL is not part of the twidget protocol.
 
 ## Rendering a document
 
@@ -48,7 +94,9 @@ Every document is validated before layout. The validator is an allowlist, not a 
 
 The policy lives in portable C++ (`lhx::SanitizerPolicy`, `lhx::Sanitizer` in `Sources/LiteHTML/core`), so other ports can share it.
 
-## Scripted documents
+## Standalone scripted documents
+
+For hosts that don't run twidget, `HTMLScript` is a smaller model: the script returns HTML instead of driving a DOM.
 
 A document with `<script>` blocks becomes an `HTMLScript`. The script's `render()` function returns the HTML to show. The host gets `scriptDidChange` whenever the output changes and draws `currentHTML`.
 

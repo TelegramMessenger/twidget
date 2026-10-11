@@ -10,6 +10,8 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
     public var onDiag: ((String, String) -> Void)?
+    public private(set) var layoutCount = 0
+    public private(set) var layoutMilliseconds = 0.0
 
     private let documentView: WidgetDocumentView
     private let dom = WidgetDOM()
@@ -280,6 +282,11 @@ public final class LiteHTMLWidgetRenderer {
     private var retiredURLs: [String] = []
 
     private func layout(_ overrides: [Int: [(String, String)]]) {
+        let start = CACurrentMediaTime()
+        defer {
+            layoutCount += 1
+            layoutMilliseconds += (CACurrentMediaTime() - start) * 1000
+        }
         syncCanvases()
         let html = dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) })
         let next = LHDocument(html: html, css: nil, previous: document)
