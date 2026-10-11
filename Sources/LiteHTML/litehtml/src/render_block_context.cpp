@@ -50,32 +50,39 @@ litehtml::rendered_width litehtml::render_item_block_context::_render_content(pi
 
                 el->calc_outlines(self_size.width);
 
-                // Collapse top margin
-                if(is_first && collapse_top_margin())
-                {
-                    if(el->get_margins().top > 0_px)
+                const pixel_t base_child_top = child_top;
+                const pixel_t base_top_margin = top_margin;
+                auto collapse = [&](pixel_t margin) {
+                    child_top  = base_child_top;
+                    top_margin = base_top_margin;
+                    if(is_first && collapse_top_margin())
                     {
-                        child_top -= el->get_margins().top;
-                        if(el->get_margins().top > get_margins().top)
+                        if(margin > 0_px)
                         {
-                            top_margin = el->get_margins().top;
+                            child_top -= margin;
+                            if(margin > get_margins().top)
+                            {
+                                top_margin = margin;
+                            }
                         }
-                    }
-                } else
-                {
-                    if(el->get_margins().top > 0_px)
+                    } else if(margin > 0_px)
                     {
-                        if(last_margin > el->get_margins().top)
-                        {
-                            child_top -= el->get_margins().top;
-                        } else
-                        {
-                            child_top -= last_margin;
-                        }
+                        child_top -= std::min(last_margin, margin);
                     }
-                }
+                };
+                const pixel_t css_top = el->get_margins().top;
+                collapse(css_top);
 
                 auto rw = el->render(child_x, child_top, self_size.new_width(child_width), fmt_ctx);
+                if(el->get_margins().top != css_top)
+                {
+                    const pixel_t before = child_top;
+                    collapse(el->get_margins().top);
+                    if(child_top != before)
+                    {
+                        rw = el->render(child_x, child_top, self_size.new_width(child_width), fmt_ctx);
+                    }
+                }
                 // Render table with "width: auto" into returned width
                 if(el->css().get_display() == display_table && rw.natural_width < child_width &&
                    el->css().get_width().is_predefined())
