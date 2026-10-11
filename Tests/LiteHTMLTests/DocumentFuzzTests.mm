@@ -104,4 +104,12 @@ static NSArray<NSString *> *Seeds(void)
     }
 }
 
+- (void)testStyleSharingRespectsStructuralPseudoClasses
+{
+    NSString *html = @"<!doctype html><style>body{margin:0} .ev{padding-bottom:8px;height:10px} .ev:last-child{padding-bottom:0}</style><div><div class=\"ev\" data-k=\"a\"></div><div class=\"ev\" data-k=\"b\"></div><div class=\"ev\" data-k=\"c\"></div></div>";
+    LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+    CGSize size = [document layoutWithMaxWidth:300];
+    XCTAssertEqualWithAccuracy(size.height, 46, 0.5);
+}
+
 @end

@@ -397,7 +397,7 @@ namespace litehtml
             shareKey = std::to_string(parentId) + '#' + std::to_string(static_cast<int>(m_tag));
             for(const auto& us : m_used_styles)
             {
-                shareKey += '|';
+                shareKey += us->m_used ? '|' : '!';
                 shareKey += std::to_string(reinterpret_cast<uintptr_t>(us->m_selector.get()));
             }
             if(const css_properties* hit = doc->share_lookup(shareKey))
