@@ -244,8 +244,10 @@ final class WidgetMagicMove {
                     outgoing.transform = WidgetMagicMove.mapping(from: previous.border, to: border)
                     host.insertSublayer(outgoing, below: layer)
                     outgoing.add(WidgetMagicMove.spring("transform", from: NSValue(caTransform3D: WidgetMagicMove.mapping(from: previous.border, to: old)), to: NSValue(caTransform3D: outgoing.transform)), forKey: "move")
-                    outgoing.add(WidgetMagicMove.fade(from: 1, to: 0, duration: 0.3), forKey: "fade")
-                    layer.add(WidgetMagicMove.fade(from: 0, to: 1, duration: 0.3), forKey: "fade")
+                    let fadeOut = WidgetMagicMove.fade(from: 1, to: 0, duration: 0.16)
+                    fadeOut.beginTime = CACurrentMediaTime() + 0.2
+                    outgoing.add(fadeOut, forKey: "fade")
+                    layer.add(WidgetMagicMove.fade(from: 0, to: 1, duration: 0.24), forKey: "fade")
                     leavingLayers.append(outgoing)
                 }
             case .enter:
