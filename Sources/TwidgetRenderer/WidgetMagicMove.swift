@@ -7,7 +7,9 @@ final class WidgetMagicMove {
         let ancestors: [String: Set<String>]
         let rects: [Int: CGRect]
         let presented: [String: CGRect]
+        let signatures: [String: Int]
         var leaving: [(key: String, image: CGImage, ink: CGRect, border: CGRect)] = []
+        var changed: [String: (image: CGImage, ink: CGRect, border: CGRect)] = [:]
     }
 
     private struct Active {
@@ -44,7 +46,29 @@ final class WidgetMagicMove {
         return false
     }
 
-    static func keyedNodes(_ dom: WidgetDOM) -> (keyed: [String: Int], ancestors: [String: Set<String>]) {
+    static func signature(_ node: WidgetNode) -> Int {
+        var hasher = Hasher()
+        func visit(_ node: WidgetNode) {
+            hasher.combine(node.tag)
+            hasher.combine(node.text)
+            for attribute in node.attributes {
+                hasher.combine(attribute.name)
+                hasher.combine(attribute.value)
+            }
+            for declaration in node.declarations {
+                hasher.combine(declaration.name)
+                hasher.combine(declaration.value)
+            }
+            hasher.combine(node.children.count)
+            for child in node.children {
+                visit(child)
+            }
+        }
+        visit(node)
+        return hasher.finalize()
+    }
+
+    static func keyedNodes(_ dom: WidgetDOM, signatures: UnsafeMutablePointer<[String: Int]>? = nil) -> (keyed: [String: Int], ancestors: [String: Set<String>]) {
         var keyed: [String: Int] = [:]
         var ancestors: [String: Set<String>] = [:]
         var duplicates: Set<String> = []
@@ -69,6 +93,7 @@ final class WidgetMagicMove {
                 } else {
                     keyed[k] = dom.publicId(node)
                     ancestors[k] = Set(chain)
+                    signatures?.pointee[k] = signature(node)
                 }
                 chain.append(k)
             }
@@ -88,7 +113,8 @@ final class WidgetMagicMove {
     }
 
     func capture(dom: WidgetDOM, document: LHDocument) -> Capture? {
-        let (keyed, ancestors) = WidgetMagicMove.keyedNodes(dom)
+        var signatures: [String: Int] = [:]
+        let (keyed, ancestors) = WidgetMagicMove.keyedNodes(dom, signatures: &signatures)
         guard !keyed.isEmpty else {
             return nil
         }
@@ -103,11 +129,12 @@ final class WidgetMagicMove {
         for (key, item) in active {
             presented[key] = WidgetMagicMove.borderFrame(of: item.layer.presentation() ?? item.layer, target: item.target)
         }
-        return Capture(keyed: keyed, ancestors: ancestors, rects: rects, presented: presented)
+        return Capture(keyed: keyed, ancestors: ancestors, rects: rects, presented: presented, signatures: signatures)
     }
 
     func collectLeaving(_ capture: inout Capture, dom: WidgetDOM, document: LHDocument, scale: CGFloat) {
-        let now = WidgetMagicMove.keyedNodes(dom).keyed
+        var signatures: [String: Int] = [:]
+        let now = WidgetMagicMove.keyedNodes(dom, signatures: &signatures).keyed
         let gone = capture.keyed.keys.filter { now[$0] == nil }
         let goneSet = Set(gone)
         var pixels = 0
@@ -125,6 +152,24 @@ final class WidgetMagicMove {
             var ink = CGRect.zero, border = CGRect.zero
             if let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: scale, inkBounds: &ink, borderBox: &border) {
                 capture.leaving.append((key, image, ink, border))
+            }
+        }
+        let changed = capture.signatures.compactMap { entry in signatures[entry.key].flatMap { $0 != entry.value ? entry.key : nil } }
+        let changedSet = Set(changed)
+        for key in changed.sorted() {
+            if !(capture.ancestors[key] ?? []).isDisjoint(with: changedSet) {
+                continue
+            }
+            guard let id = capture.keyed[key], let rect = capture.rects[id], rect.width > 0, rect.height > 0 else {
+                continue
+            }
+            pixels += Int(rect.width * scale * rect.height * scale)
+            if capture.leaving.count + capture.changed.count >= WidgetMagicMove.maxLayers / 2 || pixels > WidgetMagicMove.maxPixels / 2 {
+                break
+            }
+            var ink = CGRect.zero, border = CGRect.zero
+            if let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: scale, inkBounds: &ink, borderBox: &border) {
+                capture.changed[key] = (image, ink, border)
             }
         }
     }
@@ -191,10 +236,18 @@ final class WidgetMagicMove {
             host.addSublayer(layer)
             switch item.kind {
             case let .move(old):
-                let sx = border.width > 0 ? old.width / border.width : 1
-                let sy = border.height > 0 ? old.height / border.height : 1
-                let start = CATransform3DConcat(CATransform3DMakeScale(sx, sy, 1), CATransform3DMakeTranslation(old.minX - border.minX, old.minY - border.minY, 0))
-                layer.add(WidgetMagicMove.spring("transform", from: NSValue(caTransform3D: start), to: NSValue(caTransform3D: CATransform3DIdentity)), forKey: "move")
+                layer.add(WidgetMagicMove.spring("transform", from: NSValue(caTransform3D: WidgetMagicMove.mapping(from: border, to: old)), to: NSValue(caTransform3D: CATransform3DIdentity)), forKey: "move")
+                if let previous = capture.changed[item.key], previous.ink.width > 0, previous.ink.height > 0 {
+                    let outgoing = WidgetMagicMove.layer(image: previous.image, ink: previous.ink, border: previous.border, scale: scale)
+                    outgoing.zPosition = 2
+                    outgoing.opacity = 0
+                    outgoing.transform = WidgetMagicMove.mapping(from: previous.border, to: border)
+                    host.insertSublayer(outgoing, below: layer)
+                    outgoing.add(WidgetMagicMove.spring("transform", from: NSValue(caTransform3D: WidgetMagicMove.mapping(from: previous.border, to: old)), to: NSValue(caTransform3D: outgoing.transform)), forKey: "move")
+                    outgoing.add(WidgetMagicMove.fade(from: 1, to: 0, duration: 0.3), forKey: "fade")
+                    layer.add(WidgetMagicMove.fade(from: 0, to: 1, duration: 0.3), forKey: "fade")
+                    leavingLayers.append(outgoing)
+                }
             case .enter:
                 layer.add(WidgetMagicMove.spring("transform", from: NSValue(caTransform3D: WidgetMagicMove.scaled(layer, 0.92)), to: NSValue(caTransform3D: CATransform3DIdentity)), forKey: "enter")
                 let fade = CABasicAnimation(keyPath: "opacity")
@@ -302,6 +355,22 @@ final class WidgetMagicMove {
         spring.duration = duration
         spring.fillMode = .both
         return spring
+    }
+
+    private static func mapping(from a: CGRect, to b: CGRect) -> CATransform3D {
+        let sx = a.width > 0 ? b.width / a.width : 1
+        let sy = a.height > 0 ? b.height / a.height : 1
+        return CATransform3DConcat(CATransform3DMakeScale(sx, sy, 1), CATransform3DMakeTranslation(b.minX - a.minX, b.minY - a.minY, 0))
+    }
+
+    private static func fade(from: Float, to: Float, duration: CFTimeInterval) -> CAAnimation {
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = from
+        fade.toValue = to
+        fade.duration = duration
+        fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.45, 0, 0.55, 1)
+        fade.fillMode = .both
+        return fade
     }
 
     private static func layer(image: CGImage, ink: CGRect, border: CGRect, scale: CGFloat) -> CALayer {
