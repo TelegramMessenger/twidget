@@ -1,4 +1,4 @@
-# LiteHTMLKit
+# twidget
 
 A fast, sandboxed HTML/CSS renderer for native Apple apps. It is built on a heavily optimized fork of [litehtml](https://github.com/litehtml/litehtml) and powers the interactive HTML messages in Telegram for macOS.
 
@@ -15,7 +15,7 @@ Untrusted HTML never reaches a browser engine. Each document goes through an all
 macOS 10.13+, Swift 5.5+, C++17.
 
 ```swift
-.package(url: "https://github.com/macosswift/litehtml-kit.git", branch: "main")
+.package(url: "https://github.com/macosswift/twidget.git", branch: "main")
 ```
 
 ## Rendering a document

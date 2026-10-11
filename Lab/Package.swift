@@ -5,17 +5,17 @@ let package = Package(
     name: "LiteHTMLLab",
     platforms: [.macOS(.v10_15)],
     dependencies: [
-        .package(name: "LiteHTMLKit", path: ".."),
+        .package(name: "twidget", path: ".."),
     ],
     targets: [
         .executableTarget(
             name: "LiteHTMLLab",
-            dependencies: [.product(name: "LiteHTML", package: "LiteHTMLKit"), .product(name: "HTMLScript", package: "LiteHTMLKit"), .product(name: "HTMLScriptQuickJS", package: "LiteHTMLKit"), .product(name: "HTML3D", package: "LiteHTMLKit")],
+            dependencies: [.product(name: "LiteHTML", package: "twidget"), .product(name: "HTMLScript", package: "twidget"), .product(name: "HTMLScriptQuickJS", package: "twidget"), .product(name: "HTML3D", package: "twidget")],
             path: "Sources/LiteHTMLLab",
             swiftSettings: [.unsafeFlags(["-Ounchecked"])]),
         .executableTarget(
             name: "EngineLab",
-            dependencies: [.product(name: "HTMLSandbox", package: "LiteHTMLKit"), .product(name: "HTMLScriptQuickJS", package: "LiteHTMLKit")],
+            dependencies: [.product(name: "HTMLSandbox", package: "twidget"), .product(name: "HTMLScriptQuickJS", package: "twidget")],
             path: "Sources/EngineLab",
             swiftSettings: [.unsafeFlags(["-Ounchecked"])],
             linkerSettings: [.linkedFramework("JavaScriptCore")]),

@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "LiteHTMLKit",
+    name: "twidget",
     platforms: [.macOS(.v10_13)],
     products: [
         .library(name: "LiteHTML", targets: ["LiteHTML"]),

@@ -1,6 +1,6 @@
 # Third-party notices
 
-LiteHTMLKit includes code from these projects. Their license texts are kept next to the code.
+twidget includes code from these projects. Their license texts are kept next to the code.
 
 | Project | Where | License |
 |---|---|---|
