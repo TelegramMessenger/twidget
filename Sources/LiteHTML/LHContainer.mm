@@ -988,6 +988,28 @@ struct LHContainer::OpHash
 void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFont, lh::web_color color,
                             const lh::position& pos)
 {
+    if(m_painter)
+    {
+        auto* font = reinterpret_cast<Font*>(hFont);
+        if(!font || !text || !*text)
+            return;
+        lhx::TextStyle style;
+        style.nativeFont          = font->shared->font;
+        style.ascent              = float(font->shared->ascent);
+        style.descent             = float(font->shared->descent);
+        style.underline           = font->underline;
+        style.overline            = font->overline;
+        style.strike              = font->strike;
+        style.decorationColor     = font->deco_color;
+        style.decorationStyle     = font->deco_style;
+        style.decorationThickness = float(font->deco_thickness);
+        style.shadowColor         = font->shadow_color;
+        style.shadowX             = float(font->shadow_x);
+        style.shadowY             = float(font->shadow_y);
+        style.shadowBlur          = float(font->shadow_blur);
+        m_painter->text(text, style, color, pos);
+        return;
+    }
     auto* f   = reinterpret_cast<Font*>(hFont);
     auto  ctx = reinterpret_cast<CGContextRef>(hdc);
     if(!f || !ctx || !text || !*text)
@@ -1111,11 +1133,15 @@ void LHContainer::transform_text(std::string& text, lh::text_transform tt)
 
 void LHContainer::set_clip(const lh::position& pos, const lh::border_radiuses& bdr_radius)
 {
+    if(m_painter)
+        m_painter->pushClip(pos, bdr_radius);
     m_clips.push_back({pos, bdr_radius, group_matrix()});
 }
 
 void LHContainer::del_clip()
 {
+    if(m_painter)
+        m_painter->popClip();
     if(!m_clips.empty())
         m_clips.pop_back();
 }
@@ -1511,6 +1537,11 @@ void LHContainer::for_each_tile(const lh::background_layer& layer, CGSize tile,
 
 void LHContainer::draw_solid_fill(lh::uint_ptr hdc, const lh::background_layer& layer, const lh::web_color& color)
 {
+    if(m_painter)
+    {
+        m_painter->solidFill(layer, color);
+        return;
+    }
     if(m_runs)
         return;
     if(m_ops)
@@ -1617,6 +1648,11 @@ static void AppendColorPoints(std::string& key, const std::vector<lh::background
 void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::linear_gradient& gradient)
 {
+    if(m_painter)
+    {
+        m_painter->linearGradient(layer, gradient);
+        return;
+    }
     if(m_runs)
         return;
     if(m_ops)
@@ -1668,6 +1704,11 @@ void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::radial_gradient& gradient)
 {
+    if(m_painter)
+    {
+        m_painter->radialGradient(layer, gradient);
+        return;
+    }
     if(m_runs)
         return;
     if(m_ops)
@@ -1724,6 +1765,11 @@ void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_conic_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                       const lh::background_layer::conic_gradient& gradient)
 {
+    if(m_painter)
+    {
+        m_painter->conicGradient(layer, gradient);
+        return;
+    }
     if(m_runs)
         return;
     if(m_ops)
@@ -1797,6 +1843,11 @@ void LHContainer::get_image_size(const char* src, const char* baseurl, lh::size&
 void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer, const std::string& url,
                              const std::string& base_url)
 {
+    if(m_painter)
+    {
+        m_painter->image(layer, url);
+        return;
+    }
     if(m_runs)
         return;
     if(m_ops)
@@ -1835,6 +1886,11 @@ void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer
 
 void LHContainer::draw_list_marker(lh::uint_ptr hdc, const lh::list_marker& marker)
 {
+    if(m_painter)
+    {
+        m_painter->listMarker(marker);
+        return;
+    }
     if(m_runs)
         return;
     if(m_ops)
@@ -1887,6 +1943,11 @@ void LHContainer::draw_list_marker(lh::uint_ptr hdc, const lh::list_marker& mark
 
 void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, const lh::position& draw_pos, bool root)
 {
+    if(m_painter)
+    {
+        m_painter->borders(borders, draw_pos, root);
+        return;
+    }
     if(m_runs)
         return;
     if(m_ops)
@@ -2059,6 +2120,11 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
 void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, const lh::border_radiuses& radius,
                                   const lh::shadow_paint& shadow)
 {
+    if(m_painter)
+    {
+        m_painter->boxShadow(box, radius, shadow);
+        return;
+    }
     if(m_runs || shadow.color.alpha == 0)
         return;
     CGFloat dx = F(shadow.x), dy = F(shadow.y), blur = F(shadow.blur), spread = F(shadow.spread);
@@ -2180,6 +2246,11 @@ static CGPathRef CreateVectorPath(const lh::vector_path& path)
 
 void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
 {
+    if(m_painter)
+    {
+        m_painter->path(path);
+        return;
+    }
     if(m_runs || (!path.fill && !path.stroke))
         return;
     CGPathRef cgpath = CreateVectorPath(path);
@@ -2259,6 +2330,11 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
 
 void LHContainer::begin_group(lh::uint_ptr hdc, const lh::paint_group& group)
 {
+    if(m_painter)
+    {
+        m_painter->beginGroup(group);
+        return;
+    }
     const auto&       m   = group.matrix;
     CGAffineTransform own = CGAffineTransformMake(m.a, m.b, m.c, m.d, m.tx, m.ty);
     Group             g;
@@ -2288,6 +2364,11 @@ void LHContainer::begin_group(lh::uint_ptr hdc, const lh::paint_group& group)
 
 void LHContainer::end_group(lh::uint_ptr hdc)
 {
+    if(m_painter)
+    {
+        m_painter->endGroup();
+        return;
+    }
     if(m_groups.empty())
         return;
     Group g = m_groups.back();

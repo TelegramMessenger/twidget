@@ -64,6 +64,17 @@ let package = Package(
             dependencies: ["HTMLSandbox"],
             path: "Sources/HTMLScript",
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("Metal"), .linkedFramework("QuartzCore")]),
+        .testTarget(
+            name: "LiteHTMLTests",
+            dependencies: ["LiteHTML"],
+            path: "Tests/LiteHTMLTests",
+            cxxSettings: [
+                .headerSearchPath("../../Sources/LiteHTML/litehtml/include"),
+                .headerSearchPath("../../Sources/LiteHTML/litehtml/include/litehtml"),
+                .headerSearchPath("../../Sources/LiteHTML/core"),
+                .headerSearchPath("../../Sources/LiteHTML/include"),
+            ],
+            linkerSettings: [.linkedFramework("XCTest")]),
     ],
     cxxLanguageStandard: .gnucxx17
 )

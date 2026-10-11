@@ -2,6 +2,7 @@
 
 #include <litehtml.h>
 #include "lhx_sanitizer.h"
+#include "lhx_painter.h"
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
 
@@ -76,6 +77,7 @@ class LHContainer : public litehtml::document_container
     void set_text_runs(std::vector<LHTextRun>* runs) { m_runs = runs; }
     void set_draw_ops(std::vector<LHDrawOp>* ops) { m_ops = ops; }
     void set_clip_culling(bool enabled) { m_clip_culling = enabled; }
+    void set_painter(lhx::Painter* painter) { m_painter = painter; }
     void set_gpu_recorder(LHGPURecorder* recorder)
     {
         flush_capture();
@@ -169,6 +171,7 @@ class LHContainer : public litehtml::document_container
     SanitizerReport m_sanitizer_report;
     bool            m_trusted_styles = false;
     lhx::Sanitizer  m_sanitizer{nullptr};
+    lhx::Painter*   m_painter = nullptr;
     void apply_clips(CGContextRef ctx, CGRect bounds) const;
     void record_op(OpHash& hash, CGRect ink, bool capture = true);
     void flush_capture();

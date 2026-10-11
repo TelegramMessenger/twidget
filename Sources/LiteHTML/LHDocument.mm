@@ -1,5 +1,6 @@
 #import "LHDocument.h"
 #import "LHGPUInternal.h"
+#import "LHDocumentPainting.h"
 
 #include "LHContainer.h"
 #include "render_item.h"
@@ -863,6 +864,25 @@ static std::string MasterWithCSS(NSString *css)
         }
     }
     return details;
+}
+
+@end
+
+@implementation LHDocument (Painting)
+
+- (CGSize)paintWithMaxWidth:(CGFloat)maxWidth clip:(CGRect)clip painter:(lhx::Painter &)painter
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    CGSize       size = [self layoutLockedWithMaxWidth:maxWidth];
+    CGContextRef ctx  = _doc ? [self createContextWithWidth:1 height:1] : nullptr;
+    if(ctx)
+    {
+        _container->set_painter(&painter);
+        [self drawLockedInContext:ctx origin:CGPointZero clip:clip];
+        _container->set_painter(nullptr);
+        CGContextRelease(ctx);
+    }
+    return size;
 }
 
 @end
