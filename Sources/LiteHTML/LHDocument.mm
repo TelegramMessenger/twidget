@@ -1,0 +1,868 @@
+#import "LHDocument.h"
+#import "LHGPUInternal.h"
+
+#include "LHContainer.h"
+#include "render_item.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
+#include <memory>
+#include <mutex>
+
+namespace lh = litehtml;
+
+static double NowMs()
+{
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+static const std::string &MasterCSS()
+{
+    static const std::string css = [] {
+        std::string s     = lh::master_css;
+        size_t      start = s.find("a:link");
+        size_t      end   = start == std::string::npos ? start : s.find('}', start);
+        if(end != std::string::npos)
+            s.replace(start, end - start + 1, "a:link { cursor: pointer; }");
+        s += R"CSS(
+[hidden], template, datalist { display: none; }
+details, summary { display: block; }
+summary::before { content: "▶︎"; display: inline-block; width: 1.25em; font-size: 0.9em; }
+details[open] > summary::before { content: "▼︎"; }
+details:not([open]) > :not(summary) { display: none; }
+button { box-sizing: border-box; text-align: center; }
+input, select, textarea { font-family: -apple-system; font-size: 13.333px; font-weight: 400; color: #000000; letter-spacing: normal; text-align: left; }
+input { box-sizing: border-box; width: 153px; padding: 1px 3px; border: 1px solid #767676; border-radius: 3px; background-color: #ffffff; vertical-align: middle; }
+input[type="checkbox"], input[type="radio"] { width: 13px; height: 13px; margin: 3px 3px 3px 4px; padding: 0; border-radius: 3px; vertical-align: -2px; }
+input[type="radio"] { border-radius: 50%; }
+input[type="range"] { width: 129px; height: 16px; margin: 2px; padding: 0; border: 0; background-color: transparent; }
+input[type="color"] { width: 50px; height: 27px; padding: 4px 3px; background-color: #efefef; }
+input[type="button"], input[type="submit"], input[type="reset"] { width: auto; padding: 1px 6px; background-color: #efefef; text-align: center; }
+select { box-sizing: border-box; padding: 1px 4px; border: 1px solid #767676; border-radius: 4px; background-color: #ffffff; vertical-align: middle; }
+textarea { display: inline-block; box-sizing: border-box; width: 182px; height: 36px; padding: 2px; border: 1px solid #767676; background-color: #ffffff; white-space: pre-wrap; overflow: hidden; font-family: ui-monospace; }
+)CSS";
+        return s;
+    }();
+    return css;
+}
+
+static void IgnoreRedraw(const lh::position &) {}
+
+static bool UsesPercentHeight(const lh::element::ptr &el)
+{
+    return el->css().get_height().units() == lh::css_units_percentage ||
+           el->css().get_min_height().units() == lh::css_units_percentage;
+}
+
+static bool NeedsViewportHeight(const lh::document::ptr &doc)
+{
+    lh::position::vector fixed;
+    doc->get_fixed_boxes(fixed);
+    if(!fixed.empty())
+        return true;
+    auto root = doc->root();
+    if(!root)
+        return false;
+    if(UsesPercentHeight(root))
+        return true;
+    for(const auto &child : root->children())
+        if(child->tag() == lh::_body_ && UsesPercentHeight(child))
+            return true;
+    return false;
+}
+
+static bool CopyPixels(CGImageRef image, CGContextRef ctx)
+{
+    size_t width = CGImageGetWidth(image), height = CGImageGetHeight(image);
+    if(CGImageGetBitsPerPixel(image) != 32 || CGImageGetBitmapInfo(image) != CGBitmapContextGetBitmapInfo(ctx) ||
+       CGBitmapContextGetWidth(ctx) != width || CGBitmapContextGetHeight(ctx) != height)
+        return false;
+    CGDataProviderRef provider = CGImageGetDataProvider(image);
+    CFDataRef         data     = provider ? CGDataProviderCopyData(provider) : nullptr;
+    if(!data)
+        return false;
+    const uint8_t *src       = CFDataGetBytePtr(data);
+    uint8_t       *dst       = static_cast<uint8_t *>(CGBitmapContextGetData(ctx));
+    size_t         srcStride = CGImageGetBytesPerRow(image), dstStride = CGBitmapContextGetBytesPerRow(ctx);
+    bool           ok        = dst && src && (size_t)CFDataGetLength(data) >= srcStride * height;
+    if(ok)
+        for(size_t y = 0; y < height; y++)
+            memcpy(dst + y * dstStride, src + y * srcStride, width * 4);
+    CFRelease(data);
+    return ok;
+}
+
+@interface LHTextFragment ()
+- (instancetype)initWithText:(NSString *)text font:(CTFontRef)font frame:(CGRect)frame;
+@end
+
+@implementation LHTextFragment
+{
+    CTFontRef _font;
+    CTLineRef _line;
+}
+
+- (instancetype)initWithText:(NSString *)text font:(CTFontRef)font frame:(CGRect)frame
+{
+    if((self = [super init]))
+    {
+        _text  = [text copy];
+        _font  = (CTFontRef)CFRetain(font);
+        _frame = frame;
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    if(_line)
+        CFRelease(_line);
+    CFRelease(_font);
+}
+
+- (CTLineRef)line
+{
+    if(!_line)
+    {
+        NSDictionary *attributes = @{(__bridge NSString *)kCTFontAttributeName: (__bridge id)_font};
+        NSAttributedString *string = [[NSAttributedString alloc] initWithString:_text attributes:attributes];
+        _line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)string);
+    }
+    return _line;
+}
+
+- (NSUInteger)characterIndexForX:(CGFloat)x
+{
+    CFIndex index = CTLineGetStringIndexForPosition([self line], CGPointMake(x - _frame.origin.x, 0));
+    if(index == kCFNotFound || index < 0)
+        return 0;
+    return MIN((NSUInteger)index, _text.length);
+}
+
+- (CGFloat)xForCharacterIndex:(NSUInteger)index
+{
+    index = MIN(index, _text.length);
+    return _frame.origin.x + CTLineGetOffsetForStringIndex([self line], (CFIndex)index, nullptr);
+}
+
+@end
+
+@interface LHDisplayList ()
+- (instancetype)initWithOps:(std::vector<LHDrawOp>)ops;
+@end
+
+@implementation LHDisplayList
+{
+    std::vector<LHDrawOp> _ops;
+    std::vector<LHGPUOp>  _gpuOps;
+    BOOL                  _hasGPU;
+    BOOL                  _gpuUnsupported;
+}
+
+- (void)setGPUOps:(std::vector<LHGPUOp>)ops unsupported:(BOOL)unsupported
+{
+    _gpuOps         = std::move(ops);
+    _hasGPU         = YES;
+    _gpuUnsupported = unsupported;
+}
+
+- (const std::vector<LHGPUOp> *)gpuOps
+{
+    return _hasGPU ? &_gpuOps : nullptr;
+}
+
+- (BOOL)gpuUnsupported
+{
+    return _gpuUnsupported;
+}
+
+- (BOOL)gpuSupported
+{
+    return _hasGPU && !_gpuUnsupported;
+}
+
+- (instancetype)initWithOps:(std::vector<LHDrawOp>)ops
+{
+    if((self = [super init]))
+        _ops = std::move(ops);
+    return self;
+}
+
+static uint64_t OpKey(const LHDrawOp &op)
+{
+    uint64_t     key       = op.hash;
+    const double values[4] = {op.bounds.origin.x, op.bounds.origin.y, op.bounds.size.width, op.bounds.size.height};
+    const auto  *bytes     = reinterpret_cast<const unsigned char *>(values);
+    for(size_t i = 0; i < sizeof(values); i++)
+        key = (key ^ bytes[i]) * 0x100000001b3ULL;
+    return key;
+}
+
+static std::vector<std::pair<uint64_t, size_t>> OpIdentities(const std::vector<LHDrawOp> &ops)
+{
+    std::unordered_map<uint64_t, size_t>      seen;
+    std::vector<std::pair<uint64_t, size_t>> result;
+    result.reserve(ops.size());
+    for(const auto &op : ops)
+    {
+        uint64_t key = OpKey(op);
+        result.emplace_back(key, seen[key]++);
+    }
+    return result;
+}
+
+struct OpIdentityHash
+{
+    size_t operator()(const std::pair<uint64_t, size_t> &v) const { return std::hash<uint64_t>()(v.first ^ (v.second * 0x9e3779b97f4a7c15ULL)); }
+};
+
+- (NSArray<NSValue *> *)changedRectsSince:(LHDisplayList *)previous
+{
+    const std::vector<LHDrawOp> &a = previous->_ops;
+    const std::vector<LHDrawOp> &b = _ops;
+    NSMutableArray<NSValue *>   *rects = [NSMutableArray array];
+    auto add = [&](const LHDrawOp &op) {
+        if(!CGRectIsNull(op.bounds) && !CGRectIsEmpty(op.bounds))
+            [rects addObject:[NSValue valueWithRect:NSRectFromCGRect(op.bounds)]];
+    };
+    auto ida = OpIdentities(a), idb = OpIdentities(b);
+    std::unordered_set<std::pair<uint64_t, size_t>, OpIdentityHash> inA(ida.begin(), ida.end()), inB(idb.begin(), idb.end());
+    std::vector<std::pair<uint64_t, size_t>> commonA, commonB;
+    for(size_t i = 0; i < a.size(); i++)
+    {
+        if(inB.count(ida[i]))
+            commonA.push_back(ida[i]);
+        else
+            add(a[i]);
+    }
+    for(size_t i = 0; i < b.size(); i++)
+    {
+        if(inA.count(idb[i]))
+            commonB.push_back(idb[i]);
+        else
+            add(b[i]);
+    }
+    if(commonA != commonB)
+    {
+        [rects removeAllObjects];
+        for(const auto &op : a)
+            add(op);
+        for(const auto &op : b)
+            add(op);
+    }
+    return rects;
+}
+
+static std::unordered_multimap<uint64_t, CGRect> OpShapes(const std::vector<LHDrawOp> &ops)
+{
+    std::unordered_multimap<uint64_t, CGRect> shapes;
+    shapes.reserve(ops.size());
+    for(const auto &op : ops)
+        shapes.emplace(op.shape, op.bounds);
+    return shapes;
+}
+
+static bool HasMovedCopy(const std::unordered_multimap<uint64_t, CGRect> &shapes, const LHDrawOp &op, CGFloat dy)
+{
+    if(CGRectIsNull(op.bounds))
+        return false;
+    auto range = shapes.equal_range(op.shape);
+    for(auto it = range.first; it != range.second; ++it)
+    {
+        const CGRect &r = it->second;
+        if(!CGRectIsNull(r) && std::fabs(r.origin.x - op.bounds.origin.x) < 0.05 && std::fabs(r.origin.y - op.bounds.origin.y - dy) <= 1
+           && std::fabs(r.size.width - op.bounds.size.width) < 0.05 && std::fabs(r.size.height - op.bounds.size.height) < 0.05)
+            return true;
+    }
+    return false;
+}
+
+static CGRect OpInk(const LHDrawOp &op)
+{
+    CGRect ink = CGRectInset(op.bounds, 1, 1);
+    return CGRectIsNull(ink) ? op.bounds : ink;
+}
+
+static bool MovedDistance(const std::vector<LHDrawOp> &ops, const std::unordered_multimap<uint64_t, CGRect> &previous, CGFloat estimate, CGFloat top, CGFloat *distance)
+{
+    std::unordered_map<int64_t, size_t> votes;
+    for(const auto &op : ops)
+    {
+        if(CGRectIsNull(op.bounds) || CGRectGetMinY(op.bounds) < top - 1)
+            continue;
+        auto range = previous.equal_range(op.shape);
+        for(auto it = range.first; it != range.second; ++it)
+        {
+            const CGRect &r = it->second;
+            if(CGRectIsNull(r) || std::fabs(r.origin.x - op.bounds.origin.x) >= 0.05)
+                continue;
+            const CGFloat dy = op.bounds.origin.y - r.origin.y;
+            if(std::fabs(dy - estimate) < 1.5)
+                votes[static_cast<int64_t>(std::llround(dy * 64))]++;
+        }
+    }
+    if(votes.empty())
+        return false;
+    auto best = std::max_element(votes.begin(), votes.end(), [](const auto &l, const auto &r) { return l.second < r.second; });
+    *distance = static_cast<CGFloat>(best->first) / 64;
+    return true;
+}
+
+static CGFloat ChangedBottom(const std::vector<LHDrawOp> &ops, const std::unordered_multimap<uint64_t, CGRect> &other, CGFloat dy, CGFloat top, CGFloat offset)
+{
+    std::vector<CGRect> moved, changed;
+    for(const auto &op : ops)
+    {
+        if(CGRectIsNull(op.bounds) || CGRectIsEmpty(op.bounds))
+            continue;
+        const CGRect ink = OpInk(op);
+        if(CGRectGetMinY(ink) < top - 1)
+            continue;
+        (HasMovedCopy(other, op, dy) ? moved : changed).push_back(ink);
+    }
+    CGFloat bottom = -CGFLOAT_MAX;
+    for(const auto &ink : changed)
+    {
+        const CGPoint center = CGPointMake(CGRectGetMidX(ink), CGRectGetMidY(ink));
+        if(std::any_of(moved.begin(), moved.end(), [&](const CGRect &box) { return CGRectContainsPoint(box, center); }))
+            continue;
+        bottom = std::max(bottom, CGRectGetMaxY(ink) + offset);
+    }
+    return bottom;
+}
+
+- (CGFloat)unchangedBottomSince:(LHDisplayList *)previous previousHeight:(CGFloat)previousHeight height:(CGFloat)height below:(CGFloat)top
+{
+    const std::vector<LHDrawOp> &a   = previous->_ops;
+    const std::vector<LHDrawOp> &b   = _ops;
+    const auto                   inA = OpShapes(a);
+    const auto                   inB = OpShapes(b);
+    CGFloat                      delta;
+    if(!MovedDistance(b, inA, height - previousHeight, top, &delta))
+        return 0;
+    const CGFloat start = std::max({top, ChangedBottom(b, inA, -delta, top, 0), ChangedBottom(a, inB, delta, top, delta)});
+    return std::max<CGFloat>(0, height - start);
+}
+
+@end
+
+@implementation LHDocument
+{
+    std::mutex                   _lock;
+    std::unique_ptr<LHContainer> _container;
+    lh::document::ptr            _doc;
+    CGFloat                      _lastMaxWidth;
+    CGFloat                      _preferredWidth;
+    CGSize                       _size;
+    NSString                    *_cursor;
+    CGColorSpaceRef              _colorSpace;
+    std::string                  _master;
+    BOOL                         _updatable;
+    BOOL                         _consumed;
+    BOOL                         _consumedCulling;
+    BOOL                         _reusedPrevious;
+    CGFloat                      _consumedMaxWidth;
+}
+
+- (void)bindContainerLocked
+{
+    __weak LHDocument *weakSelf = self;
+    _container->on_anchor = [weakSelf](const std::string &url) {
+        NSString *u = @(url.c_str());
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LHDocument *s = weakSelf;
+            if(s.anchorHandler && u)
+                s.anchorHandler(u);
+        });
+    };
+    _container->on_action = [weakSelf](const std::string &action, const std::string &value) {
+        NSString *a = @(action.c_str()), *v = value.empty() ? nil : @(value.c_str());
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LHDocument *s = weakSelf;
+            if(s.actionHandler && a)
+                s.actionHandler(a, v);
+        });
+    };
+    LHDocument *__unsafe_unretained unsafeSelf = self;
+    _container->on_cursor = [unsafeSelf](const std::string &cursor) {
+        unsafeSelf->_cursor = @(cursor.c_str()) ?: @"auto";
+    };
+}
+
+static std::string MasterWithCSS(NSString *css)
+{
+    std::string master = MasterCSS();
+    master += "\n";
+    master += css.UTF8String ?: "";
+    return master;
+}
+
+- (instancetype)initWithHTML:(NSString *)html css:(NSString *)css
+{
+    if((self = [super init]))
+    {
+        _html         = [html copy];
+        _lastMaxWidth = -1;
+        _cursor       = @"auto";
+        _container    = std::make_unique<LHContainer>();
+        [self bindContainerLocked];
+
+        double t0 = NowMs();
+        _doc = lh::document::createFromString(lh::estring(html.UTF8String ?: ""), _container.get(), MasterWithCSS(css));
+        _parseMilliseconds = NowMs() - t0;
+    }
+    return self;
+}
+
+- (instancetype)initWithHTML:(NSString *)html css:(NSString *)css previous:(LHDocument *)previous
+{
+    if((self = [super init]))
+    {
+        _html         = [html copy];
+        _lastMaxWidth = -1;
+        _cursor       = @"auto";
+        _updatable    = YES;
+        _master       = MasterWithCSS(css);
+
+        double            t0   = NowMs();
+        const std::string body = html.UTF8String ?: "";
+        if(previous)
+        {
+            std::lock_guard<std::mutex> guard(previous->_lock);
+            if(previous->_doc && previous->_updatable && previous->_master == _master &&
+               previous->_doc->update_from_string(body, nullptr))
+            {
+                _doc       = std::move(previous->_doc);
+                _container = std::move(previous->_container);
+                _cursor    = previous->_cursor;
+                previous->_consumed         = YES;
+                previous->_consumedMaxWidth = previous->_lastMaxWidth;
+                previous->_consumedCulling  = _container->clip_culling();
+                _reusedPrevious             = YES;
+            }
+        }
+        if(!_doc)
+        {
+            _container = std::make_unique<LHContainer>();
+            _doc       = lh::document::createUpdatableFromString(body, _container.get(), _master);
+        }
+        [self bindContainerLocked];
+        _parseMilliseconds = NowMs() - t0;
+    }
+    return self;
+}
+
+- (BOOL)reusedPrevious
+{
+    return _reusedPrevious;
+}
+
+- (void)restoreLocked
+{
+    if(!_consumed || _doc)
+        return;
+    _consumed  = NO;
+    _container = std::make_unique<LHContainer>();
+    _container->set_clip_culling(_consumedCulling);
+    [self bindContainerLocked];
+    _doc          = lh::document::createUpdatableFromString(_html.UTF8String ?: "", _container.get(), _master);
+    _lastMaxWidth = -1;
+    if(_consumedMaxWidth > 0)
+        [self layoutLockedWithMaxWidth:_consumedMaxWidth];
+}
+
+- (void)dealloc
+{
+    _doc.reset();
+    _container.reset();
+    if(_colorSpace)
+        CGColorSpaceRelease(_colorSpace);
+}
+
+- (CGColorSpaceRef)colorSpace
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return _colorSpace;
+}
+
+- (void)setColorSpace:(CGColorSpaceRef)colorSpace
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    if(colorSpace == _colorSpace)
+        return;
+    if(_colorSpace)
+        CGColorSpaceRelease(_colorSpace);
+    _colorSpace = colorSpace ? CGColorSpaceRetain(colorSpace) : nullptr;
+}
+
+- (CGSize)size
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return _size;
+}
+
+- (BOOL)clipCulling
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    return _container->clip_culling();
+}
+
+- (void)setClipCulling:(BOOL)clipCulling
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    _container->set_clip_culling(clipCulling);
+}
+
+- (NSString *)cursor
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return _cursor;
+}
+
+- (void)fitViewportHeightLockedWithWidth:(CGFloat)width
+{
+    if(!NeedsViewportHeight(_doc))
+        return;
+    _container->set_viewport(lh::position(0, 0, static_cast<float>(width), static_cast<float>(std::ceil(_doc->height().value()))));
+    _doc->render(static_cast<float>(width));
+}
+
+- (CGSize)layoutLockedWithMaxWidth:(CGFloat)maxWidth
+{
+    [self restoreLocked];
+    maxWidth = std::max<CGFloat>(1, std::floor(maxWidth));
+    if(!_doc)
+        return CGSizeZero;
+    if(std::fabs(maxWidth - _lastMaxWidth) < 0.5)
+        return _size;
+    if(_preferredWidth > 0.5 && _preferredWidth <= maxWidth + 0.5)
+    {
+        double  t0 = NowMs();
+        CGFloat vw = std::min<CGFloat>(_preferredWidth, maxWidth);
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(vw), 0));
+        _doc->render(static_cast<float>(vw));
+        CGFloat extent = std::ceil(_doc->width().value());
+        if(vw >= maxWidth - 0.5 || extent <= vw + 0.5)
+        {
+            [self fitViewportHeightLockedWithWidth:vw];
+            _lastMaxWidth       = maxWidth;
+            _layoutMilliseconds = NowMs() - t0;
+            _size = CGSizeMake(std::max(std::ceil(vw), extent), std::ceil(_doc->height().value()));
+            return _size;
+        }
+    }
+    _lastMaxWidth = maxWidth;
+
+    double t0 = NowMs();
+    _container->set_viewport(lh::position(0, 0, static_cast<float>(maxWidth), 0));
+    lh::pixel_t natural = _doc->render(static_cast<float>(maxWidth));
+    CGFloat     width   = maxWidth;
+    if(natural.value() > 0 && natural.value() < maxWidth)
+    {
+        width = std::min<CGFloat>(maxWidth, std::ceil(natural.value() + 0.01));
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(width), 0));
+        _doc->render(static_cast<float>(width));
+    }
+    CGFloat extent = std::ceil(_doc->width().value());
+    for(int pass = 0; pass < 2 && extent > width + 0.5 && width < maxWidth; pass++)
+    {
+        width = std::min<CGFloat>(maxWidth, extent);
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(width), 0));
+        _doc->render(static_cast<float>(width));
+        extent = std::ceil(_doc->width().value());
+    }
+    for(int pass = 0; pass < 3 && extent > maxWidth + 0.5; pass++)
+    {
+        CGFloat target = std::floor(width - (extent - maxWidth));
+        if(target < maxWidth / 2)
+            break;
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(target), 0));
+        _doc->render(static_cast<float>(target));
+        CGFloat narrowed = std::ceil(_doc->width().value());
+        if(narrowed >= extent - 0.5)
+        {
+            _container->set_viewport(lh::position(0, 0, static_cast<float>(width), 0));
+            _doc->render(static_cast<float>(width));
+            break;
+        }
+        width  = target;
+        extent = narrowed;
+    }
+    [self fitViewportHeightLockedWithWidth:width];
+    _layoutMilliseconds = NowMs() - t0;
+    _size               = CGSizeMake(std::max(std::ceil(width), extent), std::ceil(_doc->height().value()));
+    return _size;
+}
+
+- (CGSize)layoutWithMaxWidth:(CGFloat)maxWidth
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return [self layoutLockedWithMaxWidth:maxWidth];
+}
+
+- (CGSize)layoutWithMaxWidth:(CGFloat)maxWidth preferredWidth:(CGFloat)preferredWidth
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _preferredWidth = preferredWidth;
+    CGSize size     = [self layoutLockedWithMaxWidth:maxWidth];
+    _preferredWidth = 0;
+    return size;
+}
+
+- (void)drawLockedInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip
+{
+    [self restoreLocked];
+    if(!_doc)
+        return;
+    CGContextSaveGState(ctx);
+    CGContextTranslateCTM(ctx, origin.x, origin.y);
+    lh::position c(static_cast<float>(clip.origin.x), static_cast<float>(clip.origin.y),
+                   static_cast<float>(clip.size.width), static_cast<float>(clip.size.height));
+    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &c);
+    CGContextRestoreGState(ctx);
+}
+
+- (void)drawInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self drawLockedInContext:ctx origin:origin clip:clip];
+}
+
+- (CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale base:(CGImageRef)base dirty:(CGRect)dirty
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self layoutLockedWithMaxWidth:maxWidth];
+    size_t pw = (size_t)std::ceil(rect.size.width * scale);
+    size_t ph = (size_t)std::ceil(rect.size.height * scale);
+    if(!_doc || pw == 0 || ph == 0)
+        return nullptr;
+    if(CGImageGetWidth(base) != pw || CGImageGetHeight(base) != ph)
+        return [self copyImageLockedWithRect:rect scale:scale];
+    CGRect local = CGRectIntersection(CGRectOffset(dirty, -rect.origin.x, -rect.origin.y),
+                                      CGRectMake(0, 0, rect.size.width, rect.size.height));
+    if(CGRectIsNull(local) || CGRectIsEmpty(local))
+        return CGImageRetain(base);
+    CGFloat x0 = std::floor(CGRectGetMinX(local) * scale) / scale, y0 = std::floor(CGRectGetMinY(local) * scale) / scale;
+    CGFloat x1 = std::ceil(CGRectGetMaxX(local) * scale) / scale, y1 = std::ceil(CGRectGetMaxY(local) * scale) / scale;
+    CGRect  aligned = CGRectMake(x0, y0, x1 - x0, y1 - y0);
+
+    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    if(!ctx)
+        return nullptr;
+    if(!CopyPixels(base, ctx))
+    {
+        CGContextRelease(ctx);
+        return [self copyImageLockedWithRect:rect scale:scale];
+    }
+    CGContextTranslateCTM(ctx, 0, ph);
+    CGContextScaleCTM(ctx, scale, -scale);
+    CGContextSetAllowsFontSmoothing(ctx, false);
+    CGContextSetShouldAntialias(ctx, true);
+    CGContextClipToRect(ctx, aligned);
+    CGContextClearRect(ctx, aligned);
+    [self drawLockedInContext:ctx origin:CGPointMake(-rect.origin.x, -rect.origin.y) clip:rect];
+    CGImageRef image = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return image;
+}
+
+- (CGContextRef)createContextWithWidth:(size_t)pw height:(size_t)ph CF_RETURNS_RETAINED
+{
+    CGColorSpaceRef space = _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef    ctx   = CGBitmapContextCreate(nullptr, pw, ph, 8, 0, space,
+                                                  kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(space);
+    return ctx;
+}
+
+- (CGRect)boundsOfElementsMatching:(NSString *)selector
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || !_doc->root() || !_doc->root_render())
+        return CGRectNull;
+    std::unordered_set<const lh::element *> wanted;
+    for(const auto &el : _doc->root()->select_all(std::string(selector.UTF8String)))
+        wanted.insert(el.get());
+    CGRect result = CGRectNull;
+    if(wanted.empty())
+        return result;
+    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
+        if(wanted.count(ri->src_el().get()))
+        {
+            const lh::position p      = ri->get_placement();
+            const CGFloat      left   = ri->padding_left().value() + ri->border_left().value();
+            const CGFloat      top    = ri->padding_top().value() + ri->border_top().value();
+            const CGFloat      right  = ri->padding_right().value() + ri->border_right().value();
+            const CGFloat      bottom = ri->padding_bottom().value() + ri->border_bottom().value();
+            const CGRect       box    = CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
+            if(box.size.width > 0 && box.size.height > 0)
+                result = CGRectUnion(result, box);
+        }
+        for(const auto &child : ri->children())
+            visit(child);
+    };
+    visit(_doc->root_render());
+    return result;
+}
+
+- (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    CGSize                size = [self layoutLockedWithMaxWidth:maxWidth];
+    std::vector<LHDrawOp> ops;
+    LHGPURecorder         recorder;
+    CGColorSpaceRef       space = _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    [renderer beginRecordingWithScale:scale space:space recorder:&recorder];
+    CGContextRef ctx = _doc ? [self createContextWithWidth:1 height:1] : nullptr;
+    if(ctx)
+    {
+        _container->set_draw_ops(&ops);
+        _container->set_gpu_recorder(&recorder);
+        [self drawLockedInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, size.width, std::max<CGFloat>(size.height, 1))];
+        _container->set_gpu_recorder(nullptr);
+        _container->set_draw_ops(nullptr);
+        CGContextRelease(ctx);
+    }
+    CGColorSpaceRelease(space);
+    LHDisplayList *list = [[LHDisplayList alloc] initWithOps:std::move(ops)];
+    [list setGPUOps:std::move(recorder.ops) unsupported:recorder.unsupported];
+    return list;
+}
+
+- (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    CGSize                size = [self layoutLockedWithMaxWidth:maxWidth];
+    std::vector<LHDrawOp> ops;
+    CGContextRef          ctx = _doc ? [self createContextWithWidth:1 height:1] : nullptr;
+    if(ctx)
+    {
+        _container->set_draw_ops(&ops);
+        [self drawLockedInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, size.width, std::max<CGFloat>(size.height, 1))];
+        _container->set_draw_ops(nullptr);
+        CGContextRelease(ctx);
+    }
+    return [[LHDisplayList alloc] initWithOps:std::move(ops)];
+}
+
+- (CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self layoutLockedWithMaxWidth:maxWidth];
+    return [self copyImageLockedWithRect:rect scale:scale];
+}
+
+- (CGImageRef)copyImageLockedWithRect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED
+{
+    size_t pw = (size_t)std::ceil(rect.size.width * scale);
+    size_t ph = (size_t)std::ceil(rect.size.height * scale);
+    if(!_doc || pw == 0 || ph == 0)
+        return nullptr;
+    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    if(!ctx)
+        return nullptr;
+    CGContextTranslateCTM(ctx, 0, ph);
+    CGContextScaleCTM(ctx, scale, -scale);
+    CGContextSetAllowsFontSmoothing(ctx, false);
+    CGContextSetShouldAntialias(ctx, true);
+    [self drawLockedInContext:ctx origin:CGPointMake(-rect.origin.x, -rect.origin.y) clip:rect];
+    CGImageRef image = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return image;
+}
+
+- (NSArray<LHTextFragment *> *)textFragmentsWithMaxWidth:(CGFloat)maxWidth
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    CGSize size = [self layoutLockedWithMaxWidth:maxWidth];
+    if(!_doc)
+        return @[];
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef    ctx   = CGBitmapContextCreate(nullptr, 1, 1, 8, 0, space,
+                                                  kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(space);
+    if(!ctx)
+        return @[];
+    std::vector<LHTextRun> runs;
+    _container->set_text_runs(&runs);
+    [self drawLockedInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, size.width, std::max<CGFloat>(size.height, 1))];
+    _container->set_text_runs(nullptr);
+    CGContextRelease(ctx);
+
+    NSMutableArray<LHTextFragment *> *fragments = [NSMutableArray arrayWithCapacity:runs.size()];
+    for(const auto &run : runs)
+    {
+        NSString *text = @(run.text.c_str());
+        if(text.length == 0 || !run.font)
+            continue;
+        [fragments addObject:[[LHTextFragment alloc] initWithText:text font:run.font frame:run.frame]];
+    }
+    return fragments;
+}
+
+- (BOOL)mouseMoved:(CGPoint)p
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    return _doc && _doc->on_mouse_over(x, y, x, y, IgnoreRedraw);
+}
+
+- (BOOL)mouseDown:(CGPoint)p
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    return _doc && _doc->on_lbutton_down(x, y, x, y, IgnoreRedraw);
+}
+
+- (BOOL)mouseUp:(CGPoint)p
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    return _doc && _doc->on_lbutton_up(x, y, x, y, IgnoreRedraw);
+}
+
+- (BOOL)mouseExited
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    return _doc && _doc->on_mouse_leave(IgnoreRedraw);
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)sanitizerCounts
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
+    if(_container)
+    {
+        for(const auto &entry : _container->sanitizer_report())
+            counts[@(entry.first.c_str())] = @(entry.second.first);
+    }
+    return counts;
+}
+
+- (NSArray<NSString *> *)sanitizerDetails
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    NSMutableArray<NSString *> *details = [NSMutableArray array];
+    if(_container)
+    {
+        for(const auto &entry : _container->sanitizer_report())
+        {
+            for(const auto &detail : entry.second.second)
+                [details addObject:[NSString stringWithFormat:@"%s: %s", entry.first.c_str(), detail.c_str()]];
+        }
+    }
+    return details;
+}
+
+@end

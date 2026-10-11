@@ -1,0 +1,353 @@
+@chat Playground
+@subtitle Type your own HTML in the composer below
+@icon wand.and.stars
+@participant me | You | #007aff | me
+@participant guide | litehtml | #2cb67d
+
+--- guide 12:00 bare
+<style>
+  .pgw { width: 420px; max-width: 100%; }
+  .pgw .hd { display: flex; align-items: center; padding: 14px; border-radius: 13px 13px 0 0; background: linear-gradient(135deg, #7f5af0, #2cb67d); color: #ffffff; }
+  .pgw .logo { margin-right: 12px; border-radius: 11px; border: 2px solid rgba(255,255,255,0.6); }
+  .pgw .tabs { display: flex; margin: 10px 16px 0 16px; padding: 2px; border-radius: 9px; background-color: rgba(127,127,127,0.14); }
+  .pgw .tab { flex-grow: 1; padding: 4px 0; border-radius: 7px; text-align: center; font-size: 12.5px; font-weight: 600; }
+  .pgw .tab:hover { background-color: rgba(127,127,127,0.16); }
+  .pgw .tab.on { background-color: #7f5af0; color: #ffffff; }
+  .pgw .bd { padding: 8px 16px 14px 16px; font-size: 13px; }
+  .pgw .list { overflow: hidden; margin: 0 -6px; }
+  .pgw .tip { display: flex; position: relative; padding: 5px 6px; border-radius: 8px; }
+  .pgw .tip:hover { background-color: rgba(127,127,127,0.09); }
+  .pgw .ck { display: inline-block; width: 18px; height: 18px; margin-right: 8px; border-radius: 9px; text-align: center; line-height: 18px; font-size: 10.5px; font-weight: 800; }
+  .pgw .tx { flex-grow: 1; width: 340px; }
+  .pgw .meter { height: 6px; margin-top: 4px; border-radius: 3px; background-color: rgba(127,127,127,0.2); }
+  .pgw .meter div { height: 6px; border-radius: 3px; background: linear-gradient(90deg, #7f5af0, #2cb67d); }
+  .pgw .demo { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 8px 10px; border-radius: 10px; background-color: rgba(127,90,240,0.10); }
+  .pgw .num { display: inline-block; width: 44px; height: 30px; line-height: 30px; text-align: center; font-weight: 800; }
+  .pgw .thumbs { display: flex; justify-content: space-between; margin-top: 6px; }
+  .pgw .th { padding: 2px; border-radius: 9px; }
+  .pgw .th:hover { background-color: rgba(127,127,127,0.25); }
+  .pgw .th.on { background-color: #7f5af0; }
+  .pgw .prev { position: relative; height: 120px; margin-top: 8px; overflow: hidden; border-radius: 10px; background-color: rgba(127,127,127,0.12); text-align: center; }
+  .pgw .prev code { position: absolute; left: 8px; top: 92px; background-color: rgba(0,0,0,0.55); color: #ffffff; }
+  .pgw .syms { display: flex; margin-top: 6px; }
+  .pgw .sym { width: 40px; height: 34px; margin-right: 6px; border-radius: 9px; text-align: center; line-height: 34px; background-color: rgba(127,127,127,0.10); }
+  .pgw .sym:hover { background-color: rgba(127,127,127,0.22); }
+  .pgw .sym.on { background-color: rgba(127,90,240,0.22); }
+  .pgw .note { margin-top: 10px; padding: 8px 10px; border-radius: 8px; border-left: 3px solid #007aff; background-color: rgba(0,122,255,0.08); font-size: 12px; }
+</style>
+<div class="card pgw"><div class="hd"><img class="logo" src="app:logo" width="44" height="44"><div><div style="font-size: 18px; font-weight: 800">Welcome to the playground</div><div class="small" style="color: rgba(255,255,255,0.85)">Every bubble in this app is an HTML document rendered by litehtml</div></div></div><div class="bd">Type HTML in the composer and press <b>Return</b>.</div></div>
+<script>
+const TABS = [['basics', '✍️ Basics'], ['scripts', '⚡️ Scripts'], ['assets', '🖼 Assets']];
+const BASICS = [
+  'Type HTML in the composer and press <b>Return</b> (Shift-Return for a newline).',
+  'Use <b>Insert Snippet</b> for ready-made cards, tables, buttons…',
+  'Toggle <b>Send as Them</b> to see the incoming bubble style.',
+  'Messages show fullsize, without a bubble. Wrap one in <code>&lt;div class="widget"&gt;</code> to show it inside a bubble.',
+  '<b>Hover</b> a bubble for parse/layout timings, <b>right-click</b> to view its source.',
+  '<b>⌘O</b> opens any <code>.html</code> file as a message, or a <code>.chat</code> conversation.',
+];
+const SCRIPTS = [
+  'Add a <code>&lt;script&gt;</code>: <code>render()</code> returns the HTML, <code>onAction(name, value)</code> handles clicks on <code>data-action</code>.',
+  'Animate with <code>tween()</code>, <code>animate()</code> and <code>transition()</code>. litehtml itself has no CSS transitions.',
+  '<b>Without JS:</b> <code>chat:toggle?key=x</code> and <code>chat:select?key=tab-2&amp;group=tab</code> links add <code>on-x</code> classes to the bubble\'s &lt;body&gt;.',
+  '<b>CSS kit</b> in every bubble (dark-mode aware): <code>.card .pad .row .badge .btn .chip .panel .muted kbd</code>.',
+];
+const IMAGES = ['aurora', 'ocean', 'dunes', 'forest', 'sunset', 'map', 'logo'];
+const SYMBOLS = [['heart.fill', 'ff2d55'], ['star.fill', 'ff9500'], ['bolt.fill', 'ffcc00'], ['leaf.fill', '34c759'], ['drop.fill', '007aff'], ['moon.stars.fill', 'af52de']];
+let tab = 'basics', intro = 0, count = 0, last = null, img = 'aurora', sym = 0;
+const tried = new Set(), meter = { v: 0 }, pop = { s: 1 }, symPop = { s: 1 }, checks = BASICS.map(() => ({ s: 1 }));
+
+setTimeout(() => animate(900, (_, t) => { intro = t; }, ease.linear), 250);
+
+const stagger = i => ease.outCubic(clamp((intro * 900 - i * 80) / 420, 0, 1));
+
+function basics() {
+  const rows = BASICS.map((t, i) => {
+    const on = tried.has(i), s = checks[i].s;
+    const d = Math.max(1, Math.round(18 * s));
+    const ck = on
+      ? `<span class="ck" style="width: ${d}px; height: ${d}px; line-height: ${d}px; margin: ${(18 - d) / 2}px ${8 + (18 - d) / 2}px 0 ${(18 - d) / 2}px; background-color: #2cb67d; color: #ffffff">✓</span>`
+      : `<span class="ck" style="background-color: rgba(127,90,240,0.16); color: #7f5af0">${i + 1}</span>`;
+    return `<div class="tip" data-action="try" data-value="${i}" style="left: ${Math.round((1 - stagger(i)) * 440)}px">${ck}<span class="tx">${t}</span></div>`;
+  }).join('');
+  const n = tried.size;
+  return `<div class="list">${rows}</div>
+    <div class="row between small" style="margin-top: 8px"><span class="muted">${n === BASICS.length ? '🎉 You tried them all' : 'Click a tip once you\'ve tried it'}</span><b>${n} / ${BASICS.length}</b></div>
+    <div class="meter"><div style="width: ${(meter.v * 100).toFixed(1)}%"></div></div>`;
+}
+
+function scripts() {
+  const rows = SCRIPTS.map((t, i) => `<div class="tip" style="left: ${Math.round((1 - stagger(i)) * 440)}px"><span class="ck" style="background-color: rgba(44,182,125,0.18); color: #2cb67d">${i + 1}</span><span class="tx">${t}</span></div>`).join('');
+  const size = Math.round(20 * pop.s);
+  return `<div class="list">${rows}</div>
+    <div class="demo"><span class="small"><b>This card is a script too.</b><br><span class="muted">${last === null ? 'Try the buttons →' : `last call: onAction('add', '${last}')`}</span></span>
+      <span><button data-action="add" data-value="-1">−</button><span class="num ${count > 0 ? 't-green' : count < 0 ? 't-red' : ''}" style="font-size: ${size}px">${count}</span><button class="primary" data-action="add" data-value="1">+</button></span></div>`;
+}
+
+function assets() {
+  const thumbs = IMAGES.map(n => `<span class="th ${n === img ? 'on' : ''}" data-action="img" data-value="${n}"><img src="app:${n}" width="44" height="44" style="border-radius: 7px"></span>`).join('');
+  const big = img === 'logo' ? '<img src="app:logo" width="120" height="120">' : `<img src="app:${img}" width="388" height="120">`;
+  const syms = SYMBOLS.map(([name, c], i) => {
+    const d = i === sym ? Math.max(1, Math.round(22 * symPop.s)) : 20;
+    return `<span class="sym ${i === sym ? 'on' : ''}" data-action="sym" data-value="${i}"><img src="sf:${name}?size=22&color=${c}" width="${d}" height="${d}"></span>`;
+  }).join('');
+  const [sn, sc] = SYMBOLS[sym];
+  return `<div class="small muted">Bundled pictures · click one</div>
+    <div class="thumbs">${thumbs}</div>
+    <div class="prev">${big}<code>app:${img}</code></div>
+    <div class="small muted" style="margin-top: 10px">SF Symbols · any name, size and colour</div>
+    <div class="syms">${syms}</div>
+    <div style="margin-top: 6px"><code>sf:${sn}?size=24&amp;color=${sc}</code></div>
+    <div class="note">Also <code>data:</code> URIs (PNG/JPEG/SVG). Links: <code>https:</code> opens the browser, <code>chat:send?text=…</code> sends a reply.</div>`;
+}
+
+function render() {
+  const tabs = TABS.map(([id, label]) => `<span class="tab ${tab === id ? 'on' : ''}" data-action="tab" data-value="${id}">${label}</span>`).join('');
+  const body = tab === 'basics' ? basics() : tab === 'scripts' ? scripts() : assets();
+  return `<div class="card pgw">
+    <div class="hd"><img class="logo" src="app:logo" width="44" height="44"><div>
+      <div style="font-size: 18px; font-weight: 800">Welcome to the playground</div>
+      <div class="small" style="color: rgba(255,255,255,0.85)">Every bubble in this app is an HTML document rendered by litehtml</div></div></div>
+    <div class="tabs">${tabs}</div>
+    <div class="bd">${body}</div>
+  </div>`;
+}
+
+function onAction(name, value) {
+  if (name === 'tab') {
+    if (value === tab) return;
+    const order = TABS.map(t => t[0]);
+    transition(order.indexOf(value) > order.indexOf(tab) ? 'slide-left' : 'slide-right');
+    tab = value;
+  } else if (name === 'try') {
+    const i = Number(value);
+    if (tried.has(i)) tried.delete(i);
+    else { tried.add(i); checks[i].s = 0; tween(checks[i], { s: 1 }, 420, ease.outBack); }
+    tween(meter, { v: tried.size / BASICS.length }, 500, ease.outCubic);
+  } else if (name === 'add') {
+    count += Number(value);
+    last = value;
+    pop.s = 1.5;
+    tween(pop, { s: 1 }, 420, ease.outBack);
+  } else if (name === 'img') {
+    if (value === img || !IMAGES.includes(value)) return;
+    transition('fade');
+    img = value;
+  } else if (name === 'sym') {
+    sym = clamp(Number(value), 0, SYMBOLS.length - 1);
+    symPop.s = 0.4;
+    tween(symPop, { s: 1 }, 420, ease.outBack);
+  }
+}
+</script>
+
+--- guide 12:01
+<style>
+  .pg { width: 320px; max-width: 100%; }
+  .pg .ask { display: inline-block; position: relative; margin: 2px 4px 2px 0; padding: 3px 12px; border-radius: 14px; border: 1px solid #2cb67d; color: #2cb67d; }
+  .pg .ask:hover { background-color: rgba(44,182,125,0.14); }
+  .pg .ask.on { background-color: #2cb67d; color: #ffffff; }
+  .pg .ask.x { padding: 3px 9px; border-color: rgba(127,127,127,0.4); color: #8e8e93; }
+  .pg .stage { margin-top: 8px; }
+  .pg .tbl { overflow: hidden; border-radius: 10px; border: 1px solid rgba(127,127,127,0.25); }
+  .pg .thd { display: flex; align-items: center; height: 28px; padding: 0 10px; background-color: rgba(44,182,125,0.18); font-size: 12.5px; font-weight: 700; }
+  .pg .srt:hover { color: #2cb67d; }
+  .pg .rws { height: 182px; }
+  .pg .tr { display: flex; align-items: center; position: relative; height: 26px; padding: 0 10px; font-size: 13px; }
+  .pg .tr.alt { background-color: rgba(127,127,127,0.07); }
+  .pg .tr:hover { background-color: rgba(44,182,125,0.10); }
+  .pg .tr.sel { background-color: rgba(44,182,125,0.22); }
+  .pg .sup { width: 104px; text-align: center; }
+  .pg .tip { margin-top: 6px; padding: 6px 10px; border-radius: 8px; background-color: rgba(127,127,127,0.10); font-size: 12px; }
+  .pg .fc { width: 298px; height: 238px; overflow: hidden; }
+  .pg .fav { position: absolute; left: 256px; top: 10px; width: 30px; height: 30px; border-radius: 15px; background-color: rgba(0,0,0,0.35); text-align: center; line-height: 30px; }
+  .pg .fav:hover { background-color: rgba(0,0,0,0.55); }
+  .pg .lnk { color: #2cb67d; font-weight: 600; }
+  .pg .lnk:hover { text-decoration: underline; }
+  .pg .stp { display: inline-block; width: 22px; line-height: 20px; border-radius: 6px; text-align: center; font-weight: 700; background-color: rgba(127,127,127,0.14); }
+  .pg .stp:hover { background-color: rgba(127,127,127,0.28); }
+  .pg .undo { display: inline-block; padding: 1px 9px; border-radius: 8px; font-size: 12px; font-weight: 600; background-color: rgba(127,127,127,0.14); }
+  .pg .undo:hover { background-color: rgba(127,127,127,0.28); }
+  .pg .book { padding: 6px 14px; border-radius: 16px; background: linear-gradient(135deg, #ff9500, #ff2d55); color: #ffffff; font-weight: 700; }
+  .pg .book:hover { background: linear-gradient(135deg, #e68600, #e0264b); }
+  .pg .rb { width: 210px; height: 6px; margin-top: 3px; border-radius: 3px; background-color: rgba(127,127,127,0.2); }
+  .pg .rb div { height: 6px; border-radius: 3px; background-color: #ff9500; }
+  .pg .seg { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; background-color: rgba(127,127,127,0.12); }
+  .pg .seg:hover { background-color: rgba(127,127,127,0.24); }
+  .pg .seg.on { background-color: #2cb67d; color: #ffffff; }
+  .pg .bars { display: flex; align-items: flex-end; height: 116px; margin-top: 6px; }
+  .pg .days { display: flex; }
+  .pg .col { width: 40px; text-align: center; }
+  .pg .b { width: 24px; margin: 0 8px; border-radius: 4px 4px 0 0; background: linear-gradient(180deg, #2cb67d, #1a7f57); }
+  .pg .b:hover { background: linear-gradient(180deg, #4fd99b, #2cb67d); }
+  .pg .b.pk { background: linear-gradient(180deg, #7f5af0, #5a3fc0); }
+  .pg .b.pk:hover { background: linear-gradient(180deg, #9d80ff, #7f5af0); }
+  .pg .b.sel { background: linear-gradient(180deg, #ffb340, #ff9500); }
+</style>
+<p>Try one of these 👇</p>
+<div><span class="ask">Show a table</span><span class="ask">Show a card</span><span class="ask">Draw a chart</span></div>
+<script>
+const TABS = [['table', 'Show a table'], ['card', 'Show a card'], ['chart', 'Draw a chart']];
+const FEATURES = [
+  { name: 'Block & inline layout', ok: 2, tip: 'Paragraphs, lists and inline formatting: what every bubble is made of.' },
+  { name: 'Tables, floats, positioning', ok: 2, tip: 'rowspan, colspan, float: left, position: relative and absolute.' },
+  { name: 'Flexbox', ok: 2, tip: 'justify-content, align-items, flex-wrap and flex-grow all work.' },
+  { name: 'Gradients (linear/radial/conic)', ok: 2, tip: 'All three. Rings and pie charts are conic gradients.' },
+  { name: 'JavaScript', ok: 1, tip: 'A sandboxed <script> per message with render() and onAction(). This card is one.' },
+  { name: 'CSS grid', ok: 0, tip: 'Not supported: use flex or a table instead.' },
+  { name: 'CSS transitions', ok: 0, tip: 'Not supported: animate from a script with tween() and transition().' },
+];
+const MARK = ['❌', '✅ sandboxed', '✅'];
+const ROW = 26;
+const DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+const LONG = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const WEEKS = { now: [124, 192, 158, 248, 217, 87, 56], last: [110, 150, 186, 170, 205, 120, 64] };
+const REVIEWS = [[5, 72], [4, 18], [3, 6], [2, 3], [1, 1]];
+
+let cur = null, intro = 0;
+let order = FEATURES.map((_, i) => i), sortKey = null, sortDir = 1, shift = {}, sel = null;
+let nights = 3, fav = false, booked = false, face = 'front', flipping = false;
+let week = 'now', bar = null, hs = Array(7).fill(0), barRun = 0;
+const move = { p: 1 }, rowsIn = { v: 1 }, price = { v: 420 }, heart = { s: 1 }, flip = { w: 1 }, rev = { k: 1 };
+
+setTimeout(() => animate(700, (_, t) => { intro = t; }, ease.linear), 250);
+
+function growBars() {
+  const from = hs.slice(), to = WEEKS[week], me = ++barRun;
+  animate(800, (_, t) => {
+    if (me === barRun) hs = to.map((v, i) => lerp(from[i], v, ease.outCubic(clamp((t * 800 - i * 50) / 500, 0, 1))));
+  }, ease.linear);
+}
+
+function resort(key) {
+  const before = order.slice();
+  if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = 1; }
+  order = FEATURES.map((_, i) => i).sort((a, b) => {
+    const A = FEATURES[a], B = FEATURES[b];
+    const c = key === 'name' ? A.name.localeCompare(B.name) : B.ok - A.ok;
+    return c * sortDir || a - b;
+  });
+  shift = {};
+  order.forEach((id, idx) => { shift[id] = (before.indexOf(id) - idx) * ROW; });
+  move.p = 0;
+  tween(move, { p: 1 }, 520, ease.outCubic);
+}
+
+async function flipCard() {
+  if (flipping) return;
+  flipping = true;
+  await tween(flip, { w: 0 }, 160, ease.inQuad);
+  face = face === 'front' ? 'back' : 'front';
+  if (face === 'back') { rev.k = 0; tween(rev, { k: 1 }, 700, ease.outCubic); }
+  await tween(flip, { w: 1 }, 220, ease.outCubic);
+  flipping = false;
+}
+
+function onAction(name, value) {
+  if (name === 'tab') {
+    if (value === cur || !TABS.some(t => t[0] === value)) return;
+    const ids = TABS.map(t => t[0]);
+    transition(cur === null ? 'slide-down' : ids.indexOf(value) > ids.indexOf(cur) ? 'slide-left' : 'slide-right');
+    cur = value;
+    if (value === 'chart') { hs = hs.map(() => 0); growBars(); }
+    if (value === 'table') { rowsIn.v = 0; tween(rowsIn, { v: 1 }, 700, ease.linear); }
+  } else if (name === 'close') {
+    transition('slide-up');
+    cur = null;
+  } else if (name === 'sort') resort(value === 'ok' ? 'ok' : 'name');
+  else if (name === 'row') {
+    transition('fade');
+    const id = Number(value);
+    sel = sel === id ? null : id;
+  } else if (name === 'fav') {
+    fav = !fav;
+    heart.s = 0.3;
+    tween(heart, { s: 1 }, 450, ease.outBack);
+  } else if (name === 'nights' && !booked) {
+    nights = clamp(nights + Number(value), 1, 7);
+    tween(price, { v: nights * 140 }, 450, ease.outCubic);
+  } else if (name === 'book' && !booked) { transition('pop'); booked = true; }
+  else if (name === 'unbook' && booked) { transition('fade'); booked = false; }
+  else if (name === 'flip') flipCard();
+  else if (name === 'week') {
+    if (value === week || !WEEKS[value]) return;
+    week = value;
+    growBars();
+  } else if (name === 'bar') {
+    const i = Number(value);
+    bar = bar === i ? null : i;
+  }
+}
+
+function table() {
+  const arrow = k => sortKey === k ? (sortDir > 0 ? ' ▲' : ' ▼') : ' ↕';
+  const rows = order.map((id, idx) => {
+    const f = FEATURES[id];
+    const off = Math.round((shift[id] || 0) * (1 - move.p));
+    const left = Math.round((1 - ease.outCubic(clamp(rowsIn.v * 1.6 - idx * 0.09, 0, 1))) * 330);
+    return `<div class="tr ${idx % 2 ? 'alt' : ''} ${sel === id ? 'sel' : ''}" data-action="row" data-value="${id}" style="top: ${off}px; left: ${left}px"><span class="grow">${esc(f.name)}</span><span class="sup">${MARK[f.ok]}</span></div>`;
+  }).join('');
+  const f = sel !== null ? FEATURES[sel] : null;
+  return `<div class="tbl"><div class="thd"><span class="grow srt" data-action="sort" data-value="name">Feature${arrow('name')}</span><span class="sup srt" data-action="sort" data-value="ok">Supported${arrow('ok')}</span></div>
+    <div class="rws">${rows}</div></div>
+    <div class="tip">${f ? `💡 <b>${esc(f.name)}</b> · ${esc(f.tip)}` : '<span class="muted">Click a header to sort, a row for details</span>'}</div>`;
+}
+
+function front() {
+  const n = nights, plural = n > 1 ? 's' : '';
+  const buy = booked
+    ? `<span class="t-green"><b>✓ Booked</b> · ${n} night${plural} · $${n * 140}</span><span class="undo" data-action="unbook">Undo</span>`
+    : `<span><b style="font-size: 18px">$${Math.round(price.v)}</b> <s class="small muted">$${n * 170}</s></span>
+       <span><span class="stp" data-action="nights" data-value="-1">−</span><span class="small" style="display: inline-block; width: 28px; text-align: center">${n} n</span><span class="stp" data-action="nights" data-value="1">+</span></span>
+       <span class="book" data-action="book">Book</span>`;
+  return `<div class="card fc">
+    <div style="position: relative; height: 120px"><img src="app:dunes" width="298" height="120" style="display: block; border-radius: 13px 13px 0 0">
+      <span class="fav" data-action="fav"><span style="font-size: ${Math.max(1, Math.round(16 * heart.s))}px">${fav ? '❤️' : '🤍'}</span></span></div>
+    <div style="padding: 9px 14px 0 14px">
+      <div class="caps t-orange">Travel · ${n} night${plural}</div>
+      <div style="font-size: 17px; font-weight: 700">Desert Retreat, Merzouga</div>
+      <div class="small muted" style="margin: 2px 0 9px 0">★★★★☆ 4.6 · 1,204 reviews · <span class="lnk" data-action="flip">Details ↻</span></div>
+      <div class="row between">${buy}</div>
+    </div></div>`;
+}
+
+function back() {
+  const rows = REVIEWS.map(([s, p]) => `<div class="row tiny"><span style="width: 22px">${s}★</span><div class="rb"><div style="width: ${(p * rev.k).toFixed(1)}%"></div></div><span class="muted" style="width: 34px; text-align: right">${p}%</span></div>`).join('');
+  return `<div class="card fc"><div style="padding: 12px 14px">
+    <div class="row between"><b>What's included</b><span class="lnk small" data-action="flip">↻ Photo</span></div>
+    <div class="small" style="margin-top: 4px; line-height: 1.6">🐪 Camel trek at sunset<br>⛺ Luxury tent with en-suite<br>🍲 Dinner &amp; breakfast<br>🌌 Stargazing with a guide</div>
+    <div class="caps" style="margin: 8px 0 2px 0">Reviews · 4.6 ★</div>${rows}
+  </div></div>`;
+}
+
+function card() {
+  const W = 300, w = Math.max(0, Math.round(W * flip.w)), off = Math.round((W - w) / 2);
+  return `<div style="height: 240px; padding-left: ${off}px"><div style="width: ${w}px; height: 240px; overflow: hidden"><div style="width: ${W}px; margin-left: ${-off}px">${face === 'front' ? front() : back()}</div></div></div>`;
+}
+
+function chart() {
+  const data = WEEKS[week], peak = data.indexOf(Math.max(...data));
+  const cols = hs.map((v, i) => `<div class="col" data-action="bar" data-value="${i}"><div class="tiny" style="height: 16px">${i === bar ? `<b>${Math.round(v)}</b>` : '&nbsp;'}</div><div class="b ${i === bar ? 'sel' : i === peak ? 'pk' : ''}" style="height: ${Math.max(2, Math.round(v / 260 * 96))}px"></div></div>`).join('');
+  const days = DAYS.map((d, i) => `<span class="col tiny ${i === peak ? 't-purple' : 'muted'}">${i === peak ? `<b>${d}</b>` : d}</span>`).join('');
+  let info = `<span class="muted">Click a bar · busiest day is ${LONG[peak]}</span>`;
+  if (bar !== null) {
+    const v = data[bar], other = WEEKS[week === 'now' ? 'last' : 'now'][bar], d = Math.round((v - other) / other * 100);
+    info = `<b>${LONG[bar]}</b> · ${v} messages · <span class="${d >= 0 ? 't-green' : 't-red'}">${d >= 0 ? '+' : ''}${d}%</span> <span class="muted">vs ${week === 'now' ? 'last' : 'this'} week</span>`;
+  }
+  return `<div class="row between"><b>Weekly messages</b><span><span class="seg ${week === 'now' ? 'on' : ''}" data-action="week" data-value="now">This week</span> <span class="seg ${week === 'last' ? 'on' : ''}" data-action="week" data-value="last">Last week</span></span></div>
+    <div class="bars">${cols}</div><div class="days">${days}</div>
+    <div class="small" style="margin-top: 6px">${info}</div>
+    <div class="tiny muted">Total <b>${Math.round(hs.reduce((s, v) => s + v, 0))}</b> · pure HTML/CSS bars</div>`;
+}
+
+function render() {
+  const chips = TABS.map(([id, label], i) => {
+    const e = clamp((intro * 700 - i * 110) / 350, 0, 1);
+    const style = e < 1 ? ` style="top: ${Math.round((1 - ease.outBack(e)) * 12)}px; border-color: ${alpha('#2cb67d', e)}; color: ${alpha('#2cb67d', e)}"` : '';
+    return `<span class="ask ${cur === id ? 'on' : ''}" data-action="tab" data-value="${id}"${style}>${label}</span>`;
+  }).join('') + (cur ? '<span class="ask x" data-action="close">✕</span>' : '');
+  const body = cur === 'table' ? table() : cur === 'card' ? card() : cur === 'chart' ? chart() : '';
+  return `<div class="pg"><p style="margin-bottom: 4px">${cur ? 'Here you go, all live 👇' : 'Try one of these 👇'}</p>
+    <div>${chips}</div>${body ? `<div class="stage">${body}</div>` : ''}</div>`;
+}
+</script>

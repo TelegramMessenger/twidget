@@ -1,0 +1,65 @@
+#import <Cocoa/Cocoa.h>
+#import "LHTextFragment.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@class LHGPURenderer;
+
+@interface LHDisplayList : NSObject
+@property (readonly) BOOL gpuSupported;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+- (NSArray<NSValue *> *)changedRectsSince:(LHDisplayList *)previous NS_SWIFT_NAME(changedRects(since:));
+- (CGFloat)unchangedBottomSince:(LHDisplayList *)previous previousHeight:(CGFloat)previousHeight height:(CGFloat)height below:(CGFloat)top NS_SWIFT_NAME(unchangedBottom(since:previousHeight:height:below:));
+
+@end
+
+@interface LHDocument : NSObject
+
+- (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
+/// Builds the next frame of `previous`. When only inline `style` values and text changed, the previous
+/// document's tree is patched in place and handed over (much cheaper than parsing); `previous` then
+/// rebuilds itself from its own HTML if it is used again. Otherwise this parses `html` from scratch.
+- (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous NS_DESIGNATED_INITIALIZER;
+/// Whether this document was made by patching the previous one.
+@property (readonly) BOOL reusedPrevious;
+- (instancetype)init NS_UNAVAILABLE;
+
+@property (nonatomic, readonly, copy) NSString *html;
+@property (nonatomic) BOOL clipCulling;
+@property (nonatomic, nullable) CGColorSpaceRef colorSpace;
+
+- (CGSize)layoutWithMaxWidth:(CGFloat)maxWidth;
+- (CGSize)layoutWithMaxWidth:(CGFloat)maxWidth preferredWidth:(CGFloat)preferredWidth NS_SWIFT_NAME(layout(maxWidth:preferredWidth:));
+@property (readonly) CGSize size;
+
+- (void)drawInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip;
+- (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:));
+- (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale base:(CGImageRef)base dirty:(CGRect)dirty CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:base:dirty:));
+
+- (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(displayList(maxWidth:));
+- (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:gpu:scale:));
+- (CGRect)boundsOfElementsMatching:(NSString *)selector NS_SWIFT_NAME(bounds(matching:));
+
+- (NSArray<LHTextFragment *> *)textFragmentsWithMaxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(textFragments(maxWidth:));
+
+- (BOOL)mouseMoved:(CGPoint)point;
+- (BOOL)mouseDown:(CGPoint)point;
+- (BOOL)mouseUp:(CGPoint)point;
+- (BOOL)mouseExited;
+
+@property (readonly, copy) NSString *cursor;
+
+@property (nonatomic, copy, nullable) void (^anchorHandler)(NSString *url);
+@property (nonatomic, copy, nullable) void (^actionHandler)(NSString *action, NSString *_Nullable value);
+
+@property (readonly) double parseMilliseconds;
+@property (readonly) double layoutMilliseconds;
+
+@property (readonly) NSDictionary<NSString *, NSNumber *> *sanitizerCounts;
+@property (readonly) NSArray<NSString *> *sanitizerDetails;
+
+@end
+
+NS_ASSUME_NONNULL_END
