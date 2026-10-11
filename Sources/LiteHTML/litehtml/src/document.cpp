@@ -726,7 +726,7 @@ namespace litehtml
         m_mode = mode;
     }
 
-    void document::finalize_from_external_root(const std::shared_ptr<element>& root, const std::string& master_styles,
+    void document::finalize_from_external_root(const std::shared_ptr<element>& root, const std::string& base_master_styles,
                                                const std::string& user_styles)
     {
         // Finalization accumulates state that is never rolled back: the parsed stylesheets, the media
@@ -741,6 +741,10 @@ namespace litehtml
 
         m_root = root;
 
+        const std::string master_styles =
+            m_mode == quirks_mode && base_master_styles != ""
+                ? base_master_styles + "\ntable { font-size: medium; font-weight: normal; font-style: normal; }\n"
+                : base_master_styles;
         if(master_styles != "")
         {
             static std::mutex                           master_cache_mutex;
