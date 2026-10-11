@@ -56,13 +56,16 @@ let htmlScriptPrelude = #"""
     },
   });
   const animate = (duration, onFrame, easing = ease.inOutCubic) => new Promise(resolve => {
-    const start = now();
+    let start = -1;
     const step = () => {
-      const t = Math.min(1, (now() - start) / Math.max(1, duration));
+      const time = now();
+      if (start < 0) start = time;
+      const t = Math.min(1, (time - start) / Math.max(1, duration));
       onFrame(easing(t), t);
       if (t < 1) requestFrame(step); else resolve();
     };
-    step();
+    onFrame(easing(0), 0);
+    requestFrame(step);
   });
 
   const tweens = new WeakMap();

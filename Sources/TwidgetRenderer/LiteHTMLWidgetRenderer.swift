@@ -43,6 +43,22 @@ public final class LiteHTMLWidgetRenderer {
     private var frameRequested = false
     private var clock: WidgetFrameClock?
     private let timeOrigin = CACurrentMediaTime()
+    private var hiddenSince: CFTimeInterval? = CACurrentMediaTime()
+    private var hiddenTotal: CFTimeInterval = 0
+
+    private var animationNow: CFTimeInterval {
+        return (hiddenSince ?? CACurrentMediaTime()) - hiddenTotal
+    }
+
+    private func updateAnimationClock() {
+        let onScreen = isOnScreen
+        if onScreen, let since = hiddenSince {
+            hiddenTotal += CACurrentMediaTime() - since
+            hiddenSince = nil
+        } else if !onScreen, hiddenSince == nil {
+            hiddenSince = CACurrentMediaTime()
+        }
+    }
     private var pendingMoves: [String: [String: Any]] = [:]
     private var bounds: [Int: CGRect] = [:]
     private var boundsValid = false
@@ -218,7 +234,8 @@ public final class LiteHTMLWidgetRenderer {
 
     private func render() {
         needsRender = false
-        let now = CACurrentMediaTime()
+        updateAnimationClock()
+        let now = animationNow
         let sheets = dom.styleSheets()
         let key = sheets.joined(separator: "\u{1}")
         if key != styleSheetKey {
@@ -250,7 +267,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func renderAnimationFrame() {
-        let sampled = animator.sample(now: CACurrentMediaTime())
+        let sampled = animator.sample(now: animationNow)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
         if !LiteHTMLWidgetRenderer.same(rest, overrides) {
             overrides = rest
@@ -669,6 +686,7 @@ public final class LiteHTMLWidgetRenderer {
 
     public func setVisible(_ visible: Bool) {
         hostVisible = visible
+        updateAnimationClock()
         if isOnScreen && (animator.isActive || frameRequested || !pendingMoves.isEmpty) && !frozen {
             if animator.isActive {
                 renderAnimationFrame()
@@ -701,7 +719,8 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func tick() {
-        if !isOnScreen && pendingMoves.isEmpty && !frameRequested {
+        updateAnimationClock()
+        if !isOnScreen {
             clock?.stop()
             return
         }
