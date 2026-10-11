@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import JavaScriptCore
 import HTMLSandbox
 
 public protocol HTMLScriptHost: AnyObject {
@@ -16,8 +15,9 @@ public final class HTMLScript {
     private static let transitions = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "pop", "none"]
 
     public weak var host: HTMLScriptHost?
-    public static var librarySource: ((String) -> String?)?
-    public let scene3D: HTML3DSession?
+    public static var runtime: HTMLScriptRuntime = JSCScriptRuntime.shared
+    public static var libraryFactories: [String: () -> HTMLScriptLibrary] = [:]
+    public let libraries: [String: HTMLScriptLibrary]
 
     public static func setDisplay(_ display: CGDirectDisplayID) {
         let engine = HTMLScriptEngine.shared
@@ -28,7 +28,7 @@ public final class HTMLScript {
 
     private let engine = HTMLScriptEngine.shared
     private let source: String
-    private let libraries: [String]
+    private let libraryOrder: [String]
     private let staticHTML: String
     private let styles: NSString
 
@@ -43,9 +43,7 @@ public final class HTMLScript {
     private var publishedFrames = 0
     private var visible = false
 
-    private var context: JSContext?
-    private var hooks: JSValue?
-    private var exception: JSValue?
+    private var context: HTMLScriptContext?
     private var started = false
     private var starting = false
     private var stopped = false
@@ -79,12 +77,24 @@ public final class HTMLScript {
 
     private init(source: String, libraries: [String], staticHTML: String) {
         self.source = source
-        self.libraries = libraries
-        self.scene3D = libraries.contains("three") ? HTML3DSession() : nil
+        var made: [String: HTMLScriptLibrary] = [:]
+        var order: [String] = []
+        for name in libraries where made[name] == nil {
+            if let factory = HTMLScript.libraryFactories[name] {
+                made[name] = factory()
+                order.append(name)
+            }
+        }
+        self.libraries = made
+        self.libraryOrder = order
         self.staticHTML = staticHTML.trimmingCharacters(in: .whitespacesAndNewlines)
         self.styles = HTMLScript.styleBlocks(self.staticHTML) as NSString
         self.html = self.staticHTML as NSString
         self.publishedHTML = self.staticHTML
+    }
+
+    public func library<T: HTMLScriptLibrary>(_ type: T.Type) -> T? {
+        return libraryOrder.lazy.compactMap { self.libraries[$0] as? T }.first
     }
 
     public var currentHTML: String {
@@ -173,7 +183,7 @@ public final class HTMLScript {
         }
     }
 
-    public func performInput(_ type: String, _ a: Any, _ b: Double) {
+    public func performInput(_ type: String, _ a: HTMLScriptValue, _ b: Double) {
         engine.perform { [weak self] in
             self?.runInput(type, a, b)
         }
@@ -186,62 +196,78 @@ public final class HTMLScript {
         lock.lock()
         startedFlag = true
         lock.unlock()
-        let context = JSContext(virtualMachine: engine.machine)!
-        context.name = "HTML message"
-        context.exceptionHandler = { [weak self] _, exception in
-            self?.exception = exception
-        }
-        let native = JSValue(newObjectIn: context)!
-        let schedule: @convention(block) (Int, Double, Bool) -> Void = { [weak self] id, ms, repeats in
-            self?.scheduleTimer(id, milliseconds: ms, repeats: repeats)
-        }
-        let cancel: @convention(block) (Int) -> Void = { [weak self] id in
-            self?.cancelTimer(id)
-        }
-        let update: @convention(block) () -> Void = { [weak self] in
-            self?.setNeedsRender()
-        }
-        let requestFrame: @convention(block) () -> Void = { [weak self] in
-            self?.requestFrame()
-        }
-        let log: @convention(block) (String, String) -> Void = { [weak self] level, text in
-            self?.appendLog(text, level: level)
-        }
-        let transition: @convention(block) (String) -> Void = { [weak self] kind in
-            self?.requestTransition(kind)
-        }
-        let copy: @convention(block) (String) -> Void = { [weak self] text in
-            self?.copyText(text)
-        }
-        native.setObject(schedule, forKeyedSubscript: "schedule" as NSString)
-        native.setObject(cancel, forKeyedSubscript: "cancel" as NSString)
-        native.setObject(update, forKeyedSubscript: "update" as NSString)
-        native.setObject(requestFrame, forKeyedSubscript: "requestFrame" as NSString)
-        native.setObject(log, forKeyedSubscript: "log" as NSString)
-        native.setObject(transition, forKeyedSubscript: "transition" as NSString)
-        native.setObject(copy, forKeyedSubscript: "copy" as NSString)
+        let context = HTMLScript.runtime.makeContext(name: "HTML message", callLimit: HTMLScriptEngine.callLimit)
         self.context = context
-        hooks = call("boot") {
-            context.evaluateScript(htmlScriptPrelude)?.call(withArguments: [native, HTMLScript.maxTimers, HTMLScript.maxHTMLLength, HTMLScript.transitions])
+        let native: HTMLScriptNativeCall = { [weak self] name, arguments in
+            self?.native(name, arguments)
         }
-        if let scene3D = scene3D, let library = HTMLScript.librarySource?("three") {
-            let bridge = scene3D.install(in: context)
-            let engine = self.engine
-            _ = call("boot") {
-                engine.withCallLimit(HTMLScriptEngine.libraryLimit) {
-                    context.evaluateScript(library, withSourceURL: URL(string: "three.js"))
-                }
+        call("boot") {
+            try context.boot(prelude: htmlScriptPrelude, native: HTMLScript.nativeFunctions, call: native, arguments: [.number(Double(HTMLScript.maxTimers)), .number(Double(HTMLScript.maxHTMLLength)), .array(HTMLScript.transitions.map { .string($0) })])
+            return .undefined
+        }
+        for name in libraryOrder {
+            guard let library = libraries[name] else {
+                continue
             }
-            _ = call("boot") {
-                context.evaluateScript(html3DThreeAdapter)?.call(withArguments: [bridge])
+            call("boot") {
+                try library.install(in: context, limit: HTMLScriptEngine.libraryLimit)
+                return .undefined
             }
         }
         let source = self.source
-        _ = call("boot") {
-            context.evaluateScript(source, withSourceURL: URL(string: "message.js"))
+        call("boot") {
+            try context.evaluate(source, name: "message.js", timeLimit: nil)
+            return .undefined
         }
         renderNow()
         starting = false
+    }
+
+    private static let nativeFunctions = ["schedule", "cancel", "update", "requestFrame", "log", "transition", "copy"]
+
+    private func native(_ name: String, _ arguments: [HTMLScriptValue]) {
+        func number(_ index: Int) -> Double {
+            return index < arguments.count ? arguments[index].numberValue ?? .nan : .nan
+        }
+        func string(_ index: Int) -> String {
+            guard index < arguments.count else {
+                return "undefined"
+            }
+            switch arguments[index] {
+            case let .string(value):
+                return value
+            case let .number(value):
+                return value == value.rounded() && abs(value) < 1e15 ? String(Int64(value)) : String(value)
+            case let .bool(value):
+                return value ? "true" : "false"
+            case .null:
+                return "null"
+            default:
+                return "undefined"
+            }
+        }
+        func integer(_ index: Int) -> Int {
+            let value = number(index)
+            return value.isFinite ? Int(max(min(value, Double(Int32.max)), Double(Int32.min))) : 0
+        }
+        switch name {
+        case "schedule":
+            scheduleTimer(integer(0), milliseconds: number(1).isNaN ? 0 : number(1), repeats: arguments.count > 2 && arguments[2].isTruthy)
+        case "cancel":
+            cancelTimer(integer(0))
+        case "update":
+            setNeedsRender()
+        case "requestFrame":
+            requestFrame()
+        case "log":
+            appendLog(string(1), level: string(0))
+        case "transition":
+            requestTransition(string(0))
+        case "copy":
+            copyText(string(0))
+        default:
+            break
+        }
     }
 
     private func now() -> Double {
@@ -249,14 +275,21 @@ public final class HTMLScript {
     }
 
     @discardableResult
-    private func call(_ kind: String, _ body: () -> JSValue?) -> JSValue? {
+    private func call(_ kind: String, _ body: () throws -> HTMLScriptValue) -> HTMLScriptValue? {
         if stopped {
             return nil
         }
         engine.beginCall()
-        exception = nil
         let t0 = CFAbsoluteTimeGetCurrent()
-        let result = body()
+        var result: HTMLScriptValue?
+        var failure: HTMLScriptError?
+        do {
+            result = try body()
+        } catch let error as HTMLScriptError {
+            failure = error
+        } catch {
+            failure = HTMLScriptError(.exception, "\(error)")
+        }
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
         let memoryBefore = engine.footprintBaseline
         let memoryAfter = elapsed > 0.002 ? HTMLScriptEngine.footprint() : 0
@@ -266,22 +299,16 @@ public final class HTMLScript {
         publishedTotal += elapsed * 1000
         lock.unlock()
 
-        let thrown = exception
-        exception = nil
-        if engine.terminated {
+        if failure?.kind == .timeLimit {
             stop(reason: String(format: "a call ran longer than %.0f ms", HTMLScriptEngine.callLimit * 1000))
             return nil
         }
-        if memoryAfter > memoryBefore, memoryAfter - memoryBefore > HTMLScriptEngine.memoryLimitBytes {
+        if failure?.kind == .outOfMemory || (memoryAfter > memoryBefore && memoryAfter - memoryBefore > HTMLScriptEngine.memoryLimitBytes) {
             stop(reason: "it used more than \(HTMLScriptEngine.memoryLimitBytes >> 20) MB of memory in one call")
             return nil
         }
-        if let thrown = thrown {
-            var message = hooks?.invokeMethod("describe", withArguments: [thrown])?.toString() ?? thrown.toString() ?? ""
-            if engine.terminated || exception != nil || message.isEmpty {
-                message = "Uncaught exception"
-            }
-            exception = nil
+        if let failure = failure {
+            let message = failure.message.isEmpty ? "Uncaught exception" : failure.message
             pendingError = message
             appendLog(message, level: "error")
             return nil
@@ -297,7 +324,6 @@ public final class HTMLScript {
         dueTimeouts.removeAll()
         framesWanted = false
         engine.cancelFrames(for: self)
-        hooks = nil
         context = nil
         lock.lock()
         publishedStopped = true
@@ -308,9 +334,9 @@ public final class HTMLScript {
     private func renderNow() {
         needsRender = false
         lastRenderTime = CFAbsoluteTimeGetCurrent()
-        let out = call("frame") { hooks?.invokeMethod("callRender", withArguments: []) }
-        if let out = out, out.isString {
-            rendered = out.toObject() as? NSString
+        let out = call("frame") { try context?.invoke("callRender", []) ?? .undefined }
+        if case let .string(text)? = out {
+            rendered = text as NSString
         }
         if !stopped {
             error = pendingError
@@ -390,14 +416,14 @@ public final class HTMLScript {
         guard !stopped, let context = context else {
             return
         }
-        let argument: Any = value ?? JSValue(undefinedIn: context) as Any
+        let argument: HTMLScriptValue = value.map { .string($0) } ?? .undefined
         handlingAction = true
-        _ = call("event") { hooks?.invokeMethod("callAction", withArguments: [name, argument]) }
+        call("event") { try context.invoke("callAction", [.string(name), argument]) }
         handlingAction = false
         renderNow()
     }
 
-    private func runInput(_ type: String, _ a: Any, _ b: Double) {
+    private func runInput(_ type: String, _ a: HTMLScriptValue, _ b: Double) {
         if !started {
             start()
         }
@@ -405,7 +431,7 @@ public final class HTMLScript {
             return
         }
         handlingAction = true
-        _ = call("event") { hooks?.invokeMethod("callInput", withArguments: [type, a, b]) }
+        call("event") { try context?.invoke("callInput", [.string(type), a, .number(b)]) ?? .undefined }
         handlingAction = false
         renderNow()
     }
@@ -449,7 +475,7 @@ public final class HTMLScript {
             }
             return
         }
-        call("timer") { hooks?.invokeMethod("fire", withArguments: [id]) }
+        call("timer") { try context?.invoke("fire", [.number(Double(id))]) ?? .undefined }
         setNeedsRender()
     }
 
@@ -483,11 +509,11 @@ public final class HTMLScript {
             return
         }
         framesWanted = false
-        let more = call("frame") { hooks?.invokeMethod("frame", withArguments: []) }
+        let more = call("frame") { try context?.invoke("frame", []) ?? .undefined }
         lock.lock()
         publishedFrames += 1
         lock.unlock()
-        if let more = more, more.toBool() {
+        if let more = more, more.isTruthy {
             framesWanted = true
             engine.requestFrame(for: self)
         }
@@ -501,7 +527,7 @@ public final class HTMLScript {
         let due = dueTimeouts
         dueTimeouts.removeAll()
         for id in due {
-            call("timer") { hooks?.invokeMethod("fire", withArguments: [id]) }
+            call("timer") { try context?.invoke("fire", [.number(Double(id))]) ?? .undefined }
             needsRender = true
         }
         if needsRender {

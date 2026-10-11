@@ -3,6 +3,8 @@ import Metal
 import QuartzCore
 import LiteHTML
 import HTMLScript
+import HTMLScriptQuickJS
+import HTML3D
 
 let labRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 let repoRoot = labRoot.deletingLastPathComponent()
@@ -810,11 +812,37 @@ case "live":
                  Double((u1.ri_interrupt_wkups + u1.ri_pkg_idle_wkups) - (u0.ri_interrupt_wkups + u0.ri_pkg_idle_wkups)) / seconds,
                  Double(u1.ri_pkg_idle_wkups - u0.ri_pkg_idle_wkups) / seconds, Double(u1.ri_energy_nj - u0.ri_energy_nj) / 1e6 / seconds))
     exit(0)
+case "threetest":
+    HTML3DSession.register()
+    let html = """
+    <script src="app:three"></script>
+    <script>
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+    camera.position.z = 4;
+    const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x3390ec }));
+    scene.add(cube, new THREE.AmbientLight(0xffffff, 0.5), new THREE.DirectionalLight(0xffffff, 1));
+    let frames = 0;
+    requestAnimationFrame(function tick() { cube.rotation.y += 0.02; renderer.render(scene, camera); frames++; requestAnimationFrame(tick); });
+    function render() { return '<p>frames ' + frames + '</p>'; }
+    </script>
+    """
+    let script = HTMLScript.make(html: html)!
+    guard let scene = script.scene3D, let layer = scene.makeLayer() else { print("no 3D session"); exit(1) }
+    scene.attach(layer, size: CGSize(width: 200, height: 200), scale: 2)
+    script.setVisible(true)
+    _ = script.currentHTML
+    RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+    let stats = scene.stats
+    print("three: error=\(script.errorText ?? "none") stopped=\(script.isStopped) frames=\(stats.frames) submitted=\(stats.submitted) draws=\(stats.draws) triangles=\(stats.triangles) html=\(script.currentHTML.suffix(40))")
+    exit(script.errorText == nil && stats.submitted > 0 ? 0 : 1)
 case "scripttest":
     final class Probe: HTMLScriptHost {
         var changes = 0
         func scriptDidChange(_ script: HTMLScript) { changes += 1 }
     }
+    if option("--runtime") == "quickjs" { HTMLScript.runtime = QuickJSScriptRuntime() }
     let cases: [(String, String, Bool)] = [
         ("memory bomb", "<script>let s = ''; setTimeout(() => { s = 'x'.repeat(300 * 1024 * 1024); update(); }, 100); function render() { return '<p>' + s.length + '</p>'; }</script>", true),
         ("infinite loop", "<script>setTimeout(() => { for (;;) {} }, 100); function render() { return '<p>ok</p>'; }</script>", true),
@@ -822,6 +850,7 @@ case "scripttest":
         ("hidden bubble", "<script>let n = 0; setInterval(() => { n++; update(); }, 50); requestAnimationFrame(function f() { n++; requestAnimationFrame(f); }); function render() { return '<p>' + n + '</p>'; }</script>", false),
         ("raf rate", "<script>let n = 0; requestAnimationFrame(function f() { n++; requestAnimationFrame(f); }); function render() { return '<p>frames ' + n + '</p>'; }</script>", true),
         ("action", "<script>let n = 0; function onAction(name) { n++; } function render() { return '<p>' + n + '</p>'; }</script>", true),
+        ("action throws", "<script>function onAction(name) { throw new Error('boom ' + name); } function render() { return '<p>alive</p>'; }</script>", true),
     ]
     for (name, html, visible) in cases {
         let probe = Probe()

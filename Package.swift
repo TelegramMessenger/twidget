@@ -9,6 +9,8 @@ let package = Package(
         .library(name: "LiteHTML", targets: ["LiteHTML"]),
         .library(name: "HTMLScript", targets: ["HTMLScript"]),
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
+        .library(name: "HTMLScriptQuickJS", targets: ["HTMLScriptQuickJS"]),
+        .library(name: "HTML3D", targets: ["HTML3D"]),
     ],
     targets: [
         .target(
@@ -57,12 +59,21 @@ let package = Package(
             ]),
         .target(
             name: "HTMLSandbox",
-            dependencies: ["CQuickJS"],
             path: "Sources/HTMLSandbox"),
         .target(
             name: "HTMLScript",
             dependencies: ["HTMLSandbox"],
             path: "Sources/HTMLScript",
+            linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("QuartzCore")]),
+        .target(
+            name: "HTMLScriptQuickJS",
+            dependencies: ["CQuickJS", "HTMLSandbox", "HTMLScript"],
+            path: "Sources/HTMLScriptQuickJS"),
+        .target(
+            name: "HTML3D",
+            dependencies: ["HTMLScript"],
+            path: "Sources/HTML3D",
+            resources: [.copy("Resources/three.js")],
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("Metal"), .linkedFramework("QuartzCore")]),
         .testTarget(
             name: "LiteHTMLTests",

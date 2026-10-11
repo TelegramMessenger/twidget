@@ -1,5 +1,4 @@
 import Foundation
-import JavaScriptCore
 import QuartzCore
 import HTMLSandbox
 
@@ -10,9 +9,7 @@ final class HTMLScriptEngine {
     static let libraryLimit: TimeInterval = 2.0
     static let memoryLimitBytes: UInt64 = 128 << 20
 
-    let thread = JSThread(name: "org.telegram.HTMLScript", qos: .userInitiated)
-    private(set) lazy var machine: JSVirtualMachine = makeMachine()
-    fileprivate(set) var terminated = false
+    let thread = JSThread(name: "HTMLScript", qos: .userInitiated)
 
     private struct TimerKey: Hashable {
         let script: ObjectIdentifier
@@ -42,41 +39,6 @@ final class HTMLScriptEngine {
     private var changed: [ObjectIdentifier: HTMLScriptWeak] = [:]
     private var notifyScheduled = false
 
-    private typealias ShouldTerminate = @convention(c) (OpaquePointer?, UnsafeMutableRawPointer?) -> Bool
-    private typealias SetExecutionTimeLimit = @convention(c) (OpaquePointer?, Double, ShouldTerminate?, UnsafeMutableRawPointer?) -> Void
-
-    private static let shouldTerminate: ShouldTerminate = { _, _ in
-        HTMLScriptEngine.shared.terminated = true
-        return true
-    }
-    private var setLimit: SetExecutionTimeLimit?
-    private var group: OpaquePointer?
-
-    private func makeMachine() -> JSVirtualMachine {
-        let machine = JSVirtualMachine()!
-        let probe = JSContext(virtualMachine: machine)!
-        if let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "JSContextGroupSetExecutionTimeLimit") {
-            let setLimit = unsafeBitCast(symbol, to: SetExecutionTimeLimit.self)
-            let group = JSContextGetGroup(probe.jsGlobalContextRef)
-            setLimit(group, HTMLScriptEngine.callLimit, HTMLScriptEngine.shouldTerminate, nil)
-            self.setLimit = setLimit
-            self.group = group
-        }
-        return machine
-    }
-
-    func withCallLimit<T>(_ limit: TimeInterval, _ body: () -> T) -> T {
-        assert(thread.isCurrent)
-        guard let setLimit = setLimit else {
-            return body()
-        }
-        setLimit(group, limit, HTMLScriptEngine.shouldTerminate, nil)
-        defer {
-            setLimit(group, HTMLScriptEngine.callLimit, HTMLScriptEngine.shouldTerminate, nil)
-        }
-        return body()
-    }
-
     func perform(_ block: @escaping () -> Void) {
         thread.async(block)
     }
@@ -98,7 +60,6 @@ final class HTMLScriptEngine {
     }
 
     func beginCall() {
-        terminated = false
         if !baselineFresh {
             baselineFresh = true
             footprintBaseline = HTMLScriptEngine.footprint()
