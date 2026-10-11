@@ -168,6 +168,16 @@ static void RegisterDemoImages(void)
     LHRegisterAppImage(name, image);
 }
 
++ (void)setProvider:(NSImage *_Nullable (^)(NSString *url))provider
+{
+    LHSetImageProvider(provider);
+}
+
++ (void)forgetImageWithURL:(NSString *)url
+{
+    LHForgetImage(url);
+}
+
 + (void)registerDemoImages
 {
     static dispatch_once_t once;

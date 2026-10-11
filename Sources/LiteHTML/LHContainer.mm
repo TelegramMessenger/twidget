@@ -315,6 +315,23 @@ ImageHandle LoadSymbol(const std::string& url)
     return {};
 }
 
+NSImage* (^g_provider)(NSString* url) = nil;
+std::mutex g_providerLock;
+
+ImageHandle LoadProvided(const std::string& url)
+{
+    NSImage* (^provider)(NSString* url) = nil;
+    {
+        std::lock_guard<std::mutex> guard(g_providerLock);
+        provider = g_provider;
+    }
+    NSString* string = provider ? [NSString stringWithUTF8String:url.c_str()] : nil;
+    NSImage*  image  = string ? provider(string) : nil;
+    if(!image)
+        return {};
+    return AdoptImage(CreateCGImageFromNSImage(image, image.size, 2.0, nil), image.size);
+}
+
 ImageHandle LookupImage(const std::string& url)
 {
     if(url.empty())
@@ -341,7 +358,11 @@ ImageHandle LookupImage(const std::string& url)
     else if(url.rfind("sf:", 0) == 0)
         img = LoadSymbol(url);
     else
-        return {};
+    {
+        img = LoadProvided(url);
+        if(!img)
+            return {};
+    }
 
     std::lock_guard<std::mutex> guard(store.lock);
     if(isData)
@@ -383,6 +404,19 @@ void LHRegisterAppImage(NSString* name, NSImage* image)
     ImageStore& store = Store();
     std::lock_guard<std::mutex> guard(store.lock);
     store.images[key] = img;
+}
+
+void LHSetImageProvider(NSImage* (^provider)(NSString* url))
+{
+    std::lock_guard<std::mutex> guard(g_providerLock);
+    g_provider = [provider copy];
+}
+
+void LHForgetImage(NSString* url)
+{
+    ImageStore& store = Store();
+    std::lock_guard<std::mutex> guard(store.lock);
+    store.images.erase(std::string(url.UTF8String));
 }
 
 static void DrawCGImage(CGContextRef ctx, CGImageRef img, CGRect r)

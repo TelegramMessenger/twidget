@@ -17,6 +17,8 @@
 #ifdef __OBJC__
 @class NSImage;
 void LHRegisterAppImage(NSString* name, NSImage* image);
+void LHSetImageProvider(NSImage* (^provider)(NSString* url));
+void LHForgetImage(NSString* url);
 #endif
 
 struct LHTextRun

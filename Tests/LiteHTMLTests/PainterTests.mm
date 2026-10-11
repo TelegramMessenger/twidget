@@ -2,6 +2,7 @@
 #import "LHDocument.h"
 #import "LHSanitizer.h"
 #import "LHDocumentPainting.h"
+#import "LHImages.h"
 
 #include <cmath>
 #include <map>
@@ -130,6 +131,46 @@ struct RecordingPainter : lhx::Painter
     [document layoutWithMaxWidth:300];
     NSDictionary<NSString *, NSNumber *> *counts = document.sanitizerCounts;
     XCTAssertEqual(counts[@"url-blocked"].intValue, 1);
+}
+
+@end
+
+@interface ImageProviderTests : XCTestCase
+@end
+
+@implementation ImageProviderTests
+
+- (void)tearDown
+{
+    [LHImages setProvider:nil];
+    [LHSanitizer setLinkSchemes:@[@"http", @"https", @"mailto"] imageSchemes:@[]];
+}
+
+- (void)testProviderSuppliesImagesForAllowedSchemes
+{
+    [LHSanitizer setLinkSchemes:@[@"https"] imageSchemes:@[@"asset"]];
+    __block NSInteger asked = 0;
+    [LHImages setProvider:^NSImage *(NSString *url) {
+        asked++;
+        if(![url isEqualToString:@"asset:block"])
+            return nil;
+        NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(50, 120)];
+        [image lockFocus];
+        [[NSColor redColor] setFill];
+        NSRectFill(NSMakeRect(0, 0, 50, 120));
+        [image unlockFocus];
+        return image;
+    }];
+    LHDocument *document = [[LHDocument alloc] initWithHTML:@"<div style=\"line-height:0\"><img src=\"asset:block\"></div>" css:nil];
+    RecordingPainter painter;
+    CGSize size = [document paintWithMaxWidth:300 clip:CGRectMake(0, 0, 300, 300) painter:painter];
+    XCTAssertGreaterThanOrEqual(size.height, 120);
+    XCTAssertGreaterThan(asked, 0);
+    [LHImages forgetImageWithURL:@"asset:block"];
+
+    LHDocument *blocked = [[LHDocument alloc] initWithHTML:@"<div style=\"line-height:0\"><img src=\"other:block\"></div>" css:nil];
+    CGSize blockedSize = [blocked paintWithMaxWidth:300 clip:CGRectMake(0, 0, 300, 300) painter:painter];
+    XCTAssertLessThan(blockedSize.height, 120);
 }
 
 @end
