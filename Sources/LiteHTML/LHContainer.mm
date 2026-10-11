@@ -688,20 +688,23 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
         if(name.length == 0)
             continue;
 
-        if([@[@"-apple-system", @"system-ui", @"blinkmacsystemfont", @"sans-serif", @"ui-sans-serif",
+        if([@[@"-apple-system", @"system-ui", @"blinkmacsystemfont", @"ui-sans-serif",
               @"sf pro", @"sf pro text", @"sf pro display"] containsObject:lower])
             font = WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
-        else if([@[@"monospace", @"ui-monospace", @"sf mono"] containsObject:lower])
+        else if([@[@"ui-monospace", @"sf mono"] containsObject:lower])
             font = WithCSSWeight(MonospacedFont(size, NSFontWeightRegular), cssWeight);
-        else if([@[@"serif", @"ui-serif", @"new york"] containsObject:lower])
+        else if([@[@"ui-serif", @"new york"] containsObject:lower])
             font = WithCSSWeight(SystemFontWithDesign(size, NSFontWeightRegular, true), cssWeight);
         else if([@[@"ui-rounded", @"sf pro rounded"] containsObject:lower])
             font = WithCSSWeight(SystemFontWithDesign(size, NSFontWeightRegular, false), cssWeight);
         else
         {
-            NSString* family = [lower isEqualToString:@"cursive"]   ? @"Snell Roundhand"
-                               : [lower isEqualToString:@"fantasy"] ? @"Papyrus"
-                                                                     : name;
+            NSString* family = [lower isEqualToString:@"serif"]        ? @"Times"
+                               : [lower isEqualToString:@"sans-serif"] ? @"Helvetica"
+                               : [lower isEqualToString:@"monospace"]  ? @"Courier"
+                               : [lower isEqualToString:@"cursive"]    ? @"Apple Chancery"
+                               : [lower isEqualToString:@"fantasy"]    ? @"Papyrus"
+                                                                        : name;
             NSFontManager* fm = NSFontManager.sharedFontManager;
             if([fm availableMembersOfFontFamily:family].count)
             {
