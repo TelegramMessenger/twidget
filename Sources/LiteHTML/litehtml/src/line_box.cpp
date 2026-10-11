@@ -585,7 +585,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                     top_shift  += diff2;
                     m_baseline += diff2;
                 }
-                const pixel_t diff1 = inline_boxes_dims.bottom - (line_max_height.bottom + top_shift_correction);
+                const pixel_t diff1 =
+                    inline_boxes_dims.bottom - (line_height.value() - top_shift_correction - line_max_height.height() + line_max_height.bottom);
                 if(diff1 > 0_px)
                 {
                     m_height += diff1;

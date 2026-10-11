@@ -84,7 +84,7 @@ litehtml::rendered_width litehtml::render_item_flex::_render_content(pixel_t x, 
     {
         if(is_row_direction)
         {
-            ret_width += ln.base_size;
+            ret_width += ln.main_size;
         }
         ln.init(container_main_size, fit_container, is_row_direction, self_size, fmt_ctx);
         sum_cross_size += ln.cross_size;
