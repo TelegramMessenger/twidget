@@ -1,0 +1,16 @@
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+/// The rules every document is sanitized with (twidget's validator rules). By default links may use
+/// `http`, `https`, `mailto` and `#fragment`, and images only `data:image/…`. Hosts add their own schemes here;
+/// URLs with them reach the host's link handler or image provider, never the network.
+@interface LHSanitizer : NSObject
+
++ (void)setLinkSchemes:(NSArray<NSString *> *)linkSchemes imageSchemes:(NSArray<NSString *> *)imageSchemes;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+NS_ASSUME_NONNULL_END

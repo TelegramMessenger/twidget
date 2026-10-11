@@ -1,6 +1,7 @@
 #pragma once
 
 #include <litehtml.h>
+#include "lhx_sanitizer.h"
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
 
@@ -167,6 +168,7 @@ class LHContainer : public litehtml::document_container
     void sanitizer_report(const char* kind, const std::string& detail);
     SanitizerReport m_sanitizer_report;
     bool            m_trusted_styles = false;
+    lhx::Sanitizer  m_sanitizer{nullptr};
     void apply_clips(CGContextRef ctx, CGRect bounds) const;
     void record_op(OpHash& hash, CGRect ink, bool capture = true);
     void flush_capture();

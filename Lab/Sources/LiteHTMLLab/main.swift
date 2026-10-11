@@ -722,6 +722,7 @@ func option(_ name: String) -> String? {
     guard let i = args.firstIndex(of: name), args.index(after: i) < args.endIndex else { return nil }
     return args[args.index(after: i)]
 }
+LHSanitizer.setLinkSchemes(["http", "https", "mailto", "chat", "tg"], imageSchemes: ["sf", "app"])
 if let t = option("--tile"), let v = Double(t) { tileHeight = CGFloat(v) }
 if let t = option("--tilew"), let v = Double(t) { tileWidth = CGFloat(v) }
 wholeTiles = !args.contains("--partial")

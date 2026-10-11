@@ -26,6 +26,7 @@ let package = Package(
                 .headerSearchPath("litehtml/include/litehtml"),
                 .headerSearchPath("litehtml/src"),
                 .headerSearchPath("litehtml/gumbo-include"),
+                .headerSearchPath("core"),
             ],
             cxxSettings: [
                 .unsafeFlags(["-O2"]),
@@ -33,6 +34,7 @@ let package = Package(
                 .headerSearchPath("litehtml/include/litehtml"),
                 .headerSearchPath("litehtml/src"),
                 .headerSearchPath("litehtml/gumbo-include"),
+                .headerSearchPath("core"),
             ],
             linkerSettings: [
                 .linkedFramework("Cocoa"),
