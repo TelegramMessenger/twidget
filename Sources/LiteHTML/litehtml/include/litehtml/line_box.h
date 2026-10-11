@@ -238,7 +238,7 @@ namespace litehtml
         }
 
         void    add_item(std::unique_ptr<line_box_item> item);
-        bool    can_hold(const std::unique_ptr<line_box_item>& item, white_space ws) const;
+        bool    can_hold(const std::unique_ptr<line_box_item>& item, white_space ws, pixel_t trailing = 0_px) const;
         bool    is_empty() const;
         pixel_t baseline() const;
         pixel_t top_margin() const;

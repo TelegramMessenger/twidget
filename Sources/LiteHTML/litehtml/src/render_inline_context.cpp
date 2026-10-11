@@ -23,7 +23,21 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     inline_selector   select_inlines;
     elements_iterator inlines_iter(true, &go_inside_inlines_selector, &select_inlines);
 
+    std::vector<std::pair<std::shared_ptr<render_item>, iterator_item_type>> events;
     inlines_iter.process(shared_from_this(), [&](const std::shared_ptr<render_item>& el, iterator_item_type item_type) {
+        events.emplace_back(el, item_type);
+    });
+    for(size_t index = 0; index < events.size(); index++)
+    {
+        const auto& el        = events[index].first;
+        const auto  item_type = events[index].second;
+        m_trailing            = 0_px;
+        if(item_type == iterator_item_type_child)
+        {
+            for(size_t next = index + 1; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
+                m_trailing += lbi_end(events[next].first).width();
+        }
+        [&]() {
         switch(item_type)
         {
         case iterator_item_type_child:
@@ -63,7 +77,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             }
             break;
         }
-    });
+        }();
+    }
+    m_trailing = 0_px;
 
     finish_last_box(true, self_size);
 
@@ -271,7 +287,7 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
 
     if(!m_line_boxes.empty())
     {
-        if(m_line_boxes.back()->can_hold(item, src_el()->css().get_white_space()))
+        if(m_line_boxes.back()->can_hold(item, src_el()->css().get_white_space(), item->get_type() == line_box_item::type_text_part ? m_trailing : 0_px))
         {
             add_box = false;
         }

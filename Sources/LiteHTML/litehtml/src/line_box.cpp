@@ -742,7 +742,7 @@ std::shared_ptr<litehtml::render_item> litehtml::line_box::get_last_text_part() 
     return nullptr;
 }
 
-bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, white_space ws) const
+bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, white_space ws, pixel_t trailing) const
 {
     if(!item->get_el()->src_el()->is_inline())
     {
@@ -784,7 +784,7 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
             return true;
         }
 
-        if(m_left + m_width + item->width() > m_right)
+        if(m_left + m_width + item->width() + trailing > m_right)
         {
             return false;
         }
