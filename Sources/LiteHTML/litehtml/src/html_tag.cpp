@@ -29,6 +29,7 @@ namespace litehtml
         litehtml::style st;
         st.add(style);
         add_style(st);
+        m_anonymous_style = true;
         this->parent(parent);
         compute_styles();
     }
@@ -371,7 +372,7 @@ namespace litehtml
         bool        shared   = false;
         std::string shareKey;
 
-        if(doc->style_sharing_enabled() && m_id == empty_id && m_pseudo_classes.empty() &&
+        if(doc->style_sharing_enabled() && !m_anonymous_style && m_id == empty_id && m_pseudo_classes.empty() &&
            get_attr("style") == nullptr && !m_style.has_var_property())
         {
             eligible = true;

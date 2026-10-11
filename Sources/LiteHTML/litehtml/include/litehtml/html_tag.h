@@ -30,6 +30,7 @@ namespace litehtml
         style                  m_style;
         style                  m_style_base;
         bool                   m_has_style_base = false;
+        bool m_anonymous_style = false;
         string_map             m_attrs;
         std::vector<string_id> m_pseudo_classes;
 

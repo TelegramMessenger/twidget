@@ -87,4 +87,21 @@ static NSArray<NSString *> *Seeds(void)
     XCTAssertGreaterThan(documents, 50);
 }
 
+- (void)testOrphanTablePartsTerminate
+{
+    NSArray<NSString *> *cases = @[
+        @"<div style=\"display:table-cell;height:66px\"></div>",
+        @"<div style=\"display:table-row\">x</div>",
+        @"<div style=\"display:table-row-group\"><div style=\"display:table-cell\">a</div></div>",
+        @"<span style=\"display:table-cell\">a</span>b<span style=\"display:table-cell\">c</span>",
+        @"<div style=\"display:table\">a<div style=\"display:table-cell\">b</div></div>",
+    ];
+    for(NSString *html in cases)
+    {
+        LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+        CGSize size = [document layoutWithMaxWidth:300];
+        XCTAssertTrue(std::isfinite(size.height), @"%@", html);
+    }
+}
+
 @end

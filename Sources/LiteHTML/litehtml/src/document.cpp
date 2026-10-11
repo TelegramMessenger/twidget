@@ -1685,8 +1685,14 @@ namespace litehtml
 
     void document::fix_tables_layout()
     {
+        const std::size_t limit = m_tabular_elements.size() * 8 + 64;
+        std::size_t       processed = 0;
         for(const auto& el_ptr : m_tabular_elements)
         {
+            if(++processed > limit)
+            {
+                break;
+            }
             switch(el_ptr->src_el()->css().get_display())
             {
             case display_inline_table:
