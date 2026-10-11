@@ -57,11 +57,34 @@ How the protocol maps onto native code:
 
 Both renderers render the ported demo corpus and Chart.js and D3 widgets. `tools/perflab/TwidgetLab` in the Telegram for macOS repository compares them side by side.
 
+On the ported corpus, every widget lays out to WebKit's height within 4 pt, and the remaining pixel differences come from glyph antialiasing.
+
 **Known gaps:**
 - Form controls render as static content.
 - No scroll containers.
-- Some flex and percentage edge cases differ from WebKit.
+- Fallback fonts for symbols such as ✕ can differ from WebKit's choice.
 - WebGL is not part of the twidget protocol.
+
+### Magic move
+
+Mark a container with `data-transition="move"`. When an operations batch adds, removes or reorders its descendants, keyed descendants animate from their old boxes to their new ones instead of jumping:
+
+```html
+<div class="list" data-transition="move">
+  <div data-key="a">…</div>
+  <div data-key="b">…</div>
+</div>
+```
+
+- An element's key is its `data-key`, or else its `id`. Keys must be unique; duplicates don't animate.
+- An element whose key survives the batch moves and resizes on a spring. If its content changed, the old snapshot morphs along the same path and cross-fades into the new one.
+- New keys fade and scale in, and removed keys fade and scale out.
+- A keyed element inside another animating keyed element rides inside its ancestor's snapshot.
+- Elements that are running a CSS animation or transition keep their own motion.
+- A change that arrives mid-flight starts from the elements' on-screen positions.
+- Nothing animates off screen, with Reduce Motion on, or beyond the layer budget (48 layers, 4096² pixels). The change then applies at once.
+
+The moving elements are snapshots on Core Animation layers, so the flight costs no layout or drawing. At the end, the layers are removed in the same transaction that repaints the document.
 
 ## Rendering a document
 
