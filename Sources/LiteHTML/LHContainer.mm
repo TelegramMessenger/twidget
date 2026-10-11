@@ -1184,7 +1184,7 @@ void LHContainer::push_mask(const LHGlyphSlot& slot, CGRect device, const uint8_
     if(slot.empty)
         return;
     LHGPUOp op;
-    op.kind   = LHGPUOp::Glyph;
+    op.kind   = LHGPUOp::Mask;
     op.device = device;
     op.key    = static_cast<uint64_t>(slot.u) | static_cast<uint64_t>(slot.v) << 16 |
              static_cast<uint64_t>(slot.device.size.width) << 32 | static_cast<uint64_t>(slot.device.size.height) << 48;
@@ -1299,7 +1299,7 @@ bool LHContainer::record_rounded(CGRect rect, const lh::border_radiuses& radius,
         if(bx <= ax || by <= ay)
             return;
         LHGPUOp op;
-        op.kind   = LHGPUOp::Solid;
+        op.kind   = LHGPUOp::Fill;
         op.device = CGRectMake(ax, ay, bx - ax, by - ay);
         op.key    = 0;
         memcpy(op.color, rgba, 4);
@@ -1342,7 +1342,7 @@ bool LHContainer::record_solid(const lh::background_layer& layer, const lh::web_
         return true;
     const CGFloat s = m_gpu->scale;
     LHGPUOp       op;
-    op.kind   = LHGPUOp::Solid;
+    op.kind   = LHGPUOp::Fill;
     op.device = CGRectMake(rect.origin.x * s, rect.origin.y * s, rect.size.width * s, rect.size.height * s);
     op.key    = 0;
     memcpy(op.color, device_color(color), 4);
@@ -1405,7 +1405,7 @@ bool LHContainer::record_glyphs(const char* text, Font* f, const lh::web_color& 
             if(slot.empty)
                 continue;
             LHGPUOp op;
-            op.kind   = LHGPUOp::Glyph;
+            op.kind   = LHGPUOp::Mask;
             op.device = slot.device;
             op.key    = static_cast<uint64_t>(slot.u) | static_cast<uint64_t>(slot.v) << 16;
             memcpy(op.color, rgba, 4);
@@ -1457,7 +1457,7 @@ void LHContainer::record_op(OpHash& hash, CGRect ink, bool capture)
     for(double v : {double(s), double(device.origin.x), double(device.origin.y), double(device.size.width), double(device.size.height)})
         OpHash::mix(key, &v, sizeof(v));
     LHGPUOp op;
-    op.kind   = LHGPUOp::Texture;
+    op.kind   = LHGPUOp::Bitmap;
     op.device = device;
     op.key    = key;
     m_gpu->ops.push_back(op);

@@ -384,24 +384,16 @@ const int kAtlasSize = 2048;
     auto it = _masks.find(key);
     if(it == _masks.end())
     {
-        const int w = int(box.size.width), h = int(box.size.height);
-        if(w <= 0 || h <= 0 || w > 512 || h > 512)
+        lhx::AlphaBitmap bitmap;
+        if(box.size.width <= 0 || box.size.height <= 0 || box.size.width > 512 || box.size.height > 512)
             return NO;
         int x = 0, y = 0;
-        if(![self reserveAtlasWidth:w height:h x:&x y:&y])
+        if(![self reserveAtlasWidth:int(box.size.width) height:int(box.size.height) x:&x y:&y])
             return NO;
-        std::vector<uint8_t> pixels(size_t(w) * h, 0);
-        CGContextRef ctx = CGBitmapContextCreate(pixels.data(), w, h, 8, w, nullptr, kCGImageAlphaOnly);
-        if(!ctx)
+        if(!lhx::rasterizeMask(box, scale, 512, draw, bitmap))
             return NO;
-        CGContextTranslateCTM(ctx, 0, h);
-        CGContextScaleCTM(ctx, scale, -scale);
-        CGContextTranslateCTM(ctx, -box.origin.x / scale, -box.origin.y / scale);
-        CGContextSetShouldAntialias(ctx, true);
-        draw(ctx);
-        CGContextRelease(ctx);
-        [_atlas replaceRegion:MTLRegionMake2D(x, y, w, h) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:w];
-        it = _masks.emplace(key, GlyphEntry{0, 0, uint16_t(w), uint16_t(h), uint16_t(x), uint16_t(y), false}).first;
+        [_atlas replaceRegion:MTLRegionMake2D(x, y, bitmap.width, bitmap.height) mipmapLevel:0 withBytes:bitmap.pixels.data() bytesPerRow:bitmap.width];
+        it = _masks.emplace(key, GlyphEntry{0, 0, uint16_t(bitmap.width), uint16_t(bitmap.height), uint16_t(x), uint16_t(y), false}).first;
     }
     slot->empty  = false;
     slot->u      = it->second.u;
@@ -419,48 +411,17 @@ const int kAtlasSize = 2048;
     {
         if(_atlasFull)
             return NO;
-        CGRect bounds;
-        CTFontGetBoundingRectsForGlyphs(font, kCTFontOrientationHorizontal, &glyph, &bounds, 1);
+        lhx::AlphaBitmap bitmap;
+        if(!lhx::rasterizeGlyph(font, glyph, device, scale, 512, bitmap))
+            return NO;
         GlyphEntry entry{0, 0, 0, 0, 0, 0, true};
-        if(!CGRectIsNull(bounds) && !CGRectIsEmpty(bounds))
+        if(!bitmap.empty)
         {
-            const CGFloat fx = device.x - ix, fy = device.y - iy;
-            const int     x0 = int(std::floor(fx + bounds.origin.x * scale)) - 2;
-            const int     y0 = int(std::floor(fy - CGRectGetMaxY(bounds) * scale)) - 2;
-            const int     x1 = int(std::ceil(fx + CGRectGetMaxX(bounds) * scale)) + 2;
-            const int     y1 = int(std::ceil(fy - bounds.origin.y * scale)) + 2;
-            const int     w = x1 - x0, h = y1 - y0;
-            if(w <= 0 || h <= 0 || w > 512 || h > 512)
+            int x = 0, y = 0;
+            if(![self reserveAtlasWidth:bitmap.width height:bitmap.height x:&x y:&y])
                 return NO;
-            if(_shelfX + w > kAtlasSize)
-            {
-                _shelfX = 0;
-                _shelfY += _shelfH;
-                _shelfH = 0;
-            }
-            if(_shelfY + h > kAtlasSize)
-            {
-                _atlasFull = YES;
-                return NO;
-            }
-            std::vector<uint8_t> pixels(size_t(w) * h, 0);
-            CGContextRef ctx = CGBitmapContextCreate(pixels.data(), w, h, 8, w, nullptr, kCGImageAlphaOnly);
-            if(!ctx)
-                return NO;
-            CGContextTranslateCTM(ctx, 0, h);
-            CGContextScaleCTM(ctx, scale, -scale);
-            CGContextTranslateCTM(ctx, -(ix + x0) / scale, -(iy + y0) / scale);
-            CGContextSetAllowsFontSmoothing(ctx, false);
-            CGContextSetShouldAntialias(ctx, true);
-            CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
-            CGContextSetTextPosition(ctx, device.x / scale, device.y / scale);
-            CGPoint zero = CGPointZero;
-            CTFontDrawGlyphs(font, &glyph, &zero, 1, ctx);
-            CGContextRelease(ctx);
-            [_atlas replaceRegion:MTLRegionMake2D(_shelfX, _shelfY, w, h) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:w];
-            entry = {x0, y0, uint16_t(w), uint16_t(h), uint16_t(_shelfX), uint16_t(_shelfY), false};
-            _shelfX += w;
-            _shelfH = std::max(_shelfH, h);
+            [_atlas replaceRegion:MTLRegionMake2D(x, y, bitmap.width, bitmap.height) mipmapLevel:0 withBytes:bitmap.pixels.data() bytesPerRow:bitmap.width];
+            entry = {bitmap.x, bitmap.y, uint16_t(bitmap.width), uint16_t(bitmap.height), uint16_t(x), uint16_t(y), false};
             _rasterizedGlyphs++;
             if(std::find(_atlasFonts.begin(), _atlasFonts.end(), (CFTypeRef)font) == _atlasFonts.end())
                 _atlasFonts.push_back(CFRetain(font));
@@ -647,7 +608,7 @@ const int kAtlasSize = 2048;
         {
             if(!CGRectIntersectsRect(op.device, area))
                 continue;
-            if(op.kind == LHGPUOp::Glyph)
+            if(op.kind == LHGPUOp::Mask)
             {
                 flushSolids();
                 flushQuads();
@@ -668,7 +629,7 @@ const int kAtlasSize = 2048;
                 textureState = false;
                 continue;
             }
-            if(op.kind == LHGPUOp::Solid)
+            if(op.kind == LHGPUOp::Fill)
             {
                 flushGlyphs();
                 flushQuads();

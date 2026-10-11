@@ -3,6 +3,8 @@
 #import "LHSanitizer.h"
 #import "LHDocumentPainting.h"
 
+#include <cmath>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,58 @@ struct RecordingPainter : lhx::Painter
         joined += t;
     XCTAssertTrue(joined.find("Hello") != std::string::npos);
     XCTAssertTrue(joined.find("world") != std::string::npos);
+}
+
+- (void)testRenderListWithoutGPU
+{
+    LHDocument *document = [[LHDocument alloc] initWithHTML:@"<div style=\"background:#00ff00;padding:8px;border-radius:6px\">Hello world</div><div style=\"background:#0000ff;height:10px\"></div>" css:nil];
+    lhx::RenderRecorder recorder;
+    recorder.scale = 2;
+    std::map<uint64_t, CGRect> stored;
+    int glyphs = 0, masks = 0;
+    recorder.store = [&](uint64_t key, CGContextRef ctx, CGRect device) {
+        XCTAssertEqual(CGBitmapContextGetWidth(ctx), size_t(device.size.width));
+        stored[key] = device;
+    };
+    recorder.glyph = [&](CTFontRef font, CGGlyph glyph, CGPoint device, lhx::AtlasSlot &slot) {
+        lhx::AlphaBitmap bitmap;
+        if(!lhx::rasterizeGlyph(font, glyph, device, 2, 512, bitmap))
+            return false;
+        glyphs++;
+        slot.empty  = bitmap.empty;
+        slot.u      = 0;
+        slot.v      = 0;
+        slot.device = CGRectMake(std::floor(device.x) + bitmap.x, std::floor(device.y) + bitmap.y, bitmap.width, bitmap.height);
+        return true;
+    };
+    recorder.mask = [&](uint64_t key, CGRect box, const std::function<void(CGContextRef)> &draw, lhx::AtlasSlot &slot) {
+        lhx::AlphaBitmap bitmap;
+        if(!lhx::rasterizeMask(box, 2, 512, draw, bitmap))
+            return false;
+        masks++;
+        slot.empty  = false;
+        slot.u      = 0;
+        slot.v      = 0;
+        slot.device = CGRectMake(0, 0, bitmap.width, bitmap.height);
+        return true;
+    };
+    CGSize size = [document recordWithMaxWidth:200 recorder:recorder];
+    XCTAssertGreaterThan(size.height, 10);
+    XCTAssertFalse(recorder.ops.empty());
+    int fills = 0, maskOps = 0;
+    for(const auto &op : recorder.ops)
+    {
+        if(op.kind == lhx::RenderOp::Fill)
+            fills++;
+        if(op.kind == lhx::RenderOp::Mask)
+            maskOps++;
+        if(op.kind == lhx::RenderOp::Bitmap)
+            XCTAssertTrue(stored.count(op.key));
+    }
+    XCTAssertGreaterThanOrEqual(fills, 1);
+    XCTAssertGreaterThan(glyphs + masks, 0);
+    XCTAssertGreaterThan(maskOps, 0);
+    XCTAssertEqual(recorder.space, nullptr);
 }
 
 @end

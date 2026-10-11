@@ -713,6 +713,19 @@ static std::string MasterWithCSS(NSString *css)
     return result;
 }
 
+- (void)recordLockedSize:(CGSize)size ops:(std::vector<LHDrawOp> &)ops recorder:(lhx::RenderRecorder &)recorder
+{
+    CGContextRef ctx = _doc ? [self createContextWithWidth:1 height:1] : nullptr;
+    if(!ctx)
+        return;
+    _container->set_draw_ops(&ops);
+    _container->set_gpu_recorder(&recorder);
+    [self drawLockedInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, size.width, std::max<CGFloat>(size.height, 1))];
+    _container->set_gpu_recorder(nullptr);
+    _container->set_draw_ops(nullptr);
+    CGContextRelease(ctx);
+}
+
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale
 {
     std::lock_guard<std::mutex> guard(_lock);
@@ -721,16 +734,7 @@ static std::string MasterWithCSS(NSString *css)
     LHGPURecorder         recorder;
     CGColorSpaceRef       space = _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     [renderer beginRecordingWithScale:scale space:space recorder:&recorder];
-    CGContextRef ctx = _doc ? [self createContextWithWidth:1 height:1] : nullptr;
-    if(ctx)
-    {
-        _container->set_draw_ops(&ops);
-        _container->set_gpu_recorder(&recorder);
-        [self drawLockedInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, size.width, std::max<CGFloat>(size.height, 1))];
-        _container->set_gpu_recorder(nullptr);
-        _container->set_draw_ops(nullptr);
-        CGContextRelease(ctx);
-    }
+    [self recordLockedSize:size ops:ops recorder:recorder];
     CGColorSpaceRelease(space);
     LHDisplayList *list = [[LHDisplayList alloc] initWithOps:std::move(ops)];
     [list setGPUOps:std::move(recorder.ops) unsupported:recorder.unsupported];
@@ -881,6 +885,23 @@ static std::string MasterWithCSS(NSString *css)
         [self drawLockedInContext:ctx origin:CGPointZero clip:clip];
         _container->set_painter(nullptr);
         CGContextRelease(ctx);
+    }
+    return size;
+}
+
+- (CGSize)recordWithMaxWidth:(CGFloat)maxWidth recorder:(lhx::RenderRecorder &)recorder
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    CGSize                size  = [self layoutLockedWithMaxWidth:maxWidth];
+    CGColorSpaceRef       given = recorder.space;
+    std::vector<LHDrawOp> ops;
+    if(!given)
+        recorder.space = _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    [self recordLockedSize:size ops:ops recorder:recorder];
+    if(!given)
+    {
+        CGColorSpaceRelease(recorder.space);
+        recorder.space = nullptr;
     }
     return size;
 }

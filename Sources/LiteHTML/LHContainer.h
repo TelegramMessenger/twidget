@@ -3,6 +3,7 @@
 #include <litehtml.h>
 #include "lhx_sanitizer.h"
 #include "lhx_painter.h"
+#include "include/LHRenderList.h"
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
 
@@ -32,39 +33,9 @@ struct LHDrawOp
     uint64_t shape;
 };
 
-struct LHGPUOp
-{
-    enum Kind : uint8_t
-    {
-        Texture,
-        Solid,
-        Glyph,
-    };
-    Kind     kind;
-    CGRect   device;
-    uint64_t key;
-    uint8_t  color[4];
-};
-
-struct LHGlyphSlot
-{
-    CGRect   device;
-    uint16_t u, v;
-    bool     empty;
-};
-
-struct LHGPURecorder
-{
-    std::function<bool(CTFontRef font, CGGlyph glyph, CGPoint device, LHGlyphSlot& slot)> glyph;
-    std::function<bool(uint64_t key, CGRect box, const std::function<void(CGContextRef ctx)>& draw, LHGlyphSlot& slot)> mask;
-    CGFloat                                           scale = 2;
-    CGColorSpaceRef                                   space = nullptr;
-    std::vector<LHGPUOp>                              ops;
-    bool                                              unsupported = false;
-    std::function<bool(uint64_t key)>                 cached;
-    std::function<void(uint64_t key, CGContextRef ctx, CGRect device)> store;
-    std::function<CGContextRef(uint64_t key, CGRect device)>           allocate;
-};
+using LHGPUOp       = lhx::RenderOp;
+using LHGlyphSlot   = lhx::AtlasSlot;
+using LHGPURecorder = lhx::RenderRecorder;
 
 class LHContainer : public litehtml::document_container
 {
