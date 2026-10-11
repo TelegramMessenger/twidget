@@ -2315,6 +2315,18 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
         for(float v : path.dashes)
             hash.number(v);
         hash.number(path.dash_offset);
+        if(path.fill_gradient.type != 0)
+        {
+            const auto& g = path.fill_gradient;
+            hash.integer(g.type);
+            for(float v : {g.x1, g.y1, g.x2, g.y2, g.r, g.fx, g.fy})
+                hash.number(v);
+            for(const auto& stop : g.stops)
+            {
+                hash.number(stop.first);
+                hash.color(stop.second);
+            }
+        }
         record_op(hash, ink);
         if(!m_capture)
         {
@@ -2331,7 +2343,38 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
     }
     CGContextSaveGState(ctx);
     apply_clips(ctx, ink);
-    if(path.fill && path.fill_color.alpha > 0)
+    if(path.fill && path.fill_gradient.type != 0)
+    {
+        std::vector<CGColorRef> colors;
+        std::vector<CGFloat>    locations;
+        for(const auto& stop : path.fill_gradient.stops)
+        {
+            colors.push_back(CreateColor(stop.second));
+            locations.push_back(stop.first);
+        }
+        CFArrayRef  array    = CFArrayCreate(nullptr, (const void**)colors.data(), colors.size(), &kCFTypeArrayCallBacks);
+        CGGradientRef gradient = CGGradientCreateWithColors(SRGB(), array, locations.data());
+        CFRelease(array);
+        for(CGColorRef color : colors)
+            CGColorRelease(color);
+        if(gradient)
+        {
+            const auto& g = path.fill_gradient;
+            CGContextSaveGState(ctx);
+            CGContextAddPath(ctx, cgpath);
+            if(path.evenodd)
+                CGContextEOClip(ctx);
+            else
+                CGContextClip(ctx);
+            const CGGradientDrawingOptions options = kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation;
+            if(g.type == 1)
+                CGContextDrawLinearGradient(ctx, gradient, CGPointMake(g.x1, g.y1), CGPointMake(g.x2, g.y2), options);
+            else
+                CGContextDrawRadialGradient(ctx, gradient, CGPointMake(g.fx, g.fy), 0, CGPointMake(g.x1, g.y1), g.r, options);
+            CGContextRestoreGState(ctx);
+            CGGradientRelease(gradient);
+        }
+    } else if(path.fill && path.fill_color.alpha > 0)
     {
         SetFill(ctx, path.fill_color);
         CGContextAddPath(ctx, cgpath);

@@ -7,16 +7,52 @@ namespace lh = litehtml;
 
 @implementation LHSanitizer
 
-+ (void)setLinkSchemes:(NSArray<NSString *> *)linkSchemes imageSchemes:(NSArray<NSString *> *)imageSchemes
+static NSMutableSet<NSString *> *ExtraImageSchemes(void)
+{
+    static NSMutableSet<NSString *> *schemes;
+    static dispatch_once_t           once;
+    dispatch_once(&once, ^{
+        schemes = [NSMutableSet set];
+    });
+    return schemes;
+}
+
+static NSArray<NSString *> *CurrentLinkSchemes = @[@"http", @"https", @"mailto"];
+static NSArray<NSString *> *CurrentImageSchemes = @[];
+
++ (void)apply
 {
     auto policy = std::make_shared<lhx::SanitizerPolicy>(lhx::SanitizerPolicy::standard());
     policy->linkSchemes.clear();
-    for(NSString *scheme in linkSchemes)
+    for(NSString *scheme in CurrentLinkSchemes)
         policy->linkSchemes.insert(scheme.lowercaseString.UTF8String);
     policy->imageSchemes.clear();
-    for(NSString *scheme in imageSchemes)
+    for(NSString *scheme in CurrentImageSchemes)
+        policy->imageSchemes.insert(scheme.lowercaseString.UTF8String);
+    for(NSString *scheme in ExtraImageSchemes())
         policy->imageSchemes.insert(scheme.lowercaseString.UTF8String);
     lhx::Sanitizer::setCurrent(policy);
+}
+
++ (void)setLinkSchemes:(NSArray<NSString *> *)linkSchemes imageSchemes:(NSArray<NSString *> *)imageSchemes
+{
+    @synchronized(self)
+    {
+        CurrentLinkSchemes  = [linkSchemes copy];
+        CurrentImageSchemes = [imageSchemes copy];
+        [self apply];
+    }
+}
+
++ (void)addImageScheme:(NSString *)scheme
+{
+    @synchronized(self)
+    {
+        if([ExtraImageSchemes() containsObject:scheme])
+            return;
+        [ExtraImageSchemes() addObject:scheme];
+        [self apply];
+    }
 }
 
 @end

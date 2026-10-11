@@ -575,6 +575,116 @@ namespace litehtml
             return color;
         }
 
+        std::string svg_url_id(const css_token_vector& tokens)
+        {
+            for(const auto& tok : tokens)
+            {
+                std::string url;
+                if(tok.type == URL)
+                    url = tok.str();
+                else if(tok.type == CV_FUNCTION && lowcase(tok.name()) == "url" && !tok.value.empty())
+                    url = tok.value[0].str();
+                if(url.size() > 1 && url[0] == '#')
+                    return url.substr(1);
+            }
+            return {};
+        }
+
+        float gradient_coordinate(const element::ptr& el, const char* name, float def)
+        {
+            const char* value = el->get_attr(name);
+            if(!value || !*value)
+                return def;
+            const char* p = value;
+            float       v = 0;
+            if(!next_number(p, v))
+                return def;
+            return *p == '%' ? v / 100 : v;
+        }
+
+        bool svg_gradient_paint(const element::ptr& el, string_id name, const vector_path& path, svg_gradient& out,
+                                float opacity, document_container* container)
+        {
+            std::string id = svg_url_id(svg_property(el, name, true));
+            if(id.empty() || id.find_first_of(" \"'[]()") != std::string::npos)
+                return false;
+            auto doc = el->get_document();
+            if(!doc || !doc->root())
+                return false;
+            element::ptr target = doc->root()->select_one("#" + id);
+            if(!target)
+                return false;
+            std::string tag = lowcase(target->get_tagName());
+            bool        linear = tag == "lineargradient";
+            if(!linear && tag != "radialgradient")
+                return false;
+            float minx = 0, miny = 0, maxx = 0, maxy = 0;
+            for(size_t i = 0; i + 1 < path.points.size(); i += 2)
+            {
+                float x = path.points[i], y = path.points[i + 1];
+                if(i == 0)
+                {
+                    minx = maxx = x;
+                    miny = maxy = y;
+                } else
+                {
+                    minx = std::min(minx, x);
+                    maxx = std::max(maxx, x);
+                    miny = std::min(miny, y);
+                    maxy = std::max(maxy, y);
+                }
+            }
+            const char* units = target->get_attr("gradientUnits");
+            bool        user  = units && std::string(units) == "userSpaceOnUse";
+            float       w = maxx - minx, h = maxy - miny;
+            auto        mapx = [&](float v) { return user ? v : minx + v * w; };
+            auto        mapy = [&](float v) { return user ? v : miny + v * h; };
+            svg_gradient g;
+            if(linear)
+            {
+                g.type = 1;
+                g.x1   = mapx(gradient_coordinate(target, "x1", 0));
+                g.y1   = mapy(gradient_coordinate(target, "y1", 0));
+                g.x2   = mapx(gradient_coordinate(target, "x2", 1));
+                g.y2   = mapy(gradient_coordinate(target, "y2", 0));
+            } else
+            {
+                g.type   = 2;
+                float cx = gradient_coordinate(target, "cx", 0.5f), cy = gradient_coordinate(target, "cy", 0.5f);
+                g.x1     = mapx(cx);
+                g.y1     = mapy(cy);
+                g.fx     = mapx(gradient_coordinate(target, "fx", cx));
+                g.fy     = mapy(gradient_coordinate(target, "fy", cy));
+                float r  = gradient_coordinate(target, "r", 0.5f);
+                g.r      = user ? r : r * std::sqrt((w * w + h * h) / 2);
+            }
+            for(const auto& child : target->children())
+            {
+                if(lowcase(child->get_tagName()) != "stop")
+                    continue;
+                float     offset = std::max(0.f, std::min(1.f, gradient_coordinate(child, "offset", 0)));
+                web_color color  = web_color::black;
+                css_token_vector tokens = svg_property(child, _id("stop-color"), false);
+                web_color parsed;
+                for(const auto& tok : tokens)
+                {
+                    if(parse_color(tok, parsed, container))
+                    {
+                        color = parsed;
+                        break;
+                    }
+                }
+                color = with_opacity(color, svg_number(child, _id("stop-opacity"), 1, false) * opacity);
+                if(!g.stops.empty())
+                    offset = std::max(offset, g.stops.back().first);
+                g.stops.emplace_back(offset, color);
+            }
+            if(g.stops.empty())
+                return false;
+            out = std::move(g);
+            return true;
+        }
+
         class svg_painter
         {
             document_container* m_container;
@@ -590,6 +700,11 @@ namespace litehtml
                 path.fill   = svg_paint(el, _fill_, web_color::black, true, path.fill_color, m_container);
                 path.stroke = svg_paint(el, _stroke_, web_color::black, false, path.stroke_color, m_container);
                 path.fill_color   = with_opacity(path.fill_color, svg_number(el, _fill_opacity_, 1));
+                if(!path.fill && svg_gradient_paint(el, _fill_, path, path.fill_gradient, svg_number(el, _fill_opacity_, 1), m_container))
+                {
+                    path.fill       = true;
+                    path.fill_color = path.fill_gradient.stops.back().second;
+                }
                 path.stroke_color = with_opacity(path.stroke_color, svg_number(el, _stroke_opacity_, 1));
                 path.evenodd      = svg_ident(el, _fill_rule_) == "evenodd";
                 path.stroke_width = std::max(0.f, svg_number(el, _stroke_width_, 1));
@@ -657,6 +772,18 @@ namespace litehtml
                 std::vector<float> ys     = numbers(el->get_attr("y", "0"));
                 float              x      = xs.empty() ? 0 : xs[0];
                 float              y      = ys.empty() ? 0 : ys[0];
+                const float        em     = el->css().get_font_size().value();
+                auto               shift  = [em](const char* value) -> float {
+                    if(!value || !*value)
+                        return 0;
+                    const char* p = value;
+                    float       v = 0;
+                    if(!next_number(p, v))
+                        return 0;
+                    return (p[0] == 'e' && p[1] == 'm') ? v * em : v;
+                };
+                x += shift(el->get_attr("dx"));
+                y += shift(el->get_attr("dy"));
                 pixel_t            width  = m_container->text_width(collapsed.c_str(), font);
                 std::string        anchor = svg_ident(el, _text_anchor_);
                 if(anchor == "middle")

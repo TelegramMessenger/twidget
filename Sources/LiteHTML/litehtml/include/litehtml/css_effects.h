@@ -75,6 +75,13 @@ namespace litehtml
         position         bounds;
     };
 
+    struct svg_gradient
+    {
+        int                                    type = 0;
+        float                                  x1 = 0, y1 = 0, x2 = 1, y2 = 0, r = 0.5f, fx = 0.5f, fy = 0.5f;
+        std::vector<std::pair<float, web_color>> stops;
+    };
+
     struct vector_path
     {
         enum op_t
@@ -98,6 +105,7 @@ namespace litehtml
         float              miter_limit  = 4;
         std::vector<float> dashes;
         float              dash_offset = 0;
+        svg_gradient       fill_gradient;
     };
 
     struct grid_track_size

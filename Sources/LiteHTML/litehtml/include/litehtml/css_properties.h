@@ -227,6 +227,9 @@ namespace litehtml
         void    set_font_size(pixel_t mFontSize);
 
         uint_ptr get_font() const;
+        const std::string& font_family() const { return m_font_family; }
+        const css_length&  font_weight() const { return m_font_weight; }
+        font_style         font_style_value() const { return m_font_style; }
         void     set_font(uint_ptr mFont);
 
         int  get_shared_id() const { return m_shared_id; }

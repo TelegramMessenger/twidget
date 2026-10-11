@@ -4,6 +4,7 @@
 
 #include "LHContainer.h"
 #include "render_item.h"
+#include "html_tag.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -680,6 +681,196 @@ static std::string MasterWithCSS(NSString *css)
                                                   kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(space);
     return ctx;
+}
+
+- (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)p
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || !_doc->root_render())
+        return nil;
+    const lh::pixel_t x  = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    const char*       key = name.UTF8String;
+    for(lh::element::ptr el = _doc->root_render()->get_element_by_point(x, y, x, y, nullptr); el; el = el->parent())
+    {
+        if(const char* value = el->get_attr(key))
+            return @(value);
+    }
+    return nil;
+}
+
+- (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute
+{
+    return [self declarations:names byAttribute:attribute requiringAny:@[]];
+}
+
+- (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    if(!_doc || !_doc->root())
+        return result;
+    std::vector<std::string> keys;
+    for(NSString *name in names)
+        keys.emplace_back(name.UTF8String);
+    std::vector<std::string> gates;
+    for(NSString *name in required)
+        gates.emplace_back(name.UTF8String);
+    const char *key = attribute.UTF8String;
+    std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
+        if(auto tag = std::dynamic_pointer_cast<lh::html_tag>(el))
+        {
+            const char *value = tag->get_attr(key);
+            bool        open  = gates.empty();
+            for(size_t i = 0; value && !open && i < gates.size(); i++)
+                open = !tag->raw_declaration(gates[i]).empty();
+            if(value && open)
+            {
+                NSMutableDictionary<NSString *, NSString *> *found = nil;
+                for(const auto &name : keys)
+                {
+                    std::string raw = tag->raw_declaration(name);
+                    if(raw.empty())
+                        continue;
+                    if(!found)
+                        found = [NSMutableDictionary dictionary];
+                    found[@(name.c_str())] = @(raw.c_str());
+                }
+                if(found)
+                    result[@(value)] = found;
+            }
+        }
+        for(const auto &child : el->children())
+            visit(child);
+    };
+    visit(_doc->root());
+    return result;
+}
+
+- (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || !_doc->root_render())
+        return @{};
+    const char                          *key    = attribute.UTF8String;
+    const std::string                    wanted = value.UTF8String;
+    std::shared_ptr<lh::render_item>     found;
+    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
+        if(found)
+            return;
+        const char *v = ri->src_el()->get_attr(key);
+        if(v && wanted == v)
+        {
+            found = ri;
+            return;
+        }
+        for(const auto &child : ri->children())
+            visit(child);
+    };
+    visit(_doc->root_render());
+    lh::element::ptr el = found ? found->src_el() : nullptr;
+    if(!el)
+    {
+        std::function<lh::element::ptr(const lh::element::ptr &)> search = [&](const lh::element::ptr &e) -> lh::element::ptr {
+            const char *v = e->get_attr(key);
+            if(v && wanted == v)
+                return e;
+            for(const auto &child : e->children())
+                if(auto hit = search(child))
+                    return hit;
+            return nullptr;
+        };
+        el = _doc->root() ? search(_doc->root()) : nullptr;
+    }
+    if(!el)
+        return @{};
+    const lh::css_properties &css = el->css();
+    NSMutableDictionary<NSString *, NSString *> *out = [NSMutableDictionary dictionary];
+    auto px = [](double v) { return [NSString stringWithFormat:@"%gpx", v]; };
+    auto length = [&](const lh::css_length &l) -> NSString * {
+        if(l.is_predefined())
+            return @"none";
+        switch(l.units())
+        {
+        case lh::css_units_percentage:
+            return [NSString stringWithFormat:@"%g%%", l.val()];
+        default:
+            return px(l.val());
+        }
+    };
+    if(found)
+    {
+        out[@"padding-top"]         = px(found->padding_top().value());
+        out[@"padding-right"]       = px(found->padding_right().value());
+        out[@"padding-bottom"]      = px(found->padding_bottom().value());
+        out[@"padding-left"]        = px(found->padding_left().value());
+        out[@"border-top-width"]    = px(found->border_top().value());
+        out[@"border-right-width"]  = px(found->border_right().value());
+        out[@"border-bottom-width"] = px(found->border_bottom().value());
+        out[@"border-left-width"]   = px(found->border_left().value());
+        out[@"margin-top"]          = px(found->margin_top().value());
+        out[@"margin-right"]        = px(found->margin_right().value());
+        out[@"margin-bottom"]       = px(found->margin_bottom().value());
+        out[@"margin-left"]         = px(found->margin_left().value());
+        const lh::position p        = found->get_placement();
+        out[@"width"]               = px(p.width.value());
+        out[@"height"]              = px(p.height.value());
+    } else
+    {
+        for(NSString *name in @[@"padding-top", @"padding-right", @"padding-bottom", @"padding-left", @"border-top-width", @"border-right-width",
+                                @"border-bottom-width", @"border-left-width", @"margin-top", @"margin-right", @"margin-bottom", @"margin-left", @"width", @"height"])
+            out[name] = @"0px";
+    }
+    out[@"max-width"]   = length(css.get_max_width());
+    out[@"max-height"]  = length(css.get_max_height());
+    out[@"box-sizing"]  = css.get_box_sizing() == lh::box_sizing_border_box ? @"border-box" : @"content-box";
+    out[@"display"]     = @(std::string(lh::style_display_strings[css.get_display()]).c_str());
+    out[@"position"]    = @(std::string(lh::element_position_strings[css.get_position()]).c_str());
+    out[@"font-size"]   = px(css.get_font_size().value());
+    out[@"font-weight"] = [NSString stringWithFormat:@"%d", (int)css.font_weight().val()];
+    out[@"font-family"] = @(css.font_family().c_str());
+    out[@"font-style"]  = css.font_style_value() == lh::font_style_italic ? @"italic" : @"normal";
+    const lh::web_color c = css.get_color();
+    out[@"color"]       = c.alpha == 255 ? [NSString stringWithFormat:@"rgb(%d, %d, %d)", c.red, c.green, c.blue]
+                                         : [NSString stringWithFormat:@"rgba(%d, %d, %d, %g)", c.red, c.green, c.blue, c.alpha / 255.0];
+    out[@"opacity"]     = [NSString stringWithFormat:@"%g", css.get_opacity()];
+    out[@"visibility"]  = css.get_visibility() == lh::visibility_visible ? @"visible" : @"hidden";
+    return out;
+}
+
+- (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableDictionary<NSString *, NSValue *> *result = [NSMutableDictionary dictionary];
+    if(!_doc || !_doc->root_render())
+        return result;
+    const char *key = name.UTF8String;
+    std::unordered_map<std::string, CGRect> boxes;
+    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
+        if(const char *value = ri->src_el()->get_attr(key))
+        {
+            const lh::position p      = ri->get_placement();
+            const CGFloat      left   = ri->padding_left().value() + ri->border_left().value();
+            const CGFloat      top    = ri->padding_top().value() + ri->border_top().value();
+            const CGFloat      right  = ri->padding_right().value() + ri->border_right().value();
+            const CGFloat      bottom = ri->padding_bottom().value() + ri->border_bottom().value();
+            const CGRect       box    = CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
+            auto               it     = boxes.find(value);
+            if(it == boxes.end())
+                boxes.emplace(value, box);
+            else
+                it->second = CGRectUnion(it->second, box);
+        }
+        for(const auto &child : ri->children())
+            visit(child);
+    };
+    visit(_doc->root_render());
+    for(const auto &entry : boxes)
+        result[@(entry.first.c_str())] = [NSValue valueWithRect:NSRectFromCGRect(entry.second)];
+    return result;
 }
 
 - (CGRect)boundsOfElementsMatching:(NSString *)selector

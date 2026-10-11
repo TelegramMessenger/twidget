@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface LHSanitizer : NSObject
 
 + (void)setLinkSchemes:(NSArray<NSString *> *)linkSchemes imageSchemes:(NSArray<NSString *> *)imageSchemes;
++ (void)addImageScheme:(NSString *)scheme;
 
 - (instancetype)init NS_UNAVAILABLE;
 

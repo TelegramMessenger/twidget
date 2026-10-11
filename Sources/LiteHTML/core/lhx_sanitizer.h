@@ -31,6 +31,7 @@ struct SanitizerPolicy
     std::unordered_set<std::string> blockedProperties;
     std::string                     renamedTagAttribute = "data-lh-tag";
     std::string                     reservedAttributePrefix = "data-lh-";
+    std::unordered_set<std::string> hostAttributes{"data-lh-id"};
 
     static SanitizerPolicy standard();
 };

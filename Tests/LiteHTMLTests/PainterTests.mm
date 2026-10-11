@@ -174,3 +174,36 @@ struct RecordingPainter : lhx::Painter
 }
 
 @end
+
+@interface DeclarationTests : XCTestCase
+@end
+
+@implementation DeclarationTests
+
+- (void)testRawAnimationDeclarationsSurviveTheCascade
+{
+    NSString *html = @"<style>:root{--d:300ms} .a{animation:pulse 1.2s ease-in-out infinite;transition:transform var(--d) ease;transform:scale(1)} .a.b{transform:scale(1.5)}</style><div class=\"a b\" data-lh-id=\"7\" style=\"opacity:.5\">x</div>";
+    LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+    [document layoutWithMaxWidth:300];
+    NSDictionary *found = [document declarations:@[@"animation", @"transition", @"transform", @"opacity", @"color"] byAttribute:@"data-lh-id"][@"7"];
+    XCTAssertEqualObjects(found[@"animation"], @"pulse 1.2s ease-in-out infinite");
+    XCTAssertEqualObjects(found[@"transition"], @"transform 300ms ease");
+    XCTAssertEqualObjects(found[@"transform"], @"scale(1.5)");
+    XCTAssertEqualObjects(found[@"opacity"], @".5");
+    XCTAssertNil(found[@"color"]);
+}
+
+- (void)testAnimationLayerIsHiddenFromRawDeclarations
+{
+    for(NSString *style in @[@"opacity:.5;--lh-anim:1;opacity:.9;transform:scale(2)", @"opacity: .5; --lh-anim: 1; opacity: .9; transform: scale(2)"])
+    {
+        NSString *html = [NSString stringWithFormat:@"<style>.a{transform:scale(1)}</style><div class=\"a\" data-lh-id=\"3\" style=\"%@\">x</div>", style];
+        LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+        [document layoutWithMaxWidth:300];
+        NSDictionary *found = [document declarations:@[@"opacity", @"transform"] byAttribute:@"data-lh-id"][@"3"];
+        XCTAssertEqualObjects(found[@"opacity"], @".5");
+        XCTAssertEqualObjects(found[@"transform"], @"scale(1)");
+    }
+}
+
+@end

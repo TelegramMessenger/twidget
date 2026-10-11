@@ -240,7 +240,7 @@ bool Sanitizer::element(std::string& tag, bool svg, litehtml::string_map& attrs,
             ++it;
             continue;
         }
-        if(!m_policy->reservedAttributePrefix.empty() && key.compare(0, m_policy->reservedAttributePrefix.size(), m_policy->reservedAttributePrefix) == 0)
+        if(!m_policy->reservedAttributePrefix.empty() && key.compare(0, m_policy->reservedAttributePrefix.size(), m_policy->reservedAttributePrefix) == 0 && !m_policy->hostAttributes.count(key))
         {
             it = attrs.erase(it);
             continue;

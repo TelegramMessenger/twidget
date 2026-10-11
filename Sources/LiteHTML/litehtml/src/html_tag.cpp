@@ -6,6 +6,7 @@
 #include "document_container.h"
 #include "html_microsyntaxes.h"
 #include "html_tag.h"
+#include <set>
 #include "internal.h"
 #include "iterators.h"
 #include "line_box.h"
@@ -333,6 +334,17 @@ namespace litehtml
                 get_document()->container()->del_clip();
             }
         }
+    }
+
+    std::string html_tag::raw_declaration(const std::string& name) const
+    {
+        string_id raw = raw_declaration_id(_id(name));
+        if(raw == empty_id)
+            return {};
+        const property_value& value = m_style.get_property(raw);
+        if(!value.is<css_token_vector>())
+            return {};
+        return get_repr(value.get<css_token_vector>(), 0, -1, true);
     }
 
     bool html_tag::get_custom_property(string_id name, css_token_vector& result) const
@@ -806,6 +818,24 @@ namespace litehtml
 
     void litehtml::html_tag::parse_attributes()
     {
+        static const std::set<std::string> svg_text_tags = {"svg", "g", "text", "tspan", "textpath", "a"};
+        bool                               svg_context   = false;
+        for(element::ptr cur = parent(); cur && !svg_context; cur = cur->parent())
+            svg_context = lowcase(cur->get_tagName()) == "svg";
+        std::string tag = lowcase(_s(m_tag));
+        if((tag == "svg" || svg_context) && svg_text_tags.count(tag))
+        {
+            for(const char* name : {"font-family", "font-weight", "font-style", "font-size"})
+            {
+                const char* value = get_attr(name);
+                if(!value || !*value)
+                    continue;
+                std::string text = value;
+                if(std::string(name) == "font-size" && text.find_first_not_of("0123456789.") == std::string::npos)
+                    text += "px";
+                m_style.add(std::string(name) + ":" + text, "", nullptr);
+            }
+        }
         for(auto& el : m_children)
         {
             el->parse_attributes();

@@ -36,6 +36,8 @@ namespace litehtml
     };
 
     class html_tag;
+    string_id raw_declaration_id(string_id name);
+    bool      is_raw_declaration(string_id name);
     using props_map = std::map<string_id, property_value>;
 
     // represents a style block, eg. "color: black; display: inline"

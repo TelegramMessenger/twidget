@@ -86,6 +86,7 @@ namespace litehtml
         template <class Type>
         const Type& get_property(string_id name, bool inherited, const Type& default_value,
                                  uint_ptr css_properties_member_offset) const;
+        std::string raw_declaration(const std::string& name) const;
         bool        get_custom_property(string_id name, css_token_vector& result) const;
         const css_token_vector* get_token_property(string_id name) const
         {

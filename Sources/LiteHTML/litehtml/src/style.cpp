@@ -120,6 +120,12 @@ namespace litehtml
         };
 
         thread_local std::vector<style_op>* recorded_ops = nullptr;
+        thread_local bool                   suppress_raw = false;
+
+        bool is_animation_layer(const std::string& txt, size_t start)
+        {
+            return txt.compare(start, 9, "--lh-anim") == 0;
+        }
 
         std::mutex                                                   declaration_cache_lock;
         std::unordered_map<std::string, std::vector<style_op>>       declaration_cache;
@@ -173,8 +179,11 @@ namespace litehtml
             add(tokens, baseurl, container);
             return;
         }
+        bool layer = false;
         for(const auto& d : declarations)
         {
+            if(is_animation_layer(txt, d.first))
+                layer = true;
             std::string key(txt, d.first, d.second);
             key.push_back(container ? '\x01' : '\x00');
             std::vector<style_op> ops;
@@ -191,10 +200,13 @@ namespace litehtml
             if(!hit)
             {
                 style scratch;
-                recorded_ops = &ops;
+                const bool suppressed = suppress_raw;
+                suppress_raw          = false;
+                recorded_ops          = &ops;
                 auto tokens  = normalize(std::string(txt, d.first, d.second), f_componentize);
                 scratch.add(tokens, baseurl, container);
                 recorded_ops = nullptr;
+                suppress_raw = suppressed;
                 std::lock_guard<std::mutex> guard(declaration_cache_lock);
                 if(declaration_cache.size() > 50000)
                     declaration_cache.clear();
@@ -202,6 +214,8 @@ namespace litehtml
             }
             for(const auto& op : ops)
             {
+                if(layer && is_raw_declaration(op.name))
+                    continue;
                 if(op.remove)
                     remove_property(op.name, op.important);
                 else
@@ -224,9 +238,11 @@ namespace litehtml
             return;
         }
 
-        // Parse each declaration
+        const bool outer = suppress_raw;
         for(auto& decl : decls)
         {
+            if(decl.name == "--lh-anim")
+                suppress_raw = true;
             remove_whitespace(decl.value);
             // Note: decl.value is already componentized, see consume_qualified_rule and consume_style_block_contents.
             // Note: decl.value may be empty.
@@ -237,6 +253,7 @@ namespace litehtml
             }
             add_property(_id(name), decl.value, baseurl, decl.important, container);
         }
+        suppress_raw = outer;
     }
 
     bool has_var(const css_token_vector& tokens)
@@ -280,10 +297,58 @@ namespace litehtml
         }
     }
 
+    static const char* const raw_declaration_names[] = {
+        "animation", "animation-name", "animation-duration", "animation-timing-function", "animation-delay",
+        "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state",
+        "transition", "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
+        "transform", "opacity", "color", "background-color", "background", "width", "height", "top", "left", "right",
+        "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
+        "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow",
+    };
+
+    static const std::map<string_id, string_id>& raw_declaration_ids()
+    {
+        static const std::map<string_id, string_id> ids = [] {
+            std::map<string_id, string_id> map;
+            for(const char* name : raw_declaration_names)
+                map[_id(name)] = _id(std::string("-lh-raw-") + name);
+            return map;
+        }();
+        return ids;
+    }
+
+    string_id raw_declaration_id(string_id name)
+    {
+        const auto& ids = raw_declaration_ids();
+        auto        it  = ids.find(name);
+        return it == ids.end() ? empty_id : it->second;
+    }
+
+    bool is_raw_declaration(string_id name)
+    {
+        static const std::set<string_id> raws = [] {
+            std::set<string_id> set;
+            for(const auto& entry : raw_declaration_ids())
+                set.insert(entry.second);
+            return set;
+        }();
+        return raws.count(name) != 0;
+    }
+
     // `value` is a list of component values with all whitespace tokens removed, including those inside component values
     void style::add_property(string_id name, const css_token_vector& value, const std::string& baseurl, bool important,
                              document_container* container)
     {
+        if(is_raw_declaration(name))
+        {
+            add_parsed_property(name, property_value(value, important, has_var(value)));
+            return;
+        }
+        if(string_id raw = raw_declaration_id(name); raw != empty_id && !value.empty() && !suppress_raw)
+        {
+            add_parsed_property(raw, property_value(value, important, has_var(value)));
+        }
+
         // Note: empty value is a valid value for a custom property.
         if(value.empty() && _s(name).substr(0, 2) != "--")
         {
