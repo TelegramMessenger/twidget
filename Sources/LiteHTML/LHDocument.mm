@@ -1009,6 +1009,25 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     return result;
 }
 
+- (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableDictionary<NSString *, NSString *> *result = [NSMutableDictionary dictionary];
+    if(!_doc || !_doc->root())
+        return result;
+    const char *key = name.UTF8String;
+    std::function<void(const lh::element::ptr &, const char *)> visit = [&](const lh::element::ptr &el, const char *parent) {
+        const char *value = el->get_attr(key);
+        if(value && parent)
+            result[@(value)] = @(parent);
+        for(const auto &child : el->children())
+            visit(child, value ? value : parent);
+    };
+    visit(_doc->root(), nullptr);
+    return result;
+}
+
 - (CGRect)boundsOfElementsMatching:(NSString *)selector
 {
     std::lock_guard<std::mutex> guard(_lock);

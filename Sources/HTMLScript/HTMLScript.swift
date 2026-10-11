@@ -12,7 +12,7 @@ public final class HTMLScript {
     private static let maxLogLines = 200
     private static let minTimerInterval: TimeInterval = 0.050
     private static let transitionWindow: CFTimeInterval = 0.8
-    private static let transitions = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "pop", "none"]
+    private static let transitions = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "pop", "move", "none"]
 
     public weak var host: HTMLScriptHost?
     public static var runtime: HTMLScriptRuntime = QuickJSScriptRuntime()

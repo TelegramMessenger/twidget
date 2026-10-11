@@ -46,6 +46,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value isolatedInRect:(CGRect)rect NS_SWIFT_NAME(isElement(attribute:value:isolatedIn:));
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point NS_SWIFT_NAME(attribute(_:at:));
 - (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name NS_SWIFT_NAME(bounds(byAttribute:));
+- (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name NS_SWIFT_NAME(parents(byAttribute:));
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(computedStyle(attribute:value:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute NS_SWIFT_NAME(declarations(_:byAttribute:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required NS_SWIFT_NAME(declarations(_:byAttribute:requiringAny:));
