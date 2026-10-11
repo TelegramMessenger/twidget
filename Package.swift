@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
         .library(name: "HTMLScriptQuickJS", targets: ["HTMLScriptQuickJS"]),
         .library(name: "HTML3D", targets: ["HTML3D"]),
+        .library(name: "TwidgetRenderer", targets: ["TwidgetRenderer"]),
     ],
     targets: [
         .target(
@@ -44,8 +45,8 @@ let package = Package(
                 .linkedFramework("IOSurface"),
             ]),
         .target(
-            name: "CQuickJS",
-            path: "Sources/CQuickJS",
+            name: "CQuickJSNG",
+            path: "Sources/CQuickJSNG",
             exclude: ["quickjs/LICENSE"],
             sources: ["quickjs/quickjs.c", "quickjs/dtoa.c", "quickjs/libregexp.c", "quickjs/libunicode.c", "shim/qjs_shim.c"],
             publicHeadersPath: "include",
@@ -65,7 +66,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("QuartzCore")]),
         .target(
             name: "HTMLScriptQuickJS",
-            dependencies: ["CQuickJS", "HTMLSandbox", "HTMLScript"],
+            dependencies: ["CQuickJSNG", "HTMLSandbox", "HTMLScript"],
             path: "Sources/HTMLScriptQuickJS"),
         .target(
             name: "HTML3D",
@@ -73,6 +74,15 @@ let package = Package(
             path: "Sources/HTML3D",
             resources: [.copy("Resources/three.js")],
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("Metal"), .linkedFramework("QuartzCore")]),
+        .target(
+            name: "TwidgetRenderer",
+            dependencies: ["LiteHTML"],
+            path: "Sources/TwidgetRenderer",
+            linkerSettings: [.linkedFramework("CoreVideo")]),
+        .testTarget(
+            name: "TwidgetRendererTests",
+            dependencies: ["TwidgetRenderer"],
+            path: "Tests/TwidgetRendererTests"),
         .testTarget(
             name: "LiteHTMLTests",
             dependencies: ["LiteHTML"],

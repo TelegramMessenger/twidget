@@ -1,4 +1,4 @@
-module CQuickJS {
+module CQuickJSNG {
     header "qjs_shim.h"
     header "quickjs.h"
     export *

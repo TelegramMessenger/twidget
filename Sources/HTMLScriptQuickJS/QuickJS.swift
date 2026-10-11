@@ -2,7 +2,7 @@
 // one context, string-based host functions. All methods must be called from
 // the thread/queue that owns the context.
 
-import CQuickJS
+import CQuickJSNG
 import Foundation
 
 public enum QuickJSError: Error, CustomStringConvertible {
