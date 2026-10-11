@@ -492,9 +492,13 @@ enum CSSInterpolate {
         while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
             let name = rest[..<open].trimmingCharacters(in: .whitespaces)
             let args = WidgetNode.splitTopLevel(String(rest[rest.index(after: open)..<close]), separator: ",")
-            let identity = identityValues[name.lowercased()].map { value in args.map { _ in value }.joined(separator: ",") } ?? args.map { arg -> String in
+            let identity = args.map { arg -> String in
+                let lead = arg.prefix { $0 == " " || $0 == "\t" }
+                if let value = identityValues[name.lowercased()] {
+                    return lead + value
+                }
                 let unit = arg.trimmingCharacters(in: .whitespaces).drop { "0123456789.-+".contains($0) }
-                return "0" + unit
+                return lead + "0" + unit
             }.joined(separator: ",")
             out += (out.isEmpty ? "" : " ") + name + "(" + identity + ")"
             rest = rest[rest.index(after: close)...]
@@ -672,7 +676,7 @@ final class WidgetAnimator {
         }
         let base = bases[id] ?? [:]
         let spec = item.spec
-        return Baked(spec: spec, start: item.start, value: { [unowned self] progress in
+        return Baked(spec: spec, start: item.start, value: { [self] progress in
             let values = self.values(frames: frames, base: base, progress: progress, spec: spec)
             return (values.last { $0.0 == "transform" }?.1, values.last { $0.0 == "opacity" }?.1)
         })

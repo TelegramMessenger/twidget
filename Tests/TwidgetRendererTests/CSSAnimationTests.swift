@@ -127,4 +127,8 @@ final class CSSOvershootTests: XCTestCase {
         XCTAssertEqual(CSSInterpolate.mix("translateX(0px)", "translateX(100px)", 1.1), "translateX(110px)")
         XCTAssertEqual(CSSInterpolate.mix("0", "1", -0.1), "-0.1")
     }
+
+    func testInterpolatesFromNoneWithSpacedArguments() {
+        XCTAssertEqual(CSSInterpolate.mix("none", "skewX(20deg) translate(10px, 5px)", 0.5), "skewX(10deg) translate(5px, 2.5px)")
+    }
 }
