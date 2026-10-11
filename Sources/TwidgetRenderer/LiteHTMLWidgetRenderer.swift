@@ -71,6 +71,16 @@ public final class LiteHTMLWidgetRenderer {
     private var displayList: LHDisplayList?
     private let animator = WidgetAnimator()
     private lazy var compositor = WidgetCompositor(host: documentView.layer)
+    private lazy var magic: WidgetMagicMove = {
+        let magic = WidgetMagicMove(host: documentView.layer)
+        magic.onFinish = { [weak self] in
+            self?.finishMagicMove()
+        }
+        return magic
+    }()
+    public var magicMoveCount: Int {
+        return magic.transitions
+    }
     public var compositedCount: Int {
         return compositor.ids.count
     }
@@ -134,7 +144,7 @@ public final class LiteHTMLWidgetRenderer {
         guard let image = document.copyImage(maxWidth: size.width, rect: CGRect(origin: .zero, size: size), scale: scale) else {
             return nil
         }
-        if compositor.ids.isEmpty {
+        if compositor.ids.isEmpty && !magic.isActive {
             return NSImage(cgImage: image, size: size)
         }
         guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
@@ -144,11 +154,13 @@ public final class LiteHTMLWidgetRenderer {
         ctx.translateBy(x: 0, y: CGFloat(image.height))
         ctx.scaleBy(x: scale, y: -scale)
         compositor.draw(into: ctx)
+        magic.draw(into: ctx)
         return ctx.makeImage().map { NSImage(cgImage: $0, size: size) } ?? NSImage(cgImage: image, size: size)
     }
 
     public func destroy() {
         destroyed = true
+        magic.cancel()
         for (id, url) in canvasURLs {
             WidgetCanvasImages.unregister(uid + "-" + String(id))
             LHImages.forgetImage(withURL: url)
@@ -166,10 +178,22 @@ public final class LiteHTMLWidgetRenderer {
         }
         switch type {
         case "ops":
-            for case let op as [String: Any] in (message["ops"] as? [Any]) ?? [] {
+            let ops = ((message["ops"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
+            var capture: WidgetMagicMove.Capture?
+            if let document = document, !frozen, isOnScreen, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, WidgetMagicMove.isStructural(ops) {
+                capture = magic.capture(dom: dom, document: document)
+            }
+            for op in ops {
                 dom.apply(op)
             }
+            if var pending = capture, let document = document {
+                magic.collectLeaving(&pending, dom: dom, document: document, scale: documentView.scale)
+                capture = pending
+            }
             render()
+            if let capture = capture, let document = document, magic.run(capture, dom: dom, document: document, skip: animator.animatedIDs().union(compositor.ids), scale: documentView.scale) {
+                applyExclusions()
+            }
         case "query":
             let qid = message["qid"] ?? NSNull()
             let q = (message["query"] as? [String: Any]) ?? [:]
@@ -377,8 +401,9 @@ public final class LiteHTMLWidgetRenderer {
         let html = dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) })
         stage("serialize")
         let next = LHDocument(html: html, css: nil, previous: document)
-        if !compositor.ids.isEmpty {
-            next.setPaintExclusions(Set(compositor.ids.map { String($0) }), attribute: WidgetDOM.idAttribute)
+        let excluded = compositor.ids.union(magic.excluded)
+        if !excluded.isEmpty {
+            next.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
         stage("document")
         if next.reusedPrevious {
@@ -410,6 +435,23 @@ public final class LiteHTMLWidgetRenderer {
         documentView.document = next
         reportSize()
         reportResize()
+    }
+
+    private func applyExclusions() {
+        guard let document = document else {
+            return
+        }
+        document.setPaintExclusions(Set(compositor.ids.union(magic.excluded).map { String($0) }), attribute: WidgetDOM.idAttribute)
+        documentView.invalidate(nil)
+    }
+
+    private func finishMagicMove() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        magic.removeLayers()
+        applyExclusions()
+        documentView.displayIfNeeded()
+        CATransaction.commit()
     }
 
     private static func same(_ a: [Int: [(String, String)]], _ b: [Int: [(String, String)]]) -> Bool {
@@ -458,6 +500,9 @@ public final class LiteHTMLWidgetRenderer {
     func viewResized() {
         guard document != nil else {
             return
+        }
+        if magic.isActive {
+            magic.cancel()
         }
         render()
     }
@@ -659,6 +704,10 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         frozen = true
+        if magic.isActive {
+            magic.cancel()
+            applyExclusions()
+        }
         clock?.stop()
         frameRequested = false
         pendingMoves.removeAll()
