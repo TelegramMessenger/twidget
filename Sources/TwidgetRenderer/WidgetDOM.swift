@@ -199,6 +199,7 @@ final class WidgetDOM {
     let head: WidgetNode
     let body: WidgetNode
     private(set) var nodes: [Int: WidgetNode] = [:]
+    private(set) var usesTransitions = false
     var onViolation: ((String) -> Void)?
     var onCanvas: ((WidgetNode, [Any]) -> Void)?
     var onCall: ((WidgetNode, String, [Any]) -> Void)?
@@ -272,6 +273,9 @@ final class WidgetDOM {
         }
         if key.hasPrefix("data-lh-") {
             return
+        }
+        if key == "data-transition" {
+            usesTransitions = true
         }
         node.setAttribute(name, value)
     }
