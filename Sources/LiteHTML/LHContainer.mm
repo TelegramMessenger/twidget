@@ -634,6 +634,24 @@ static NSInteger ManagerWeightFromCSS(int w)
     return table[std::clamp((w + 50) / 100, 1, 9) - 1];
 }
 
+static NSFont* WithCSSWeight(NSFont* font, int cssWeight)
+{
+    if(!font)
+        return font;
+    const int     axis       = 0x77676874;
+    NSArray*      axes       = CFBridgingRelease(CTFontCopyVariationAxes((__bridge CTFontRef)font));
+    bool          hasWeight  = false;
+    for(NSDictionary* item in axes)
+        hasWeight = hasWeight || [item[(__bridge NSString*)kCTFontVariationAxisIdentifierKey] intValue] == axis;
+    if(!hasWeight)
+        return font;
+    CTFontDescriptorRef varied = CTFontDescriptorCreateCopyWithVariation((__bridge CTFontDescriptorRef)font.fontDescriptor,
+                                                                         (__bridge CFNumberRef) @(axis), std::clamp(cssWeight, 1, 1000));
+    CTFontRef result = CTFontCreateWithFontDescriptor(varied, font.pointSize, nullptr);
+    CFRelease(varied);
+    return result ? (NSFont*)CFBridgingRelease(result) : font;
+}
+
 static NSFont* SystemFontWithDesign(CGFloat size, NSFontWeight weight, bool serif)
 {
     NSFont* base = [NSFont systemFontOfSize:size weight:weight];
@@ -672,13 +690,13 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
 
         if([@[@"-apple-system", @"system-ui", @"blinkmacsystemfont", @"sans-serif", @"ui-sans-serif",
               @"sf pro", @"sf pro text", @"sf pro display"] containsObject:lower])
-            font = [NSFont systemFontOfSize:size weight:weight];
+            font = WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
         else if([@[@"monospace", @"ui-monospace", @"sf mono"] containsObject:lower])
-            font = MonospacedFont(size, weight);
+            font = WithCSSWeight(MonospacedFont(size, NSFontWeightRegular), cssWeight);
         else if([@[@"serif", @"ui-serif", @"new york"] containsObject:lower])
-            font = SystemFontWithDesign(size, weight, true);
+            font = WithCSSWeight(SystemFontWithDesign(size, NSFontWeightRegular, true), cssWeight);
         else if([@[@"ui-rounded", @"sf pro rounded"] containsObject:lower])
-            font = SystemFontWithDesign(size, weight, false);
+            font = WithCSSWeight(SystemFontWithDesign(size, NSFontWeightRegular, false), cssWeight);
         else
         {
             NSString* family = [lower isEqualToString:@"cursive"]   ? @"Snell Roundhand"
@@ -698,7 +716,7 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
             break;
     }
     if(!font)
-        font = [NSFont systemFontOfSize:size weight:weight];
+        font = WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
 
     if(italic && !(font.fontDescriptor.symbolicTraits & NSFontDescriptorTraitItalic))
     {
@@ -752,9 +770,8 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
     CGFloat ascent          = CTFontGetAscent(sf->font);
     CGFloat descent         = CTFontGetDescent(sf->font);
     CGFloat leading         = CTFontGetLeading(sf->font);
-    CGFloat height          = std::ceil(ascent + descent + leading);
-    sf->ascent              = std::ceil(ascent);
-    sf->descent             = height - sf->ascent;
+    sf->ascent              = std::round(ascent);
+    sf->descent             = std::round(descent) + std::round(leading);
     sf->x_height            = CTFontGetXHeight(sf->font);
     sf->underline_pos       = -CTFontGetUnderlinePosition(sf->font);
     sf->underline_thickness = std::max<CGFloat>(1.0, std::round(CTFontGetUnderlineThickness(sf->font)));

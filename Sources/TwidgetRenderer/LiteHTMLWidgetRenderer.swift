@@ -1228,15 +1228,21 @@ enum WidgetKeys {
 enum CSSFont {
     static func make(_ css: String) -> CTFont {
         var size: CGFloat = 10
-        var bold = false
+        var weight: CGFloat = 400
         var italic = false
         var families: [String] = []
         let tokens = WidgetNode.splitTopLevel(css, separator: " ").filter { !$0.isEmpty }
         var familyStart = tokens.count
         for (index, token) in tokens.enumerated() {
             let t = token.lowercased()
-            if t == "bold" || t == "bolder" || (Int(t) ?? 0) >= 600 {
-                bold = true
+            if t == "bold" {
+                weight = 700
+            } else if t == "bolder" {
+                weight = 900
+            } else if t == "lighter" {
+                weight = 300
+            } else if let numeric = Int(t), numeric >= 1, numeric <= 1000, index < tokens.count - 1 {
+                weight = CGFloat(numeric)
             } else if t == "italic" || t == "oblique" {
                 italic = true
             } else if let px = t.split(separator: "/").first, px.hasSuffix("px"), let value = Double(px.dropLast(2)), value.isFinite {
@@ -1268,10 +1274,14 @@ enum CSSFont {
                 break
             }
         }
-        var traits: CTFontSymbolicTraits = []
-        if bold {
-            traits.insert(.traitBold)
+        let axis = 0x77676874
+        if let axes = CTFontCopyVariationAxes(font) as? [[String: Any]], axes.contains(where: { ($0[kCTFontVariationAxisIdentifierKey as String] as? Int) == axis }) {
+            let varied = CTFontDescriptorCreateCopyWithVariation(CTFontCopyFontDescriptor(font), axis as CFNumber, weight)
+            font = CTFontCreateWithFontDescriptor(varied, size, nil)
+        } else if weight >= 600, let bolded = CTFontCreateCopyWithSymbolicTraits(font, size, nil, .traitBold, .traitBold) {
+            font = bolded
         }
+        var traits: CTFontSymbolicTraits = []
         if italic {
             traits.insert(.traitItalic)
         }
