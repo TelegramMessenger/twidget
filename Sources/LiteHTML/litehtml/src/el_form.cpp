@@ -317,6 +317,24 @@ namespace litehtml
                    (is(p.right, 2.01f) || is(p.right, 2.02f));
         }
 
+        void button_padding(css_properties& css, bool native)
+        {
+            const css_margins& p  = css.get_padding();
+            auto               is = [](const css_length& len, float v) {
+                return len.units() == css_units_px && std::fabs(len.val() - v) < 0.0001f;
+            };
+            if(!is(p.top, 0.01f) || !is(p.right, 6.01f) || !is(p.bottom, 1.01f) || !is(p.left, 6.01f))
+            {
+                return;
+            }
+            css_margins padding = p;
+            padding.top.set_value(native ? 0.f : 2.f, css_units_px);
+            padding.bottom.set_value(native ? 1.f : 3.f, css_units_px);
+            padding.left.set_value(6.f, css_units_px);
+            padding.right.set_value(6.f, css_units_px);
+            css.set_padding(padding);
+        }
+
         void field_padding(css_properties& css, bool native, bool number)
         {
             if(!ua_padding(css))
@@ -325,12 +343,12 @@ namespace litehtml
             }
             float       size    = css.get_font_size().value();
             float       v       = native ? std::round(size * 0.2f) : 1.f;
-            float       h       = native ? std::floor(size * 0.5f) : 2.f;
+            float       h       = native ? std::floor(size * 0.5f) : 1.f;
             css_margins padding = css.get_padding();
             padding.top.set_value(v, css_units_px);
             padding.bottom.set_value(v, css_units_px);
             padding.left.set_value(h, css_units_px);
-            padding.right.set_value(number ? (native ? 2.f : 1.f) : h, css_units_px);
+            padding.right.set_value(number && native ? 2.f : h, css_units_px);
             css.set_padding(padding);
         }
 
@@ -478,6 +496,7 @@ namespace litehtml
         } else if(is_button_like())
         {
             m_look.native = appearance && !authored_box(c, 0);
+            button_padding(c, m_look.native);
             resolve_box(c, m_look.native, p.button_border, p.button_face);
             resolve_text(c, m_look.disabled ? p.disabled_text : p.control_text);
             c.set_center_content(true);
@@ -728,6 +747,7 @@ namespace litehtml
         m_look.dark       = c.get_dark_scheme();
         m_look.disabled   = get_attr("disabled") != nullptr;
         m_look.native     = c.get_appearance() != appearance_none && !authored_box(c, 0);
+        button_padding(c, m_look.native);
         resolve_box(c, m_look.native, p.button_border, p.button_face);
         resolve_text(c, m_look.disabled ? p.disabled_text : p.control_text);
         c.set_center_content(true);
