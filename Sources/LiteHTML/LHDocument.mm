@@ -416,6 +416,7 @@ static bool LHPaintTraceUncached()
     CGFloat                      _preferredWidth;
     CGSize                       _size;
     BOOL                         _paintOnly;
+    BOOL                         _pointerRestyled;
     NSString                    *_cursor;
     CGColorSpaceRef              _colorSpace;
     BOOL                         _noSubtreeCulling;
@@ -504,7 +505,7 @@ static std::string MasterWithCSS(NSString *css)
                 previous->_consumedMaxWidth = previous->_lastMaxWidth;
                 previous->_consumedCulling  = _container->clip_culling();
                 _reusedPrevious             = YES;
-                if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0)
+                if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0 && !previous->_pointerRestyled)
                 {
                     _lastMaxWidth = previous->_lastMaxWidth;
                     _size         = previous->_size;
@@ -564,7 +565,7 @@ static std::string MasterWithCSS(NSString *css)
     previous->_consumedMaxWidth = previous->_lastMaxWidth;
     previous->_consumedCulling  = _container->clip_culling();
     _reusedPrevious             = YES;
-    if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0)
+    if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0 && !previous->_pointerRestyled)
     {
         _lastMaxWidth = previous->_lastMaxWidth;
         _size         = previous->_size;
@@ -1712,7 +1713,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
     _paintTraceValid = NO;
-    return _doc && _doc->on_mouse_over(x, y, x, y, IgnoreRedraw);
+    const BOOL changed = _doc && _doc->on_mouse_over(x, y, x, y, IgnoreRedraw);
+    _pointerRestyled = _pointerRestyled || changed;
+    return changed;
 }
 
 - (BOOL)mouseDown:(CGPoint)p
@@ -1721,7 +1724,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
     _paintTraceValid = NO;
-    return _doc && _doc->on_lbutton_down(x, y, x, y, IgnoreRedraw);
+    const BOOL changed = _doc && _doc->on_lbutton_down(x, y, x, y, IgnoreRedraw);
+    _pointerRestyled = _pointerRestyled || changed;
+    return changed;
 }
 
 - (BOOL)mouseUp:(CGPoint)p
@@ -1730,7 +1735,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
     _paintTraceValid = NO;
-    return _doc && _doc->on_lbutton_up(x, y, x, y, IgnoreRedraw);
+    const BOOL changed = _doc && _doc->on_lbutton_up(x, y, x, y, IgnoreRedraw);
+    _pointerRestyled = _pointerRestyled || changed;
+    return changed;
 }
 
 - (BOOL)mouseExited
@@ -1738,7 +1745,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     _paintTraceValid = NO;
-    return _doc && _doc->on_mouse_leave(IgnoreRedraw);
+    const BOOL changed = _doc && _doc->on_mouse_leave(IgnoreRedraw);
+    _pointerRestyled = _pointerRestyled || changed;
+    return changed;
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)sanitizerCounts
