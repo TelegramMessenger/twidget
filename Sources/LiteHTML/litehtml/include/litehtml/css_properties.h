@@ -123,6 +123,8 @@ namespace litehtml
         css_length        m_outline_offset;
         web_color         m_accent_color       = web_color::transparent;
         int               m_dark_scheme        = 0;
+        bool              m_keyword_size       = true;
+        bool              m_generic_mono       = false;
 
         void      compute_font(const html_tag* el, const std::shared_ptr<document>& doc);
         void      compute_background(const html_tag* el, const std::shared_ptr<document>& doc);

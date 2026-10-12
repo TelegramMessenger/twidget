@@ -184,5 +184,5 @@ class LHContainer : public litehtml::document_container
     CGColorSpaceRef          m_device_colors_space = nullptr;
     bool                     m_clip_culling = true;
     litehtml::position m_viewport;
-    float              m_default_font_size = 15.0f;
+    float              m_default_font_size = 16.0f;
 };

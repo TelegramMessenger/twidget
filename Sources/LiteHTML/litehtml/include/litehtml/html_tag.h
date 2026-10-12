@@ -99,6 +99,11 @@ namespace litehtml
                                  uint_ptr css_properties_member_offset) const;
         std::string raw_declaration(const std::string& name) const;
         bool        get_custom_property(string_id name, css_token_vector& result) const;
+        bool has_own_property(string_id name) const
+        {
+            const property_value& value = m_style.get_property(name);
+            return !value.is<invalid>();
+        }
         const css_token_vector* get_token_property(string_id name) const
         {
             const property_value& value = m_style.get_property(name);

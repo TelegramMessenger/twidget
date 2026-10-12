@@ -399,11 +399,26 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
         }
     }
 
-    m_font_size = static_cast<float>(font_size);
-
-    // initialize font
     m_font_family = el->get_property<std::string>(_font_family_, true, doc->container()->get_default_font_name(),
                                                   offset(m_font_family));
+
+    bool parent_keyword = el_parent ? el_parent->css().m_keyword_size : true;
+    bool parent_mono    = el_parent ? el_parent->css().m_generic_mono : false;
+    bool own_size       = el->has_own_property(_font_size_);
+    m_keyword_size      = own_size ? sz.is_predefined() && sz.predef() <= font_size_xx_large : parent_keyword;
+    std::string family  = m_font_family;
+    trim(family, " \t\"'");
+    m_generic_mono = m_keyword_size && t_strcasecmp(family.c_str(), "monospace") == 0;
+    if(m_generic_mono && (own_size || !parent_mono))
+    {
+        font_size = font_size * 13_px / 16_px;
+    } else if(!m_generic_mono && parent_mono && !own_size)
+    {
+        font_size = font_size * 16_px / 13_px;
+    }
+
+    m_font_size = static_cast<float>(font_size);
+
     m_font_weight = el->get_property<css_length>(_font_weight_, true, css_length::predef_value(font_weight_normal),
                                                  offset(m_font_weight));
     m_font_style =
