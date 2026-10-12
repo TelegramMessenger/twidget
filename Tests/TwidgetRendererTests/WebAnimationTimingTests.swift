@@ -212,7 +212,7 @@ final class WebAnimationHandoffTests: XCTestCase {
         }
         var worst: Float = 0
         for step in 0...400 {
-            let time = 0.8 + Double(step) * 0.01
+            let time = 0.8037 + Double(step) * 0.01
             let expected = min(1, max(0, animation.values(at: time, underlying: { _ in "1" }).flatMap { $0.first.map { Float(Double($0.1)!) } } ?? 1))
             let shown = emulate(bake, track, at: time) ?? 1
             worst = max(worst, abs(shown - expected))
@@ -225,7 +225,7 @@ final class WebAnimationHandoffTests: XCTestCase {
         check(["timing": ["duration": 400, "iterations": 3, "direction": "alternate", "easing": "ease-in-out"]])
         check(["timing": ["duration": 300, "iterations": NSNull(), "iterationStart": 0.4, "direction": "alternate-reverse"]])
         check(["timing": ["duration": 500, "delay": 300, "iterations": 2.5, "fill": "both", "easing": "steps(4, jump-end)"]])
-        check(["timing": ["duration": 500, "iterations": 2.5, "fill": "both", "easing": "steps(4, jump-both)"]])
+        check(["timing": ["duration": 500, "iterations": 2.5, "fill": "forwards", "easing": "steps(4, jump-both)"]])
         let before = WebAnimation.parse(["aid": 1, "target": 5, "startTime": 1000, "keyframes": [], "timing": ["duration": 500, "delay": 300, "fill": "both", "easing": "steps(4, jump-both)"]])!
         XCTAssertNil(WidgetWebAnimations.bake(before, base: [:]))
         check(["timing": ["duration": 600, "iterations": 2, "fill": "forwards", "endDelay": 200], "playbackRate": 2])

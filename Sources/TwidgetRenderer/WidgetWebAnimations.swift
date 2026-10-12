@@ -852,7 +852,7 @@ final class WidgetWebAnimations {
         }
         let fillsBackwards = timing.fillsBackwards
         let fillsForwards = timing.fillsForwards
-        if let (_, jump) = timing.easing.steps, jump == .start || jump == .both, (fillsBackwards && timing.delay > 0) || (fillsForwards && animation.rate < 0) {
+        if let (_, jump) = timing.easing.steps, jump == .start || jump == .both, (fillsBackwards && animation.rate > 0) || (fillsForwards && animation.rate < 0) {
             return nil
         }
         timing.fill = "both"
