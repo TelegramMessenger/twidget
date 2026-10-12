@@ -267,25 +267,40 @@ final class WidgetCompositor {
         }
     }
 
-    func handoffError(_ sampled: [Int: [(String, String)]], bases: (Int) -> [String: String]) -> (geometry: CGFloat, alpha: Float) {
+    func handoffError(animator: WidgetAnimator, now: CFTimeInterval) -> (geometry: CGFloat, alpha: Float, offset: Double) {
         var geometry: CGFloat = 0
         var alpha: Float = 0
+        var offsetAtWorst = 0.0
         for id in driven.keys {
             guard let item = promoted[id], let shown = item.layer.presentation() else {
                 continue
             }
-            let values = sampled[id] ?? []
-            let base = bases(id)
-            let transform = CSSTransform.parse(values.last { $0.0 == "transform" }?.1 ?? base["transform"], box: item.box.size) ?? .identity
-            let opacity = Float(Double(values.last { $0.0 == "opacity" }?.1 ?? base["opacity"] ?? "1") ?? 1)
             let actual = CATransform3DGetAffineTransform(shown.transform)
-            for corner in [CGPoint(x: -item.origin.x, y: -item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: item.box.height - item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: -item.origin.y)] {
-                let a = corner.applying(transform), b = corner.applying(actual)
-                geometry = max(geometry, hypot(a.x - b.x, a.y - b.y))
+            var best: (CGFloat, Float, Double) = (.greatestFiniteMagnitude, 1, 0)
+            for step in -25...25 {
+                let offset = Double(step) / 1000
+                guard let value = animator.peek(id, at: now + offset) else {
+                    continue
+                }
+                let transform = CSSTransform.parse(value.transform, box: item.box.size) ?? .identity
+                let opacity = Float(max(0, min(1, Double(value.opacity ?? "1") ?? 1)))
+                var error: CGFloat = 0
+                for corner in [CGPoint(x: -item.origin.x, y: -item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: item.box.height - item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: -item.origin.y)] {
+                    let a = corner.applying(transform), b = corner.applying(actual)
+                    error = max(error, hypot(a.x - b.x, a.y - b.y))
+                }
+                let alphaError = abs(opacity - shown.opacity)
+                if error + CGFloat(alphaError) * 100 < best.0 + CGFloat(best.1) * 100 {
+                    best = (error, alphaError, offset)
+                }
             }
-            alpha = max(alpha, abs(opacity - shown.opacity))
+            if best.0 > geometry {
+                geometry = best.0
+                offsetAtWorst = best.2
+            }
+            alpha = max(alpha, best.1)
         }
-        return (geometry, alpha)
+        return (geometry, alpha, offsetAtWorst)
     }
 
     struct Track {

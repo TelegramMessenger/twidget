@@ -682,6 +682,40 @@ final class WidgetAnimator {
         })
     }
 
+    func peek(_ id: Int, at now: CFTimeInterval) -> (transform: String?, opacity: String?)? {
+        guard let item = running[id]?.first(where: { keyframes[$0.spec.name] != nil }), let frames = keyframes[item.spec.name] else {
+            return nil
+        }
+        let spec = item.spec
+        let base = bases[id] ?? [:]
+        let local = now - item.start - spec.delay
+        let duration = max(spec.duration, 0.0001)
+        var progress: Double
+        if local < 0 {
+            guard spec.fill == "backwards" || spec.fill == "both" else {
+                return (base["transform"], base["opacity"])
+            }
+            progress = reversed(spec.direction, 0) ? 1 : 0
+        } else if local >= spec.iterations * duration {
+            guard spec.fill == "forwards" || spec.fill == "both" else {
+                return (base["transform"], base["opacity"])
+            }
+            let last = max(0, Int(ceil(min(spec.iterations, 1e9))) - 1)
+            progress = spec.iterations.truncatingRemainder(dividingBy: 1) == 0 ? 1 : spec.iterations.truncatingRemainder(dividingBy: 1)
+            if reversed(spec.direction, last) {
+                progress = 1 - progress
+            }
+        } else {
+            let iteration = Int(min(local / duration, 1e12))
+            progress = (local - Double(iteration) * duration) / duration
+            if reversed(spec.direction, iteration) {
+                progress = 1 - progress
+            }
+        }
+        let values = self.values(frames: frames, base: base, progress: progress, spec: spec)
+        return (values.last { $0.0 == "transform" }?.1 ?? base["transform"], values.last { $0.0 == "opacity" }?.1 ?? base["opacity"])
+    }
+
     func isActive(excluding driven: Set<Int>) -> Bool {
         if transitions.keys.contains(where: { !driven.contains($0) }) {
             return true

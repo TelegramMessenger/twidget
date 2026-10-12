@@ -293,12 +293,14 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public private(set) var handoffWorst: (geometry: CGFloat, alpha: Float) = (0, 0)
+    public private(set) var handoffOffsets: [Double] = []
 
     private func renderAnimationFrame() {
         let sampled = animator.sample(now: animationNow)
         if WidgetDocumentView.verify && !compositor.drivenIDs.isEmpty {
-            let error = compositor.handoffError(sampled, bases: { [animator] in animator.base($0) })
+            let error = compositor.handoffError(animator: animator, now: animationNow)
             handoffWorst = (max(handoffWorst.geometry, error.geometry), max(handoffWorst.alpha, error.alpha))
+            handoffOffsets.append(error.offset)
         }
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
         if !LiteHTMLWidgetRenderer.same(rest, overrides) {
