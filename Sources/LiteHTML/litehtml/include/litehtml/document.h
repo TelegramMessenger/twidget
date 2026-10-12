@@ -109,6 +109,7 @@ namespace litehtml
         {
             bool                                  text  = false;
             bool                                  src   = false;
+            bool                                  cls   = false;
             const void*                           node  = nullptr;
             std::string                           name;
             std::string                           attr;
@@ -251,6 +252,7 @@ namespace litehtml
                                bool blocked);
         bool     apply_retag(const std::shared_ptr<element>& el, const string_map& attrs, bool check);
         void     forget_positions();
+        bool     class_change_allowed(const html_hole& hole, const std::string& value, string_map& attrs);
         bool     retext_in_place(const std::vector<std::shared_ptr<element>>& current, const char* text,
                                  std::vector<std::string>& words) const;
 

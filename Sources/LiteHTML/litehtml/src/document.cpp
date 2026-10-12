@@ -574,13 +574,16 @@ namespace litehtml
                     const bool src  = (e.tag == GUMBO_TAG_IMG || e.tag == GUMBO_TAG_CANVAS) && strcmp(attr->name, "src") == 0;
                     const bool geometry = !src && e.tag_namespace == GUMBO_NAMESPACE_SVG && e.tag != GUMBO_TAG_SVG &&
                                           svg_geometry_attribute(attr->name) && !selected.count(attr->name);
-                    if(!src && !geometry && strcmp(attr->name, "style") != 0)
+                    const bool cls = !src && !geometry && e.tag_namespace == GUMBO_NAMESPACE_HTML && strcmp(attr->name, "class") == 0;
+                    if(!src && !geometry && !cls && strcmp(attr->name, "style") != 0)
                         continue;
                     const GumboStringPiece& v = attr->original_value;
                     auto it = m_node_elements.find(node);
                     if(!v.data || v.length < 2 || (v.data[0] != '"' && v.data[0] != '\'') || v.data < base ||
                        v.data + v.length > base + size || it == m_node_elements.end() || it->second.size() != 1)
                     {
+                        if(cls)
+                            continue;
                         ok = false;
                         return;
                     }
@@ -589,6 +592,7 @@ namespace litehtml
                     s.end         = (size_t)(v.data - base) + v.length - 1;
                     s.hole.close  = v.data[0];
                     s.hole.src    = src;
+                    s.hole.cls    = cls;
                     if(geometry)
                         s.hole.attr = attr->name;
                     s.hole.owner  = it->second.front();
@@ -779,7 +783,7 @@ namespace litehtml
             for(size_t i = 0; i < m_holes.size(); i++)
             {
                 const html_hole& hole = m_holes[i];
-                if(!hole.text && !hole.src && hole.attr.empty() && hole.owner)
+                if(!hole.text && !hole.src && !hole.cls && hole.attr.empty() && hole.owner)
                     m_style_holes.emplace(hole.owner.get(), i);
             }
         }
@@ -826,10 +830,29 @@ namespace litehtml
         return true;
     }
 
+    bool document::class_change_allowed(const html_hole& hole, const std::string& value, string_map& attrs)
+    {
+        static const bool disabled = getenv("LH_NO_CLASS_HOLES") != nullptr;
+        if(disabled || !hole.owner || !hole.owner->parent() || (selector_scope() & 5) != 0)
+            return false;
+        for(auto p = hole.owner->parent(); p; p = p->parent())
+        {
+            if(p->tag() == _select_)
+                return false;
+        }
+        auto tag = std::dynamic_pointer_cast<html_tag>(hole.owner);
+        if(!tag)
+            return false;
+        attrs          = tag->attributes();
+        attrs["class"] = value;
+        return retag_allowed(hole.owner, hole.owner->get_tagName(), false, attrs, false);
+    }
+
     int document::apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed)
     {
         invalidate_paint();
-        std::vector<size_t> dirty;
+        std::vector<size_t>                             dirty;
+        std::vector<std::pair<size_t, string_map>>      classes;
         for(const auto& change : changes)
         {
             const size_t       i = change.first;
@@ -838,6 +861,14 @@ namespace litehtml
                 continue;
             if(v.find_first_of("&\r") != std::string::npos || v.find('\0') != std::string::npos)
                 return -1;
+            if(m_holes[i].cls)
+            {
+                string_map attrs;
+                if(!class_change_allowed(m_holes[i], v, attrs))
+                    return -1;
+                classes.emplace_back(&change - changes.data(), std::move(attrs));
+                continue;
+            }
             if(m_holes[i].text)
             {
                 if(v.find_first_not_of(" \t\n\f") == std::string::npos)
@@ -850,7 +881,7 @@ namespace litehtml
                 return -1;
             dirty.push_back(&change - changes.data());
         }
-        if(dirty.empty())
+        if(dirty.empty() && classes.empty())
         {
             m_paint_only_patch = true;
             m_patch_confined   = true;
@@ -868,6 +899,18 @@ namespace litehtml
         bool                      paint_only = !getenv("LH_NO_PAINT_ONLY");
         m_patch_regions.clear();
         m_patch_confined = !getenv("LH_NO_PATCH_REGIONS");
+        for(const auto& entry : classes)
+        {
+            html_hole& hole = m_holes[changes[entry.first].first];
+            if(!apply_retag(hole.owner, entry.second, true))
+            {
+                keep_tree  = false;
+                paint_only = false;
+            }
+            m_patch_confined = false;
+            hole.value       = changes[entry.first].second;
+            restyle.push_back(hole.owner);
+        }
         for(size_t k : dirty)
         {
             const std::string& value = changes[k].second;

@@ -168,6 +168,39 @@ static NSString *Page(NSString *css, const std::string &body)
     }
 }
 
+- (void)testPaintOnlyClassTogglesReuseTheLayout
+{
+    auto body = [](int frame, bool layoutClass) {
+        std::string out = "<div data-lh-id=\"5\" class=\"row\">";
+        for(int i = 0; i < 6; i++)
+        {
+            const bool  up  = ((frame >> i) & 1) != 0;
+            std::string cls = up ? "up" : "down";
+            if(layoutClass && i == 2)
+                cls += " wide";
+            out += "<span data-lh-id=\"" + std::to_string(10 + i) + "\" id=\"c" + std::to_string(i) + "\" class=\"" + cls + "\">" +
+                   std::to_string(i * 11) + ".5</span>";
+        }
+        return out + "</div>";
+    };
+    LHDocument *document = [[LHDocument alloc] initWithHTML:Page(PaintSheet, body(0, false)) css:nil previous:nil];
+    [document layoutWithMaxWidth:240 preferredWidth:240];
+    for(int frame = 1; frame < 12; frame++)
+    {
+        const bool  layoutClass = frame % 4 == 3;
+        NSString   *html        = Page(PaintSheet, body(frame * 7, layoutClass));
+        LHDocument *patch       = [[LHDocument alloc] initWithHTML:html css:nil previous:document];
+        LHDocument *fresh       = [[LHDocument alloc] initWithHTML:html css:nil];
+        XCTAssertTrue(patch.reusedPrevious, @"frame %d", frame);
+        if(!layoutClass && frame % 4 != 0)
+            XCTAssertTrue(patch.reusedLayout, @"frame %d", frame);
+        if(layoutClass)
+            XCTAssertFalse(patch.reusedLayout, @"frame %d", frame);
+        [self expect:patch like:fresh width:240 label:[NSString stringWithFormat:@"frame %d", frame]];
+        document = patch;
+    }
+}
+
 - (void)testRandomTextAndClassEditsMatchAFreshLayout
 {
     const char  *budget   = getenv("TWIDGET_FUZZ_SECONDS");
