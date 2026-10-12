@@ -130,7 +130,7 @@ bool Sanitizer::imageAllowed(std::string_view raw) const
 {
     std::string_view url    = Trimmed(raw);
     std::string      scheme = Scheme(url);
-    if(!scheme.empty() && m_policy->imageSchemes.count(scheme))
+    if(!scheme.empty() && (m_policy->imageSchemes.count(scheme) || m_policy->builtinImageSchemes.count(scheme)))
         return true;
     if(scheme != "data")
         return false;

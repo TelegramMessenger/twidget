@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (class, readonly, nullable) NSImage *_Nullable (^provider)(NSString *url);
 + (void)forgetImageWithURL:(NSString *)url;
 + (void)registerDemoImages;
+@property (class, nonatomic) BOOL portableSymbols;
 
 @end
 

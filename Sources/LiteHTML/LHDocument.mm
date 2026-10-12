@@ -9,7 +9,9 @@
 #include "el_svg.h"
 #include "el_image.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstring>
 #include <cmath>
 #include <functional>
 #include <unordered_map>
@@ -1774,3 +1776,67 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 }
 
 @end
+
+static std::string::size_type FindCaseless(const std::string &text, const char *needle, bool last)
+{
+    const size_t n = std::strlen(needle);
+    if(text.size() < n)
+        return std::string::npos;
+    auto matches = [&](size_t at) {
+        for(size_t i = 0; i < n; i++)
+            if(std::tolower(static_cast<unsigned char>(text[at + i])) != needle[i])
+                return false;
+        return true;
+    };
+    if(last)
+    {
+        for(size_t at = text.size() - n + 1; at-- > 0;)
+            if(matches(at))
+                return at;
+        return std::string::npos;
+    }
+    for(size_t at = 0; at + n <= text.size(); at++)
+        if(matches(at))
+            return at;
+    return std::string::npos;
+}
+
+static thread_local int SVGImageDepth = 0;
+
+bool LHRenderingSVGImage(void)
+{
+    return SVGImageDepth > 0;
+}
+
+CGImageRef LHCreateSVGImage(const std::string &markup, CGSize *size)
+{
+    int         &depth      = SVGImageDepth;
+    const size_t kMaxMarkup = 2 * 1024 * 1024;
+    if(depth > 0 || markup.size() > kMaxMarkup)
+        return nullptr;
+    size_t open  = FindCaseless(markup, "<svg", false);
+    size_t close = FindCaseless(markup, "</svg>", true);
+    if(open == std::string::npos || close == std::string::npos || close < open)
+        return nullptr;
+    std::string body = "<body style=\"margin: 0; color: #000000\">" + markup.substr(open, close + 6 - open) + "</body>";
+    NSString   *html = [[NSString alloc] initWithBytes:body.data() length:body.size() encoding:NSUTF8StringEncoding];
+    if(!html)
+        return nullptr;
+    depth++;
+    CGImageRef image = nullptr;
+    @autoreleasepool
+    {
+        LHDocument *doc = [[LHDocument alloc] initWithHTML:html css:@"body > :not(svg) { display: none !important; }"];
+        [doc layoutWithMaxWidth:300 preferredWidth:300];
+        CGRect box = [doc boundsOfElementsMatching:@"body > svg"];
+        if(!CGRectIsNull(box) && box.size.width > 0 && box.size.height > 0 && box.size.width <= 16384 && box.size.height <= 16384)
+        {
+            CGFloat scale = std::min<CGFloat>(2, std::min(4096 / box.size.width, 4096 / box.size.height));
+            image         = [doc copyImageWithMaxWidth:300 rect:box scale:scale];
+            if(image && size)
+                *size = box.size;
+        }
+    }
+    depth--;
+    return image;
+}

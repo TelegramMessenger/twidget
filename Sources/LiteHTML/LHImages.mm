@@ -183,6 +183,16 @@ static void RegisterDemoImages(void)
     LHForgetImage(url);
 }
 
++ (BOOL)portableSymbols
+{
+    return LHPortableSymbols();
+}
+
++ (void)setPortableSymbols:(BOOL)portableSymbols
+{
+    LHSetPortableSymbols(portableSymbols);
+}
+
 + (void)registerDemoImages
 {
     static dispatch_once_t once;

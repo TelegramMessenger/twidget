@@ -2,6 +2,7 @@
 #import <ImageIO/ImageIO.h>
 
 #include "LHContainer.h"
+#include "twidget_assets.h"
 
 #include <algorithm>
 #include <atomic>
@@ -291,10 +292,9 @@ ImageHandle LoadImageFromData(NSData* data, bool isSVG)
         }
         return {};
     }
-    NSImage* img = [[NSImage alloc] initWithData:data];
-    if(img && img.size.width > 0 && img.size.height > 0)
-        return AdoptImage(CreateCGImageFromNSImage(img, img.size, 2.0, nil), img.size);
-    return {};
+    CGSize     size  = CGSizeZero;
+    CGImageRef image = LHCreateSVGImage(std::string(static_cast<const char*>(data.bytes), data.length), &size);
+    return image ? AdoptImage(image, size) : ImageHandle();
 }
 
 ImageHandle LoadDataURI(const std::string& url)
@@ -364,6 +364,29 @@ ImageHandle LoadSymbol(const std::string& url)
     return {};
 }
 
+std::atomic<bool> g_portableSymbols{getenv("LH_PORTABLE_SYMBOLS") != nullptr};
+
+bool HasScheme(const std::string& url, const char* scheme)
+{
+    size_t n = std::strlen(scheme);
+    if(url.size() < n)
+        return false;
+    for(size_t i = 0; i < n; i++)
+        if(std::tolower(static_cast<unsigned char>(url[i])) != scheme[i])
+            return false;
+    return true;
+}
+
+ImageHandle LoadIcon(const std::string& url)
+{
+    auto icon = twa::parseURL(url);
+    if(!icon)
+        return {};
+    CGSize     size  = CGSizeZero;
+    CGImageRef image = LHCreateSVGImage(twa::svg(*icon), &size);
+    return image ? AdoptImage(image, size) : ImageHandle();
+}
+
 NSImage* (^g_provider)(NSString* url) = nil;
 std::mutex g_providerLock;
 
@@ -395,14 +418,19 @@ ImageHandle LookupImage(const std::string& url)
 {
     if(url.empty())
         return {};
-    bool        isData = url.rfind("data:", 0) == 0;
-    ImageStore& store  = Store();
+    bool        isData   = url.rfind("data:", 0) == 0;
+    if(!isData && LHRenderingSVGImage())
+        return {};
+    bool        isIcon   = !isData && HasScheme(url, "icon:");
+    bool        isSymbol = !isData && !isIcon && url.rfind("sf:", 0) == 0;
+    bool        bounded  = isData || isIcon || isSymbol;
+    ImageStore& store    = Store();
     {
         std::lock_guard<std::mutex> guard(store.lock);
         auto                        it = store.images.find(url);
         if(it != store.images.end())
         {
-            if(isData)
+            if(bounded)
             {
                 auto mit = store.dataMeta.find(url);
                 if(mit != store.dataMeta.end())
@@ -414,9 +442,15 @@ ImageHandle LookupImage(const std::string& url)
     ImageHandle img;
     if(isData)
         img = LoadDataURI(url);
-    else if(url.rfind("sf:", 0) == 0)
-        img = LoadSymbol(url);
-    else
+    else if(isIcon)
+        img = LoadIcon(url);
+    else if(isSymbol)
+    {
+        if(!g_portableSymbols.load(std::memory_order_relaxed))
+            img = LoadSymbol(url);
+        if(!img)
+            img = LoadIcon(url);
+    } else
     {
         img = LoadProvided(url);
         if(!img)
@@ -424,7 +458,7 @@ ImageHandle LookupImage(const std::string& url)
     }
 
     std::lock_guard<std::mutex> guard(store.lock);
-    if(isData)
+    if(bounded)
     {
         auto existing = store.images.find(url);
         if(existing != store.images.end())
@@ -434,7 +468,7 @@ ImageHandle LookupImage(const std::string& url)
                 store.dataOrder.splice(store.dataOrder.end(), store.dataOrder, mit->second.first);
             return existing->second;
         }
-        size_t bytes = img.image ? CGImageGetBytesPerRow(img.image) * CGImageGetHeight(img.image) : 16 * 1024;
+        size_t bytes = (img.image ? CGImageGetBytesPerRow(img.image) * CGImageGetHeight(img.image) : 16 * 1024) + url.size();
         while(store.dataBytes + bytes > kMaxDataImageBytes && !store.dataOrder.empty())
         {
             std::string victim = store.dataOrder.front();
@@ -475,6 +509,35 @@ void LHSetImageProvider(NSImage* (^provider)(NSString* url))
 {
     std::lock_guard<std::mutex> guard(g_providerLock);
     g_provider = [provider copy];
+}
+
+void LHSetPortableSymbols(bool portable)
+{
+    if(g_portableSymbols.exchange(portable) == portable)
+        return;
+    ImageStore& store = Store();
+    std::lock_guard<std::mutex> guard(store.lock);
+    for(auto it = store.dataOrder.begin(); it != store.dataOrder.end();)
+    {
+        if(it->rfind("sf:", 0) != 0)
+        {
+            ++it;
+            continue;
+        }
+        auto meta = store.dataMeta.find(*it);
+        if(meta != store.dataMeta.end())
+        {
+            store.dataBytes -= meta->second.second;
+            store.dataMeta.erase(meta);
+        }
+        store.images.erase(*it);
+        it = store.dataOrder.erase(it);
+    }
+}
+
+bool LHPortableSymbols(void)
+{
+    return g_portableSymbols.load(std::memory_order_relaxed);
 }
 
 void LHForgetImage(NSString* url)

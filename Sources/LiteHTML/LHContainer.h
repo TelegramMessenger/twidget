@@ -14,12 +14,17 @@
 #include <unordered_map>
 #include <vector>
 
+CGImageRef LHCreateSVGImage(const std::string& markup, CGSize* size);
+bool       LHRenderingSVGImage(void);
+
 #ifdef __OBJC__
 @class NSImage;
 void LHRegisterAppImage(NSString* name, NSImage* image);
 void LHSetImageProvider(NSImage* (^provider)(NSString* url));
 NSImage* (^LHImageProvider(void))(NSString* url);
 void LHForgetImage(NSString* url);
+void LHSetPortableSymbols(bool portable);
+bool LHPortableSymbols(void);
 #endif
 
 struct LHTextRun

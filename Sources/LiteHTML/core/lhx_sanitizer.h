@@ -16,6 +16,7 @@ struct SanitizerPolicy
 {
     std::unordered_set<std::string> linkSchemes;
     std::unordered_set<std::string> imageSchemes;
+    std::unordered_set<std::string> builtinImageSchemes{"icon"};
     std::unordered_set<std::string> imageMIMETypes;
     std::unordered_set<std::string> htmlTags;
     std::unordered_set<std::string> svgTags;

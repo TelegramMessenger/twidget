@@ -23,7 +23,7 @@ let package = Package(
             publicHeadersPath: "include"),
         .target(
             name: "LiteHTML",
-            dependencies: [],
+            dependencies: ["TwidgetAssets"],
             path: "Sources/LiteHTML",
             exclude: [
                 "litehtml/LICENSE",
@@ -89,7 +89,7 @@ let package = Package(
             path: "Tests/TwidgetRendererTests"),
         .testTarget(
             name: "LiteHTMLTests",
-            dependencies: ["LiteHTML"],
+            dependencies: ["LiteHTML", "TwidgetAssets"],
             path: "Tests/LiteHTMLTests",
             cxxSettings: [
                 .headerSearchPath("../../Sources/LiteHTML/litehtml/include"),
