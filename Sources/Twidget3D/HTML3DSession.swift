@@ -95,7 +95,6 @@ final class HTML3DGPU {
     static let depthFormat: MTLPixelFormat = .depth32Float
 
     let device: MTLDevice
-    let queue: MTLCommandQueue
     let dummyBuffer: MTLBuffer
     let dummyDepth: MTLTexture
     let shadowSampler: MTLSamplerState
@@ -143,7 +142,7 @@ final class HTML3DGPU {
     }
 
     private init?() {
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
+        guard let device = MTLCreateSystemDefaultDevice() else {
             return nil
         }
         let ones = [Float](repeating: 1, count: 16)
@@ -170,7 +169,6 @@ final class HTML3DGPU {
             memoryless = device.supportsFamily(.apple7)
         }
         self.device = device
-        self.queue = queue
         self.dummyBuffer = dummyBuffer
         self.dummyDepth = dummyDepth
         self.shadowSampler = shadowSampler
@@ -370,6 +368,8 @@ public final class HTML3DSession {
     private var colorTarget: MTLTexture?
     private var depthTarget: MTLTexture?
     private var shadowMap: MTLTexture?
+    private var targetBytes = 0
+    private lazy var queue: MTLCommandQueue? = gpu?.device.makeCommandQueue()
 
     public static var isAvailable: Bool {
         return HTML3DGPU.shared != nil
@@ -387,7 +387,7 @@ public final class HTML3DSession {
     }
 
     deinit {
-        gpu?.unreserve(geometryBytes + instanceBytes)
+        gpu?.unreserve(geometryBytes + instanceBytes + targetBytes)
     }
 
     public var cornerRadius: CGFloat {
@@ -479,9 +479,7 @@ public final class HTML3DSession {
         lock.unlock()
         if changed && value {
             renderQueue.async { [self] in
-                colorTarget = nil
-                depthTarget = nil
-                shadowMap = nil
+                releaseTargets()
             }
         }
         if schedule {
@@ -508,6 +506,9 @@ public final class HTML3DSession {
         let callback = onStop
         lock.unlock()
         gpu?.unreserve(released)
+        renderQueue.async { [self] in
+            releaseTargets()
+        }
         callback?(reason)
     }
 
@@ -756,7 +757,7 @@ public final class HTML3DSession {
             let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: HTML3DGPU.colorFormat, width: width, height: height, mipmapped: false)
             desc.usage = [.renderTarget]
             desc.storageMode = .private
-            guard let texture = gpu.device.makeTexture(descriptor: desc), let readback = gpu.device.makeBuffer(length: width * height * 4, options: .storageModeShared), let commandBuffer = gpu.queue.makeCommandBuffer() else {
+            guard let texture = gpu.device.makeTexture(descriptor: desc), let readback = gpu.device.makeBuffer(length: width * height * 4, options: .storageModeShared), let commandBuffer = queue?.makeCommandBuffer() else {
                 return nil
             }
             inFlight.wait()
@@ -792,7 +793,7 @@ public final class HTML3DSession {
             lock.unlock()
             inFlight.wait()
             let committed = autoreleasepool { () -> Bool in
-                guard let gpu = gpu, let drawable = layer.nextDrawable(), let commandBuffer = gpu.queue.makeCommandBuffer() else {
+                guard let gpu = gpu, let drawable = layer.nextDrawable(), let commandBuffer = queue?.makeCommandBuffer() else {
                     return false
                 }
                 guard drawable.texture.width * drawable.texture.height <= limits.maxDrawablePixels else {
@@ -1110,9 +1111,42 @@ public final class HTML3DSession {
         }
     }
 
+    private func releaseTargets() {
+        colorTarget = nil
+        depthTarget = nil
+        shadowMap = nil
+        gpu?.unreserve(targetBytes)
+        targetBytes = 0
+    }
+
+    private func reserveTargets(_ bytes: Int) -> Bool {
+        guard let gpu = gpu else {
+            return false
+        }
+        if bytes > targetBytes {
+            if !gpu.reserve(bytes - targetBytes) {
+                return false
+            }
+        } else {
+            gpu.unreserve(targetBytes - bytes)
+        }
+        targetBytes = bytes
+        return true
+    }
+
+    private func targetCost(gpu: HTML3DGPU, width: Int, height: Int, shadow: Int) -> Int {
+        let multisampled = gpu.memorylessTargets ? 0 : width * height * 4 * HTML3DGPU.sampleCount * 2
+        return multisampled + shadow * shadow * 4
+    }
+
     private func ensureTargets(gpu: HTML3DGPU, width: Int, height: Int) -> Bool {
         if let color = colorTarget, color.width == width, color.height == height, depthTarget != nil {
             return true
+        }
+        guard reserveTargets(targetCost(gpu: gpu, width: width, height: height, shadow: shadowMap?.width ?? 0)) else {
+            colorTarget = nil
+            depthTarget = nil
+            return false
         }
         let colorDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: HTML3DGPU.colorFormat, width: width, height: height, mipmapped: false)
         colorDesc.textureType = .type2DMultisample
@@ -1138,6 +1172,10 @@ public final class HTML3DSession {
         let size = max(256, min(requested > 0 ? requested : 1024, limits.maxShadowMapSize))
         if let map = shadowMap, map.width == size {
             return map
+        }
+        guard reserveTargets(targetCost(gpu: gpu, width: colorTarget?.width ?? 0, height: colorTarget?.height ?? 0, shadow: size)) else {
+            shadowMap = nil
+            return nil
         }
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: HTML3DGPU.depthFormat, width: size, height: size, mipmapped: false)
         desc.usage = [.renderTarget, .shaderRead]
