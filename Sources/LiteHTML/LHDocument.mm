@@ -706,22 +706,27 @@ static std::string MasterWithCSS(NSString *css)
         return nil;
     if(regions.empty())
         return @[];
+    const lh::render_item *root = _doc->root_render().get();
     std::unordered_map<const lh::element *, std::shared_ptr<lh::render_item>> found;
     for(const auto &region : regions)
-        found.emplace(region.get(), nullptr);
-    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
-        auto it = found.find(ri->src_el().get());
-        if(it != found.end())
-        {
-            if(it->second)
-                it->second = std::shared_ptr<lh::render_item>();
-            else
-                it->second = ri;
-        }
-        for(const auto &child : ri->children())
-            visit(child);
-    };
-    visit(_doc->root_render());
+    {
+        if(found.count(region.get()))
+            continue;
+        std::shared_ptr<lh::render_item> single;
+        int                              count = 0;
+        region->for_each_render_item([&](const std::shared_ptr<lh::render_item> &ri) {
+            auto top = ri;
+            while(auto up = top->parent())
+                top = up;
+            if(top.get() != root)
+                return;
+            count++;
+            single = ri;
+        });
+        if(count != 1)
+            return nil;
+        found.emplace(region.get(), single);
+    }
     NSMutableArray<NSValue *> *rects = [NSMutableArray arrayWithCapacity:found.size()];
     for(const auto &entry : found)
     {

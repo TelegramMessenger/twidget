@@ -372,7 +372,7 @@ static void RegionChange(NSMutableData *changes, int idValue, NSString *name, NS
     }
 }
 
-- (void)testRandomHolePatchesMatchTheHTML
+- (void)testRandomHolePatchesMatchHTMLPatches
 {
     const char *budget   = getenv("TWIDGET_FUZZ_SECONDS");
     NSDate     *deadline = [NSDate dateWithTimeIntervalSinceNow:budget ? atof(budget) / 2 : 0];
@@ -385,7 +385,9 @@ static void RegionChange(NSMutableData *changes, int idValue, NSString *name, NS
             RegionNode    root     = RegionDocument(random, true);
             const CGFloat width    = 160 + random() % 160;
             LHDocument   *document = [[LHDocument alloc] initWithHTML:RegionPage(root) css:nil previous:nil];
+            LHDocument   *mirror   = [[LHDocument alloc] initWithHTML:RegionPage(root) css:nil previous:nil];
             [document layoutWithMaxWidth:width preferredWidth:width];
+            [mirror layoutWithMaxWidth:width preferredWidth:width];
             for(int step = 0; step < 16; step++)
             {
                 std::vector<RegionNode *> elements;
@@ -427,11 +429,12 @@ static void RegionChange(NSMutableData *changes, int idValue, NSString *name, NS
                     XCTAssertEqualObjects(patch.html, page, @"seed %u step %d", seed, step);
                 } else
                     patch = [[LHDocument alloc] initWithHTML:page css:nil previous:document];
-                LHDocument *fresh = [[LHDocument alloc] initWithHTML:page css:nil];
+                LHDocument *fresh = [[LHDocument alloc] initWithHTML:page css:nil previous:mirror];
                 NSString   *label = [NSString stringWithFormat:@"seed %u step %d %@", seed, step, page];
                 XCTAssertEqualObjects(RegionPixels(patch, width), RegionPixels(fresh, width), @"%@", label);
                 XCTAssertEqualObjects(patch.layoutSignature, fresh.layoutSignature, @"%@", label);
                 document = patch;
+                mirror   = fresh;
             }
         }
     }

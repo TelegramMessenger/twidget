@@ -73,6 +73,14 @@ namespace litehtml
         const std::list<std::shared_ptr<element>>& children() const;
 
         std::shared_ptr<render_item> get_render_item();
+        template <class F> void      for_each_render_item(F visit) const
+        {
+            for(const auto& item : m_renders)
+            {
+                if(auto ri = item.lock())
+                    visit(ri);
+            }
+        }
 
         virtual elements_list select_all(const std::string& selector);
         virtual elements_list select_all(const css_selector& selector);
