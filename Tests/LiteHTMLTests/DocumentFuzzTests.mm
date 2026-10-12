@@ -184,4 +184,25 @@ static NSArray<NSString *> *Seeds(void)
     }
 }
 
+- (void)testTmpLayoutIdempotence
+{
+    NSString *html = [NSString stringWithContentsOfFile:@"/tmp/leo-frame.html" encoding:NSUTF8StringEncoding error:nil];
+    if(!html) return;
+    LHDocument *a = [[LHDocument alloc] initWithHTML:html css:nil];
+    CGSize s1 = [a layoutWithMaxWidth:400 preferredWidth:400];
+    CGImageRef i1 = [a copyImageWithMaxWidth:400 rect:CGRectMake(0, 0, 400, s1.height) scale:1];
+    LHDocument *b = [[LHDocument alloc] initWithHTML:html css:nil];
+    CGSize s2 = [b layoutWithMaxWidth:400 preferredWidth:400];
+    [b layoutWithMaxWidth:400 preferredWidth:400];
+    CGImageRef i2 = [b copyImageWithMaxWidth:400 rect:CGRectMake(0, 0, 400, s2.height) scale:1];
+    NSData *d1 = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(i1));
+    NSData *d2 = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(i2));
+    NSLog(@"IDEMP sizes %@ %@ equal=%d", NSStringFromSize(s1), NSStringFromSize(s2), [d1 isEqualToData:d2]);
+    LHDocument *c = [[LHDocument alloc] initWithHTML:html css:nil previous:b];
+    CGSize s3 = [c layoutWithMaxWidth:400 preferredWidth:400];
+    CGImageRef i3 = [c copyImageWithMaxWidth:400 rect:CGRectMake(0, 0, 400, s3.height) scale:1];
+    NSData *d3 = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(i3));
+    NSLog(@"IDEMP patched reusedLayout=%d size %@ equalFresh=%d", c.reusedLayout, NSStringFromSize(s3), [d1 isEqualToData:d3]);
+}
+
 @end

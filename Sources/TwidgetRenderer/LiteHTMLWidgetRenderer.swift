@@ -458,6 +458,11 @@ public final class LiteHTMLWidgetRenderer {
                 patchMismatches += 1
                 if let dir = ProcessInfo.processInfo.environment["TW_PATCHCHECK_DUMP"], patchMismatches <= 3 {
                     print("PATCHDBG reusedLayout=\(next.reusedLayout) sizes=\(next.size) \(fresh.size)")
+                    for (name, image) in [("patched", a), ("fresh", b)] {
+                        if let image = image {
+                            try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir + "/\(name)\(patchMismatches).png"))
+                        }
+                    }
                     try? html.write(toFile: dir + "/mismatch\(patchMismatches).html", atomically: true, encoding: .utf8)
                     if let previousHTML = lastSerialized {
                         try? previousHTML.write(toFile: dir + "/before\(patchMismatches).html", atomically: true, encoding: .utf8)
