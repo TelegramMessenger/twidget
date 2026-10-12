@@ -138,4 +138,22 @@ namespace
     XCTAssertEqualWithAccuracy(double(width), 2 * 20 / 1.2, 2);
 }
 
+- (void)testAutoTablesSpreadSpaceByMaxContentAndFixedTablesSplitTheRestEvenly
+{
+    NSString* cell = @"<td style=\"padding:0;background:%@\"><span style=\"display:inline-block;width:%dpx;height:10px\"></span></td>";
+    NSString* autoTable = [NSString stringWithFormat:@"<table style=\"width:400px;border-spacing:0\"><tr>%@%@</tr></table>",
+                                                     [NSString stringWithFormat:cell, @"#f00", 20], [NSString stringWithFormat:cell, @"#00f", 60]];
+    Pixels a = Render(autoTable, 400);
+    XCTAssertEqual(a.at(196, 10)[0], 255);
+    XCTAssertEqual(a.at(204, 10)[2], 255);
+    NSString* fixedTable = @"<table style=\"width:300px;border-spacing:0;table-layout:fixed\"><tr>"
+                           @"<td style=\"padding:0;width:50px;background:#f00\">a</td><td style=\"padding:0;background:#0f0\">b</td><td style=\"padding:0;background:#00f\">c</td></tr>"
+                           @"<tr><td style=\"padding:0\">much wider text here</td><td></td><td></td></tr></table>";
+    Pixels f = Render(fixedTable, 300);
+    XCTAssertEqual(f.at(96, 4)[0], 255);
+    XCTAssertEqual(f.at(104, 4)[1], 255);
+    XCTAssertEqual(f.at(346, 4)[1], 255);
+    XCTAssertEqual(f.at(354, 4)[2], 255);
+}
+
 @end

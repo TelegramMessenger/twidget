@@ -84,6 +84,7 @@ namespace litehtml
         std::string           m_cursor;
         std::string           m_content;
         border_collapse       m_border_collapse = border_collapse_separate;
+        table_layout          m_table_layout   = table_layout_auto;
         css_length            m_css_border_spacing_x;
         css_length            m_css_border_spacing_y;
 
@@ -190,6 +191,7 @@ namespace litehtml
         void               set_borders(const css_borders& mCssBorders);
 
         const css_length& get_width() const;
+        table_layout get_table_layout() const { return m_table_layout; }
         const css_length& get_cell_width() const
         {
             return m_cell_width;

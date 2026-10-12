@@ -307,126 +307,302 @@ void litehtml::table_grid::distribute_width(pixel_t width, int start, int end)
 litehtml::pixel_t litehtml::table_grid::calc_table_width(pixel_t block_width, bool is_auto, pixel_t& min_table_width,
                                                          pixel_t& max_table_width)
 {
-    // pixel_t table_width = 0;
-
-    min_table_width = 0; // MIN
-    max_table_width = 0; // MAX
-
-    pixel_t cur_width = 0_px;
-    pixel_t max_w     = 0_px;
-    pixel_t min_w     = 0_px;
-
-    for(int col = 0; col < m_cols_count; col++)
+    enum kind
     {
-        min_table_width += m_columns[col].min_width;
-        max_table_width += m_columns[col].max_width;
-
-        if(!m_columns[col].css_width.is_predefined())
+        kind_auto,
+        kind_fixed,
+        kind_percent
+    };
+    const int         n = m_cols_count;
+    std::vector<kind> kinds(n, kind_auto);
+    std::vector<float> fixed(n, 0), percent(n, 0), mins(n, 0), maxs(n, 0), widths(n, 0);
+    float             min_sum = 0, max_sum = 0, max_percent = 0, max_non_percent = 0, remaining_percent = 100;
+    const float       epsilon = 1.0f / 128.0f;
+    for(int col = 0; col < n; col++)
+    {
+        const table_column& column = m_columns[col];
+        mins[col]                  = column.min_width.value();
+        maxs[col]                  = std::max(column.max_width.value(), mins[col]);
+        if(!column.css_width.is_predefined())
         {
-            m_columns[col].width = m_columns[col].css_width.calc_percent(block_width);
-            m_columns[col].width = std::max(m_columns[col].width, m_columns[col].min_width);
+            if(column.css_width.units() == css_units_percentage)
+            {
+                kinds[col]   = kind_percent;
+                percent[col] = std::max(0.0f, column.css_width.val());
+            } else
+            {
+                kinds[col] = kind_fixed;
+                fixed[col] = maxs[col];
+            }
+        }
+        min_sum += mins[col];
+        max_sum += maxs[col];
+        if(kinds[col] == kind_percent)
+        {
+            const float p = std::min(percent[col], remaining_percent);
+            max_percent   = std::max(max_percent, maxs[col] * 100 / std::max(p, epsilon));
+            remaining_percent -= p;
         } else
         {
-            m_columns[col].width  = m_columns[col].min_width;
-            max_w                += m_columns[col].max_width;
-            min_w                += m_columns[col].min_width;
+            max_non_percent += maxs[col];
         }
-
-        cur_width += m_columns[col].width;
     }
+    max_non_percent = max_non_percent * 100 / std::max(remaining_percent, epsilon);
+    float max_width = std::max({max_sum, max_non_percent, max_percent});
+    if(remaining_percent >= 100)
+        max_width = max_sum;
+    min_table_width = min_sum;
+    max_table_width = max_width;
 
-    if(cur_width == block_width)
-    {
-        return cur_width;
-    }
+    float table = block_width.value();
+    if(is_auto)
+        table = std::min(table, max_width);
+    table = std::max(table, min_sum);
 
-    if(cur_width < block_width)
+    float available = table;
+    bool  have_percent = false;
+    int   num_auto = 0, num_fixed = 0;
+    float total_auto = 0, total_fixed = 0, total_percent = 0, alloc_auto = 0;
+    for(int col = 0; col < n; col++)
     {
-        if(cur_width - min_w + max_w <= block_width)
+        widths[col] = mins[col];
+        available  -= mins[col];
+        switch(kinds[col])
         {
-            cur_width = 0;
-            for(int col = 0; col < m_cols_count; col++)
+        case kind_percent:
+            have_percent = true;
+            total_percent += percent[col];
+            break;
+        case kind_fixed:
+            num_fixed++;
+            total_fixed += maxs[col];
+            break;
+        case kind_auto:
+            num_auto++;
+            total_auto += maxs[col];
+            alloc_auto += mins[col];
+            break;
+        }
+    }
+    if(available > 0 && have_percent)
+    {
+        for(int col = 0; col < n; col++)
+        {
+            if(kinds[col] == kind_percent)
             {
-                if(m_columns[col].css_width.is_predefined())
+                const float w = std::max(mins[col], table * percent[col] / 100);
+                available    += widths[col] - w;
+                widths[col]   = w;
+            }
+        }
+        if(total_percent > 100)
+        {
+            float excess = table * (total_percent - 100) / 100;
+            for(int col = n - 1; col >= 0; col--)
+            {
+                if(kinds[col] == kind_percent)
                 {
-                    m_columns[col].width = m_columns[col].max_width;
+                    const float w         = widths[col];
+                    const float reduction = std::min(w, excess);
+                    excess               -= reduction;
+                    const float next      = std::max(mins[col], w - reduction);
+                    available            += w - next;
+                    widths[col]           = next;
                 }
-                cur_width += m_columns[col].width;
-            }
-            if(cur_width == block_width || is_auto)
-            {
-                return cur_width;
             }
         }
-        distribute_width(block_width - cur_width, 0, m_cols_count - 1);
-        cur_width = 0;
-        for(int col = 0; col < m_cols_count; col++)
+    }
+    if(available > 0)
+    {
+        for(int col = 0; col < n; col++)
         {
-            cur_width += m_columns[col].width;
+            if(kinds[col] == kind_fixed && fixed[col] > widths[col])
+            {
+                available  += widths[col] - fixed[col];
+                widths[col] = fixed[col];
+            }
+        }
+    }
+    if(available > 0 && num_auto)
+    {
+        available += alloc_auto;
+        for(int col = 0; col < n; col++)
+        {
+            if(kinds[col] == kind_auto && total_auto > 0)
+            {
+                const float w = std::max(widths[col], available * maxs[col] / total_auto);
+                available    -= w;
+                total_auto   -= maxs[col];
+                widths[col]   = w;
+            }
+        }
+    }
+    if(available > 0 && num_fixed && total_fixed > 0)
+    {
+        for(int col = 0; col < n; col++)
+        {
+            if(kinds[col] == kind_fixed)
+            {
+                const float w = available * maxs[col] / total_fixed;
+                available    -= w;
+                total_fixed  -= maxs[col];
+                widths[col]  += w;
+            }
+        }
+    }
+    if(available > 0 && have_percent && total_percent < 100)
+    {
+        for(int col = 0; col < n; col++)
+        {
+            if(kinds[col] == kind_percent)
+            {
+                const float w  = available * percent[col] / total_percent;
+                available     -= w;
+                total_percent -= percent[col];
+                widths[col]   += w;
+                if(available <= 0 || total_percent <= 0)
+                    break;
+            }
+        }
+    }
+    if(available > 0 && n > 0)
+    {
+        int total = n;
+        for(int col = n - 1; col >= 0; col--)
+        {
+            const float w = available / static_cast<float>(total);
+            available    -= w;
+            total--;
+            widths[col] += w;
+        }
+    }
+    if(available < 0)
+    {
+        for(kind k : {kind_auto, kind_fixed, kind_percent})
+        {
+            float beyond = 0;
+            for(int col = n - 1; col >= 0; col--)
+            {
+                if(kinds[col] == k)
+                    beyond += widths[col] - mins[col];
+            }
+            for(int col = n - 1; col >= 0 && available < 0 && beyond > 0; col--)
+            {
+                if(kinds[col] == k)
+                {
+                    const float diff   = widths[col] - mins[col];
+                    const float reduce = available * diff / beyond;
+                    widths[col]       += reduce;
+                    available         -= reduce;
+                    beyond            -= diff;
+                }
+            }
+            if(available >= 0)
+                break;
+        }
+    }
+    pixel_t cur_width = 0_px;
+    for(int col = 0; col < n; col++)
+    {
+        m_columns[col].width = widths[col];
+        cur_width           += m_columns[col].width;
+    }
+    return cur_width;
+}
+
+litehtml::pixel_t litehtml::table_grid::calc_fixed_table_width(pixel_t block_width)
+{
+    const int          n = m_cols_count;
+    std::vector<float> widths(n, -1), percent(n, 0);
+    float              total_fixed = 0, total_percent = 0, total_percent_width = 0;
+    int                auto_span   = 0;
+    for(int col = 0; col < n; col++)
+    {
+        const css_length& w = m_columns[col].css_width;
+        if(!w.is_predefined() && w.units() == css_units_percentage)
+        {
+            percent[col]  = std::max(0.0f, w.val());
+            widths[col]   = block_width.value() * percent[col] / 100;
+            total_percent += percent[col];
+            total_percent_width += widths[col];
+        } else if(!w.is_predefined())
+        {
+            widths[col]  = m_columns[col].max_width.value();
+            total_fixed += widths[col];
+        } else
+        {
+            auto_span++;
+        }
+    }
+    const float table = std::max(block_width.value(), total_fixed);
+    float       total = total_fixed + total_percent_width;
+    if(!auto_span || total > table)
+    {
+        if(total != table)
+        {
+            if(total_fixed > 0 && total < table)
+            {
+                const float scaled = total;
+                total_fixed        = 0;
+                for(int col = 0; col < n; col++)
+                {
+                    if(widths[col] >= 0 && percent[col] == 0)
+                    {
+                        widths[col]  = widths[col] * table / scaled;
+                        total_fixed += widths[col];
+                    }
+                }
+            }
+            if(total_percent > 0)
+            {
+                total_percent_width = 0;
+                for(int col = 0; col < n; col++)
+                {
+                    if(percent[col] > 0)
+                    {
+                        widths[col]          = percent[col] * (table - total_fixed) / total_percent;
+                        total_percent_width += widths[col];
+                    }
+                }
+            }
+            total = total_fixed + total_percent_width;
         }
     } else
     {
-        pixel_t fixed_width = 0_px;
-        float   percent     = 0;
-        for(int col = 0; col < m_cols_count; col++)
+        float remaining = table - total_fixed - total_percent_width;
+        int   last_auto = 0;
+        for(int col = 0; col < n; col++)
         {
-            if(!m_columns[col].css_width.is_predefined() && m_columns[col].css_width.units() == css_units_percentage)
+            if(widths[col] < 0)
             {
-                percent += m_columns[col].css_width.val();
-            } else
-            {
-                fixed_width += m_columns[col].width;
+                const float w = remaining / static_cast<float>(auto_span);
+                widths[col]   = w;
+                remaining    -= w;
+                auto_span--;
+                last_auto = col;
             }
         }
-        auto scale = static_cast<float>(100.0 / percent);
-        if(pixel_t(scale) != 1_px)
+        if(remaining != 0)
+            widths[last_auto] += remaining;
+        total = table;
+    }
+    if(total < table && n > 0)
+    {
+        float remaining = table - total;
+        int   count     = n;
+        while(count)
         {
-            cur_width = 0;
-            for(int col = 0; col < m_cols_count; col++)
-            {
-                if(!m_columns[col].css_width.is_predefined() &&
-                   m_columns[col].css_width.units() == css_units_percentage)
-                {
-                    css_length w;
-                    w.set_value(m_columns[col].css_width.val() * scale, css_units_percentage);
-                    m_columns[col].width = w.calc_percent(block_width - fixed_width);
-                    if(m_columns[col].width < m_columns[col].min_width)
-                    {
-                        m_columns[col].width = m_columns[col].min_width;
-                    }
-                }
-                cur_width += m_columns[col].width;
-            }
+            const float w = remaining / static_cast<float>(count);
+            remaining    -= w;
+            widths[--count] += w;
         }
-        // If the table is still too wide shrink columns with % widths
-        if(cur_width > block_width)
-        {
-            while(true)
-            {
-                bool shrunk = false;
-                for(int col = 0; col < m_cols_count; col++)
-                {
-                    if(!m_columns[col].css_width.is_predefined() &&
-                       m_columns[col].css_width.units() == css_units_percentage)
-                    {
-                        if(m_columns[col].width > m_columns[col].min_width)
-                        {
-                            m_columns[col].width--;
-                            cur_width--;
-                            shrunk = true;
-                            if(cur_width <= block_width)
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
-                if(cur_width <= block_width || !shrunk)
-                {
-                    break;
-                }
-            }
-        }
+        widths[n - 1] += remaining;
+    }
+    pixel_t cur_width = 0_px;
+    for(int col = 0; col < n; col++)
+    {
+        m_columns[col].width = std::max(0.0f, widths[col]);
+        cur_width           += m_columns[col].width;
     }
     return cur_width;
 }

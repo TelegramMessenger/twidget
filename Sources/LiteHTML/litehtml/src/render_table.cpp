@@ -49,7 +49,36 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
     // Also, calculate the "maximum" cell width of each cell: formatting the content without breaking lines other than
     // where explicit line breaks occur.
 
-    if(m_grid->cols_count() == 1 && self_size.width.type != containing_block_context::cbc_value_type_auto)
+    const bool fixed_layout = src_el()->css().get_table_layout() == table_layout_fixed &&
+                              self_size.width.type != containing_block_context::cbc_value_type_auto;
+
+    if(fixed_layout)
+    {
+        for(int col = 0; col < m_grid->cols_count(); col++)
+        {
+            table_column& column = m_grid->column(col);
+            column.css_width.predef(0);
+            column.min_width = column.max_width = 0_px;
+            table_cell* cell = m_grid->cell(col, 0);
+            if(cell && cell->el && cell->colspan <= 1)
+            {
+                const css_length& w = cell->el->src_el()->css().get_cell_width();
+                if(!w.is_predefined())
+                {
+                    column.css_width = w;
+                    if(w.units() != css_units_percentage)
+                    {
+                        pixel_t css_w = w.calc_percent(self_size.width);
+                        if(cell->el->css().get_box_sizing() == box_sizing_content_box)
+                        {
+                            css_w += cell->el->content_offset_width();
+                        }
+                        column.max_width = css_w;
+                    }
+                }
+            }
+        }
+    } else if(m_grid->cols_count() == 1 && self_size.width.type != containing_block_context::cbc_value_type_auto)
     {
         for(int row = 0; row < m_grid->rows_count(); row++)
         {
@@ -71,25 +100,20 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
                 table_cell* cell = m_grid->cell(col, row);
                 if(cell && cell->el)
                 {
+                    cell->min_width =
+                        cell->el->measure(0_px, 0_px, self_size.new_width(cell->el->content_offset_width()), fmt_ctx)
+                            .natural_width;
                     if(!m_grid->column(col).css_width.is_predefined() &&
                        m_grid->column(col).css_width.units() != css_units_percentage)
                     {
                         pixel_t css_w = m_grid->column(col).css_width.calc_percent(self_size.width);
-                        pixel_t el_w  = cell->el->measure(0_px, 0_px, self_size.new_width(css_w), fmt_ctx).natural_width;
                         if(cell->el->css().get_box_sizing() == box_sizing_content_box)
                         {
                             css_w += cell->el->content_offset_width();
                         }
-                        cell->min_width = cell->max_width = std::max(css_w, el_w);
-                        cell->el->pos().width =
-                            cell->min_width - cell->el->content_offset_left() - cell->el->content_offset_right();
+                        cell->max_width = std::max(cell->min_width, css_w);
                     } else
                     {
-                        // calculate minimum content width
-                        cell->min_width =
-                            cell->el->measure(0_px, 0_px, self_size.new_width(cell->el->content_offset_width()), fmt_ctx)
-                                .natural_width;
-                        // calculate maximum content width
                         cell->max_width =
                             cell->el
                                 ->measure(0_px, 0_px,
@@ -108,7 +132,7 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
     // The maximum is that required by the cell with the largest maximum cell width (or the column 'width', whichever is
     // larger).
 
-    for(int col = 0; col < m_grid->cols_count(); col++)
+    for(int col = 0; col < m_grid->cols_count() && !fixed_layout; col++)
     {
         m_grid->column(col).max_width = 0;
         m_grid->column(col).min_width = 0;
@@ -129,7 +153,7 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
     // they are at least as wide as the cell. Do the same for the maximum widths.
     // If possible, widen all spanned columns by approximately the same amount.
 
-    for(int col = 0; col < m_grid->cols_count(); col++)
+    for(int col = 0; col < m_grid->cols_count() && !fixed_layout; col++)
     {
         for(int row = 0; row < m_grid->rows_count(); row++)
         {
@@ -168,7 +192,10 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
     pixel_t min_table_width = 0_px;
     pixel_t max_table_width = 0_px;
 
-    if(self_size.width.type == containing_block_context::cbc_value_type_absolute)
+    if(fixed_layout)
+    {
+        table_width = m_grid->calc_fixed_table_width(self_size.render_width.value - table_width_spacing);
+    } else if(self_size.width.type == containing_block_context::cbc_value_type_absolute)
     {
         table_width = m_grid->calc_table_width(self_size.render_width.value - table_width_spacing, false,
                                                min_table_width, max_table_width);

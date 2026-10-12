@@ -102,7 +102,7 @@ namespace litehtml
         _accent_color_, _color_scheme_, _outline_, _outline_width_, _outline_style_, _outline_color_, _outline_offset_, _inset_,
         _fill_, _fill_opacity_, _fill_rule_, _stroke_, _stroke_width_, _stroke_opacity_, _stroke_linecap_,
         _stroke_linejoin_, _stroke_miterlimit_, _stroke_dasharray_, _stroke_dashoffset_, _text_anchor_, _text_shadow_,
-        _filter_, _backdrop_filter_, __webkit_backdrop_filter_, __webkit_font_smoothing_,
+        _filter_, _backdrop_filter_, __webkit_backdrop_filter_, __webkit_font_smoothing_, _table_layout_,
 
         // some CSS dimensions
         _deg_, _grad_, _rad_, _turn_,

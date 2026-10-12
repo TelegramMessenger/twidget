@@ -482,6 +482,14 @@ namespace litehtml
     // ==========================================================
     inline constexpr auto border_collapse_strings = split_css_values<2>("collapse;separate");
 
+    inline constexpr auto table_layout_strings = split_css_values<2>("auto;fixed");
+
+    enum table_layout
+    {
+        table_layout_auto,
+        table_layout_fixed
+    };
+
     enum border_collapse
     {
         border_collapse_collapse,
