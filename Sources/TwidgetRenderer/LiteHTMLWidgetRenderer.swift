@@ -508,7 +508,16 @@ public final class LiteHTMLWidgetRenderer {
             }
             let a = next.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: 2)
             let b = fresh.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: 2)
-            if abs(next.size.height - fresh.size.height) > 0.01 || !LiteHTMLWidgetRenderer.sameImage(a, b) {
+            let boundsDiffer = next.layoutSignature != fresh.layoutSignature
+            if boundsDiffer {
+                patchBoundsMismatches += 1
+                print("PATCHBOUNDS reusedLayout=\(next.reusedLayout) element bounds differ from a fresh layout")
+                if let dir = ProcessInfo.processInfo.environment["TW_PATCHCHECK_DUMP"], patchBoundsMismatches <= 3 {
+                    try? next.layoutSignature.write(toFile: dir + "/bounds-patched\(patchBoundsMismatches).txt", atomically: true, encoding: .utf8)
+                    try? fresh.layoutSignature.write(toFile: dir + "/bounds-fresh\(patchBoundsMismatches).txt", atomically: true, encoding: .utf8)
+                }
+            }
+            if abs(next.size.height - fresh.size.height) > 0.01 || !LiteHTMLWidgetRenderer.sameImage(a, b) || boundsDiffer {
                 patchMismatches += 1
                 if let dir = ProcessInfo.processInfo.environment["TW_PATCHCHECK_DUMP"], patchMismatches <= 3 {
                     print("PATCHDBG reusedLayout=\(next.reusedLayout) sizes=\(next.size) \(fresh.size)")
@@ -739,6 +748,7 @@ public final class LiteHTMLWidgetRenderer {
     static let dirtyLog = ProcessInfo.processInfo.environment["TW_DIRTY_LOG"] != nil
     public private(set) var patchChecks = 0
     public private(set) var patchMismatches = 0
+    public private(set) var patchBoundsMismatches = 0
     private var lastSerialized: String?
 
     private static func sameImage(_ a: CGImage?, _ b: CGImage?) -> Bool {

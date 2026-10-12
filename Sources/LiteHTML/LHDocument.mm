@@ -1448,6 +1448,43 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return result;
 }
 
+- (NSString *)layoutSignature
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    std::string out;
+    if(!_doc || !_doc->root_render())
+        return @"";
+    char line[256];
+    std::function<void(const std::shared_ptr<lh::render_item> &, int)> visit = [&](const std::shared_ptr<lh::render_item> &ri, int depth) {
+        const auto         el = ri->src_el();
+        const lh::position p  = ri->get_placement();
+        if(p.width.value() == 0 && p.height.value() == 0)
+        {
+            for(const auto &child : ri->children())
+                visit(child, depth + 1);
+            return;
+        }
+        if(el->is_text())
+        {
+            std::string text;
+            el->get_text(text);
+            out += "#" + text;
+        } else
+            out += el->get_tagName();
+        snprintf(line, sizeof(line), " %d %.3f %.3f %.3f %.3f m%.3f,%.3f,%.3f,%.3f p%.3f,%.3f,%.3f,%.3f b%.3f,%.3f,%.3f,%.3f %d\n", depth,
+                 p.x.value(), p.y.value(), p.width.value(), p.height.value(), ri->margin_left().value(), ri->margin_top().value(),
+                 ri->margin_right().value(), ri->margin_bottom().value(), ri->padding_left().value(), ri->padding_top().value(),
+                 ri->padding_right().value(), ri->padding_bottom().value(), ri->border_left().value(), ri->border_top().value(),
+                 ri->border_right().value(), ri->border_bottom().value(), ri->skip() ? 1 : 0);
+        out += line;
+        for(const auto &child : ri->children())
+            visit(child, depth + 1);
+    };
+    visit(_doc->root_render(), 0);
+    return [[NSString alloc] initWithBytes:out.data() length:out.size() encoding:NSUTF8StringEncoding] ?: @"";
+}
+
 - (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name
 {
     std::lock_guard<std::mutex> guard(_lock);
