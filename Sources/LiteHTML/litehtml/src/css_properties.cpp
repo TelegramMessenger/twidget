@@ -849,12 +849,12 @@ void litehtml::css_properties::snap_border_width(css_length& width, const std::s
 
     pixel_t px = doc->to_pixels(width, m_font_metrics, 0_px);
 
-    if(px > 0_px && px < 1_px)
+    if(px > 0_px && px < 0.5_px)
     {
-        px = 1_px;
+        px = 0.5_px;
     } else
     {
-        px = std::floor(px.value());
+        px = std::floor(px.value() * 2) / 2;
     }
 
     width.set_value(px.value(), css_units_px);
