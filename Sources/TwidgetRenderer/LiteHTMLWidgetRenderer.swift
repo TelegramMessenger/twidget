@@ -1061,6 +1061,8 @@ final class WidgetDocumentView: NSView {
     }
 
     static let cullMargin: CGFloat = 32
+    static let surfaceSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    static let screenTagged = ProcessInfo.processInfo.environment["TW_SURFACE_SCREEN"] != nil
     static let verify = ProcessInfo.processInfo.environment["TW_VERIFY"] != nil
     private(set) var verifiedFrames = 0
     private(set) var mismatchedFrames = 0
@@ -1131,7 +1133,7 @@ final class WidgetDocumentView: NSView {
             drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
         }
         let scale = self.scale
-        let space = window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let space = WidgetDocumentView.screenTagged ? (window?.colorSpace?.cgColorSpace ?? WidgetDocumentView.surfaceSpace) : WidgetDocumentView.surfaceSpace
         let height = max(1, ceil(document.size.height))
         let pixelWidth = Int(ceil(bounds.width * scale)), pixelHeight = Int(ceil(height * scale))
         if pixelWidth <= 0 || pixelHeight <= 0 || pixelWidth > 16384 || pixelHeight > 16384 {
