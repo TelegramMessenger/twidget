@@ -48,16 +48,17 @@ How the protocol maps onto native code:
 
 | Protocol | Native implementation |
 |---|---|
-| DOM operations | A mirror document, serialized and laid out by litehtml. Frames that only change styles or text are patched in place, not parsed again. |
+| DOM operations | A mirror document laid out by litehtml. Frames that change styles, text, classes, attributes or child lists patch the live document instead of parsing it again; animation-only frames skip serialization entirely. |
 | `light-dark()`, theme | Resolved for the current theme, re-rendered on `setTheme` |
-| `@keyframes`, `animation`, `transition` | A native animation engine: timing functions, iterations, direction, fill modes, and interpolation of numbers, colors and transforms. It writes into an animation layer that litehtml keeps out of the cascade it reports back. |
-| Canvas 2D | CoreGraphics: paths, Path2D, gradients, text, transforms, clipping, shadows, compositing, `getImageData` and `putImageData` |
+| `@keyframes`, `animation`, `transition` | A native animation engine: timing functions, `steps()`, iterations, direction, fill modes, and interpolation of numbers, colors and transforms (through their CSS primitives, across units). Transform and opacity animations are baked into Core Animation keyframes and run on the render server with no per-frame CPU work; everything else writes into an animation layer that litehtml keeps out of the cascade it reports back. Animations stop under `display: none` and restart when shown, as in browsers. |
+| Script-driven motion | Elements whose `transform` or `opacity` a script sets frame after frame are promoted to their own layers and updated without layout or drawing |
+| Canvas 2D | CoreGraphics on a native BGRA backing: paths, Path2D, gradients, text, transforms, clipping, shadows, compositing, `getImageData` and `putImageData`. The canvas takes its CSS size like any replaced element. |
 | Layout queries | `rect`, `box`, `cs`, `measureText`, `elementFromPoint`, `matchMedia`, `viewport` and canvas calls, answered synchronously |
 | Events | Pointer, mouse, click, double-click, hover, key and animation events, with per-frame coalescing of moves like the WebView renderer |
 
 Both renderers render the ported demo corpus and Chart.js and D3 widgets. `tools/perflab/TwidgetLab` in the Telegram for macOS repository compares them side by side.
 
-On the ported corpus, every widget lays out to WebKit's height within 4 pt, and the remaining pixel differences come from glyph antialiasing.
+On the ported corpus, every widget lays out to WebKit's height within 4 pt, and the remaining pixel differences come from glyph antialiasing. Box edges snap to device pixels as in WebKit. A frozen-animation suite (keyframes paused at fixed times, across transform functions, origins, opacity, colors, sizes, easings, `steps()`, directions and fill modes) renders with no geometric difference from WebKit.
 
 **Known gaps:**
 - Form controls render as static content.
@@ -77,12 +78,14 @@ Mark a container with `data-transition="move"`. When an operations batch adds, r
 ```
 
 - An element's key is its `data-key`, or else its `id`. Keys must be unique; duplicates don't animate.
-- An element whose key survives the batch moves and resizes on a spring. If its content changed, the old snapshot morphs along the same path and cross-fades into the new one.
+- An element whose key survives the batch moves and resizes on a spring. Its frame animates, not a scaled snapshot, so text never stretches; a solid background fills the growing area and rounded corners keep their radius. If its content changed, old and new content cross-fade inside the moving frame.
 - New keys fade and scale in, and removed keys fade and scale out.
 - A keyed element inside another animating keyed element rides inside its ancestor's snapshot.
 - Elements that are running a CSS animation or transition keep their own motion.
-- A change that arrives mid-flight starts from the elements' on-screen positions.
-- Nothing animates off screen, with Reduce Motion on, or beyond the layer budget (48 layers, 4096² pixels). The change then applies at once.
+- A change that arrives mid-flight continues from the on-screen position, size and velocity, and the half-finished cross-fade becomes the outgoing content.
+- Moving layers keep the document's paint order. The first frame matches the old state and the settled frame matches a fresh render pixel for pixel.
+- Content that keeps changing (a live counter) snaps instead of morphing.
+- With Reduce Motion on, the change dissolves in place. Nothing animates off screen or beyond the layer budget (48 items, 4096² pixels); the change then applies at once.
 
 The moving elements are snapshots on Core Animation layers, so the flight costs no layout or drawing. At the end, the layers are removed in the same transaction that repaints the document.
 
@@ -99,8 +102,8 @@ document.draw(in: context, origin: .zero, clip: CGRect(origin: .zero, size: size
 
 - **Links and actions.** `anchorHandler` receives links that passed the sanitizer. `actionHandler` receives clicks on elements with `data-action` (and an optional `data-value`).
 - **Pointer input.** `mouseMoved`, `mouseDown`, `mouseUp` and `cursor` handle hover and active states.
-- **Animated documents.** Build each new frame with `LHDocument(html:css:previous:)`. When only inline `style` values and text changed, the previous tree is patched in place instead of being parsed again.
-- **Partial repaints.** `displayList(maxWidth:)` and `changedRects(since:)` give exact dirty rectangles, so a host repaints only what changed.
+- **Animated documents.** Build each new frame with `LHDocument(html:css:previous:)`. Inline styles, text, classes, attributes and child lists are patched into the previous tree instead of parsing it again; inserted elements go through the same sanitizer and limits as a parse. `LHDocument(previous:styles:attribute:css:)` patches style values directly, with no HTML at all, and `patchDirtyRects` names the boxes a paint-only patch can have changed.
+- **Partial repaints.** `displayList(maxWidth:scale:)` and `changedRects(since:)` give exact dirty rectangles on the device-pixel grid of `scale`, so a host repaints only what changed.
 - **Images.** `copyImage(maxWidth:rect:scale:base:dirty:)` redraws only a dirty area on top of the previous bitmap.
 
 ## Security model
@@ -111,7 +114,9 @@ Every document is validated before layout. The validator is an allowlist, not a 
 - **Attributes.** Attributes are allowlisted, every `on*` handler is dropped, and attributes with the reserved `data-lh-` prefix cannot be forged.
 - **URLs.** Links may use `http`, `https`, `mailto` and `#fragment`. Images may only use `data:image/…` with an allowlisted MIME type. A host adds its own schemes with `LHSanitizer.setLinkSchemes(_:imageSchemes:)`. URLs with those schemes reach the host's link handler or image provider. The renderer never fetches anything.
 - **CSS.** At-rules are allowlisted, so `@import`, `@font-face` and `@namespace` are removed. Every `url()` and image function is checked against the image rules, and `behavior` and `-moz-binding` are blocked.
-- **Structure limits.** The parser stops at 256 levels of nesting, 20,000 elements and 200,000 table cells, so a hostile document cannot make layout explode.
+- **Structure limits.** The parser stops at 256 levels of nesting, 20,000 elements and 200,000 table cells, so a hostile document cannot make layout explode. Patched-in subtrees count against the same limits.
+- **Canvas sources.** Only `<canvas>` may show a canvas bitmap, through the renderer's own `twcanvas:` source; `<img>`, SVG `<image>` and CSS `url()` can't reference one.
+- **Bounded caches.** Shared font, canvas font, color, raster and interpolation caches are all bounded, so no widget can grow memory through them.
 - **Reporting.** `sanitizerCounts` and `sanitizerDetails` report what was removed, for logs and tests.
 
 The policy lives in portable C++ (`lhx::SanitizerPolicy`, `lhx::Sanitizer` in `Sources/LiteHTML/core`), so other ports can share it.
@@ -222,6 +227,13 @@ const renderer = new THREE.WebGLRenderer();
 
 Call `HTML3DSession.register()` once. Then attach the layer from `script.scene3D?.makeLayer()` to your view. The bridge reads typed arrays in place on both runtimes, through the JavaScriptCore C API or the QuickJS typed-array shim.
 
+## Performance
+
+- **Core Animation does the motion.** Compositable CSS animations (including `steps()` and discrete jumps), script-driven transforms and magic-move flights run as Core Animation layers: up to 256 per widget, on one exact timeline, with snapshots cropped to their painted pixels and clip layers skipped when they can never clip.
+- **Patches, not reparses.** Style, text, class, attribute and child-list changes patch the live document; paint-only changes reuse layout and repaint only the affected boxes.
+- **Drawing.** 128 pt tiles with an 8-bit sRGB backing, per-rectangle invalidation, a raster cache for SVGs and images (a changing SVG rasterizes once per frame, not once per tile) and bounded font, color and canvas-font caches.
+- **Measured against WebKit** in TwidgetLab, at equal frame rates: every animated widget of the ported corpus uses less CPU than WebKit, and a widget with 120 CSS-animated cards idles at under 1% against WebKit's 9–17%.
+
 ## Exactness
 
 All work happens in the Lab, and every optimization is checked against a fresh render:
@@ -229,6 +241,7 @@ All work happens in the Lab, and every optimization is checked against a fresh r
 - **CoreGraphics path:** pixel-identical. `LiteHTMLLab bench --verify` replays recorded animation traces and compares every frame with a from-scratch render. `compare` diffs two runs trace by trace.
 - **Metal path:** checked within a tolerance against CoreGraphics (`gpu --verify`). The thresholds are a maximum interior difference, a share of pixels more than 8 levels off (0.000% on the bundled traces) and zero structural differences.
 - **Painter path:** receives exactly what the CoreGraphics path draws.
+- **twidget renderer:** `tools/perflab/TwidgetLab` in the Telegram for macOS repository gates every change. `TW_VERIFY=1` compares every on-screen frame with a fresh render and checks handed-off animations against the animation engine; `TW_PATCHCHECK=1` compares every patched document with a fresh parse; `replaycheck` replays recorded click sessions through the patch paths.
 
 ## Lab
 
