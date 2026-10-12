@@ -8,6 +8,7 @@
 #include "master_css.h"
 #include "types.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <unordered_map>
@@ -69,6 +70,20 @@ namespace litehtml
         // styles can have changed since it last looked.
         uint64_t style_epoch() const { return m_style_epoch; }
         void     note_style_change() { m_style_epoch++; }
+        uint64_t m_layout_epoch       = 1;
+        static std::atomic<uint64_t> s_layout_hits;
+        static std::atomic<uint64_t> s_layout_misses;
+        static std::atomic<uint64_t> s_layout_mismatches;
+        position m_layout_viewport;
+        std::vector<render_item*> m_layout_marked;
+        bool     layout_cache_enabled() const;
+        bool     layout_cache_check() const;
+        uint64_t layout_epoch() const { return m_layout_epoch; }
+        void     invalidate_layout_cache() { m_layout_epoch++; }
+        void     note_layout_hit() { s_layout_hits.fetch_add(1, std::memory_order_relaxed); }
+        void     note_layout_miss() { s_layout_misses.fetch_add(1, std::memory_order_relaxed); }
+        void     note_layout_check_mismatch() { s_layout_mismatches.fetch_add(1, std::memory_order_relaxed); }
+        void     note_layout_dirty(render_item* item) { m_layout_marked.push_back(item); }
         uint64_t m_render_tree_serial = 0;
         uint64_t m_positioned_epoch   = UINT64_MAX;
         uint64_t m_positioned_tree    = UINT64_MAX;

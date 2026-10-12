@@ -56,7 +56,7 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
             table_cell* cell = m_grid->cell(0, row);
             if(cell && cell->el)
             {
-                auto rw = cell->el->render(
+                auto rw = cell->el->measure(
                     0_px, 0_px, self_size.new_width(self_size.render_width.value - table_width_spacing), fmt_ctx);
                 cell->min_width = rw.min_width;
                 cell->max_width = rw.natural_width;
@@ -75,7 +75,7 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
                        m_grid->column(col).css_width.units() != css_units_percentage)
                     {
                         pixel_t css_w = m_grid->column(col).css_width.calc_percent(self_size.width);
-                        pixel_t el_w  = cell->el->render(0_px, 0_px, self_size.new_width(css_w), fmt_ctx).natural_width;
+                        pixel_t el_w  = cell->el->measure(0_px, 0_px, self_size.new_width(css_w), fmt_ctx).natural_width;
                         if(cell->el->css().get_box_sizing() == box_sizing_content_box)
                         {
                             css_w += cell->el->content_offset_width();
@@ -87,12 +87,12 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
                     {
                         // calculate minimum content width
                         cell->min_width =
-                            cell->el->render(0_px, 0_px, self_size.new_width(cell->el->content_offset_width()), fmt_ctx)
+                            cell->el->measure(0_px, 0_px, self_size.new_width(cell->el->content_offset_width()), fmt_ctx)
                                 .natural_width;
                         // calculate maximum content width
                         cell->max_width =
                             cell->el
-                                ->render(0_px, 0_px,
+                                ->measure(0_px, 0_px,
                                          self_size.new_width(self_size.render_width.value - table_width_spacing),
                                          fmt_ctx)
                                 .natural_width;

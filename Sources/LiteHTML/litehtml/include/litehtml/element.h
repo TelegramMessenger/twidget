@@ -156,6 +156,7 @@ namespace litehtml
 
         bool requires_styles_update();
         void add_render(const std::shared_ptr<render_item>& ri);
+        void mark_layout_dirty();
         bool find_styles_changes(const std::function<void(const position&)>& redraw_box);
 
         element::ptr add_pseudo_before(const style& style)

@@ -45,6 +45,7 @@ namespace litehtml
       protected:
         std::vector<std::unique_ptr<litehtml::line_box>> m_line_boxes;
         rendered_width                                   m_rendered_width;
+        pixel_t                                          m_va_applied = 0_px;
 
         rendered_width _render_content(pixel_t x, pixel_t y, bool second_pass,
                                        const containing_block_context& self_size, formatting_context* fmt_ctx) override;

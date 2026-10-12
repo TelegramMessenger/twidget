@@ -91,6 +91,30 @@ namespace litehtml
 
         virtual void add_children_ink(uint32_t generation, paint_ink& ink);
 
+        struct layout_entry
+        {
+            containing_block_context cb;
+            rendered_width           ret;
+            bool                     second_pass = false;
+            bool                     valid       = false;
+        };
+        bool         m_layout_dirty   = true;
+        bool         m_out_of_flow    = true;
+        uint64_t     m_layout_epoch   = 0;
+        layout_entry m_last_layout;
+        position     m_last_pos;
+        pixel_t      m_last_x = 0_px;
+        pixel_t      m_last_y = 0_px;
+        margins      m_last_margins;
+        margins      m_last_padding;
+        margins      m_last_borders;
+        layout_entry m_measured[2];
+        int          m_measured_next = 0;
+
+        bool                 layout_cacheable(formatting_context* fmt_ctx) const;
+        bool                 layout_reusable() const;
+        static bool          same_layout_input(const layout_entry& entry, const containing_block_context& cb, bool second_pass);
+
         containing_block_context calculate_containing_block_context(const containing_block_context& cb_context);
         void                     calc_cb_length(const css_length& len, pixel_t percent_base,
                                                 containing_block_context::typed_pixel& out_value) const;
@@ -500,6 +524,11 @@ namespace litehtml
 
         rendered_width render(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                               formatting_context* fmt_ctx, bool second_pass = false);
+        rendered_width measure(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
+                               formatting_context* fmt_ctx, bool second_pass = false);
+        void           mark_layout_dirty();
+        bool           layout_dirty() const { return m_layout_dirty; }
+        void           set_out_of_flow(bool value) { m_out_of_flow = value; }
         void           apply_relative_shift(const containing_block_context& containing_block_size);
         void           calc_outlines(pixel_t parent_width);
         pixel_t        calc_auto_margins(pixel_t parent_width); // returns left margin

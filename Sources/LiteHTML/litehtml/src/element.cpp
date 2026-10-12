@@ -231,6 +231,15 @@ namespace litehtml
         return false;
     }
 
+    void element::mark_layout_dirty()
+    {
+        for(const auto& weak_ri : m_renders)
+        {
+            if(auto ri = weak_ri.lock())
+                ri->mark_layout_dirty();
+        }
+    }
+
     void element::add_render(const std::shared_ptr<render_item>& ri)
     {
         m_renders.remove_if([](const std::weak_ptr<render_item>& item) { return item.expired(); });

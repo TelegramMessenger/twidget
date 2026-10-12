@@ -33,12 +33,14 @@ void litehtml::el_text::set_text(const std::string& text)
     m_draw_spaces     = true;
     m_size            = size();
     m_measured_font   = 0;
+    mark_layout_dirty();
     css_w()           = css_properties();
     css_w().set_display(display_inline_text);
 }
 
 void litehtml::el_text::compute_styles(bool /*recursive*/)
 {
+    mark_layout_dirty();
     element::ptr el_parent = parent();
     if(el_parent)
     {

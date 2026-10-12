@@ -819,6 +819,12 @@ static std::string MasterWithCSS(NSString *css)
     return @{@"hits": @(stats.hits), @"misses": @(stats.misses), @"learned": @(stats.learned), @"rejected": @(stats.rejected)};
 }
 
++ (NSDictionary<NSString*, NSNumber*>*)layoutCacheStats
+{
+    return @{@"hits": @(lh::document::s_layout_hits.load()), @"misses": @(lh::document::s_layout_misses.load()),
+             @"mismatches": @(lh::document::s_layout_mismatches.load())};
+}
+
 + (NSUInteger)textMeasureCount
 {
     return LHContainer::text_measure_count();

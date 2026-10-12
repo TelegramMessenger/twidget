@@ -29,10 +29,82 @@ litehtml::render_item::render_item(std::shared_ptr<element> _src_el) :
     m_borders.bottom = doc->to_pixels(src_el()->css().get_borders().bottom.width, fm, 0_px);
 }
 
+bool litehtml::render_item::same_layout_input(const layout_entry& entry, const containing_block_context& cb, bool second_pass)
+{
+    auto same = [](const containing_block_context::typed_pixel& a, const containing_block_context::typed_pixel& b) {
+        return a.type == b.type && a.value == b.value;
+    };
+    const containing_block_context& c = entry.cb;
+    return entry.valid && entry.second_pass == second_pass && same(c.width, cb.width) &&
+           same(c.render_width, cb.render_width) && same(c.min_width, cb.min_width) && same(c.max_width, cb.max_width) &&
+           same(c.height, cb.height) && same(c.min_height, cb.min_height) && same(c.max_height, cb.max_height) &&
+           c.context_idx == cb.context_idx && c.size_mode == cb.size_mode;
+}
+
+bool litehtml::render_item::layout_cacheable(formatting_context* fmt_ctx) const
+{
+    const document* doc = src_el()->doc_ptr();
+    if(!doc || !doc->layout_cache_enabled() || m_out_of_flow)
+        return false;
+    const element_position position = css().get_position();
+    if(position == element_position_absolute || position == element_position_fixed)
+        return false;
+    return fmt_ctx == nullptr || src_el()->is_block_formatting_context();
+}
+
+bool litehtml::render_item::layout_reusable() const
+{
+    const document* doc = src_el()->doc_ptr();
+    return !m_layout_dirty && doc && m_layout_epoch == doc->layout_epoch();
+}
+
+void litehtml::render_item::mark_layout_dirty()
+{
+    document* doc = src_el()->doc_ptr();
+    for(render_item* item = this; item;)
+    {
+        if(!item->m_layout_dirty && doc)
+            doc->note_layout_dirty(item);
+        item->m_layout_dirty      = true;
+        item->m_last_layout.valid = false;
+        item->m_measured[0].valid = false;
+        item->m_measured[1].valid = false;
+        auto parent = item->m_parent.lock();
+        item        = parent.get();
+    }
+}
+
 litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
                                                        const containing_block_context& containing_block_size,
                                                        formatting_context* fmt_ctx, bool second_pass)
 {
+    const bool cacheable = layout_cacheable(fmt_ctx);
+    document*  doc       = src_el()->doc_ptr();
+    if(cacheable && layout_reusable() && same_layout_input(m_last_layout, containing_block_size, second_pass))
+    {
+        m_pos     = m_last_pos;
+        m_margins = m_last_margins;
+        m_padding = m_last_padding;
+        m_borders = m_last_borders;
+        if(x != m_last_x || y != m_last_y)
+        {
+            m_pos.x = x + content_offset_left();
+            m_pos.y = y + content_offset_top();
+        }
+        doc->note_layout_hit();
+        if(!doc->layout_cache_check())
+            return m_last_layout.ret;
+        const position       cached_pos = m_pos;
+        const rendered_width cached     = m_last_layout.ret;
+        m_layout_dirty                  = true;
+        rendered_width fresh            = render(x, y, containing_block_size, fmt_ctx, second_pass);
+        if(fresh.natural_width != cached.natural_width || fresh.min_width != cached.min_width || !(m_pos == cached_pos))
+            doc->note_layout_check_mismatch();
+        return fresh;
+    }
+    if(cacheable && doc)
+        doc->note_layout_miss();
+
     calc_outlines(containing_block_size.width);
 
     m_pos.clear();
@@ -44,17 +116,62 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
     m_pos.x += content_left;
     m_pos.y += content_top;
 
+    rendered_width ret;
     if(src_el()->is_block_formatting_context() || (fmt_ctx == nullptr))
     {
         formatting_context fmt;
-        auto               ret = _render(x, y, containing_block_size, &fmt, second_pass);
+        ret = _render(x, y, containing_block_size, &fmt, second_pass);
         fmt.apply_relative_shift(containing_block_size);
-        return ret;
+    } else
+    {
+        fmt_ctx->push_position(x + content_left, y + content_top);
+        ret = _render(x, y, containing_block_size, fmt_ctx, second_pass);
+        fmt_ctx->pop_position(x + content_left, y + content_top);
     }
+    m_layout_dirty = false;
+    if(cacheable && doc)
+    {
+        m_layout_epoch = doc->layout_epoch();
+        m_last_layout  = {containing_block_size, ret, second_pass, true};
+        m_last_pos     = m_pos;
+        m_last_x       = x;
+        m_last_y       = y;
+        m_last_margins = m_margins;
+        m_last_padding = m_padding;
+        m_last_borders = m_borders;
+    } else
+        m_last_layout.valid = false;
+    return ret;
+}
 
-    fmt_ctx->push_position(x + content_left, y + content_top);
-    auto ret = _render(x, y, containing_block_size, fmt_ctx, second_pass);
-    fmt_ctx->pop_position(x + content_left, y + content_top);
+litehtml::rendered_width litehtml::render_item::measure(pixel_t x, pixel_t y,
+                                                        const containing_block_context& containing_block_size,
+                                                        formatting_context* fmt_ctx, bool second_pass)
+{
+    const bool cacheable = layout_cacheable(fmt_ctx);
+    document*  doc       = src_el()->doc_ptr();
+    if(cacheable && layout_reusable() && !doc->layout_cache_check())
+    {
+        if(same_layout_input(m_last_layout, containing_block_size, second_pass))
+        {
+            doc->note_layout_hit();
+            return m_last_layout.ret;
+        }
+        for(const auto& entry : m_measured)
+        {
+            if(same_layout_input(entry, containing_block_size, second_pass))
+            {
+                doc->note_layout_hit();
+                return entry.ret;
+            }
+        }
+    }
+    rendered_width ret = render(x, y, containing_block_size, fmt_ctx, second_pass);
+    if(cacheable)
+    {
+        m_measured[m_measured_next] = {containing_block_size, ret, second_pass, true};
+        m_measured_next ^= 1;
+    }
     return ret;
 }
 
@@ -210,12 +327,14 @@ litehtml::render_item::split_inlines()
 
 bool litehtml::render_item::fetch_positioned()
 {
-    bool ret = false;
+    bool ret      = false;
+    bool replaced = false;
 
     m_positioned.clear();
 
     for(auto& el : m_children)
     {
+        replaced = replaced || el->src_el()->is_replaced();
         litehtml::element_position el_pos = el->src_el()->css().get_position();
         if(el_pos != element_position_static)
         {
@@ -229,7 +348,10 @@ bool litehtml::render_item::fetch_positioned()
         {
             ret = true;
         }
+        replaced = replaced || el->m_out_of_flow;
     }
+    m_out_of_flow = ret || replaced || src_el()->is_replaced() ||
+                    (css().get_display() == display_list_item && !css().get_list_style_image().empty());
     return ret;
 }
 

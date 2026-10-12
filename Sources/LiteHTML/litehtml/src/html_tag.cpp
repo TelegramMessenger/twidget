@@ -389,6 +389,7 @@ namespace litehtml
     {
         document::ptr doc = get_document();
         doc->note_style_change();
+        mark_layout_dirty();
 
         bool        eligible = false;
         bool        shared   = false;

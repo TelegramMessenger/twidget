@@ -9,6 +9,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
 {
     m_line_boxes.clear();
     m_rendered_width.reset();
+    m_va_applied = 0_px;
 
     white_space ws          = src_el()->css().get_white_space();
     bool        skip_spaces = false;
@@ -339,7 +340,7 @@ void litehtml::render_item_inline_context::apply_vertical_align()
     {
         pixel_t add = 0_px;
 
-        pixel_t content_height = m_line_boxes.back()->bottom();
+        pixel_t content_height = m_line_boxes.back()->bottom() - m_va_applied;
 
         if(m_pos.height > content_height)
         {
@@ -357,13 +358,28 @@ void litehtml::render_item_inline_context::apply_vertical_align()
             }
         }
 
-        if(add != 0_px)
+        if(add == m_va_applied)
+            return;
+        pixel_t shift = add;
+        if(m_va_applied != 0_px)
+        {
+            if(m_last_layout.valid)
+            {
+                const position placed = m_pos;
+                m_layout_dirty        = true;
+                render(m_last_x, m_last_y, m_last_layout.cb, nullptr, m_last_layout.second_pass);
+                m_pos = placed;
+            } else
+                shift = add - m_va_applied;
+        }
+        if(shift != 0_px)
         {
             for(auto& box : m_line_boxes)
             {
-                box->y_shift(add);
+                box->y_shift(shift);
             }
         }
+        m_va_applied = add;
     }
 }
 

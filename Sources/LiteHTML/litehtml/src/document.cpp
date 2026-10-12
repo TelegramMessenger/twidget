@@ -1198,6 +1198,13 @@ namespace litehtml
     {
         if(!m_root_render)
             return;
+        if(layout_cache_enabled())
+        {
+            for(render_item* item : m_layout_marked)
+                item->pos() = position();
+            m_layout_marked.clear();
+            return;
+        }
         std::vector<render_item*> pending{m_root_render.get()};
         while(!pending.empty())
         {
@@ -1319,6 +1326,7 @@ namespace litehtml
         m_table_cells = 0;
         m_root_render = m_root->create_render_item(nullptr);
         m_render_tree_serial++;
+        m_layout_marked.clear();
         fix_tables_layout();
         if(m_root_render)
             m_root_render = m_root_render->init();
@@ -2177,6 +2185,7 @@ namespace litehtml
             m_table_cells = 0;
             m_root_render = m_root->create_render_item(nullptr);
             m_render_tree_serial++;
+            m_layout_marked.clear();
 
             // Now the m_tabular_elements is filled with tabular elements.
             // We have to check the tabular elements for missing table elements
@@ -2589,6 +2598,22 @@ namespace litehtml
         return add_font(descr, fm);
     }
 
+    std::atomic<uint64_t> document::s_layout_hits{0};
+    std::atomic<uint64_t> document::s_layout_misses{0};
+    std::atomic<uint64_t> document::s_layout_mismatches{0};
+
+    bool document::layout_cache_enabled() const
+    {
+        static const bool disabled = getenv("LH_NO_LAYOUT_CACHE") != nullptr;
+        return !disabled;
+    }
+
+    bool document::layout_cache_check() const
+    {
+        static const bool check = getenv("LH_LAYOUT_CACHE_CHECK") != nullptr;
+        return check;
+    }
+
     pixel_t document::render(pixel_t max_width, render_type rt)
     {
         invalidate_paint();
@@ -2597,6 +2622,12 @@ namespace litehtml
         {
             position viewport;
             m_container->get_viewport(viewport);
+            if(!(viewport == m_layout_viewport))
+            {
+                m_layout_viewport = viewport;
+                invalidate_layout_cache();
+            }
+            m_layout_marked.clear();
             containing_block_context cb_context;
             cb_context.width       = max_width;
             cb_context.width.type  = containing_block_context::cbc_value_type_absolute;
@@ -2970,6 +3001,7 @@ namespace litehtml
             m_table_cells = 0;
             m_root_render = m_root->create_render_item(nullptr);
             m_render_tree_serial++;
+            m_layout_marked.clear();
             if(m_root_render)
             {
                 m_root_render = m_root_render->init();
