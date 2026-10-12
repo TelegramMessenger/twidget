@@ -1052,8 +1052,16 @@ struct LHContainer::OpHash
 
     static void mix(uint64_t& hash, const void* data, size_t length)
     {
-        auto p = static_cast<const unsigned char*>(data);
-        for(size_t i = 0; i < length; i++)
+        auto   p = static_cast<const unsigned char*>(data);
+        size_t i = 0;
+        for(; i + 8 <= length; i += 8)
+        {
+            uint64_t word;
+            memcpy(&word, p + i, sizeof(word));
+            hash  = (hash ^ word) * 0x100000001b3ULL;
+            hash ^= hash >> 32;
+        }
+        for(; i < length; i++)
             hash = (hash ^ p[i]) * 0x100000001b3ULL;
     }
     void bytes(const void* data, size_t length)
