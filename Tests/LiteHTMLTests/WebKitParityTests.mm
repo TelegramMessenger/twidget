@@ -156,4 +156,16 @@ namespace
     XCTAssertEqual(f.at(354, 4)[2], 255);
 }
 
+- (void)testAutoMarginsCenterFlexAndGridContainers
+{
+    for(NSString* display in @[@"grid", @"flex", @"block"])
+    {
+        Pixels p = Render([NSString stringWithFormat:@"<div style=\"width:400px\"><div style=\"display:%@;max-width:100px;height:10px;margin:0 auto;background:#f00\"></div></div>", display], 400);
+        XCTAssertEqual(p.at(296, 10)[0], 0, @"%@", display);
+        XCTAssertEqual(p.at(304, 10)[0], 255, @"%@", display);
+        XCTAssertEqual(p.at(496, 10)[0], 255, @"%@", display);
+        XCTAssertEqual(p.at(504, 10)[0], 0, @"%@", display);
+    }
+}
+
 @end

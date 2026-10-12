@@ -504,7 +504,7 @@ litehtml::pixel_t litehtml::table_grid::calc_table_width(pixel_t block_width, bo
     pixel_t cur_width = 0_px;
     for(int col = 0; col < n; col++)
     {
-        m_columns[col].width = widths[col];
+        m_columns[col].width = std::ceil(widths[col] * 64.0f - 0.01f) / 64.0f;
         cur_width           += m_columns[col].width;
     }
     return cur_width;
@@ -601,7 +601,7 @@ litehtml::pixel_t litehtml::table_grid::calc_fixed_table_width(pixel_t block_wid
     pixel_t cur_width = 0_px;
     for(int col = 0; col < n; col++)
     {
-        m_columns[col].width = std::max(0.0f, widths[col]);
+        m_columns[col].width = std::ceil(std::max(0.0f, widths[col]) * 64.0f - 0.01f) / 64.0f;
         cur_width           += m_columns[col].width;
     }
     return cur_width;

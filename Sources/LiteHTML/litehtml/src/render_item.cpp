@@ -235,7 +235,7 @@ void litehtml::render_item::calc_outlines(pixel_t parent_width)
 
 litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
 {
-    if((src_el()->css().get_display() == display_block || src_el()->css().get_display() == display_table) &&
+    if(is_one_of(src_el()->css().get_display(), display_block, display_table, display_flex, display_grid, display_list_item) &&
        src_el()->css().get_position() != element_position_absolute && src_el()->css().get_float() == float_none)
     {
         if(src_el()->css().get_margins().left.is_predefined() && src_el()->css().get_margins().right.is_predefined())
