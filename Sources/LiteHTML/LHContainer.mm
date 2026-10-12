@@ -723,6 +723,66 @@ static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const st
     return true;
 }
 
+static bool DrawAxisLinearGradient(CGContextRef ctx, CGGradientRef gradient, CGPoint start, CGPoint end)
+{
+    static const bool disabled = getenv("LH_NO_GRADIENT_STRIP") != nullptr;
+    if(disabled || CGBitmapContextGetData(ctx) == nullptr)
+        return false;
+    CGAffineTransform m = CGContextGetCTM(ctx);
+    if(std::fabs(m.b) > 1e-9 || std::fabs(m.c) > 1e-9)
+        return false;
+    CGPoint a = CGPointApplyAffineTransform(start, m), b = CGPointApplyAffineTransform(end, m);
+    bool vertical = std::fabs(a.x - b.x) < 1e-6, horizontal = std::fabs(a.y - b.y) < 1e-6;
+    if(vertical == horizontal)
+        return false;
+    CGRect device = CGRectIntegral(CGRectApplyAffineTransform(CGContextGetClipBoundingBox(ctx), m));
+    device = CGRectIntersection(device, CGRectMake(0, 0, CGBitmapContextGetWidth(ctx), CGBitmapContextGetHeight(ctx)));
+    if(CGRectIsEmpty(device) || device.size.width < 4 || device.size.height < 4)
+        return false;
+    size_t pw = (size_t)device.size.width, ph = (size_t)device.size.height;
+    if(pw * ph > (4 << 20))
+        return false;
+    size_t w = vertical ? 1 : pw, h = vertical ? ph : 1;
+    CGColorSpaceRef space = CGBitmapContextGetColorSpace(ctx);
+    if(!space || CGColorSpaceGetModel(space) != kCGColorSpaceModelRGB)
+        space = SRGB();
+    const uint32_t info = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
+    CGContextRef strip = CGBitmapContextCreate(nullptr, w, h, 8, w * 4, space, info);
+    if(!strip)
+        return false;
+    CGPoint origin = CGPointMake(vertical ? a.x - 0.5 : device.origin.x, vertical ? device.origin.y : a.y - 0.5);
+    CGContextTranslateCTM(strip, -origin.x, -origin.y);
+    CGContextDrawLinearGradient(strip, gradient, a, b, kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+    const uint32_t* line = static_cast<const uint32_t*>(CGBitmapContextGetData(strip));
+    CGContextRef full = line ? CGBitmapContextCreate(nullptr, pw, ph, 8, 0, space, info) : nullptr;
+    if(!full)
+    {
+        CGContextRelease(strip);
+        return false;
+    }
+    auto* bytes = static_cast<uint8_t*>(CGBitmapContextGetData(full));
+    size_t row = CGBitmapContextGetBytesPerRow(full);
+    for(size_t y = 0; y < ph; y++)
+    {
+        if(vertical)
+            memset_pattern4(bytes + y * row, line + y, pw * 4);
+        else
+            memcpy(bytes + y * row, line, pw * 4);
+    }
+    CGContextRelease(strip);
+    CGImageRef image = CGBitmapContextCreateImage(full);
+    CGContextRelease(full);
+    if(!image)
+        return false;
+    CGContextSaveGState(ctx);
+    CGContextConcatCTM(ctx, CGAffineTransformInvert(m));
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+    CGContextDrawImage(ctx, device, image);
+    CGContextRestoreGState(ctx);
+    CGImageRelease(image);
+    return true;
+}
+
 namespace {
 
 struct SharedFont
@@ -2948,7 +3008,10 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
                 CGContextClip(ctx);
             const CGGradientDrawingOptions options = kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation;
             if(g.type == 1)
-                CGContextDrawLinearGradient(ctx, gradient, CGPointMake(g.x1, g.y1), CGPointMake(g.x2, g.y2), options);
+            {
+                if(!DrawAxisLinearGradient(ctx, gradient, CGPointMake(g.x1, g.y1), CGPointMake(g.x2, g.y2)))
+                    CGContextDrawLinearGradient(ctx, gradient, CGPointMake(g.x1, g.y1), CGPointMake(g.x2, g.y2), options);
+            }
             else
                 CGContextDrawRadialGradient(ctx, gradient, CGPointMake(g.fx, g.fy), 0, CGPointMake(g.x1, g.y1), g.r, options);
             CGContextRestoreGState(ctx);
