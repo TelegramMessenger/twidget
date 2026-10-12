@@ -17,6 +17,8 @@ final class WidgetCanvasPresenter {
     private weak var canvas: WidgetCanvas?
     private(set) var presented = 0
     private(set) var skipped = 0
+    var schedule: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
+    var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }
 
     init(canvas: WidgetCanvas) {
         self.canvas = canvas
@@ -127,23 +129,17 @@ final class WidgetCanvasPresenter {
             guard let target = freeSurface(canvas) else {
                 skipped += 1
                 dirty = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.004) { [weak self] in
+                scheduleAfter(0.004) { [weak self] in
                     self?.retry()
                 }
                 return
             }
             busy = true
             dirty = false
+            let schedule = self.schedule
             let started = gpu.present(canvas: canvas, to: target) { [weak self] in
-                guard let self = self else {
-                    return
-                }
-                self.busy = false
-                if self.container.superlayer != nil {
-                    self.show(target)
-                }
-                if self.dirty {
-                    self.present()
+                schedule { [weak self] in
+                    self?.didPresent(target)
                 }
             }
             if !started {
@@ -154,6 +150,16 @@ final class WidgetCanvasPresenter {
         }
         #endif
         presentNow()
+    }
+
+    private func didPresent(_ target: IOSurfaceRef) {
+        busy = false
+        if container.superlayer != nil {
+            show(target)
+        }
+        if dirty {
+            present()
+        }
     }
 
     private func retry() {

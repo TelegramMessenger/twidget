@@ -744,6 +744,8 @@ public final class LiteHTMLWidgetRenderer {
                     presenter = existing
                 } else {
                     presenter = WidgetCanvasPresenter(canvas: canvas)
+                    presenter.schedule = { [weak self] block in self?.schedule(block) }
+                    presenter.scheduleAfter = { [weak self] seconds, block in self?.scheduleAfter(seconds, block) }
                     presenters[id] = presenter
                     added.append(presenter)
                     changed = true
@@ -1644,7 +1646,13 @@ public final class LiteHTMLWidgetRenderer {
         clock?.stop()
         frameRequested = false
         pendingMoves.removeAll()
-        documentView.showBadge(reason, fatal: fatal)
+        if Thread.isMainThread {
+            documentView.showBadge(reason, fatal: fatal)
+        } else {
+            DispatchQueue.main.async { [weak documentView] in
+                documentView?.showBadge(reason, fatal: fatal)
+            }
+        }
         placeSurfaces()
     }
 
@@ -1752,14 +1760,14 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private var isOnScreen: Bool {
-        guard hostVisible, let window = documentView.window, !documentView.isHiddenOrHasHiddenAncestor else {
+        guard hostVisible else {
             return false
         }
-        let visible = window.occlusionState.contains(.visible)
-        if visible {
-            documentView.occlusionTrusted = true
+        let state = documentView.windowState
+        guard state.inWindow, !state.hidden else {
+            return false
         }
-        return documentView.occlusionTrusted ? visible : window.isVisible
+        return state.occlusionTrusted ? state.occlusionVisible : state.windowVisible
     }
 
     private func startClock() {
@@ -2441,7 +2449,7 @@ final class WidgetDocumentView: NSView {
     }
 
     private func rasterDirtyTiles() {
-        guard !preparing, !asyncDirty.isEmpty, let document = document, window != nil, !tilesTrimmed else {
+        guard !preparing, !asyncDirty.isEmpty, let document = document, windowState.inWindow, !tilesTrimmed else {
             return
         }
         let scale = self.scale
@@ -2908,7 +2916,51 @@ final class WidgetDocumentView: NSView {
     private var screenObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
     private var keyObservers: [NSObjectProtocol] = []
-    var occlusionTrusted = false
+    struct WindowState {
+        var inWindow = false
+        var hidden = false
+        var occlusionVisible = false
+        var windowVisible = false
+        var occlusionTrusted = false
+    }
+
+    private let windowStateLock = NSLock()
+    private var lockedWindowState = WindowState()
+
+    var windowState: WindowState {
+        windowStateLock.lock()
+        defer { windowStateLock.unlock() }
+        return lockedWindowState
+    }
+
+    private var occlusionTrusted = false
+
+    func captureWindowState() {
+        var state = WindowState()
+        if let window = window {
+            state.inWindow = true
+            state.hidden = isHiddenOrHasHiddenAncestor
+            state.occlusionVisible = window.occlusionState.contains(.visible)
+            state.windowVisible = window.isVisible
+            if state.occlusionVisible {
+                occlusionTrusted = true
+            }
+        }
+        state.occlusionTrusted = occlusionTrusted
+        windowStateLock.lock()
+        lockedWindowState = state
+        windowStateLock.unlock()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        captureWindowState()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        captureWindowState()
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -2928,6 +2980,7 @@ final class WidgetDocumentView: NSView {
         keyObservers.forEach { NotificationCenter.default.removeObserver($0) }
         keyObservers = []
         occlusionTrusted = false
+        captureWindowState()
         if let window = window {
             for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
                 keyObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
@@ -2939,6 +2992,7 @@ final class WidgetDocumentView: NSView {
             }
             occlusionObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
                 self?.occlusionTrusted = true
+                self?.captureWindowState()
                 guard let owner = self?.owner else {
                     return
                 }
