@@ -355,6 +355,18 @@ static CGFloat ChangedBottom(const std::vector<LHDrawOp> &ops, const std::unorde
 
 @end
 
+struct PixelSnap
+{
+    float saved;
+    explicit PixelSnap(CGContextRef ctx) : saved(lh::pixel_snap_scale())
+    {
+        const CGAffineTransform m = CGContextGetCTM(ctx);
+        const CGFloat           k = std::hypot(m.a, m.b);
+        lh::pixel_snap_scale()    = k >= 1 && k <= 16 && std::isfinite(k) ? static_cast<float>(k) : 1.0f;
+    }
+    ~PixelSnap() { lh::pixel_snap_scale() = saved; }
+};
+
 @implementation LHDocument
 {
     std::mutex                   _lock;
@@ -899,6 +911,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     auto skipped = _doc->skip_paint;
     [self resolveExclusionsLocked];
     _doc->skip_paint.erase(ri->src_el().get());
+    PixelSnap snap(ctx);
     ri->src_el()->draw(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, ri);
     ri->draw_stacking_context(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, true);
     CGRect tight = TightInk(ctx, ink, box, scale);
@@ -1156,6 +1169,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextTranslateCTM(ctx, origin.x, origin.y);
     lh::position c(static_cast<float>(clip.origin.x), static_cast<float>(clip.origin.y),
                    static_cast<float>(clip.size.width), static_cast<float>(clip.size.height));
+    PixelSnap snap(ctx);
     _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &c);
     CGContextRestoreGState(ctx);
 }
@@ -1485,12 +1499,19 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth
 {
+    return [self displayListWithMaxWidth:maxWidth scale:1];
+}
+
+- (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth scale:(CGFloat)scale
+{
     std::lock_guard<std::mutex> guard(_lock);
     CGSize                size = [self layoutLockedWithMaxWidth:maxWidth];
     std::vector<LHDrawOp> ops;
     CGContextRef          ctx = _doc ? [self createContextWithWidth:1 height:1] : nullptr;
     if(ctx)
     {
+        if(scale > 0 && std::isfinite(scale))
+            CGContextScaleCTM(ctx, scale, scale);
         _container->set_draw_ops(&ops);
         [self drawLockedInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, size.width, std::max<CGFloat>(size.height, 1))];
         _container->set_draw_ops(nullptr);

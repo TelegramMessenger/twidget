@@ -130,6 +130,12 @@ namespace litehtml
         }
     };
 
+    inline float& pixel_snap_scale()
+    {
+        thread_local float scale = 1;
+        return scale;
+    }
+
     struct position
     {
         using vector = std::vector<position>;
@@ -188,10 +194,11 @@ namespace litehtml
 
         void round()
         {
-            const float left   = std::round(x.value());
-            const float top    = std::round(y.value());
-            const float right  = std::round(x.value() + width.value());
-            const float bottom = std::round(y.value() + height.value());
+            const float k      = pixel_snap_scale();
+            const float left   = std::round(x.value() * k) / k;
+            const float top    = std::round(y.value() * k) / k;
+            const float right  = std::round((x.value() + width.value()) * k) / k;
+            const float bottom = std::round((y.value() + height.value()) * k) / k;
             x                  = left;
             y                  = top;
             width              = right - left;

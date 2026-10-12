@@ -540,7 +540,7 @@ public final class LiteHTMLWidgetRenderer {
                 documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
             }
         } else {
-            let list = next.displayList(maxWidth: width)
+            let list = next.displayList(maxWidth: width, scale: documentView.scale)
             let previousList = displayList
             displayList = list
             let debt = listDebt

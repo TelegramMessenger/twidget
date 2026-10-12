@@ -50,6 +50,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale base:(CGImageRef)base dirty:(CGRect)dirty CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:base:dirty:));
 
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(displayList(maxWidth:));
+/// Records with boxes snapped to the device pixels of `scale`, as drawing into a context of that scale does.
+- (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:scale:));
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:gpu:scale:));
 - (CGRect)boundsOfElementsMatching:(NSString *)selector NS_SWIFT_NAME(bounds(matching:));
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setPaintExclusions(_:attribute:));
