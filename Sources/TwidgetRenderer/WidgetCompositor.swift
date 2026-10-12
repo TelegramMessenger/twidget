@@ -708,6 +708,9 @@ final class WidgetCompositor {
                 if animated.contains(where: { accepted[$0] == nil && WidgetCompositor.isAncestor($0, of: id, dom: dom) }) {
                     continue
                 }
+                if log, !(reaches[id]?.contains(where: { unobscured(id, $0, ignoring) }) ?? false) {
+                    print("COMPOSITE \(id) obscured box=\(want.box) reach=\(reaches[id]?.first ?? .null) clip=\(clips[id].map { "\($0.rect)" } ?? "none")")
+                }
                 if let reach = reaches[id]?.first(where: { unobscured(id, $0, ignoring) }) {
                     next[id] = want
                     if scriptedWanted[id] != nil {
