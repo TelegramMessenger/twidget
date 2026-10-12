@@ -2236,6 +2236,7 @@ final class WidgetDocumentView: NSView {
         let syncEpoch = syncInvalidations
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
+        let schedule = owner?.schedule
         WidgetDocumentView.prepareQueue.async { [weak self] in
             let start = CACurrentMediaTime()
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
@@ -2293,7 +2294,7 @@ final class WidgetDocumentView: NSView {
                 }
                 completion()
             }
-            if let schedule = self?.owner?.schedule {
+            if let schedule = schedule {
                 schedule(finish)
             } else {
                 DispatchQueue.main.async(execute: finish)
@@ -2475,6 +2476,7 @@ final class WidgetDocumentView: NSView {
         let syncEpoch = syncInvalidations
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
+        let schedule = owner?.schedule
         WidgetDocumentView.prepareQueue.async { [weak self] in
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
             var aborted = false
@@ -2553,7 +2555,7 @@ final class WidgetDocumentView: NSView {
                     self.rasterDirtyTiles()
                 }
             }
-            if let schedule = self?.owner?.schedule {
+            if let schedule = schedule {
                 schedule(finish)
             } else {
                 DispatchQueue.main.async(execute: finish)
