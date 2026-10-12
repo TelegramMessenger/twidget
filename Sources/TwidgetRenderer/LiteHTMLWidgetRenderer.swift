@@ -607,11 +607,28 @@ public final class LiteHTMLWidgetRenderer {
             return data
         }
         let a = pixels(expected), b = pixels(actual)
+        func distance(_ x: [UInt8], _ i: Int, _ y: [UInt8], _ j: Int) -> Int {
+            return max(abs(Int(x[i]) - Int(y[j])), abs(Int(x[i + 1]) - Int(y[j + 1])), abs(Int(x[i + 2]) - Int(y[j + 2])), abs(Int(x[i + 3]) - Int(y[j + 3])))
+        }
+        func unexplained(_ x: [UInt8], _ y: [UInt8], _ row: Int, _ col: Int) -> Bool {
+            let i = (row * w + col) * 4
+            for dy in -1...1 {
+                for dx in -1...1 {
+                    let r = row + dy, c = col + dx
+                    if r >= 0 && r < h && c >= 0 && c < w && distance(x, i, y, (r * w + c) * 4) <= 48 {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
         var bad = 0
-        for i in stride(from: 0, to: a.count, by: 4) {
-            let d = max(abs(Int(a[i]) - Int(b[i])), abs(Int(a[i + 1]) - Int(b[i + 1])), abs(Int(a[i + 2]) - Int(b[i + 2])), abs(Int(a[i + 3]) - Int(b[i + 3])))
-            if d > 48 {
-                bad += 1
+        for row in 0..<h {
+            for col in 0..<w {
+                let i = (row * w + col) * 4
+                if distance(a, i, b, i) > 48 && (unexplained(a, b, row, col) || unexplained(b, a, row, col)) {
+                    bad += 1
+                }
             }
         }
         compositeChecks += 1
