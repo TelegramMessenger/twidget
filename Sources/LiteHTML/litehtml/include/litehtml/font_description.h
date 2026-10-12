@@ -4,6 +4,7 @@
 #include "css_length.h"
 #include "web_color.h"
 #include <string>
+#include <vector>
 
 namespace litehtml
 {
@@ -29,6 +30,12 @@ namespace litehtml
         float       shadow_y          = 0;
         float       shadow_blur       = 0;
         web_color   shadow_color      = web_color::transparent;
+        struct text_shadow
+        {
+            float     x = 0, y = 0, blur = 0;
+            web_color color;
+        };
+        std::vector<text_shadow> extra_shadows;
 
         std::string hash() const
         {
@@ -56,6 +63,10 @@ namespace litehtml
             {
                 out += ":ts=" + std::to_string(shadow_x) + "," + std::to_string(shadow_y) + "," +
                        std::to_string(shadow_blur) + "," + shadow_color.to_string();
+                for(const auto& extra : extra_shadows)
+                {
+                    out += ";" + std::to_string(extra.x) + "," + std::to_string(extra.y) + "," + std::to_string(extra.blur) + "," + extra.color.to_string();
+                }
             }
 
             return out;

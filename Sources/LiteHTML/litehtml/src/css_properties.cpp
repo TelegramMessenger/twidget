@@ -567,6 +567,13 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
         descr.shadow_y     = shadow.y.val();
         descr.shadow_blur  = std::max(0.f, shadow.blur.val());
         descr.shadow_color = shadow.color.is_current_color ? m_color : shadow.color;
+        for(size_t i = 1; i < m_text_shadows.size() && i < 8; i++)
+        {
+            const auto& extra = m_text_shadows[i];
+            if(extra.inset)
+                continue;
+            descr.extra_shadows.push_back({extra.x.val(), extra.y.val(), std::max(0.f, extra.blur.val()), extra.color.is_current_color ? m_color : extra.color});
+        }
     }
     descr.family               = m_font_family;
     descr.size                 = font_size.value();

@@ -1035,6 +1035,15 @@ namespace litehtml
         {
             return;
         }
+        pixel_t inline_reach = 0;
+        for(const auto& shadow : m_css.get_box_shadows())
+        {
+            if(!shadow.inset)
+            {
+                inline_reach = std::max(inline_reach, pixel_t(std::fabs(shadow.blur.val()) * 2 + std::max(0.f, shadow.spread.val()) +
+                                                              std::max(std::fabs(shadow.x.val()), std::fabs(shadow.y.val()))));
+            }
+        }
         auto inline_processed = ri->for_inline_boxes([&](const position& box_, bool first, bool last) {
             const background* bg = get_background();
 
@@ -1042,8 +1051,13 @@ namespace litehtml
             position box  = box_;
             box.x        += x;
             box.y        += y;
+            position reach_box  = box;
+            reach_box.x        -= inline_reach;
+            reach_box.y        -= inline_reach;
+            reach_box.width    += inline_reach * 2;
+            reach_box.height   += inline_reach * 2;
 
-            if(box.does_intersect(clip))
+            if(reach_box.does_intersect(clip))
             {
                 content_box  = box;
                 content_box -= ri->get_borders();
@@ -1080,6 +1094,17 @@ namespace litehtml
                     bdr.right = m_css.get_borders().right;
                 }
 
+                const auto& inline_shadows = m_css.get_box_shadows();
+                position    shadow_box     = box;
+                shadow_box.round();
+                const border_radiuses shadow_radius = bdr.radius.calc_percents(box.width, box.height);
+                for(auto it = inline_shadows.rbegin(); it != inline_shadows.rend(); ++it)
+                {
+                    if(!it->inset)
+                    {
+                        doc_ptr()->container()->draw_box_shadow(hdc, shadow_box, shadow_radius, shadow_paint_for(*it));
+                    }
+                }
                 if(bg)
                 {
                     int num_layers = bg->get_layers_number();
@@ -1099,6 +1124,13 @@ namespace litehtml
                         layer.origin_box.round();
 
                         bg->draw_layer(hdc, i, layer, doc_ptr()->container());
+                    }
+                }
+                for(auto it = inline_shadows.rbegin(); it != inline_shadows.rend(); ++it)
+                {
+                    if(it->inset)
+                    {
+                        doc_ptr()->container()->draw_box_shadow(hdc, shadow_box, shadow_radius, shadow_paint_for(*it));
                     }
                 }
                 if(bdr.is_visible())
