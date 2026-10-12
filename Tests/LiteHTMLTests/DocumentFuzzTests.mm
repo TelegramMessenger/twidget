@@ -184,25 +184,32 @@ static NSArray<NSString *> *Seeds(void)
     }
 }
 
-- (void)testTmpLayoutIdempotence
+- (void)testCachedSVGMatchesUncachedDraw
 {
-    NSString *html = [NSString stringWithContentsOfFile:@"/tmp/leo-frame.html" encoding:NSUTF8StringEncoding error:nil];
-    if(!html) return;
-    LHDocument *a = [[LHDocument alloc] initWithHTML:html css:nil];
-    CGSize s1 = [a layoutWithMaxWidth:400 preferredWidth:400];
-    CGImageRef i1 = [a copyImageWithMaxWidth:400 rect:CGRectMake(0, 0, 400, s1.height) scale:1];
-    LHDocument *b = [[LHDocument alloc] initWithHTML:html css:nil];
-    CGSize s2 = [b layoutWithMaxWidth:400 preferredWidth:400];
-    [b layoutWithMaxWidth:400 preferredWidth:400];
-    CGImageRef i2 = [b copyImageWithMaxWidth:400 rect:CGRectMake(0, 0, 400, s2.height) scale:1];
-    NSData *d1 = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(i1));
-    NSData *d2 = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(i2));
-    NSLog(@"IDEMP sizes %@ %@ equal=%d", NSStringFromSize(s1), NSStringFromSize(s2), [d1 isEqualToData:d2]);
-    LHDocument *c = [[LHDocument alloc] initWithHTML:html css:nil previous:b];
-    CGSize s3 = [c layoutWithMaxWidth:400 preferredWidth:400];
-    CGImageRef i3 = [c copyImageWithMaxWidth:400 rect:CGRectMake(0, 0, 400, s3.height) scale:1];
-    NSData *d3 = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(i3));
-    NSLog(@"IDEMP patched reusedLayout=%d size %@ equalFresh=%d", c.reusedLayout, NSStringFromSize(s3), [d1 isEqualToData:d3]);
+    NSString *format = @"<div style='padding:3.3px 5.7px;background:#f7f2fa;color:%@'><span>Revenue</span><svg width='170' height='40' viewBox='0 0 170 40'>"
+                        "<polygon points='3,34 3,26 52.8,27.2 102.7,10.1 163.3,11 163.3,34' fill-opacity='0.15' fill='#af52de'/>"
+                        "<polyline points='3,26 52.8,27.2 102.7,10.1 163.3,11' stroke-width='2' stroke='#af52de' fill='none' stroke-linecap='round' stroke-linejoin='round'/>"
+                        "<circle cx='163.3' cy='11' r='3' fill='#af52de'/></svg></div>";
+    for(NSNumber *scale in @[@1, @1.5, @2, @3])
+    {
+        LHDocument *previous = [[LHDocument alloc] initWithHTML:[NSString stringWithFormat:format, @"#1c1c1e"] css:nil];
+        CGSize size = [previous layoutWithMaxWidth:200 preferredWidth:200];
+        for(int i = 0; i < 3; i++)
+            CGImageRelease([previous copyImageWithMaxWidth:200 rect:CGRectMake(0, 0, 200, size.height) scale:scale.doubleValue]);
+        NSString *next = [NSString stringWithFormat:format, @"#3a3a3c"];
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:next css:nil previous:previous];
+        LHDocument *fresh = [[LHDocument alloc] initWithHTML:next css:nil];
+        NSMutableArray<NSData *> *images = [NSMutableArray array];
+        for(LHDocument *document in @[patched, fresh])
+        {
+            CGSize s = [document layoutWithMaxWidth:200 preferredWidth:200];
+            CGImageRef image = [document copyImageWithMaxWidth:200 rect:CGRectMake(0, 0, 200, s.height) scale:scale.doubleValue];
+            XCTAssertTrue(image != NULL);
+            [images addObject:(__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(image))];
+            CGImageRelease(image);
+        }
+        XCTAssertEqualObjects(images[0], images[1], @"scale %@", scale);
+    }
 }
 
 @end
