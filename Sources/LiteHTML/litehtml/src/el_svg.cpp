@@ -1079,7 +1079,8 @@ namespace litehtml
                 m_last_paint_key = key;
                 m_stable_draws   = 0;
             }
-            if(m_stable_draws >= 2)
+            static const int stable_draws_needed = getenv("LH_SVG_LATE_CACHE") ? 2 : 0;
+            if(m_stable_draws >= stable_draws_needed)
             {
                 cached = container->draw_cached(hdc, pos, key, paint);
             }
