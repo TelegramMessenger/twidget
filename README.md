@@ -67,6 +67,22 @@ On the ported corpus, every widget lays out to WebKit's height within 4 pt, and 
 - Fallback fonts for symbols such as ✕ can differ from WebKit's choice.
 - WebGL is not part of the twidget protocol.
 
+### Script animations
+
+`Element.animate()` and the rest of the Web Animations API run in the sandbox shim: `Animation`, `KeyframeEffect`, `DocumentTimeline`, `getAnimations()` (with `CSSAnimation` and `CSSTransition` objects for running CSS animations and transitions), promises and `finish`, `cancel` and `remove` events. The shim owns the timing model, so reading `currentTime` or `playState` never leaves the sandbox. Renderers only mirror the effect state they are sent:
+
+| Message | Direction | Content |
+|---|---|---|
+| `anim` | sandbox → host | `host('anim', json)` after the ops of the same task: a list of animation records |
+| `{type: 'anim', now, anims}` | host → renderer | validated records; `now` is the host clock in ms when the host sent it |
+| `{q: 'anims', id, subtree}` | query | running CSS animations and transitions of an element: `kind`, `id`, `name`, `index`, `origin`, `currentTime`, `playbackRate`, `paused` and their timing |
+
+A record is `{aid, target, keyframes: [{offset, easing, composite, values}], timing: {duration, delay, endDelay, iterations, iterationStart, direction, fill, easing}, composite, iterationComposite, startTime, holdTime, playbackRate}`. Times are milliseconds; `iterations: null` is infinite. `startTime` is on the host clock (the clock behind the engine's `now`) and set while the animation runs; `holdTime` is the local time of a paused or pending animation. `{aid, remove: true}` drops a record. A record with `css: {kind, name, origin}` instead of keyframes controls a CSS animation reported by the `anims` query (`origin` is its opaque identity) and may carry `cancelled: true`.
+
+The host validates every record like a style op: the target must be a rendered element, every keyframe value passes the CSS sanitizer (rejected values are dropped, `animation-*` and `transition-*` are never animated), easings match a strict grammar, and there are caps on keyframes (64), values per keyframe (64), times (24 h), iterations, playback rate (±1000) and live animations (1024 per widget).
+
+`LiteHTMLWidgetRenderer` samples records with the same timing math as the shim. Effects on `transform` and `opacity` are baked into `CAKeyframeAnimation`s whose `beginTime` and `speed` carry the start time and playback rate, so running animations cost no main-thread work. Paused animations are applied to the promoted layer once. Other properties are sampled per frame like CSS animations. Finish times are known to the shim, which wakes once per finish instead of polling.
+
 ### Magic move
 
 Mark a container with `data-transition="move"`. When an operations batch adds, removes or reorders its descendants, keyed descendants animate from their old boxes to their new ones instead of jumping:
