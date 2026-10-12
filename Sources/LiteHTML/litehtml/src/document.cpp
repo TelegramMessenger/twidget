@@ -286,7 +286,7 @@ namespace litehtml
             return false;
         auto a = split_style_declarations(before), b = split_style_declarations(after);
         auto sensitive = [](const std::pair<std::string, std::string>& d) {
-            return d.first.compare(0, 2, "--") == 0 || d.second.find("var(") != std::string::npos || d.second.find("--") != std::string::npos;
+            return d.first.compare(0, 2, "--") == 0;
         };
         size_t i = 0;
         while(i < a.size() && i < b.size() && a[i] == b[i])
