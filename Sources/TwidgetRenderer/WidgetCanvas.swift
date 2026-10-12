@@ -749,7 +749,34 @@ enum CSSColor {
         return CGColor(colorSpace: space, components: [CGFloat(r), CGFloat(g), CGFloat(b), CGFloat(a)])!
     }
 
+    private static let lock = NSLock()
+    private static var cache: [String: CGColor?] = [:]
+    static let cacheLimit = 512
+
     static func parse(_ text: String) -> CGColor? {
+        lock.lock()
+        if let cached = cache[text] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+        let color = resolve(text)
+        lock.lock()
+        if cache.count >= cacheLimit {
+            cache.removeAll(keepingCapacity: true)
+        }
+        cache[text] = .some(color)
+        lock.unlock()
+        return color
+    }
+
+    static var cachedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache.count
+    }
+
+    private static func resolve(_ text: String) -> CGColor? {
         let normalized = CSSInterpolate.normalizeColors(text.trimmingCharacters(in: .whitespaces))
         if normalized.hasPrefix("rgba(") {
             let values = normalized.dropFirst(5).dropLast().split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }

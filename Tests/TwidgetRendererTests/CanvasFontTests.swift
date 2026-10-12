@@ -27,3 +27,23 @@ final class CanvasFontTests: XCTestCase {
         XCTAssertLessThanOrEqual(CSSFont.cachedCount, CSSFont.cacheLimit)
     }
 }
+
+final class CanvasColorTests: XCTestCase {
+    func testCachedColorsMatchAFreshParse() {
+        for text in ["hsl(210,90%,60%)", "rgba(11,16,32,0.35)", "#ff3b30", "red", "not-a-colour", "hsl(400deg 50% 50% / 0.5)"] {
+            let first = CSSColor.parse(text)
+            let second = CSSColor.parse(text)
+            XCTAssertEqual(first?.components, second?.components, text)
+            XCTAssertEqual(first == nil, second == nil, text)
+        }
+        XCTAssertNil(CSSColor.parse("not-a-colour"))
+        XCTAssertEqual(CSSColor.parse("rgba(11,16,32,0.35)")?.alpha ?? 0, 0.35, accuracy: 0.0001)
+    }
+
+    func testColorCacheStaysBounded() {
+        for index in 0..<2000 {
+            _ = CSSColor.parse("hsl(\(index),50%,50%)")
+        }
+        XCTAssertLessThanOrEqual(CSSColor.cachedCount, CSSColor.cacheLimit)
+    }
+}
