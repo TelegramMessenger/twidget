@@ -1156,11 +1156,39 @@ final class WidgetDocumentView: NSView {
     private var surfaceSpace: CGColorSpace?
     private var badgeLayer: CATextLayer?
 
+    static let backingStore = ProcessInfo.processInfo.environment["TW_BACKING"] != nil
+
     override var wantsUpdateLayer: Bool {
-        return true
+        return !WidgetDocumentView.backingStore
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard WidgetDocumentView.backingStore, let document = document, let ctx = NSGraphicsContext.current?.cgContext else {
+            return
+        }
+        let start = CACurrentMediaTime()
+        defer {
+            drawCount += 1
+            let spent = (CACurrentMediaTime() - start) * 1000
+            drawMilliseconds += spent
+            drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
+        }
+        ctx.saveGState()
+        ctx.setAllowsFontSmoothing(false)
+        ctx.clear(dirtyRect)
+        document.draw(in: ctx, origin: .zero, clip: dirtyRect.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+        ctx.restoreGState()
     }
 
     func invalidate(_ rect: CGRect?) {
+        if WidgetDocumentView.backingStore {
+            if let rect = rect {
+                setNeedsDisplay(rect)
+            } else {
+                needsDisplay = true
+            }
+            return
+        }
         for surface in surfaces {
             surface.stale = rect.map { surface.stale.union($0) } ?? CGRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude / 4, height: CGFloat.greatestFiniteMagnitude / 4)
         }
