@@ -487,6 +487,9 @@ static bool LHPaintTraceUncached()
     NSSet<NSString *>           *_exclusions;
     NSSet<NSString *>           *_scrollExclusions;
     std::unordered_map<std::string, std::weak_ptr<lh::render_item>> _scrollItems;
+    std::unordered_map<std::string, std::weak_ptr<lh::render_item>> _itemIndex;
+    std::string                  _itemIndexAttribute;
+    BOOL                         _itemIndexValid;
     NSString                    *_scrollAttribute;
     NSDictionary                *_declarations;
     NSArray                     *_declarationsKey;
@@ -948,6 +951,7 @@ static std::string MasterWithCSS(NSString *css)
     _consumed     = NO;
     _declarations = nil;
     _paintTraceValid = NO;
+    _itemIndexValid  = NO;
     _container = std::make_unique<LHContainer>();
     _container->set_clip_culling(_consumedCulling);
     _container->set_controls_active(_controlsActive, LHControlAccent());
@@ -1037,6 +1041,7 @@ static std::string MasterWithCSS(NSString *css)
 - (void)fitViewportHeightLockedWithWidth:(CGFloat)width
 {
     _paintTraceValid = NO;
+    _itemIndexValid  = NO;
     if(!NeedsViewportHeight(_doc))
         return;
     _container->set_viewport(lh::position(0, 0, static_cast<float>(width), static_cast<float>(std::ceil(_doc->height().value()))));
@@ -1046,6 +1051,7 @@ static std::string MasterWithCSS(NSString *css)
 - (CGSize)layoutLockedWithMaxWidth:(CGFloat)maxWidth
 {
     _paintTraceValid = NO;
+    _itemIndexValid  = NO;
     [self restoreLocked];
     maxWidth = std::max<CGFloat>(1, std::floor(maxWidth));
     if(!_doc)
@@ -1302,6 +1308,33 @@ static std::string MasterWithCSS(NSString *css)
         return nullptr;
     const char                      *key    = attribute.UTF8String;
     const std::string                wanted = value.UTF8String;
+    if(!_itemIndexValid || _itemIndexAttribute != key)
+    {
+        _itemIndex.clear();
+        _itemIndexAttribute = key;
+        std::vector<std::shared_ptr<lh::render_item>> pending{_doc->root_render()};
+        while(!pending.empty())
+        {
+            std::shared_ptr<lh::render_item> ri = std::move(pending.back());
+            pending.pop_back();
+            if(const char *v = ri->src_el()->get_attr(key))
+                _itemIndex.emplace(v, ri);
+            const auto &children = ri->children();
+            for(auto child = children.rbegin(); child != children.rend(); ++child)
+                pending.push_back(*child);
+        }
+        _itemIndexValid = YES;
+    }
+    auto hit = _itemIndex.find(wanted);
+    if(hit == _itemIndex.end())
+        return nullptr;
+    if(auto ri = hit->second.lock())
+    {
+        const char *v = ri->src_el()->get_attr(key);
+        if(v && wanted == v)
+            return ri;
+    }
+    _itemIndexValid = NO;
     std::shared_ptr<lh::render_item> found;
     std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
         if(found)
@@ -1605,6 +1638,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     const std::vector<const lh::render_item *> &trace = _paintTrace;
     const char *key = attribute.UTF8String;
     NSMutableOrderedSet<NSString *> *found = [NSMutableOrderedSet orderedSet];
+    std::unordered_set<std::string> ignored;
+    for(NSString *value in ignoring)
+        ignored.insert(value.UTF8String ?: "");
     auto self_it = std::find(trace.begin(), trace.end(), ri.get());
     if(self_it == trace.end())
         return nil;
@@ -1622,14 +1658,13 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         }
         if(descendant || std::dynamic_pointer_cast<lh::el_space>(item->src_el()))
             continue;
-        if(ignoring.count > 0)
+        if(!ignored.empty())
         {
-            const char *key     = attribute.UTF8String;
-            bool        skipped = false;
+            bool skipped = false;
             for(const lh::render_item *walk = item; walk && !skipped; walk = walk->parent().get())
             {
                 const char *v = walk->src_el()->get_attr(key);
-                if(v && [ignoring containsObject:@(v)])
+                if(v && ignored.count(v))
                     skipped = true;
             }
             if(skipped)
@@ -2178,6 +2213,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
     _paintTraceValid = NO;
+    _itemIndexValid = NO;
     const BOOL changed = _doc && _doc->on_mouse_over(x, y, x, y, IgnoreRedraw);
     _pointerRestyled = _pointerRestyled || changed;
     return changed;
@@ -2189,6 +2225,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
     _paintTraceValid = NO;
+    _itemIndexValid = NO;
     const BOOL changed = _doc && _doc->on_lbutton_down(x, y, x, y, IgnoreRedraw);
     _pointerRestyled = _pointerRestyled || changed;
     return changed;
@@ -2200,6 +2237,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
     _paintTraceValid = NO;
+    _itemIndexValid = NO;
     const BOOL changed = _doc && _doc->on_lbutton_up(x, y, x, y, IgnoreRedraw);
     _pointerRestyled = _pointerRestyled || changed;
     return changed;
@@ -2210,6 +2248,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     _paintTraceValid = NO;
+    _itemIndexValid = NO;
     const BOOL changed = _doc && _doc->on_mouse_leave(IgnoreRedraw);
     _pointerRestyled = _pointerRestyled || changed;
     return changed;
