@@ -172,6 +172,71 @@ static void CheckClips(XCTestCase *test, LHDocument *document, CGSize size, std:
     XCTAssertGreaterThan(painted, 40);
 }
 
+- (void)testCulledDrawsMatchAtSnappedEdgesAcrossPatchesAndExclusions
+{
+    std::mt19937 rng(12102026);
+    int          painted = 0;
+    for(int n = 0; n < 12; n++)
+    {
+        @autoreleasepool
+        {
+            std::vector<CGFloat> heights;
+            for(int i = 0; i < 8; i++)
+                heights.push_back(3 + (rng() % 4000) / 97.0);
+            const CGFloat shift = (rng() % 400) / 3.0;
+            LHDocument   *document = nil;
+            for(int step = 0; step < 5; step++)
+            {
+                NSMutableString *html = [NSMutableString stringWithString:@"<!doctype html><style>body{margin:0;font:13px -apple-system} .r{position:relative;margin:0.37px 1.25px;border:0.5px solid #333;border-radius:3.3px;background:#9cf;overflow:hidden} .r>i{display:block;height:100%;background:#f80}</style>"];
+                std::vector<CGFloat> edges;
+                CGFloat              y = 0;
+                for(size_t i = 0; i < heights.size(); i++)
+                {
+                    CGFloat h  = heights[i] + (rng() % 3 == 0 ? (rng() % 100) / 7.0 : 0);
+                    heights[i] = h;
+                    NSString *move = rng() % 3 == 0 ? [NSString stringWithFormat:@"transform:translate(%gpx,%gpx);", (rng() % 200) / 3.0 - shift, (rng() % 100) / 7.0 - 7] : @"";
+                    [html appendFormat:@"<div class=\"r\" data-k=\"%zu\" style=\"height:%gpx;%@\"><i style=\"width:%g%%\">%zu</i></div>", i, h, move, 10 + (rng() % 900) / 10.0, i];
+                    y += 0.37;
+                    edges.push_back(y);
+                    y += h + 1;
+                    edges.push_back(y);
+                    y += 0.37;
+                }
+                document    = [[LHDocument alloc] initWithHTML:html css:nil previous:document];
+                CGSize size = [document layoutWithMaxWidth:240 preferredWidth:240];
+                NSMutableSet<NSString *> *excluded = [NSMutableSet set];
+                for(size_t i = 0; i < heights.size(); i++)
+                    if(rng() % 4 == 0)
+                        [excluded addObject:[NSString stringWithFormat:@"%zu", i]];
+                [document setPaintExclusions:excluded attribute:@"data-k"];
+                for(int c = 0; c < 24; c++)
+                {
+                    CGFloat edge   = edges[rng() % edges.size()];
+                    CGFloat snap   = std::round(edge * 2) / 2;
+                    CGFloat top    = (rng() % 2 ? snap : edge) + ((int)(rng() % 5) - 2) * 0.25;
+                    CGFloat height = 0.5 * (1 + rng() % 64);
+                    CGRect  clip   = rng() % 2 ? CGRectMake(0, top, 240, height) : CGRectMake(0, top - height, 240, height);
+                    if(rng() % 3 == 0)
+                        clip = CGRectMake(std::floor((rng() % 480) / 2.0) / 2, clip.origin.y, 0.5 * (1 + rng() % 160), clip.size.height);
+                    NSData *a = Render(document, clip, 2, 0, NO);
+                    NSData *b = Render(document, clip, 2, 0, YES);
+                    XCTAssertEqualObjects(a, b, @"document %d step %d clip %@ size %@", n, step, NSStringFromRect(NSRectFromCGRect(clip)), NSStringFromSize(NSSizeFromCGSize(size)));
+                    const uint8_t *p = (const uint8_t *)a.bytes;
+                    for(NSUInteger k = 3; k < a.length; k += 4)
+                    {
+                        if(p[k])
+                        {
+                            painted++;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    XCTAssertGreaterThan(painted, 500);
+}
+
 - (void)testSVGPaintKeysFollowPatches
 {
     NSString *(^page)(NSString *, NSString *) = ^NSString *(NSString *fill, NSString *stroke) {
