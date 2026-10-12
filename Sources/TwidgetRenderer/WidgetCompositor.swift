@@ -558,7 +558,7 @@ final class WidgetCompositor {
             layer.contents = image
             layer.contentsScale = scale * want.maxScale
             layer.contentsGravity = .resize
-            layer.minificationFilter = want.maxScale > 1 ? .trilinear : .linear
+            layer.minificationFilter = want.maxScale > 1 && ProcessInfo.processInfo.environment["TW_LINEAR"] == nil ? .trilinear : .linear
             layer.bounds = CGRect(origin: .zero, size: ink.size)
             let anchor = CGPoint(x: border.minX + want.origin.x, y: border.minY + want.origin.y)
             layer.anchorPoint = CGPoint(x: (anchor.x - ink.minX) / ink.width, y: (anchor.y - ink.minY) / ink.height)
