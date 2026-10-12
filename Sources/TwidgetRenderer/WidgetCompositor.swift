@@ -306,6 +306,11 @@ final class WidgetCompositor {
     private weak var host: CALayer?
     private(set) var promotions = 0
     private var driven: [Int: String] = [:]
+    private(set) var overlapIDs: Set<Int> = []
+
+    var animatedPromotions: Set<Int> {
+        return Set(promoted.keys).subtracting(scripted.keys).subtracting(overlapIDs)
+    }
     private var drivenSince: [Int: CFTimeInterval] = [:]
     private(set) var bakes = 0
     var scriptedCandidates: Set<Int> = []
@@ -781,6 +786,7 @@ final class WidgetCompositor {
         }
         wanted = accepted
         scripted = scriptedWanted.filter { accepted[$0.key] != nil && !$0.value.reach.isNull }
+        overlapIDs = overlapAdded.filter { accepted[$0] != nil }
         var order: [String: NSNumber] = [:]
         if Set(wanted.keys) != Set(promoted.keys) || wanted.count > 1 && zOrderStale {
             order = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(wanted.keys.map { String($0) }))

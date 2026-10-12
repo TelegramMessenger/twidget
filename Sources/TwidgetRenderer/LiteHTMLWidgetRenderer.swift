@@ -326,7 +326,7 @@ public final class LiteHTMLWidgetRenderer {
         } else {
             stageMilliseconds["composited-only", default: 0] += 1
         }
-        if !compositor.ids.isEmpty && !animator.animatedIDs().isSuperset(of: compositor.ids) {
+        if !compositor.animatedPromotions.isEmpty && !animator.animatedIDs().isSuperset(of: compositor.animatedPromotions) {
             setNeedsRender()
         }
     }
