@@ -436,6 +436,20 @@ public final class LiteHTMLWidgetRenderer {
         onSerialized?(html, next.reusedPrevious)
         _ = next.layout(maxWidth: width, preferredWidth: width)
         stage("layout")
+        if LiteHTMLWidgetRenderer.patchCheck && next.reusedPrevious {
+            patchChecks += 1
+            let fresh = LHDocument(html: html, css: nil)
+            _ = fresh.layout(maxWidth: width, preferredWidth: width)
+            let size = CGSize(width: width, height: max(1, ceil(max(next.size.height, fresh.size.height))))
+            if !excluded.isEmpty {
+                fresh.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+            }
+            let a = next.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: 2)
+            let b = fresh.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: 2)
+            if abs(next.size.height - fresh.size.height) > 0.01 || !LiteHTMLWidgetRenderer.sameImage(a, b) {
+                patchMismatches += 1
+            }
+        }
         defer { stage("report") }
         let list = next.displayList(maxWidth: width)
         let previousList = displayList
@@ -550,6 +564,21 @@ public final class LiteHTMLWidgetRenderer {
         applyExclusions()
         documentView.displayIfNeeded()
         CATransaction.commit()
+    }
+
+    static let patchCheck = ProcessInfo.processInfo.environment["TW_PATCHCHECK"] != nil
+    public private(set) var patchChecks = 0
+    public private(set) var patchMismatches = 0
+
+    private static func sameImage(_ a: CGImage?, _ b: CGImage?) -> Bool {
+        guard let a = a, let b = b, a.width == b.width, a.height == b.height, let da = a.dataProvider?.data, let db = b.dataProvider?.data, CFDataGetLength(da) == CFDataGetLength(db) else {
+            return a == nil && b == nil
+        }
+        let pa = CFDataGetBytePtr(da)!, pb = CFDataGetBytePtr(db)!
+        for i in 0..<CFDataGetLength(da) where abs(Int(pa[i]) - Int(pb[i])) > 1 {
+            return false
+        }
+        return true
     }
 
     private static func same(_ a: [Int: [(String, String)]], _ b: [Int: [(String, String)]]) -> Bool {
