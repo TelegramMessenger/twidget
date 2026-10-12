@@ -604,7 +604,12 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         compositeChecks += 1
-        compositeWorst = max(compositeWorst, Double(bad) / Double(w * h) * 100)
+        let share = Double(bad) / Double(w * h) * 100
+        if share > compositeWorst, let dir = ProcessInfo.processInfo.environment["TW_COMPOSITECHECK_DUMP"] {
+            try? NSBitmapImageRep(cgImage: expected).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir + "/expected.png"))
+            try? NSBitmapImageRep(cgImage: actual).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir + "/actual.png"))
+        }
+        compositeWorst = max(compositeWorst, share)
     }
 
     static let patchCheck = ProcessInfo.processInfo.environment["TW_PATCHCHECK"] != nil
