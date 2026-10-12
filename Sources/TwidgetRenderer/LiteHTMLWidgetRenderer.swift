@@ -1404,6 +1404,7 @@ final class WidgetDocumentView: NSView {
     private var badgeLayer: CATextLayer?
 
     static let backingStore = ProcessInfo.processInfo.environment["TW_BACKING"] != nil
+    static let eightBitTiles = ProcessInfo.processInfo.environment["TW_DEEP_TILES"] == nil
     static let tileHeight: CGFloat = ProcessInfo.processInfo.environment["TW_TILE"].flatMap { Double($0) }.map { CGFloat($0) } ?? 128
 
     override var wantsUpdateLayer: Bool {
@@ -1511,6 +1512,9 @@ final class WidgetDocumentView: NSView {
         while tiles.count < count {
             let tile = Tile()
             tile.layer.contentsGravity = .topLeft
+            if WidgetDocumentView.eightBitTiles {
+                tile.layer.contentsFormat = .RGBA8Uint
+            }
             tile.layer.anchorPoint = .zero
             tile.layer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull()]
             layer.insertSublayer(tile.layer, at: UInt32(tiles.count))
