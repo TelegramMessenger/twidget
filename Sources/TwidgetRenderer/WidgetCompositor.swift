@@ -795,7 +795,7 @@ final class WidgetCompositor {
             var budget = WidgetCompositor.maxPixels
             var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
             for (id, want) in next.sorted(by: { $0.value.box.width * $0.value.box.height < $1.value.box.width * $1.value.box.height }) {
-                let factor = scale * want.maxScale
+                let factor = WidgetCompositor.rasterScale(scale, want.maxScale)
                 let pixels = Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
                 if admitted.count >= WidgetCompositor.maxLayers || pixels > budget {
                     continue
@@ -834,7 +834,7 @@ final class WidgetCompositor {
         document.setPaintExclusions(Set(wanted.keys.map { String($0) }).union(extraExclusions.map { String($0) }), attribute: WidgetDOM.idAttribute)
         for (id, want) in wanted {
             let inner = wanted.keys.filter { $0 != id && WidgetCompositor.isAncestor(id, of: $0, dom: dom) }.sorted()
-            let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: scale * want.maxScale, styleKey: styleKey ^ inner.hashValue)
+            let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: WidgetCompositor.rasterScale(scale, want.maxScale), styleKey: styleKey ^ inner.hashValue)
             if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer != nil {
                 if let index = order[String(id)] {
                     existing.layer.zPosition = 1 + CGFloat(index.intValue) * 1e-6
@@ -842,7 +842,7 @@ final class WidgetCompositor {
                 continue
             }
             var ink = CGRect.zero, border = CGRect.zero
-            guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: scale * want.maxScale, inkBounds: &ink, borderBox: &border) else {
+            guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: WidgetCompositor.rasterScale(scale, want.maxScale), inkBounds: &ink, borderBox: &border) else {
                 promoted[id]?.layer.removeFromSuperlayer()
                 promoted[id] = nil
                 continue
@@ -851,7 +851,7 @@ final class WidgetCompositor {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.contents = image
-            layer.contentsScale = scale * want.maxScale
+            layer.contentsScale = WidgetCompositor.rasterScale(scale, want.maxScale)
             layer.contentsGravity = .resize
             layer.minificationFilter = want.maxScale > 1 && ProcessInfo.processInfo.environment["TW_LINEAR"] == nil ? .trilinear : .linear
             layer.bounds = CGRect(origin: .zero, size: ink.size)
@@ -909,6 +909,14 @@ final class WidgetCompositor {
         }
         clipOf = clips.filter { entry in promoted[entry.key].map { $0.layer.superlayer !== host } ?? false }
         CATransaction.commit()
+    }
+
+    static func rasterScale(_ display: CGFloat, _ magnification: CGFloat) -> CGFloat {
+        let exact = display * magnification
+        guard magnification > 1, exact.isFinite else {
+            return exact
+        }
+        return max(exact, ((exact * 4) - 1e-6).rounded(.up) / 4)
     }
 
     struct Clip: Equatable {

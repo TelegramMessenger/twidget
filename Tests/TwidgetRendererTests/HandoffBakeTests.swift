@@ -53,6 +53,22 @@ final class HandoffBakeTests: XCTestCase {
         check("@keyframes k { to { transform: skewX(20deg) translate(10px, 5px); } }", "k 1.4s ease-in-out infinite")
     }
 
+    func testRasterScaleRoundsUpToQuarterPixels() {
+        XCTAssertEqual(WidgetCompositor.rasterScale(2, 1), 2)
+        XCTAssertEqual(WidgetCompositor.rasterScale(2, 1.2), 2.5)
+        XCTAssertEqual(WidgetCompositor.rasterScale(2, 1.25), 2.5)
+        XCTAssertEqual(WidgetCompositor.rasterScale(1, 1.2), 1.25)
+        XCTAssertEqual(WidgetCompositor.rasterScale(2, 1.37), 2.75)
+        XCTAssertEqual(WidgetCompositor.rasterScale(3, 3), 9)
+        for magnification in stride(from: 1.0, through: 3.0, by: 0.013) {
+            for display in [1.0, 2.0, 3.0] {
+                let scale = WidgetCompositor.rasterScale(CGFloat(display), CGFloat(magnification))
+                XCTAssertGreaterThanOrEqual(scale, CGFloat(display * magnification) - 1e-9)
+                XCTAssertEqual((scale * 4).rounded(), scale * 4, accuracy: 1e-9)
+            }
+        }
+    }
+
     func testStepsAndUnparseableTransformsStayOnTheFrameClock() {
         if let (item, base) = baked("@keyframes t { to { transform: translateY(20px); } }", "t 1s steps(4) infinite") {
             XCTAssertNil(WidgetCompositor.bake(item, base: base, box: CGSize(width: 40, height: 40), origin: CGPoint(x: 20, y: 20)))
