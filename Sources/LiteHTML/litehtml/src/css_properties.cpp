@@ -781,6 +781,16 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
     m_opacity         = el->get_property<float>(_opacity_, false, 1.f, offset(m_opacity));
     m_aspect_ratio    = el->get_property<float>(_aspect_ratio_, false, 0.f, offset(m_aspect_ratio));
     m_backface_hidden = el->get_property<int>(_backface_visibility_, false, 0, offset(m_backface_hidden));
+    m_contain         = el->get_property<int>(_contain_, false, 0, offset(m_contain));
+    if(m_contain)
+    {
+        if(is_one_of(m_display, display_inline, display_none, display_table_row, display_table_row_group,
+                     display_table_header_group, display_table_footer_group, display_table_column,
+                     display_table_column_group))
+            m_contain = 0;
+        else if(is_one_of(m_display, display_table, display_inline_table, display_table_cell, display_table_caption))
+            m_contain &= ~(contain_size | contain_inline_size);
+    }
     m_accent_color =
         el->get_property<web_color>(_accent_color_, true, web_color::transparent, offset(m_accent_color));
     m_dark_scheme = el->get_property<int>(_color_scheme_, true, 0, offset(m_dark_scheme));

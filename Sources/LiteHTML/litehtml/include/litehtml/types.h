@@ -346,6 +346,15 @@ namespace litehtml
         draw_positioned,
     };
 
+    enum contain_flags
+    {
+        contain_size        = 0x01,
+        contain_inline_size = 0x02,
+        contain_layout      = 0x04,
+        contain_style       = 0x08,
+        contain_paint       = 0x10,
+    };
+
     struct containing_block_context
     {
         enum cbc_value_type

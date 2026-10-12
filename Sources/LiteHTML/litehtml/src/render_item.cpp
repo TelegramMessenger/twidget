@@ -58,11 +58,51 @@ bool litehtml::render_item::layout_reusable() const
     return !m_layout_dirty && doc && m_layout_epoch == doc->layout_epoch();
 }
 
+bool litehtml::render_item::relayout_boundary() const
+{
+    const document* doc = src_el()->doc_ptr();
+    if(!doc || !doc->layout_cache_enabled() || !css().contains(contain_size) || m_out_of_flow ||
+       !src_el()->is_block_formatting_context() || src_el()->is_replaced())
+        return false;
+    const element_position position = css().get_position();
+    if(position == element_position_absolute || position == element_position_fixed)
+        return false;
+    if(m_layout_dirty)
+        return m_relayout_pending;
+    return m_last_layout.valid && m_layout_epoch == doc->layout_epoch();
+}
+
+void litehtml::render_item::relayout()
+{
+    m_relayout_pending = false;
+    if(!m_layout_dirty || !m_last_layout.valid)
+        return;
+    const position placed  = m_pos;
+    const margins  margin  = m_margins;
+    const margins  padding = m_padding;
+    const margins  border  = m_borders;
+    render(m_last_x, m_last_y, m_last_layout.cb, nullptr, m_last_layout.second_pass);
+    m_pos     = placed;
+    m_margins = margin;
+    m_padding = padding;
+    m_borders = border;
+}
+
 void litehtml::render_item::mark_layout_dirty()
 {
     document* doc = src_el()->doc_ptr();
     for(render_item* item = this; item;)
     {
+        if(item != this && item->relayout_boundary())
+        {
+            if(!item->m_relayout_pending && doc)
+                doc->note_relayout_root(item);
+            item->m_relayout_pending   = true;
+            item->m_layout_dirty       = true;
+            item->m_measured[0].valid = false;
+            item->m_measured[1].valid = false;
+            return;
+        }
         if(!item->m_layout_dirty && doc)
             doc->note_layout_dirty(item);
         item->m_layout_dirty      = true;
@@ -918,7 +958,7 @@ void litehtml::render_item::render_positioned(render_type rt)
 void litehtml::render_item::add_positioned(const std::shared_ptr<litehtml::render_item>& el)
 {
     if(src_el()->css().get_position() != element_position_static || is_root() ||
-       !src_el()->css().get_transform().empty())
+       !src_el()->css().get_transform().empty() || src_el()->css().contains(contain_layout | contain_paint))
     {
         m_positioned.push_back(el);
     } else
@@ -945,7 +985,7 @@ void litehtml::render_item::get_redraw_box(litehtml::position& pos, pixel_t x /*
         pos.width  = p_right - p_left;
         pos.height = p_bottom - p_top;
 
-        if(src_el()->css().get_overflow() == overflow_visible)
+        if(!src_el()->css().clips_contents())
         {
             for(auto& el : m_children)
             {
@@ -994,7 +1034,7 @@ void litehtml::render_item::calc_document_size(litehtml::size& sz, pixel_t x /*=
             {
                 // All children of tables and blocks with style other than "overflow: visible" are inside element.
                 // We can skip calculating the size of children
-                if(src_el()->css().get_overflow() == overflow_visible && src_el()->css().get_display() != display_table)
+                if(!src_el()->css().clips_contents() && src_el()->css().get_display() != display_table)
                 {
                     for(const auto& el : m_children)
                     {
@@ -1311,7 +1351,7 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
     pos.x        += x - get_scroll_left();
     pos.y        += y - get_scroll_top();
 
-    const bool clips = src_el()->css().get_overflow() > overflow_visible && src_el().get() != doc->unclipped_scroll;
+    const bool clips = src_el()->css().clips_contents() && src_el().get() != doc->unclipped_scroll;
     if(clips)
     {
         // TODO: Process overflow for inline elements
@@ -1463,7 +1503,7 @@ std::shared_ptr<litehtml::element> litehtml::render_item::get_child_by_point(
     pixel_t x, pixel_t y, pixel_t client_x, pixel_t client_y, draw_flag flag, int zindex,
     const std::function<bool(const std::shared_ptr<render_item>&)>& check)
 {
-    if(src_el()->css().get_overflow() > overflow_visible)
+    if(src_el()->css().clips_contents())
     {
         if(!m_pos.is_point_inside(x, y))
         {

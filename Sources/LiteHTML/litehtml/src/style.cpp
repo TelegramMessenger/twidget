@@ -848,6 +848,39 @@ namespace litehtml
                 return add_length_property(name, val, normal_val, f_length, important);
             }
 
+        case _contain_:
+            {
+                int  flags = 0;
+                bool valid = !value.empty();
+                for(const auto& tok : value)
+                {
+                    const std::string word = tok.ident();
+                    if(tok.type == WHITESPACE)
+                        continue;
+                    if(word == "none" && value.size() == 1)
+                        flags = 0;
+                    else if(word == "strict")
+                        flags |= contain_size | contain_layout | contain_paint | contain_style;
+                    else if(word == "content")
+                        flags |= contain_layout | contain_paint | contain_style;
+                    else if(word == "size")
+                        flags |= contain_size;
+                    else if(word == "inline-size")
+                        flags |= contain_inline_size;
+                    else if(word == "layout")
+                        flags |= contain_layout;
+                    else if(word == "paint")
+                        flags |= contain_paint;
+                    else if(word == "style")
+                        flags |= contain_style;
+                    else
+                        valid = false;
+                }
+                if(valid)
+                    add_parsed_property(name, property_value(flags, important));
+            }
+            break;
+
         case _backface_visibility_:
             if(ident == "hidden" || ident == "visible")
             {

@@ -99,6 +99,7 @@ namespace litehtml
             bool                     valid       = false;
         };
         bool         m_layout_dirty   = true;
+        bool         m_relayout_pending = false;
         bool         m_out_of_flow    = true;
         uint64_t     m_layout_epoch   = 0;
         layout_entry m_last_layout;
@@ -499,14 +500,16 @@ namespace litehtml
         {
             return m_borders.top == 0_px && m_padding.top == 0_px && m_element->in_normal_flow() &&
                    m_element->css().get_float() == float_none && m_margins.top >= 0_px && !is_flex_item() &&
-                   !is_root() && !is_one_of(css().get_overflow(), overflow_hidden, overflow_scroll, overflow_auto);
+                   !is_root() && !is_one_of(css().get_overflow(), overflow_hidden, overflow_scroll, overflow_auto) &&
+                   !css().contains(contain_layout | contain_paint);
         }
 
         bool collapse_bottom_margin() const
         {
             return m_borders.bottom == 0_px && m_padding.bottom == 0_px && m_element->in_normal_flow() &&
                    m_element->css().get_float() == float_none && m_margins.bottom >= 0_px && !is_root() &&
-                   !is_one_of(css().get_overflow(), overflow_hidden, overflow_scroll, overflow_auto);
+                   !is_one_of(css().get_overflow(), overflow_hidden, overflow_scroll, overflow_auto) &&
+                   !css().contains(contain_layout | contain_paint);
         }
 
         bool is_visible() const
@@ -527,6 +530,8 @@ namespace litehtml
         rendered_width measure(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                                formatting_context* fmt_ctx, bool second_pass = false);
         void           mark_layout_dirty();
+        bool           relayout_boundary() const;
+        void           relayout();
         bool           layout_dirty() const { return m_layout_dirty; }
         void           set_out_of_flow(bool value) { m_out_of_flow = value; }
         void           apply_relative_shift(const containing_block_context& containing_block_size);

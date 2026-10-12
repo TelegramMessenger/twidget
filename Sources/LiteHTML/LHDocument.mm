@@ -1461,7 +1461,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     for(auto p = ri->parent(); p; p = p->parent())
     {
         ancestors.insert(p.get());
-        if(p->src_el()->css().get_overflow() > lh::overflow_visible || p->src_el()->css().is_paint_group())
+        if(p->src_el()->css().clips_contents() || p->src_el()->css().is_paint_group())
             return NO;
     }
     bool isolated = true;
@@ -1531,7 +1531,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     std::shared_ptr<lh::render_item> clip;
     for(auto p = ri->parent(); p; p = p->parent())
     {
-        if(p->src_el()->css().get_overflow() > lh::overflow_visible)
+        if(p->src_el()->css().clips_contents())
         {
             if(clip)
                 return NO;
@@ -1573,7 +1573,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     {
         if(p->src_el()->css().is_paint_group())
             return nil;
-        if(p->src_el()->css().get_overflow() > lh::overflow_visible && !clipped)
+        if(p->src_el()->css().clips_contents() && !clipped)
         {
             CGRect border = BorderBox(p);
             CGFloat bl = p->border_left().value(), bt = p->border_top().value(), br = p->border_right().value(), bb = p->border_bottom().value();

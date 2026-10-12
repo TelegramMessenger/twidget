@@ -313,7 +313,7 @@ namespace litehtml
         if(m_css.get_display() == display_list_item &&
            (m_css.get_list_style_type() != list_style_type_none || m_css.get_list_style_image() != ""))
         {
-            if(m_css.get_overflow() > overflow_visible)
+            if(m_css.clips_contents())
             {
                 position border_box  = pos;
                 border_box          += ri->get_paddings();
@@ -330,7 +330,7 @@ namespace litehtml
 
             draw_list_marker(hdc, pos, ri);
 
-            if(m_css.get_overflow() > overflow_visible)
+            if(m_css.clips_contents())
             {
                 doc_ptr()->container()->del_clip();
             }

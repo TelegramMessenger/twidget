@@ -1327,6 +1327,7 @@ namespace litehtml
         m_root_render = m_root->create_render_item(nullptr);
         m_render_tree_serial++;
         m_layout_marked.clear();
+        m_relayout_roots.clear();
         fix_tables_layout();
         if(m_root_render)
             m_root_render = m_root_render->init();
@@ -2186,6 +2187,7 @@ namespace litehtml
             m_root_render = m_root->create_render_item(nullptr);
             m_render_tree_serial++;
             m_layout_marked.clear();
+            m_relayout_roots.clear();
 
             // Now the m_tabular_elements is filled with tabular elements.
             // We have to check the tabular elements for missing table elements
@@ -2641,6 +2643,9 @@ namespace litehtml
             } else
             {
                 ret = m_root_render->render(0_px, 0_px, cb_context, nullptr).natural_width;
+                for(render_item* item : m_relayout_roots)
+                    item->relayout();
+                m_relayout_roots.clear();
                 static const bool refetch = getenv("LH_NO_POSITIONED_REUSE") != nullptr;
                 if(refetch || m_positioned_epoch != m_style_epoch || m_positioned_tree != m_render_tree_serial)
                 {
@@ -3002,6 +3007,7 @@ namespace litehtml
             m_root_render = m_root->create_render_item(nullptr);
             m_render_tree_serial++;
             m_layout_marked.clear();
+            m_relayout_roots.clear();
             if(m_root_render)
             {
                 m_root_render = m_root_render->init();

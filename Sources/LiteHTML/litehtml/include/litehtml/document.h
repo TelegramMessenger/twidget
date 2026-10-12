@@ -76,6 +76,7 @@ namespace litehtml
         static std::atomic<uint64_t> s_layout_mismatches;
         position m_layout_viewport;
         std::vector<render_item*> m_layout_marked;
+        std::vector<render_item*> m_relayout_roots;
         bool     layout_cache_enabled() const;
         bool     layout_cache_check() const;
         uint64_t layout_epoch() const { return m_layout_epoch; }
@@ -84,6 +85,7 @@ namespace litehtml
         void     note_layout_miss() { s_layout_misses.fetch_add(1, std::memory_order_relaxed); }
         void     note_layout_check_mismatch() { s_layout_mismatches.fetch_add(1, std::memory_order_relaxed); }
         void     note_layout_dirty(render_item* item) { m_layout_marked.push_back(item); }
+        void     note_relayout_root(render_item* item) { m_relayout_roots.push_back(item); }
         uint64_t m_render_tree_serial = 0;
         uint64_t m_positioned_epoch   = UINT64_MAX;
         uint64_t m_positioned_tree    = UINT64_MAX;

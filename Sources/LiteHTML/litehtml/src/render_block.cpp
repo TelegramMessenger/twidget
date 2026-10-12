@@ -216,6 +216,12 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
     //*****************************************
     auto [ret_width, ret_min_width] = _render_content(x, y, second_pass, self_size, fmt_ctx);
     //*****************************************
+    const bool size_contained = css().contains(contain_size);
+    if(size_contained || css().contains(contain_inline_size))
+    {
+        ret_width     = 0_px;
+        ret_min_width = 0_px;
+    }
 
     if(src_el()->css().get_display() == display_list_item)
     {
@@ -284,6 +290,8 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
     }
 
     pixel_t content_height = m_pos.height;
+    if(size_contained)
+        m_pos.height = 0_px;
 
     // Set block height
     if(self_size.height.type != containing_block_context::cbc_value_type_auto &&
@@ -302,7 +310,7 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
             m_pos.height = self_size.height;
         }
         m_pos.height -= box_sizing_height();
-    } else if(src_el()->is_block_formatting_context())
+    } else if(src_el()->is_block_formatting_context() && !size_contained)
     {
         // add the floats' height to the block height
         pixel_t floats_height = fmt_ctx->get_floats_height();

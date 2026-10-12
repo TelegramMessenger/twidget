@@ -319,7 +319,7 @@ namespace litehtml
            m_css.get_display() == display_inline_grid || m_css.get_display() == display_grid ||
            m_css.get_display() == display_table_caption || is_root() || m_css.get_float() != float_none ||
            m_css.get_position() == element_position_absolute || m_css.get_position() == element_position_fixed ||
-           m_css.get_overflow() > overflow_visible)
+           m_css.get_overflow() > overflow_visible || m_css.contains(contain_layout | contain_paint))
         {
             return true;
         }
