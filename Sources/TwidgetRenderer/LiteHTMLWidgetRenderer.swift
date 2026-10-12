@@ -42,6 +42,9 @@ public final class LiteHTMLWidgetRenderer {
     private var destroyed = false
     private var needsRender = false
     private var frameRequested = false
+    private var idleTicks = 0
+    private var lastFramePost: CFTimeInterval = 0
+    private static let frameInterval = ProcessInfo.processInfo.environment["TW_RAF_FPS"].flatMap { Double($0) }.map { 1 / $0 - 0.002 } ?? 1.0 / 60 - 0.002
     private var clock: WidgetFrameClock?
     private let timeOrigin = CACurrentMediaTime()
     private var hiddenSince: CFTimeInterval? = CACurrentMediaTime()
@@ -1452,11 +1455,18 @@ public final class LiteHTMLWidgetRenderer {
         if needsFrames && !frozen && isOnScreen {
             renderAnimationFrame()
         }
+        var worked = needsFrames
         if frameRequested {
-            frameRequested = false
-            post(["type": "frame", "time": (CACurrentMediaTime() - timeOrigin) * 1000])
+            worked = true
+            let now = CACurrentMediaTime()
+            if now - lastFramePost >= LiteHTMLWidgetRenderer.frameInterval {
+                frameRequested = false
+                lastFramePost = now
+                post(["type": "frame", "time": (now - timeOrigin) * 1000])
+            }
         }
-        if !frameRequested && pendingMoves.isEmpty && !needsFrames {
+        idleTicks = worked ? 0 : idleTicks + 1
+        if !frameRequested && pendingMoves.isEmpty && !needsFrames && idleTicks > 8 {
             clock?.stop()
         }
     }
