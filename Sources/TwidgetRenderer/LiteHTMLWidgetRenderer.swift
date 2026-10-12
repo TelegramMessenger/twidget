@@ -430,12 +430,12 @@ public final class LiteHTMLWidgetRenderer {
 
     private var retiredURLs: [String] = []
     private var listDebt: [CGRect] = []
-    private var layoutExclusions: Set<Int> = []
     static let slowLayoutMilliseconds = ProcessInfo.processInfo.environment["TW_SLOW_MS"].flatMap { Double($0) }
     static let patchRegions = ProcessInfo.processInfo.environment["TW_NO_PATCH_REGIONS"] == nil
     private var lastLayoutRevision: UInt64 = .max
     private var lastLayoutTheme = ""
     private var lastLayoutOverrides: [Int: [(String, String)]]?
+    private var lastExclusions: Set<Int> = []
     public private(set) var styleFastMismatches = 0
     static let styleFastPath = ProcessInfo.processInfo.environment["TW_NO_STYLE_FAST"] == nil
 
@@ -495,11 +495,11 @@ public final class LiteHTMLWidgetRenderer {
         lastLayoutTheme = theme
         lastLayoutOverrides = overrides
         let excluded = compositor.ids.union(magic.excluded)
+        let exclusionsChanged = excluded != lastExclusions
+        lastExclusions = excluded
         if !excluded.isEmpty {
             next.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
-        let exclusionsChanged = excluded != layoutExclusions
-        layoutExclusions = excluded
         stage("document")
         if next.reusedPrevious {
             stageMilliseconds["reused", default: 0] += 1
