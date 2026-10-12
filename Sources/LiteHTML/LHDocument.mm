@@ -306,19 +306,57 @@ using OpIdentitySet = std::unordered_set<std::pair<uint64_t, size_t>, OpIdentity
     const auto &ida = [previous identities], &idb = [self identities];
     const auto &inA = [previous identitySet], &inB = [self identitySet];
     std::vector<std::pair<uint64_t, size_t>> commonA, commonB;
+    std::vector<size_t>                      goneA, newB;
     for(size_t i = 0; i < a.size(); i++)
     {
         if(inB.count(ida[i]))
             commonA.push_back(ida[i]);
         else
-            add(a[i]);
+            goneA.push_back(i);
     }
     for(size_t i = 0; i < b.size(); i++)
     {
         if(inA.count(idb[i]))
             commonB.push_back(idb[i]);
         else
+            newB.push_back(i);
+    }
+    std::unordered_map<uint64_t, std::pair<int, int>> stretched;
+    for(size_t i : goneA)
+        if(a[i].stretch)
+            stretched[a[i].stretch].first++;
+    for(size_t i : newB)
+        if(b[i].stretch)
+            stretched[b[i].stretch].second++;
+    std::unordered_map<uint64_t, size_t> pairedA;
+    for(size_t i : goneA)
+    {
+        auto it = a[i].stretch ? stretched.find(a[i].stretch) : stretched.end();
+        if(it != stretched.end() && it->second.first == 1 && it->second.second == 1)
+            pairedA[a[i].stretch] = i;
+        else
+            add(a[i]);
+    }
+    for(size_t i : newB)
+    {
+        auto it = b[i].stretch ? pairedA.find(b[i].stretch) : pairedA.end();
+        if(it == pairedA.end())
+        {
             add(b[i]);
+            continue;
+        }
+        const CGRect &ra = a[it->second].bounds, &rb = b[i].bounds;
+        if(CGRectIsNull(ra) || CGRectIsNull(rb) || std::fabs(CGRectGetMinX(ra) - CGRectGetMinX(rb)) > 0.01 ||
+           std::fabs(CGRectGetMinY(ra) - CGRectGetMinY(rb)) > 0.01 || std::fabs(CGRectGetHeight(ra) - CGRectGetHeight(rb)) > 0.01)
+        {
+            add(a[it->second]);
+            add(b[i]);
+            continue;
+        }
+        const CGFloat lo = std::max(CGRectGetMinX(ra), std::min(CGRectGetMaxX(ra), CGRectGetMaxX(rb)) - b[i].edge - 2);
+        const CGFloat hi = std::max(CGRectGetMaxX(ra), CGRectGetMaxX(rb));
+        if(hi > lo)
+            [rects addObject:[NSValue valueWithRect:NSMakeRect(lo, CGRectGetMinY(rb), hi - lo, CGRectGetHeight(rb))]];
     }
     if(commonA != commonB)
     {

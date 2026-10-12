@@ -43,6 +43,8 @@ struct LHDrawOp
     uint64_t hash;
     uint64_t shape;
     bool     backdrop = false;
+    uint64_t stretch  = 0;
+    CGFloat  edge     = 0;
 };
 
 using LHGPUOp       = lhx::RenderOp;

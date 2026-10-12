@@ -1427,6 +1427,10 @@ struct LHContainer::OpHash
     uint64_t shape  = 0xcbf29ce484222325ULL;
     bool     placed = false;
     double   anchor = 0;
+    uint64_t stretch = 0;
+    double   edge    = 0;
+
+    void stretch_number(double v) { mix(stretch, &v, sizeof(v)); }
 
     static void mix(uint64_t& hash, const void* data, size_t length)
     {
@@ -2052,21 +2056,38 @@ void LHContainer::record_op(OpHash& hash, CGRect ink, bool capture)
     {
         ink = CGRectInset(ink, -effect.reach, -effect.reach);
         hash.integer(static_cast<int64_t>(effect.hash));
+        hash.stretch = 0;
     }
     CGAffineTransform matrix = group_matrix();
     CGRect            bounds = CGAffineTransformIsIdentity(matrix) ? ink : CGRectApplyAffineTransform(ink, matrix);
     const CGRect      drawn  = bounds;
     for(const auto& c : m_clips)
     {
+        if(hash.stretch)
+        {
+            for(double v : {F(c.box.x), F(c.box.y), F(c.box.width), F(c.box.height)})
+                hash.stretch_number(v);
+            const auto& r = c.radius;
+            for(lh::pixel_t v : {r.top_left_x, r.top_left_y, r.top_right_x, r.top_right_y, r.bottom_right_x, r.bottom_right_y, r.bottom_left_x, r.bottom_left_y})
+                hash.stretch_number(F(v));
+            if(!CGAffineTransformIsIdentity(c.matrix))
+                hash.stretch = 0;
+        }
         hash.clip(c.box, c.radius, drawn);
         HashMatrix(hash, c.matrix);
         bounds = CGRectIntersection(bounds, CGAffineTransformIsIdentity(c.matrix) ? R(c.box)
                                                                                  : CGRectApplyAffineTransform(R(c.box), c.matrix));
     }
     for(const auto& g : m_groups)
+    {
         hash.number(g.opacity);
+        if(hash.stretch)
+            hash.stretch_number(g.opacity);
+    }
     HashMatrix(hash, matrix);
-    m_ops->push_back({CGRectIsNull(bounds) ? CGRectNull : CGRectInset(bounds, -1, -1), hash.value, hash.shape});
+    if(!CGAffineTransformIsIdentity(matrix))
+        hash.stretch = 0;
+    m_ops->push_back({CGRectIsNull(bounds) ? CGRectNull : CGRectInset(bounds, -1, -1), hash.value, hash.shape, false, hash.stretch, static_cast<CGFloat>(hash.edge)});
     if(!m_gpu || !capture || CGRectIsNull(bounds) || CGRectIsEmpty(bounds))
         return;
     for(const auto& g : m_groups)
@@ -2175,6 +2196,24 @@ void LHContainer::draw_solid_fill(lh::uint_ptr hdc, const lh::background_layer& 
         hash.integer(2);
         hash.layer(layer);
         hash.color(color);
+        static const bool edgeBands = getenv("LH_NO_EDGE_BANDS") == nullptr;
+        if(edgeBands)
+        {
+            hash.stretch = 0x84222325cbf29ce4ULL;
+            for(const lh::position* p : {&layer.border_box, &layer.clip_box, &layer.origin_box})
+            {
+                hash.stretch_number(F(p->x));
+                hash.stretch_number(F(p->y));
+                hash.stretch_number(F(p->height));
+            }
+            const auto& r = layer.border_radius;
+            for(lh::pixel_t v : {r.top_left_x, r.top_left_y, r.top_right_x, r.top_right_y, r.bottom_right_x, r.bottom_right_y, r.bottom_left_x, r.bottom_left_y})
+                hash.stretch_number(F(v));
+            const unsigned char c[5] = {color.red, color.green, color.blue, color.alpha, color.is_current_color};
+            OpHash::mix(hash.stretch, c, sizeof(c));
+            hash.stretch_number(layer.is_root ? 1 : 0);
+            hash.edge = std::max(F(r.top_right_x), F(r.bottom_right_x));
+        }
         record_op(hash, R(layer.clip_box), !record_solid(layer, color));
         if(!m_capture)
             return;
