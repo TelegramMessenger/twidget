@@ -2431,7 +2431,7 @@ final class WidgetDocumentView: NSView {
         ctx.restoreGState()
     }
 
-    static let asyncFullTiles = ProcessInfo.processInfo.environment["TW_ASYNC_PARTIAL"] == nil
+    static let asyncFullTiles = ProcessInfo.processInfo.environment["TW_ASYNC_FULL"] != nil
     static var asyncTiles = ProcessInfo.processInfo.environment["TW_SYNC_TILES"] == nil
     var asyncAllowed = false
     private var asyncDirty: [Int: CGRect] = [:]
@@ -2512,6 +2512,7 @@ final class WidgetDocumentView: NSView {
                     IOSurfaceUnlock(base, .readOnly, nil)
                 } else {
                     dirty = rect
+                    stats.full += 1
                 }
                 now = WidgetTileStats.threadMilliseconds()
                 stats.copy += now - mark
