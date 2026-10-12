@@ -2215,6 +2215,22 @@ bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_
     return DrawRasterized(ctx, integral, cacheKey, [&](CGContextRef c) { paint(reinterpret_cast<lh::uint_ptr>(c)); });
 }
 
+void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const std::function<void(lh::uint_ptr)>& paint)
+{
+    auto ctx = reinterpret_cast<CGContextRef>(hdc);
+    if(m_painter || m_runs || m_ops || !ctx)
+    {
+        paint(hdc);
+        return;
+    }
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, CGContextConvertRectToUserSpace(ctx, CGRectIntegral(CGContextConvertRectToDeviceSpace(ctx, R(box)))));
+    CGContextBeginTransparencyLayer(ctx, nullptr);
+    paint(hdc);
+    CGContextEndTransparencyLayer(ctx);
+    CGContextRestoreGState(ctx);
+}
+
 void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, const lh::border_radiuses& radius,
                                   const lh::shadow_paint& shadow)
 {

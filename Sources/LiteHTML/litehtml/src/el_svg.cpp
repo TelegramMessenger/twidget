@@ -1054,7 +1054,7 @@ namespace litehtml
         }
         if(!cached)
         {
-            paint(hdc);
+            container->draw_isolated(hdc, pos, paint);
         }
         container->del_clip();
     }

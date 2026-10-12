@@ -93,6 +93,7 @@ class LHContainer : public litehtml::document_container
     void draw_path(litehtml::uint_ptr hdc, const litehtml::vector_path& path) override;
     void end_group(litehtml::uint_ptr hdc) override;
     bool draw_cached(litehtml::uint_ptr hdc, const litehtml::position& box, uint64_t key, const std::function<void(litehtml::uint_ptr)>& paint) override;
+    void draw_isolated(litehtml::uint_ptr hdc, const litehtml::position& box, const std::function<void(litehtml::uint_ptr)>& paint) override;
     bool sanitize_element(std::string& tag, bool svg, litehtml::string_map& attrs) override;
     bool sanitize_declaration(const std::string& name, const litehtml::css_token_vector& value) override;
     bool sanitize_at_rule(const std::string& name) override;

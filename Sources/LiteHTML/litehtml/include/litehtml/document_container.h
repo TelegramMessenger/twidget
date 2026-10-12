@@ -96,6 +96,10 @@ namespace litehtml
         {
             return false;
         }
+        virtual void draw_isolated(litehtml::uint_ptr hdc, const position& /*box*/, const std::function<void(litehtml::uint_ptr)>& paint)
+        {
+            paint(hdc);
+        }
 
         virtual bool sanitize_element(std::string& /*tag*/, bool /*svg*/, string_map& /*attrs*/) { return true; }
         virtual bool sanitize_declaration(const std::string& /*name*/, const css_token_vector& /*value*/) { return true; }
