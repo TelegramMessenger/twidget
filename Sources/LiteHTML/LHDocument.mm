@@ -361,6 +361,7 @@ static CGFloat ChangedBottom(const std::vector<LHDrawOp> &ops, const std::unorde
     CGFloat                      _lastMaxWidth;
     CGFloat                      _preferredWidth;
     CGSize                       _size;
+    BOOL                         _paintOnly;
     NSString                    *_cursor;
     CGColorSpaceRef              _colorSpace;
     std::string                  _master;
@@ -448,6 +449,12 @@ static std::string MasterWithCSS(NSString *css)
                 previous->_consumedMaxWidth = previous->_lastMaxWidth;
                 previous->_consumedCulling  = _container->clip_culling();
                 _reusedPrevious             = YES;
+                if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0)
+                {
+                    _lastMaxWidth = previous->_lastMaxWidth;
+                    _size         = previous->_size;
+                    _paintOnly    = YES;
+                }
             }
         }
         if(!_doc)

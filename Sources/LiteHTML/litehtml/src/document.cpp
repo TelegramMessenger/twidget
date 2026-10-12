@@ -280,6 +280,35 @@ namespace litehtml
 
     // A style hole may be patched in place unless the edit touches custom properties, var() or counters,
     // whose effects reach other elements.
+    static bool style_change_is_paint_only(const std::string& before, const std::string& after)
+    {
+        static const std::unordered_set<std::string> paint = {
+            "color", "background", "background-color", "background-image", "background-position", "background-repeat",
+            "opacity", "transform", "transform-origin", "box-shadow", "text-shadow", "filter", "outline", "outline-color",
+            "outline-width", "outline-style", "outline-offset", "visibility", "fill", "fill-opacity", "stroke", "stroke-opacity",
+            "stroke-width", "stroke-dasharray", "stroke-dashoffset", "stop-color", "stop-opacity", "border-color",
+            "border-top-color", "border-right-color", "border-bottom-color", "border-left-color", "text-decoration-color",
+            "caret-color", "cursor", "-lh-anim"};
+        auto a = split_style_declarations(before), b = split_style_declarations(after);
+        std::map<std::string, std::string> left, right;
+        for(const auto& d : a)
+            left[d.first] = d.second;
+        for(const auto& d : b)
+            right[d.first] = d.second;
+        for(const auto& d : left)
+        {
+            auto it = right.find(d.first);
+            if((it == right.end() || it->second != d.second) && !paint.count(d.first))
+                return false;
+        }
+        for(const auto& d : right)
+        {
+            if(!left.count(d.first) && !paint.count(d.first))
+                return false;
+        }
+        return true;
+    }
+
     static bool style_change_is_local(const std::string& before, const std::string& after)
     {
         if(before.find("counter") != std::string::npos || after.find("counter") != std::string::npos)
@@ -528,16 +557,42 @@ namespace litehtml
             dirty.push_back(i);
         }
         if(dirty.empty())
+        {
+            m_paint_only_patch = true;
             return 1;
+        }
         if(changed)
             *changed = true;
 
         std::vector<element::ptr> restyle;
         std::vector<element::ptr> new_text;
-        bool                      keep_tree = !getenv("LH_NO_KEEP_TREE");
+        bool                      keep_tree  = !getenv("LH_NO_KEEP_TREE");
+        bool                      paint_only = !getenv("LH_NO_PAINT_ONLY");
         for(size_t i : dirty)
         {
             html_hole& hole = m_holes[i];
+            if(paint_only)
+            {
+                if(hole.text || hole.src)
+                {
+                    paint_only = false;
+                } else if(!hole.attr.empty())
+                {
+                    bool inside_svg = false;
+                    for(auto p = hole.owner->parent(); p; p = p->parent())
+                    {
+                        if(std::dynamic_pointer_cast<el_svg>(p))
+                        {
+                            inside_svg = true;
+                            break;
+                        }
+                    }
+                    paint_only = inside_svg;
+                } else
+                {
+                    paint_only = style_change_is_paint_only(hole.value, values[i]);
+                }
+            }
             if(keep_tree && (hole.text || hole.src || (hole.attr.empty() && !tree_neutral_change(hole.value, values[i]))))
                 keep_tree = false;
             hole.value      = values[i];
@@ -577,7 +632,23 @@ namespace litehtml
             new_text.insert(new_text.end(), created.begin(), created.end());
         }
         m_gumbo_stale = true;
+        std::vector<bool> groups;
+        if(paint_only)
+        {
+            groups.reserve(restyle.size());
+            for(const auto& el : restyle)
+                groups.push_back(el->css().is_paint_group());
+        }
         restyle_after_patch(restyle, new_text, keep_tree);
+        if(paint_only)
+        {
+            for(size_t k = 0; k < restyle.size() && paint_only; k++)
+            {
+                if(restyle[k]->css().is_paint_group() != groups[k])
+                    paint_only = false;
+            }
+        }
+        m_paint_only_patch = paint_only && keep_tree;
         return 1;
     }
 
@@ -621,6 +692,7 @@ namespace litehtml
 
     bool document::update_from_string(const std::string& html, bool* changed)
     {
+        m_paint_only_patch = false;
         if(changed)
             *changed = false;
         if(!m_gumbo || !m_root || !m_finalized)

@@ -55,6 +55,7 @@ namespace litehtml
       public:
         bool take_table_cells(int count);
         std::unordered_set<const element*> skip_paint;
+        bool m_paint_only_patch = false;
         using ptr      = std::shared_ptr<document>;
         using weak_ptr = std::weak_ptr<document>;
 
@@ -190,6 +191,7 @@ namespace litehtml
         // and text change and the element structure is the same. Restyles the changed subtrees and rebuilds
         // the render tree. Returns false and leaves the document unchanged otherwise; the caller then builds
         // a new document. *changed tells whether anything differed.
+        bool last_patch_paint_only() const { return m_paint_only_patch; }
         bool update_from_string(const std::string& html, bool* changed);
 
         // The mode must be set before any element is created, because it is used in html_tag::set_attr.
