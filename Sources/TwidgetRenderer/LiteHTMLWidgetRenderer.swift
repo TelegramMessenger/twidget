@@ -1056,8 +1056,16 @@ public final class LiteHTMLWidgetRenderer {
 
     private var trimWork: DispatchWorkItem?
 
+    public var keepsTilesWhileHidden = false {
+        didSet {
+            if keepsTilesWhileHidden != oldValue {
+                updateTileTrim()
+            }
+        }
+    }
+
     private func updateTileTrim() {
-        if isOnScreen || destroyed {
+        if isOnScreen || destroyed || keepsTilesWhileHidden {
             trimWork?.cancel()
             trimWork = nil
             if !destroyed {
@@ -1073,7 +1081,7 @@ public final class LiteHTMLWidgetRenderer {
                 return
             }
             self.trimWork = nil
-            if !self.destroyed && !self.isOnScreen {
+            if !self.destroyed && !self.isOnScreen && !self.keepsTilesWhileHidden {
                 self.documentView.trimTiles()
             }
         }
