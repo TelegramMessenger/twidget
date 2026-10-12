@@ -367,11 +367,19 @@ struct PixelSnap
     ~PixelSnap() { lh::pixel_snap_scale() = saved; }
 };
 
+static bool LHPaintTraceUncached()
+{
+    static const bool uncached = getenv("LH_NO_TRACE_CACHE") != nullptr;
+    return uncached;
+}
+
 @implementation LHDocument
 {
     std::mutex                   _lock;
     std::unique_ptr<LHContainer> _container;
     std::string                  _htmlSource;
+    std::vector<const lh::render_item *> _paintTrace;
+    BOOL                         _paintTraceValid;
     NSString                    *_html;
     lh::document::ptr            _doc;
     CGFloat                      _lastMaxWidth;
@@ -611,6 +619,7 @@ static std::string MasterWithCSS(NSString *css)
     if(!_consumed || _doc)
         return;
     _consumed  = NO;
+    _paintTraceValid = NO;
     _container = std::make_unique<LHContainer>();
     _container->set_clip_culling(_consumedCulling);
     [self bindContainerLocked];
@@ -672,6 +681,7 @@ static std::string MasterWithCSS(NSString *css)
 
 - (void)fitViewportHeightLockedWithWidth:(CGFloat)width
 {
+    _paintTraceValid = NO;
     if(!NeedsViewportHeight(_doc))
         return;
     _container->set_viewport(lh::position(0, 0, static_cast<float>(width), static_cast<float>(std::ceil(_doc->height().value()))));
@@ -680,6 +690,7 @@ static std::string MasterWithCSS(NSString *css)
 
 - (CGSize)layoutLockedWithMaxWidth:(CGFloat)maxWidth
 {
+    _paintTraceValid = NO;
     [self restoreLocked];
     maxWidth = std::max<CGFloat>(1, std::floor(maxWidth));
     if(!_doc)
@@ -1080,20 +1091,24 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
                 return nil;
         }
     }
-    std::vector<const lh::render_item *> trace;
-    trace.reserve(256);
-    CGContextRef ctx = [self createContextWithWidth:1 height:1];
-    if(!ctx)
-        return nil;
-    [self resolveExclusionsLocked];
-    auto saved        = _doc->skip_paint;
-    lh::g_paint_trace = &trace;
-    lh::position clip(static_cast<float>(rect.origin.x), static_cast<float>(rect.origin.y), static_cast<float>(rect.size.width), static_cast<float>(rect.size.height));
-    _doc->skip_paint.clear();
-    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &clip);
-    lh::g_paint_trace = nullptr;
-    _doc->skip_paint  = saved;
-    CGContextRelease(ctx);
+    if(!_paintTraceValid || LHPaintTraceUncached())
+    {
+        _paintTrace.clear();
+        _paintTrace.reserve(512);
+        CGContextRef ctx = [self createContextWithWidth:1 height:1];
+        if(!ctx)
+            return nil;
+        [self resolveExclusionsLocked];
+        auto saved        = _doc->skip_paint;
+        lh::g_paint_trace = &_paintTrace;
+        _doc->skip_paint.clear();
+        _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, nullptr);
+        lh::g_paint_trace = nullptr;
+        _doc->skip_paint  = saved;
+        CGContextRelease(ctx);
+        _paintTraceValid = YES;
+    }
+    const std::vector<const lh::render_item *> &trace = _paintTrace;
     const char *key = attribute.UTF8String;
     NSMutableOrderedSet<NSString *> *found = [NSMutableOrderedSet orderedSet];
     auto self_it = std::find(trace.begin(), trace.end(), ri.get());
@@ -1597,6 +1612,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    _paintTraceValid = NO;
     return _doc && _doc->on_mouse_over(x, y, x, y, IgnoreRedraw);
 }
 
@@ -1605,6 +1621,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    _paintTraceValid = NO;
     return _doc && _doc->on_lbutton_down(x, y, x, y, IgnoreRedraw);
 }
 
@@ -1613,6 +1630,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     float x = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    _paintTraceValid = NO;
     return _doc && _doc->on_lbutton_up(x, y, x, y, IgnoreRedraw);
 }
 
@@ -1620,6 +1638,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 {
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
+    _paintTraceValid = NO;
     return _doc && _doc->on_mouse_leave(IgnoreRedraw);
 }
 
