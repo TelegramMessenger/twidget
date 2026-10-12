@@ -646,16 +646,40 @@ static NSInteger ManagerWeightFromCSS(int w)
     return table[std::clamp((w + 50) / 100, 1, 9) - 1];
 }
 
+static bool HasWeightAxis(NSFont* font)
+{
+    static std::mutex                            mutex;
+    static std::unordered_map<std::string, bool> known;
+    const int                                    axis = 0x77676874;
+    NSString*                                    name = CFBridgingRelease(CTFontCopyPostScriptName((__bridge CTFontRef)font));
+    const std::string                            key  = name.UTF8String ?: "";
+    if(!key.empty())
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto                        it = known.find(key);
+        if(it != known.end())
+            return it->second;
+    }
+    NSArray* axes      = CFBridgingRelease(CTFontCopyVariationAxes((__bridge CTFontRef)font));
+    bool     hasWeight = false;
+    for(NSDictionary* item in axes)
+        hasWeight = hasWeight || [item[(__bridge NSString*)kCTFontVariationAxisIdentifierKey] intValue] == axis;
+    if(!key.empty())
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(known.size() > 512)
+            known.clear();
+        known.emplace(key, hasWeight);
+    }
+    return hasWeight;
+}
+
 static NSFont* WithCSSWeight(NSFont* font, int cssWeight)
 {
     if(!font)
         return font;
-    const int     axis       = 0x77676874;
-    NSArray*      axes       = CFBridgingRelease(CTFontCopyVariationAxes((__bridge CTFontRef)font));
-    bool          hasWeight  = false;
-    for(NSDictionary* item in axes)
-        hasWeight = hasWeight || [item[(__bridge NSString*)kCTFontVariationAxisIdentifierKey] intValue] == axis;
-    if(!hasWeight)
+    const int axis = 0x77676874;
+    if(!HasWeightAxis(font))
         return font;
     CTFontDescriptorRef varied = CTFontDescriptorCreateCopyWithVariation((__bridge CTFontDescriptorRef)font.fontDescriptor,
                                                                          (__bridge CFNumberRef) @(axis), std::clamp(cssWeight, 1, 1000));
