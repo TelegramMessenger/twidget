@@ -921,6 +921,12 @@ namespace litehtml
             }
             if(m_holes[i].text && !m_holes[i].text_elements.front()->parent())
                 return -1;
+            if(m_holes[i].text && v[0] == '\n')
+            {
+                const char* tag = m_holes[i].text_elements.front()->parent()->get_tagName();
+                if(tag && (!strcmp(tag, "pre") || !strcmp(tag, "listing") || !strcmp(tag, "textarea")))
+                    return -1;
+            }
             dirty.push_back(&change - changes.data());
         }
         if(dirty.empty() && classes.empty())

@@ -363,4 +363,20 @@ static std::string RegionRetext(std::mt19937 &random, const std::string &text)
     }
 }
 
+- (void)testLeadingNewlineInPreformattedTextMatchesAFreshParse
+{
+    for(NSString *tag in @[@"pre", @"listing", @"textarea", @"div"])
+    {
+        NSString   *(^page)(NSString *) = ^NSString *(NSString *text) {
+            return [NSString stringWithFormat:@"<!DOCTYPE html><%@>%@</%@><p>after</p>", tag, text, tag];
+        };
+        LHDocument *previous = [[LHDocument alloc] initWithHTML:page(@"five") css:nil previous:nil];
+        [previous layoutWithMaxWidth:200 preferredWidth:200];
+        LHDocument *patch = [[LHDocument alloc] initWithHTML:page(@"\nfive") css:nil previous:previous];
+        LHDocument *fresh = [[LHDocument alloc] initWithHTML:page(@"\nfive") css:nil];
+        XCTAssertEqualObjects(RegionPixels(patch, 200), RegionPixels(fresh, 200), @"%@", tag);
+        XCTAssertEqualObjects(patch.layoutSignature, fresh.layoutSignature, @"%@", tag);
+    }
+}
+
 @end
