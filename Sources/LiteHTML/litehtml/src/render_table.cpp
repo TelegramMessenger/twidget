@@ -479,6 +479,7 @@ void litehtml::render_item_table::draw_children(uint_ptr hdc, pixel_t x, pixel_t
         }
         if(flag == draw_block)
         {
+            if(g_paint_trace) g_paint_trace->push_back(caption.get());
             caption->src_el()->draw(hdc, pos.x, pos.y, clip, caption);
         }
         caption->draw_children(hdc, pos.x, pos.y, clip, flag, zindex);
@@ -497,6 +498,7 @@ void litehtml::render_item_table::draw_children(uint_ptr hdc, pixel_t x, pixel_t
             {
                 if(flag == draw_block)
                 {
+                    if(g_paint_trace) g_paint_trace->push_back(cell->el.get());
                     cell->el->src_el()->draw(hdc, pos.x, pos.y, clip, cell->el);
                 }
                 cell->el->draw_children(hdc, pos.x, pos.y, clip, flag, zindex);

@@ -464,7 +464,7 @@ final class WidgetCompositor {
                     break
                 }
             }
-            if !ok || !document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), isolatedIn: reach) {
+            if !ok || !document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach) {
                 continue
             }
             wanted[id] = (box, origin, min(maxScale, 3))
@@ -487,7 +487,7 @@ final class WidgetCompositor {
             let margin = max(48, max(box.width, box.height) / 2)
             let reach = box.union(current).insetBy(dx: -margin, dy: -margin)
             let scale: CGFloat = min(3, max(1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
-            guard document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), isolatedIn: reach) else {
+            guard document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach) else {
                 continue
             }
             wanted[id] = (box, origin, scale)

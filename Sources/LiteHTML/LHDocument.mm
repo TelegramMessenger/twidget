@@ -752,6 +752,68 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     return isolated;
 }
 
+- (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri || ri->src_el()->is_inline() || CGRectIsNull(rect) || CGRectIsEmpty(rect))
+        return NO;
+    for(auto p = ri->parent(); p; p = p->parent())
+    {
+        if(p->src_el()->css().is_paint_group())
+            return NO;
+        if(p->src_el()->css().get_overflow() > lh::overflow_visible)
+        {
+            CGRect border = BorderBox(p);
+            CGFloat bl = p->border_left().value(), bt = p->border_top().value(), br = p->border_right().value(), bb = p->border_bottom().value();
+            CGRect inner  = CGRectMake(border.origin.x + bl, border.origin.y + bt, border.size.width - bl - br, border.size.height - bt - bb);
+            const auto &radius = p->src_el()->css().get_borders().radius.calc_percents(lh::pixel_t(static_cast<float>(border.size.width)), lh::pixel_t(static_cast<float>(border.size.height)));
+            CGFloat corner = std::max({radius.top_left_x.value(), radius.top_left_y.value(), radius.top_right_x.value(), radius.top_right_y.value(),
+                                       radius.bottom_left_x.value(), radius.bottom_left_y.value(), radius.bottom_right_x.value(), radius.bottom_right_y.value()});
+            CGRect safe = CGRectInset(inner, corner, corner);
+            if(!CGRectContainsRect(safe, rect))
+                return NO;
+        }
+    }
+    std::vector<const lh::render_item *> trace;
+    trace.reserve(256);
+    CGContextRef ctx = [self createContextWithWidth:1 height:1];
+    if(!ctx)
+        return NO;
+    [self resolveExclusionsLocked];
+    auto saved        = _doc->skip_paint;
+    lh::g_paint_trace = &trace;
+    lh::position clip(static_cast<float>(rect.origin.x), static_cast<float>(rect.origin.y), static_cast<float>(rect.size.width), static_cast<float>(rect.size.height));
+    _doc->skip_paint.clear();
+    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &clip);
+    lh::g_paint_trace = nullptr;
+    _doc->skip_paint  = saved;
+    CGContextRelease(ctx);
+    auto self_it = std::find(trace.begin(), trace.end(), ri.get());
+    if(self_it == trace.end())
+        return NO;
+    for(auto it = std::next(self_it); it != trace.end(); ++it)
+    {
+        const lh::render_item *item = *it;
+        bool descendant = false;
+        for(auto p = item->parent(); p; p = p->parent())
+        {
+            if(p.get() == ri.get())
+            {
+                descendant = true;
+                break;
+            }
+        }
+        if(descendant || std::dynamic_pointer_cast<lh::el_space>(item->src_el()))
+            continue;
+        CGRect box = BorderBox(std::const_pointer_cast<lh::render_item>(item->shared_from_this()));
+        if(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect))
+            return NO;
+    }
+    return YES;
+}
+
 - (void)drawLockedInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip
 {
     [self restoreLocked];

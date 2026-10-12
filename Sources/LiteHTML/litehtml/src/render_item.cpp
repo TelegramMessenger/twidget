@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <typeinfo>
 
+thread_local std::vector<const litehtml::render_item*>* litehtml::g_paint_trace = nullptr;
+
 litehtml::render_item::render_item(std::shared_ptr<element> _src_el) :
     m_element(std::move(_src_el))
 {
@@ -999,6 +1001,7 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
     auto container = src_el()->get_document()->container();
     container->begin_group(hdc, group);
     const position* inner_clip = group.matrix.is_identity() ? clip : nullptr;
+    if(g_paint_trace) g_paint_trace->push_back(el.get());
     el->src_el()->draw(hdc, x, y, inner_clip, el);
     el->draw_stacking_context(hdc, x, y, inner_clip, true);
     container->end_group(hdc);
@@ -1082,10 +1085,12 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
                     if(el->src_el()->css().get_position() == element_position_fixed)
                     {
                         // Fixed elements position is always relative to the (0,0)
+                        if(g_paint_trace) g_paint_trace->push_back(el.get());
                         el->src_el()->draw(hdc, 0_px, 0_px, clip, el);
                         el->draw_stacking_context(hdc, 0_px, 0_px, clip, true);
                     } else
                     {
+                        if(g_paint_trace) g_paint_trace->push_back(el.get());
                         el->src_el()->draw(hdc, pos.x, pos.y, clip, el);
                         el->draw_stacking_context(hdc, pos.x, pos.y, clip, true);
                     }
@@ -1096,12 +1101,14 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
                 if(!el->src_el()->is_inline() && el->src_el()->css().get_float() == float_none &&
                    !el->src_el()->is_positioned())
                 {
+                    if(g_paint_trace) g_paint_trace->push_back(el.get());
                     el->src_el()->draw(hdc, pos.x, pos.y, clip, el);
                 }
                 break;
             case draw_floats:
                 if(el->src_el()->css().get_float() != float_none && !el->src_el()->is_positioned())
                 {
+                    if(g_paint_trace) g_paint_trace->push_back(el.get());
                     el->src_el()->draw(hdc, pos.x, pos.y, clip, el);
                     el->draw_stacking_context(hdc, pos.x, pos.y, clip, false);
                     process = false;
@@ -1111,6 +1118,7 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
                 if(el->src_el()->is_inline() && el->src_el()->css().get_float() == float_none &&
                    !el->src_el()->is_positioned())
                 {
+                    if(g_paint_trace) g_paint_trace->push_back(el.get());
                     el->src_el()->draw(hdc, pos.x, pos.y, clip, el);
                     if(el->src_el()->css().get_display() == display_inline_block ||
                        el->src_el()->css().get_display() == display_inline_flex ||

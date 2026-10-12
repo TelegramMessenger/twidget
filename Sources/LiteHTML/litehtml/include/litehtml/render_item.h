@@ -14,6 +14,9 @@
 
 namespace litehtml
 {
+    class render_item;
+    extern thread_local std::vector<const render_item*>* g_paint_trace;
+
     class element;
 
     class render_item : public std::enable_shared_from_this<render_item>
