@@ -317,6 +317,9 @@ public final class LiteHTMLWidgetRenderer {
             handoffOffsets.append(error.offset)
         }
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        defer {
+            compositeCheck(sampled)
+        }
         if !LiteHTMLWidgetRenderer.same(rest, overrides) {
             overrides = rest
             layout(overrides)
@@ -564,6 +567,44 @@ public final class LiteHTMLWidgetRenderer {
         applyExclusions()
         documentView.displayIfNeeded()
         CATransaction.commit()
+    }
+
+    static let compositeChecking = ProcessInfo.processInfo.environment["TW_COMPOSITECHECK"] != nil
+    public private(set) var compositeChecks = 0
+    public private(set) var compositeWorst = 0.0
+
+    private func compositeCheck(_ sampled: [Int: [(String, String)]]) {
+        guard LiteHTMLWidgetRenderer.compositeChecking, !compositor.ids.isEmpty, let document = document else {
+            return
+        }
+        let html = dom.serialize(theme: theme, overrides: sampled, canvasSource: { [unowned self] node in self.canvasSource(node) })
+        let reference = LHDocument(html: html, css: nil)
+        _ = reference.layout(maxWidth: width, preferredWidth: width)
+        let size = CGSize(width: width, height: max(1, ceil(document.size.height)))
+        let scale = documentView.window?.backingScaleFactor ?? 2
+        guard let expected = reference.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: scale), let shot = snapshot(), let actual = shot.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return
+        }
+        let w = expected.width, h = expected.height
+        guard actual.width == w, actual.height == h else {
+            return
+        }
+        func pixels(_ image: CGImage) -> [UInt8] {
+            var data = [UInt8](repeating: 0, count: w * h * 4)
+            let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return data
+        }
+        let a = pixels(expected), b = pixels(actual)
+        var bad = 0
+        for i in stride(from: 0, to: a.count, by: 4) {
+            let d = max(abs(Int(a[i]) - Int(b[i])), abs(Int(a[i + 1]) - Int(b[i + 1])), abs(Int(a[i + 2]) - Int(b[i + 2])), abs(Int(a[i + 3]) - Int(b[i + 3])))
+            if d > 48 {
+                bad += 1
+            }
+        }
+        compositeChecks += 1
+        compositeWorst = max(compositeWorst, Double(bad) / Double(w * h) * 100)
     }
 
     static let patchCheck = ProcessInfo.processInfo.environment["TW_PATCHCHECK"] != nil
