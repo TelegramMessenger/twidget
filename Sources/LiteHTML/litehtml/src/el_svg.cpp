@@ -1,3 +1,6 @@
+#include <unordered_set>
+#include <cstring>
+#include <cmath>
 #include <cctype>
 #include "html.h"
 #include "el_svg.h"
@@ -1021,10 +1024,100 @@ namespace litehtml
         paint_group group;
         group.matrix = {sx, 0, 0, sy, tx - view[0] * sx, ty - view[1] * sy};
         group.bounds = position(pixel_t(view[0]), pixel_t(view[1]), pixel_t(view[2]), pixel_t(view[3]));
-        container->begin_group(hdc, group);
-        svg_painter(container, hdc, view).draw_children(shared_from_this());
-        container->end_group(hdc);
+        auto paint = [&](uint_ptr target) {
+            container->begin_group(target, group);
+            svg_painter(container, target, view).draw_children(shared_from_this());
+            container->end_group(target);
+        };
+        uint64_t key    = 0;
+        bool     cached = false;
+        if(cacheable_paint_key(key))
+        {
+            for(float v : {pos.width.value(), pos.height.value(), view[0], view[1], view[2], view[3], sx, sy, tx - std::floor(tx), ty - std::floor(ty)})
+            {
+                uint32_t bits;
+                memcpy(&bits, &v, sizeof(bits));
+                key = (key ^ bits) * 1099511628211ULL;
+            }
+            if(key == m_last_paint_key)
+            {
+                m_stable_draws++;
+            } else
+            {
+                m_last_paint_key = key;
+                m_stable_draws   = 0;
+            }
+            if(m_stable_draws >= 2)
+            {
+                cached = container->draw_cached(hdc, pos, key, paint);
+            }
+        }
+        if(!cached)
+        {
+            paint(hdc);
+        }
         container->del_clip();
+    }
+
+    bool el_svg::cacheable_paint_key(uint64_t& key) const
+    {
+        uint64_t                        h = 1469598103934665603ULL;
+        std::unordered_set<std::string> ids;
+        std::vector<std::string>        references;
+        int                             count = 0;
+        bool                            ok    = true;
+        std::function<void(const element::ptr&)> visit = [&](const element::ptr& el) {
+            if(!ok)
+                return;
+            if(++count > 4000)
+            {
+                ok = false;
+                return;
+            }
+            const char* tag = el->get_tagName();
+            std::string name = tag ? lowcase(tag) : "";
+            if(name == "use" || name == "image" || name == "foreignobject" || name == "canvas" || name == "img")
+            {
+                ok = false;
+                return;
+            }
+            if(const char* id = el->get_attr("id"))
+                ids.insert(id);
+            for(const char* attribute : {"fill", "stroke", "style", "mask", "clip-path", "filter", "marker-start", "marker-mid", "marker-end"})
+            {
+                if(const char* value = el->get_attr(attribute))
+                {
+                    const char* at = strstr(value, "url(");
+                    while(at)
+                    {
+                        const char* hash = strchr(at, '#');
+                        const char* end  = strchr(at, ')');
+                        if(!hash || !end || hash > end)
+                            break;
+                        std::string ref(hash + 1, end);
+                        while(!ref.empty() && (ref.back() == '"' || ref.back() == '\'' || ref.back() == ' '))
+                            ref.pop_back();
+                        references.push_back(ref);
+                        at = strstr(end, "url(");
+                    }
+                }
+            }
+            h = (h ^ el->paint_signature()) * 1099511628211ULL;
+            for(const auto& child : el->children())
+                visit(child);
+        };
+        visit(std::const_pointer_cast<element>(shared_from_this()));
+        if(!ok)
+            return false;
+        for(const auto& ref : references)
+        {
+            if(!ids.count(ref))
+                return false;
+        }
+        for(auto p = parent(); p; p = p->parent())
+            h = (h ^ p->paint_signature()) * 1099511628211ULL;
+        key = h;
+        return true;
     }
 
     std::shared_ptr<render_item> el_svg::create_render_item(const std::shared_ptr<render_item>& parent_ri)

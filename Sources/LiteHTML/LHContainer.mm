@@ -2187,6 +2187,34 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
     CGPathRelease(ring);
 }
 
+bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_t key, const std::function<void(lh::uint_ptr)>& paint)
+{
+    if(m_painter || m_runs || m_capture || m_hidden_depth > 0)
+        return false;
+    CGRect r = R(box);
+    if(r.size.width <= 0 || r.size.height <= 0)
+        return false;
+    if(m_ops)
+    {
+        OpHash hash;
+        hash.integer(77);
+        hash.integer(static_cast<intptr_t>(key));
+        hash.box(box);
+        record_op(hash, r);
+        return true;
+    }
+    auto ctx = reinterpret_cast<CGContextRef>(hdc);
+    if(!ctx)
+        return false;
+    CGRect device   = CGRectIntegral(CGContextConvertRectToDeviceSpace(ctx, r));
+    CGRect integral = CGContextConvertRectToUserSpace(ctx, device);
+    std::string cacheKey = "svg:";
+    AppendInteger(cacheKey, static_cast<uintptr_t>(key));
+    AppendNumber(cacheKey, integral.origin.x - r.origin.x);
+    AppendNumber(cacheKey, integral.origin.y - r.origin.y);
+    return DrawRasterized(ctx, integral, cacheKey, [&](CGContextRef c) { paint(reinterpret_cast<lh::uint_ptr>(c)); });
+}
+
 void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, const lh::border_radiuses& radius,
                                   const lh::shadow_paint& shadow)
 {

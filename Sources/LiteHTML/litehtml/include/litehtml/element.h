@@ -43,6 +43,7 @@ namespace litehtml
 
       public:
         explicit element(const std::shared_ptr<document>& doc);
+        virtual uint64_t paint_signature() const;
         virtual ~element() = default;
 
         const css_properties& css() const;

@@ -91,6 +91,11 @@ namespace litehtml
         virtual void begin_group(litehtml::uint_ptr /*hdc*/, const paint_group& /*group*/) {}
         virtual void draw_path(litehtml::uint_ptr /*hdc*/, const vector_path& /*path*/) {}
         virtual void end_group(litehtml::uint_ptr /*hdc*/) {}
+        virtual bool draw_cached(litehtml::uint_ptr /*hdc*/, const position& /*box*/, uint64_t /*key*/,
+                                 const std::function<void(litehtml::uint_ptr)>& /*paint*/)
+        {
+            return false;
+        }
 
         virtual bool sanitize_element(std::string& /*tag*/, bool /*svg*/, string_map& /*attrs*/) { return true; }
         virtual bool sanitize_declaration(const std::string& /*name*/, const css_token_vector& /*value*/) { return true; }

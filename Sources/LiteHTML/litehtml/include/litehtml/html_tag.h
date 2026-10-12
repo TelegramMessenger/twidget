@@ -20,6 +20,7 @@ namespace litehtml
         friend class line_box;
 
       public:
+        uint64_t paint_signature() const override;
         using ptr = std::shared_ptr<html_tag>;
 
       protected:

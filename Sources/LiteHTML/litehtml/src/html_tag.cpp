@@ -364,6 +364,27 @@ namespace litehtml
         return false;
     }
 
+    uint64_t litehtml::html_tag::paint_signature() const
+    {
+        uint64_t h = element::paint_signature();
+        auto mix = [&h](const std::string& value) {
+            for(unsigned char c : value)
+            {
+                h ^= c;
+                h *= 1099511628211ULL;
+            }
+            h ^= 0xff;
+            h *= 1099511628211ULL;
+        };
+        mix(std::to_string(static_cast<int>(m_tag)));
+        for(const auto& attr : m_attrs)
+        {
+            mix(attr.first);
+            mix(attr.second);
+        }
+        return h;
+    }
+
     void litehtml::html_tag::compute_styles(bool recursive)
     {
         document::ptr doc = get_document();

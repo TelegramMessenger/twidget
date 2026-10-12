@@ -9,6 +9,9 @@ namespace litehtml
     class el_svg : public html_tag
     {
         bool view_box(float box[4]) const;
+        uint64_t m_last_paint_key = 0;
+        int      m_stable_draws   = 0;
+        bool     cacheable_paint_key(uint64_t& key) const;
 
       public:
         explicit el_svg(const document::ptr& doc);

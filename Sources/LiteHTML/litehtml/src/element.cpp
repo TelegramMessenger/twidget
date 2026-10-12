@@ -55,6 +55,32 @@ namespace litehtml
         return pos;
     }
 
+    uint64_t element::paint_signature() const
+    {
+        uint64_t h = 1469598103934665603ULL;
+        auto mix = [&h](const void* data, size_t size) {
+            const auto* bytes = static_cast<const unsigned char*>(data);
+            for(size_t i = 0; i < size; i++)
+            {
+                h ^= bytes[i];
+                h *= 1099511628211ULL;
+            }
+        };
+        if(is_text())
+        {
+            std::string text;
+            const_cast<element*>(this)->get_text(text);
+            mix(text.data(), text.size());
+        }
+        for(const auto& used : m_used_styles)
+        {
+            const void* selector = used->m_selector.get();
+            mix(&selector, sizeof(selector));
+            mix(&used->m_used, sizeof(used->m_used));
+        }
+        return h;
+    }
+
     bool element::is_inline() const
     {
         return css().get_display() == display_inline || css().get_display() == display_inline_table ||
