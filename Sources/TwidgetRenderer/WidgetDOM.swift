@@ -536,13 +536,13 @@ final class WidgetDOM {
             write(child, into: &out, theme: theme, overrides: overrides, canvasSource: canvasSource)
         }
         out.append(contentsOf: [60, 47])
-        out.append(contentsOf: Array(node.tag.utf8))
+        WidgetDOM.append(node.tag, to: &out)
         out.append(62)
     }
 
     private func writeOpenTag(_ node: WidgetNode, id: Int, canvas: String?, animated: [(String, String)]?, theme: String, into out: inout [UInt8]) {
         func put(_ text: String) {
-            out.append(contentsOf: Array(text.utf8))
+            WidgetDOM.append(text, to: &out)
         }
         put("<")
         put(node.tag)
@@ -580,7 +580,7 @@ final class WidgetDOM {
 
     private static func writeStyle(_ node: WidgetNode, animated: [(String, String)]?, theme: String, into out: inout [UInt8]) {
         func put(_ text: String) {
-            out.append(contentsOf: Array(text.utf8))
+            WidgetDOM.append(text, to: &out)
         }
         for declaration in node.declarations where declaration.name != "-lh-anim" && WidgetNames.isProperty(declaration.name) {
             put(declaration.name)
@@ -602,8 +602,26 @@ final class WidgetDOM {
         }
     }
 
+    static func append(_ text: String, to out: inout [UInt8]) {
+        var text = text
+        text.withUTF8 { bytes in
+            out.append(contentsOf: bytes)
+        }
+    }
+
     static func escape(_ text: String, into out: inout [UInt8], attribute: Bool) {
-        for byte in text.utf8 {
+        var text = text
+        text.withUTF8 { bytes in
+            escape(bytes, into: &out, attribute: attribute)
+        }
+    }
+
+    private static func escape(_ bytes: UnsafeBufferPointer<UInt8>, into out: inout [UInt8], attribute: Bool) {
+        if !bytes.contains(where: { $0 == 38 || $0 == 60 || $0 == 62 || ($0 == 34 && attribute) }) {
+            out.append(contentsOf: bytes)
+            return
+        }
+        for byte in bytes {
             switch byte {
             case 38:
                 out.append(contentsOf: [38, 97, 109, 112, 59])
