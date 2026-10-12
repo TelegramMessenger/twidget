@@ -690,6 +690,9 @@ final class WidgetCompositor {
             let ignoring = Set(accepted.keys.map { String($0) })
             var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
             for (id, want) in accepted {
+                if animated.contains(where: { accepted[$0] == nil && WidgetCompositor.isAncestor($0, of: id, dom: dom) }) {
+                    continue
+                }
                 if let reach = reaches[id]?.first(where: { unobscured(id, $0, ignoring) }) {
                     next[id] = want
                     if scriptedWanted[id] != nil {
@@ -714,6 +717,9 @@ final class WidgetCompositor {
             if stable {
                 break
             }
+        }
+        while let orphan = accepted.keys.first(where: { id in animated.contains(where: { accepted[$0] == nil && WidgetCompositor.isAncestor($0, of: id, dom: dom) }) }) {
+            accepted[orphan] = nil
         }
         if accepted.count > 1 {
             let ignoring = Set(accepted.keys.map { String($0) })
