@@ -126,9 +126,9 @@ final class WebAnimationTimingTests: XCTestCase {
 
     func testLocalTimeAndParsingLimits() {
         let running = animation(["keyframes": [], "startTime": 1000, "playbackRate": 2, "timing": ["duration": 1000]])
-        XCTAssertEqual(running.localTime(1.5) ?? -1, 1, accuracy: 1e-9)
+        XCTAssertEqual(running.localTime(1.5) ?? -1, 1000, accuracy: 1e-6)
         let held = animation(["keyframes": [], "holdTime": 250, "timing": ["duration": 1000]])
-        XCTAssertEqual(held.localTime(99), 0.25)
+        XCTAssertEqual(held.localTime(99), 250)
         XCTAssertFalse(held.isRunning)
         XCTAssertNil(WebAnimation.parse(["aid": 1, "target": 1, "keyframes": [], "playbackRate": 1]))
         XCTAssertNil(WebAnimation.parse(["aid": 1, "target": 1, "keyframes": [], "startTime": 0, "playbackRate": 1e9]))
@@ -141,6 +141,7 @@ final class WebAnimationTimingTests: XCTestCase {
         let a = animation(["keyframes": [["offset": 0, "values": ["opacity": "0"]], ["offset": 1, "values": ["opacity": "1"]]], "timing": ["duration": 1000, "iterations": 2, "iterationStart": 0.5, "direction": "alternate", "easing": "ease-in", "fill": "forwards"]])
         let bake = WidgetWebAnimations.bake(a, base: [:])!
         XCTAssertEqual(bake.cycle, 2)
+        XCTAssertEqual(bake.begin ?? -1, 0, accuracy: 1e-9)
         XCTAssertEqual(bake.repeatCount, 1)
         for step in 0...20 {
             let s = Double(step) / 20
@@ -152,5 +153,84 @@ final class WebAnimationTimingTests: XCTestCase {
         XCTAssertEqual(back.begin ?? 0, 0, accuracy: 1e-9)
         XCTAssertEqual(back.value(0).opacity, "1")
         XCTAssertEqual(back.value(1).opacity, "0")
+    }
+}
+
+final class TransformListPaddingTests: XCTestCase {
+    func testShorterListIsPaddedWithIdentities() {
+        XCTAssertEqual(CSSInterpolate.mix("scale(0.5)", "scale(1.6) rotate(-30deg)", 0.5), "scale(1.05, 1.05) rotate(-15deg)")
+        XCTAssertEqual(CSSInterpolate.mix("scale(1.6) rotate(-30deg)", "scale(1)", 0.5), "scale(1.3, 1.3) rotate(-15deg)")
+    }
+
+    func testBezierExtrapolatesOutsideTheUnitInterval() {
+        let easeIn = WebEasing.parse("ease-in")!
+        XCTAssertEqual(easeIn.apply(1.5, before: false), 1 + 0.5 / 0.58, accuracy: 1e-9)
+        let overshoot = WebEasing.parse("cubic-bezier(0.3, 1.6, 0.6, 1)")!
+        XCTAssertEqual(overshoot.apply(-0.1, before: false), -0.1 * 1.6 / 0.3, accuracy: 1e-9)
+        XCTAssertEqual(overshoot.apply(1.2, before: false), 1, accuracy: 1e-9)
+    }
+}
+
+final class WebAnimationHandoffTests: XCTestCase {
+    private func emulate(_ bake: WidgetWebAnimations.Bake, _ track: WidgetCompositor.Track, at time: CFTimeInterval) -> Float? {
+        let begin = bake.begin ?? 0
+        let local = (time - begin) * Double(bake.speed)
+        let total = Double(bake.repeatCount) * bake.cycle
+        func at(_ s: Double) -> Float {
+            if s <= track.times[0] {
+                return track.opacities[0]
+            }
+            for i in 1..<track.times.count where s <= track.times[i] {
+                let span = track.times[i] - track.times[i - 1]
+                let f = span == 0 ? 1 : (s - track.times[i - 1]) / span
+                return track.opacities[i - 1] + Float(f) * (track.opacities[i] - track.opacities[i - 1])
+            }
+            return track.opacities[track.opacities.count - 1]
+        }
+        if local < 0 {
+            return bake.caBackwards ? at(0) : nil
+        }
+        if local >= total {
+            guard bake.caForwards else {
+                return nil
+            }
+            let cycles = Double(bake.repeatCount)
+            let fraction = cycles - floor(cycles)
+            return at(fraction == 0 ? 1 : fraction)
+        }
+        let cycles = local / bake.cycle
+        return at(cycles - floor(cycles))
+    }
+
+    private func check(_ object: [String: Any], file: StaticString = #filePath, line: UInt = #line) {
+        var base: [String: Any] = ["aid": 1, "target": 5, "startTime": 1000, "playbackRate": 1, "keyframes": [["offset": 0, "values": ["opacity": "0"]], ["offset": 0.3, "easing": "ease-in", "values": ["opacity": "0.8"]], ["offset": 1, "values": ["opacity": "0.2"]]]]
+        base.merge(object) { $1 }
+        let animation = WebAnimation.parse(base)!
+        guard let bake = WidgetWebAnimations.bake(animation, base: [:]), let track = WidgetCompositor.bake(WidgetAnimator.Baked(spec: CSSAnimationSpec(), start: 0, value: bake.value), base: [:], box: CGSize(width: 100, height: 40), origin: CGPoint(x: 50, y: 20)) else {
+            XCTFail("not bakeable", file: file, line: line)
+            return
+        }
+        var worst: Float = 0
+        for step in 0...400 {
+            let time = 0.8 + Double(step) * 0.01
+            let expected = min(1, max(0, animation.values(at: time, underlying: { _ in "1" }).flatMap { $0.first.map { Float(Double($0.1)!) } } ?? 1))
+            let shown = emulate(bake, track, at: time) ?? 1
+            worst = max(worst, abs(shown - expected))
+        }
+        XCTAssertLessThan(worst, 0.004, "\(object)", file: file, line: line)
+    }
+
+    func testCoreAnimationTimingMatchesSampling() {
+        check(["timing": ["duration": 500, "fill": "both"]])
+        check(["timing": ["duration": 400, "iterations": 3, "direction": "alternate", "easing": "ease-in-out"]])
+        check(["timing": ["duration": 300, "iterations": NSNull(), "iterationStart": 0.4, "direction": "alternate-reverse"]])
+        check(["timing": ["duration": 500, "delay": 300, "iterations": 2.5, "fill": "both", "easing": "steps(4, jump-end)"]])
+        check(["timing": ["duration": 500, "iterations": 2.5, "fill": "both", "easing": "steps(4, jump-both)"]])
+        let before = WebAnimation.parse(["aid": 1, "target": 5, "startTime": 1000, "keyframes": [], "timing": ["duration": 500, "delay": 300, "fill": "both", "easing": "steps(4, jump-both)"]])!
+        XCTAssertNil(WidgetWebAnimations.bake(before, base: [:]))
+        check(["timing": ["duration": 600, "iterations": 2, "fill": "forwards", "endDelay": 200], "playbackRate": 2])
+        check(["timing": ["duration": 400, "iterations": 3, "fill": "both"], "iterationComposite": "accumulate"])
+        check(["timing": ["duration": 1500, "fill": "both", "delay": 200], "playbackRate": -1.5, "startTime": 3500])
+        check(["timing": ["duration": 700, "iterations": 2, "fill": "backwards", "delay": 100], "playbackRate": -1, "startTime": 2600])
     }
 }

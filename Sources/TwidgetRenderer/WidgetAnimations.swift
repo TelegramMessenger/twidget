@@ -591,6 +591,10 @@ enum CSSInterpolate {
         if left.count != right.count, let a = primitive(from), let b = primitive(to) {
             left = tokenize(a)
             right = tokenize(b)
+            if left.count != right.count, let (x, y) = padded(a, b) {
+                left = tokenize(x)
+                right = tokenize(y)
+            }
         }
         let result: ([Token], [Token])? = left.count == right.count ? (left, right) : nil
         pairLock.lock()
@@ -688,6 +692,36 @@ enum CSSInterpolate {
             rest = rest[rest.index(after: close)...]
         }
         return rest.trimmingCharacters(in: .whitespaces).isEmpty && !out.isEmpty ? out.joined(separator: " ") : nil
+    }
+
+    private static func functionNames(_ transform: String) -> [String] {
+        var names: [String] = []
+        var rest = Substring(transform)
+        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+            names.append(rest[..<open].trimmingCharacters(in: .whitespaces).lowercased())
+            rest = rest[rest.index(after: close)...]
+        }
+        return names
+    }
+
+    private static func functionList(_ transform: String) -> [String] {
+        var items: [String] = []
+        var rest = Substring(transform)
+        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+            items.append(rest[..<rest.index(after: close)].trimmingCharacters(in: .whitespaces))
+            rest = rest[rest.index(after: close)...]
+        }
+        return items
+    }
+
+    private static func padded(_ a: String, _ b: String) -> (String, String)? {
+        let x = functionNames(a), y = functionNames(b)
+        let (short, long) = x.count < y.count ? (x, y) : (y, x)
+        guard !short.isEmpty || !long.isEmpty, Array(long.prefix(short.count)) == short else {
+            return nil
+        }
+        let extra = functionList(x.count < y.count ? b : a).dropFirst(short.count).map { identity(of: $0) }.joined(separator: " ")
+        return x.count < y.count ? (a + " " + extra, b) : (a, b + " " + extra)
     }
 
     private static func identity(of transform: String) -> String {
@@ -947,7 +981,14 @@ final class WidgetAnimator {
         })
     }
 
+    private var lastSampleNow: CFTimeInterval = 0
+
     func peek(_ id: Int, at now: CFTimeInterval) -> (transform: String?, opacity: String?)? {
+        if !web.animations(id).isEmpty {
+            let values = web.values(id, at: web.clock() + (now - lastSampleNow), underlying: { [self] in self.underlyingValue(id, $0) })
+            let base = bases[id] ?? [:]
+            return (values.last { $0.0 == "transform" }?.1 ?? base["transform"], values.last { $0.0 == "opacity" }?.1 ?? base["opacity"])
+        }
         guard let item = running[id]?.first(where: { keyframes[$0.spec.name] != nil }), let frames = keyframes[item.spec.name] else {
             return nil
         }
@@ -1104,6 +1145,7 @@ final class WidgetAnimator {
     }
 
     func sample(now: CFTimeInterval) -> [Int: [(String, String)]] {
+        lastSampleNow = now
         var overrides: [Int: [(String, String)]] = [:]
         for (id, list) in running {
             var updated = list

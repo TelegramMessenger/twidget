@@ -9,6 +9,7 @@ struct WebEasing: Equatable {
     let text: String
     let steps: (count: Int, jump: Jump)?
     let curve: CSSTiming?
+    var points: (Double, Double, Double, Double)? = nil
 
     static func == (a: WebEasing, b: WebEasing) -> Bool {
         return a.text == b.text
@@ -20,6 +21,10 @@ struct WebEasing: Equatable {
         let text = raw.trimmingCharacters(in: .whitespaces).lowercased()
         if text.isEmpty || text.utf8.count > 4096 {
             return nil
+        }
+        let named: [String: (Double, Double, Double, Double)] = ["ease": (0.25, 0.1, 0.25, 1), "ease-in": (0.42, 0, 1, 1), "ease-out": (0, 0, 0.58, 1), "ease-in-out": (0.42, 0, 0.58, 1)]
+        if let p = named[text] {
+            return WebEasing(text: text, steps: nil, curve: .bezier(p.0, p.1, p.2, p.3), points: p)
         }
         switch text {
         case "linear":
@@ -59,7 +64,7 @@ struct WebEasing: Equatable {
             guard values.count == 4, let x1 = values[0], let y1 = values[1], let x2 = values[2], let y2 = values[3], [x1, y1, x2, y2].allSatisfy({ $0.isFinite }), (0...1).contains(x1), (0...1).contains(x2) else {
                 return nil
             }
-            return WebEasing(text: text, steps: nil, curve: .bezier(x1, y1, x2, y2))
+            return WebEasing(text: text, steps: nil, curve: .bezier(x1, y1, x2, y2), points: (x1, y1, x2, y2))
         }
         if text.hasPrefix("linear("), text.split(separator: ",").count > 256 {
             return nil
@@ -96,6 +101,16 @@ struct WebEasing: Equatable {
                 step = jumps
             }
             return step / jumps
+        }
+        if let (x1, y1, x2, y2) = points {
+            if x < 0 {
+                let slope = x1 > 0 ? y1 / x1 : (y1 == 0 && x2 > 0 ? y2 / x2 : 0)
+                return slope * x
+            }
+            if x > 1 {
+                let slope = x2 < 1 ? (y2 - 1) / (x2 - 1) : (y2 == 1 && x1 < 1 ? (y1 - 1) / (x1 - 1) : 0)
+                return 1 + slope * (x - 1)
+            }
         }
         if let curve = curve {
             return curve.function(x)
@@ -244,6 +259,7 @@ struct WebAnimation {
     static let maxKeyframes = 64
     static let maxValues = 64
     static let maxTime = 86_400.0
+    static let maxTimeMilliseconds = maxTime * 1000
 
     var isRunning: Bool {
         return holdTime == nil && startTime != nil && rate != 0
@@ -256,7 +272,7 @@ struct WebAnimation {
         guard let start = startTime else {
             return nil
         }
-        return (now - start) * rate
+        return (now * 1000 - start) * rate
     }
 
     func computed(_ now: CFTimeInterval) -> WebTiming.Computed? {
@@ -357,7 +373,7 @@ struct WebAnimation {
             guard let number = (value as? NSNumber)?.doubleValue, number.isFinite, abs(number) <= maxTime * 1000 else {
                 return nil
             }
-            return number / 1000
+            return number
         }
         let timingObject = (object["timing"] as? [String: Any]) ?? [:]
         var timing = WebTiming()
@@ -430,14 +446,14 @@ struct WebAnimation {
             guard start.isFinite else {
                 return nil
             }
-            startTime = start / 1000
+            startTime = start
         }
         var holdTime: Double?
         if let hold = (object["holdTime"] as? NSNumber)?.doubleValue {
             guard hold.isFinite, abs(hold) <= 1e12 else {
                 return nil
             }
-            holdTime = hold / 1000
+            holdTime = hold
         }
         let rate = (object["playbackRate"] as? NSNumber)?.doubleValue ?? 1
         guard rate.isFinite, abs(rate) <= 1000, startTime != nil || holdTime != nil else {
@@ -689,6 +705,20 @@ final class WidgetWebAnimations {
         }
     }
 
+    func values(_ id: Int, at now: CFTimeInterval, underlying: (String) -> String) -> [(String, String)] {
+        var out: [(String, String)] = []
+        for animation in animations(id) {
+            guard let values = animation.values(at: now, underlying: { property in out.last { $0.0 == property }?.1 ?? underlying(property) }) else {
+                continue
+            }
+            for value in values {
+                out.removeAll { $0.0 == value.0 }
+                out.append(value)
+            }
+        }
+        return out
+    }
+
     func animatedIDs() -> Set<Int> {
         let now = clock()
         var ids = Set<Int>()
@@ -760,7 +790,7 @@ final class WidgetWebAnimations {
                 marks.append(0)
             }
             for mark in marks where mark.isFinite {
-                let wall = start + mark / animation.rate
+                let wall = (start + mark / animation.rate) / 1000
                 if wall > now, best.map({ wall < $0 }) ?? true {
                     best = wall
                 }
@@ -822,6 +852,9 @@ final class WidgetWebAnimations {
         }
         let fillsBackwards = timing.fillsBackwards
         let fillsForwards = timing.fillsForwards
+        if let (_, jump) = timing.easing.steps, jump == .start || jump == .both, (fillsBackwards && timing.delay > 0) || (fillsForwards && animation.rate < 0) {
+            return nil
+        }
         timing.fill = "both"
         let rate = animation.rate
         let properties = Set(animation.properties)
@@ -841,14 +874,14 @@ final class WidgetWebAnimations {
             cycle.iterations = timing.direction.hasPrefix("alternate") ? 2 : 1
             let period = cycle.activeDuration
             let count = active.isFinite ? active / period : Double.infinity
-            return Bake(properties: properties, signature: signature, value: { sample(cycle, $0 * period) }, begin: start + timing.delay / rate, cycle: period, repeatCount: count.isFinite ? Float(count) : .infinity, speed: Float(rate), caBackwards: fillsBackwards, caForwards: fillsForwards)
+            return Bake(properties: properties, signature: signature, value: { sample(cycle, $0 * period) }, begin: (start + timing.delay / rate) / 1000, cycle: period / 1000, repeatCount: count.isFinite ? Float(count) : .infinity, speed: Float(rate), caBackwards: fillsBackwards, caForwards: fillsForwards)
         }
         guard active.isFinite, active > 0, active / timing.duration <= 64 else {
             return nil
         }
         if rate > 0 {
-            return Bake(properties: properties, signature: signature, value: { sample(timing, $0 * active) }, begin: start + timing.delay / rate, cycle: active, repeatCount: 1, speed: Float(rate), caBackwards: fillsBackwards, caForwards: fillsForwards)
+            return Bake(properties: properties, signature: signature, value: { sample(timing, $0 * active) }, begin: (start + timing.delay / rate) / 1000, cycle: active / 1000, repeatCount: 1, speed: Float(rate), caBackwards: fillsBackwards, caForwards: fillsForwards)
         }
-        return Bake(properties: properties, signature: signature, value: { sample(timing, active - $0 * active) }, begin: start + (timing.delay + active) / rate, cycle: active, repeatCount: 1, speed: Float(-rate), caBackwards: fillsForwards, caForwards: fillsBackwards)
+        return Bake(properties: properties, signature: signature, value: { sample(timing, active - $0 * active) }, begin: (start + (timing.delay + active) / rate) / 1000, cycle: active / 1000, repeatCount: 1, speed: Float(-rate), caBackwards: fillsForwards, caForwards: fillsBackwards)
     }
 }

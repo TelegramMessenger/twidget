@@ -582,10 +582,12 @@ final class WidgetCompositor {
             removeEffectAnimations(id)
             driven[id] = nil
         }
+        if WidgetCompositor.log { print("DRIVE enabled=\(enabled) promoted=\(promoted.count)") }
         guard enabled else {
             return
         }
         for (id, item) in promoted {
+            if WidgetCompositor.log { print("WEB \(id) bakes=\(animator.webBakes(id)?.count ?? -1) anims=\(animator.web.animations(id).map { "\($0.startTime ?? -1) \($0.holdTime ?? -1) \($0.timing.iterations)" })") }
             if let bakes = animator.webBakes(id) {
                 driveWeb(id, item: item, bakes: bakes)
                 continue
