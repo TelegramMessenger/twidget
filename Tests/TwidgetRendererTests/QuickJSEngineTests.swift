@@ -1,0 +1,46 @@
+import XCTest
+import QuartzCore
+@testable import HTMLScript
+
+final class QuickJSEngineTests: XCTestCase {
+    private func context() -> QuickJSContext {
+        QuickJSContext(memoryLimitBytes: 256 << 20, maxStackBytes: 256 << 10)
+    }
+
+    private func elapsed(_ js: QuickJSContext, _ code: String) throws -> (Double, String) {
+        let t0 = CACurrentMediaTime()
+        let r = try js.evaluate(code, filename: "t.js")
+        return (CACurrentMediaTime() - t0, r.string ?? "\(r.number ?? .nan)")
+    }
+
+    func testMapKeysKeepSameValueZeroSemantics() throws {
+        let js = context()
+        let r = try js.evaluate("""
+        (() => {
+          const o = {}, s = Symbol('s'), m = new Map();
+          m.set(0, 'zero'); m.set(NaN, 'nan'); m.set(1.5, 'f'); m.set('1', 'str'); m.set(o, 'obj'); m.set(s, 'sym'); m.set(2n, 'big'); m.set(true, 't');
+          const ok = m.get(-0) === 'zero' && m.get(0/0) === 'nan' && m.get(3/2) === 'f' && m.get(1) === undefined && m.get('1') === 'str'
+            && m.get(o) === 'obj' && m.get({}) === undefined && m.get(s) === 'sym' && m.get(2n) === 'big' && m.get(1 === 1) === 't';
+          const order = [...m.values()].join(',');
+          const set = new Set([3, 1, 2, 1, 3.0, -0, 0]);
+          return ok + '|' + order + '|' + [...set].join(',');
+        })()
+        """, filename: "t.js")
+        XCTAssertEqual(r.string, "true|zero,nan,f,str,obj,sym,big,t|3,1,2,0")
+    }
+
+    func testMapWithSmallIntegerKeysIsNotLinear() throws {
+        let js = context()
+        let n = 2000, rounds = 50
+        let body = "let m = new Map(); for (let i = 0; i < \(n); i++) m.set(K, i); let s = 0; for (let r = 0; r < \(rounds); r++) for (let i = 0; i < \(n); i++) s += m.get(K); return s"
+        let (intTime, intSum) = try elapsed(js, "(() => { \(body.replacingOccurrences(of: "K", with: "i")) })()")
+        let (strTime, strSum) = try elapsed(js, "(() => { \(body.replacingOccurrences(of: "K", with: "('k' + i)")) })()")
+        let objs = try elapsed(js, "(() => { const ks = []; for (let i = 0; i < \(n); i++) ks.push({}); \(body.replacingOccurrences(of: "K", with: "ks[i]")) })()")
+        let expected = "\(Double(rounds * n * (n - 1) / 2))"
+        XCTAssertEqual(intSum, expected)
+        XCTAssertEqual(strSum, expected)
+        XCTAssertEqual(objs.1, expected)
+        XCTAssertLessThan(intTime, max(strTime, 0.01) * 4, "integer keys \(intTime)s vs string keys \(strTime)s")
+        XCTAssertLessThan(objs.0, max(strTime, 0.01) * 4, "object keys \(objs.0)s vs string keys \(strTime)s")
+    }
+}

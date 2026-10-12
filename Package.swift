@@ -55,6 +55,7 @@ let package = Package(
                 .headerSearchPath("quickjs"),
                 .define("_GNU_SOURCE"),
                 .define("QUICKJS_NG_BUILD"),
+                .define("QJS_DISABLE_DUMPS"),
             ]),
         .target(
             name: "HTMLSandbox",
