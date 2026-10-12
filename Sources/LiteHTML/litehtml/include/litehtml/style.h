@@ -69,6 +69,17 @@ namespace litehtml
             return m_properties.empty();
         }
 
+        bool declares_custom_property() const
+        {
+            for(const auto& p : m_properties)
+            {
+                const std::string& name = _s(p.first);
+                if(name.size() > 2 && name[0] == '-' && name[1] == '-')
+                    return true;
+            }
+            return false;
+        }
+
         bool has_var_property() const
         {
             for(const auto& p : m_properties)

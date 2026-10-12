@@ -89,6 +89,11 @@ namespace litehtml
         bool                                    m_track_nodes = false;
         int                                     m_build_depth    = 0;
         int                                     m_build_elements = 0;
+        bool                                    m_build_limited  = false;
+        int                                     m_selector_scope = -1;
+        std::unordered_set<string_id>           m_left_classes;
+        std::unordered_set<string_id>           m_left_ids;
+        std::unordered_set<string_id>           m_left_attrs;
         static constexpr int                    max_build_depth    = 256;
         static constexpr int                    max_build_elements = 20000;
         static constexpr int                    max_table_cells    = 200000;
@@ -100,6 +105,8 @@ namespace litehtml
         {
             bool                                  text  = false;
             bool                                  src   = false;
+            const void*                           node  = nullptr;
+            std::string                           name;
             std::string                           attr;
             char                                  close = 0;
             std::string                           value;
@@ -110,7 +117,7 @@ namespace litehtml
         std::vector<html_hole>                  m_holes;
         bool                                    m_template_ok = false;
         std::unordered_map<const element*, size_t> m_style_holes;
-        bool                                    m_gumbo_stale = false;
+        std::unordered_map<const void*, std::vector<size_t>> m_node_holes;
 
       public:
         bool style_sharing_enabled() const;
@@ -227,6 +234,8 @@ namespace litehtml
         void     build_template();
         int      update_from_template(const std::string& html, bool* changed);
         int      apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed);
+        bool     update_structure(const std::string& html, bool* changed);
+        int      selector_scope();
         void     restyle_after_patch(const std::vector<std::shared_ptr<element>>& restyle,
                                      const std::vector<std::shared_ptr<element>>& new_text, bool keep_tree = false);
 

@@ -66,6 +66,15 @@ namespace litehtml
         // Puts back the style the element had before its inline `style` attribute was applied, so a changed
         // attribute can be applied by compute_styles exactly like on a freshly built element.
         void        restore_base_style();
+        const string_map& attributes() const
+        {
+            return m_attrs;
+        }
+        // Replaces every attribute, as if the element had been created with `attrs`.
+        void reset_attributes(const string_map& attrs);
+        // Drops everything stylesheets and attributes contributed, including ::before and ::after, so the
+        // element can be matched again exactly like a freshly built one.
+        void forget_matched_styles();
 
         bool is_white_space() const override;
         bool is_body() const override;

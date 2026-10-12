@@ -36,6 +36,7 @@
 
 #include <cstdlib>
 #include <mutex>
+#include <typeinfo>
 #include <string>
 #include <unordered_map>
 
@@ -140,87 +141,222 @@ namespace litehtml
 
     namespace
     {
-        struct node_patch
-        {
-            const GumboNode* old_node;
-            const GumboNode* new_node;
-            bool             text;
-        };
-
         bool same_text(const char* a, const char* b)
         {
             return (a ? std::string_view(a) : std::string_view()) == (b ? std::string_view(b) : std::string_view());
         }
 
-        // Walks both parse trees in parallel. Returns false on any difference other than the value of a
-        // `style` attribute or the text of a text node outside <style>, <script>, <title> and <textarea>.
-        bool diff_nodes(const GumboNode* a, const GumboNode* b, std::vector<node_patch>& patches,
-                        std::vector<std::pair<const GumboNode*, const GumboNode*>>& pairs, bool raw_text)
+        const GumboVector* node_children(const GumboNode* node)
         {
-            if(a->type != b->type)
+            if(node->type == GUMBO_NODE_DOCUMENT)
+                return &node->v.document.children;
+            if(node->type == GUMBO_NODE_ELEMENT || node->type == GUMBO_NODE_TEMPLATE)
+                return &node->v.element.children;
+            return nullptr;
+        }
+
+        bool is_element_node(const GumboNode* node)
+        {
+            return node->type == GUMBO_NODE_ELEMENT || node->type == GUMBO_NODE_TEMPLATE;
+        }
+
+        std::string_view element_name(const GumboNode* node)
+        {
+            const char* known = gumbo_normalized_tagname(node->v.element.tag);
+            if(known[0])
+                return known;
+            GumboStringPiece piece = node->v.element.original_tag;
+            if(piece.data && piece.length >= 2 && piece.data[0] == '<' && piece.data[piece.length - 1] == '>')
+                gumbo_tag_from_original_text(&piece);
+            return piece.data ? std::string_view(piece.data, piece.length) : std::string_view();
+        }
+
+        bool same_element_kind(const GumboNode* a, const GumboNode* b)
+        {
+            if(a->type != b->type || !is_element_node(a))
                 return false;
-            pairs.emplace_back(a, b);
-            switch(a->type)
+            const GumboElement& ea = a->v.element;
+            const GumboElement& eb = b->v.element;
+            if(ea.tag != eb.tag || ea.tag_namespace != eb.tag_namespace)
+                return false;
+            return ea.tag != GUMBO_TAG_UNKNOWN || element_name(a) == element_name(b);
+        }
+
+        std::string_view node_key(const GumboNode* node)
+        {
+            if(!is_element_node(node))
+                return {};
+            const GumboVector& attrs = node->v.element.attributes;
+            if(attrs.length)
             {
-            case GUMBO_NODE_DOCUMENT:
-            case GUMBO_NODE_ELEMENT:
-            case GUMBO_NODE_TEMPLATE:
-            {
-                const GumboVector* ca = a->type == GUMBO_NODE_DOCUMENT ? &a->v.document.children : &a->v.element.children;
-                const GumboVector* cb = b->type == GUMBO_NODE_DOCUMENT ? &b->v.document.children : &b->v.element.children;
-                bool               child_raw = false;
-                if(a->type != GUMBO_NODE_DOCUMENT)
-                {
-                    const GumboElement& ea = a->v.element;
-                    const GumboElement& eb = b->v.element;
-                    if(ea.tag != eb.tag || ea.tag_namespace != eb.tag_namespace)
-                        return false;
-                    if(ea.tag == GUMBO_TAG_UNKNOWN &&
-                       std::string_view(ea.original_tag.data, ea.original_tag.length) !=
-                           std::string_view(eb.original_tag.data, eb.original_tag.length))
-                        return false;
-                    if(ea.attributes.length != eb.attributes.length)
-                        return false;
-                    bool style_changed = false;
-                    for(unsigned int i = 0; i < ea.attributes.length; i++)
-                    {
-                        auto* x = static_cast<const GumboAttribute*>(ea.attributes.data[i]);
-                        auto* y = static_cast<const GumboAttribute*>(eb.attributes.data[i]);
-                        if(!same_text(x->name, y->name))
-                            return false;
-                        if(same_text(x->value, y->value))
-                            continue;
-                        if(strcmp(x->name, "style") != 0)
-                            return false;
-                        if(strstr(y->value, "counter") || strstr(x->value, "counter") || strstr(y->value, "var(") ||
-                           strstr(x->value, "var(") || strstr(y->value, "--") || strstr(x->value, "--"))
-                            return false;
-                        style_changed = true;
-                    }
-                    if(style_changed)
-                        patches.push_back({a, b, false});
-                    child_raw = ea.tag == GUMBO_TAG_STYLE || ea.tag == GUMBO_TAG_SCRIPT || ea.tag == GUMBO_TAG_TITLE ||
-                                ea.tag == GUMBO_TAG_TEXTAREA || ea.tag == GUMBO_TAG_NOSCRIPT;
-                }
-                if(ca->length != cb->length)
-                    return false;
-                for(unsigned int i = 0; i < ca->length; i++)
-                {
-                    if(!diff_nodes(static_cast<const GumboNode*>(ca->data[i]), static_cast<const GumboNode*>(cb->data[i]),
-                                   patches, pairs, child_raw))
-                        return false;
-                }
-                return true;
+                auto* first = static_cast<const GumboAttribute*>(attrs.data[0]);
+                if(first->name && !strcmp(first->name, "data-lh-id"))
+                    return first->value ? std::string_view(first->value) : std::string_view();
             }
-            case GUMBO_NODE_TEXT:
-                if(same_text(a->v.text.text, b->v.text.text))
+            const GumboAttribute* attr = gumbo_get_attribute(&attrs, "data-lh-id");
+            return attr && attr->value ? std::string_view(attr->value) : std::string_view();
+        }
+
+        bool raw_text_element(const GumboNode* node)
+        {
+            if(!is_element_node(node))
+                return false;
+            const GumboTag tag = node->v.element.tag;
+            return tag == GUMBO_TAG_STYLE || tag == GUMBO_TAG_SCRIPT || tag == GUMBO_TAG_TITLE || tag == GUMBO_TAG_TEXTAREA ||
+                   tag == GUMBO_TAG_NOSCRIPT || tag == GUMBO_TAG_XMP || tag == GUMBO_TAG_IFRAME || tag == GUMBO_TAG_NOEMBED ||
+                   tag == GUMBO_TAG_NOFRAMES || tag == GUMBO_TAG_PLAINTEXT;
+        }
+
+        bool has_document_level_element(const GumboNode* node)
+        {
+            if(is_element_node(node))
+            {
+                switch(node->v.element.tag)
+                {
+                case GUMBO_TAG_HTML:
+                case GUMBO_TAG_HEAD:
+                case GUMBO_TAG_BODY:
+                case GUMBO_TAG_STYLE:
+                case GUMBO_TAG_LINK:
+                case GUMBO_TAG_BASE:
+                case GUMBO_TAG_META:
+                case GUMBO_TAG_TITLE:
+                case GUMBO_TAG_SCRIPT:
+                case GUMBO_TAG_FRAMESET:
+                case GUMBO_TAG_SELECT:
+                case GUMBO_TAG_OPTION:
+                case GUMBO_TAG_OPTGROUP:
+                case GUMBO_TAG_DATALIST:
                     return true;
-                if(raw_text)
-                    return false;
-                patches.push_back({a, b, true});
-                return true;
-            default:
-                return same_text(a->v.text.text, b->v.text.text);
+                default:
+                    break;
+                }
+            }
+            if(const GumboVector* children = node_children(node))
+            {
+                for(unsigned int i = 0; i < children->length; i++)
+                {
+                    if(has_document_level_element(static_cast<const GumboNode*>(children->data[i])))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        bool mentions_counters(const std::string& text)
+        {
+            for(size_t i = 0; i + 7 <= text.size(); i++)
+            {
+                if((text[i] | 0x20) != 'c' || strncasecmp(text.data() + i, "counter", 7) != 0)
+                    continue;
+                const size_t next = i + 7;
+                if(next < text.size() && (text[next] == '-' || text[next] == '(' || ((text[next] | 0x20) == 's')))
+                    return true;
+            }
+            return false;
+        }
+
+        void count_elements(const GumboNode* node, int depth, int& elements, int& deepest)
+        {
+            if(is_element_node(node))
+            {
+                elements++;
+                deepest = std::max(deepest, depth);
+                depth++;
+            }
+            if(const GumboVector* children = node_children(node))
+            {
+                for(unsigned int i = 0; i < children->length; i++)
+                    count_elements(static_cast<const GumboNode*>(children->data[i]), depth, elements, deepest);
+            }
+        }
+
+        std::string_view quoted_value(const GumboAttribute* attr, char close)
+        {
+            const GumboStringPiece& v = attr->original_value;
+            if(!v.data || v.length < 2 || v.data[0] != close || v.data[v.length - 1] != close)
+                return {};
+            return std::string_view(v.data + 1, v.length - 2);
+        }
+
+        struct selector_names
+        {
+            std::unordered_set<string_id>& classes;
+            std::unordered_set<string_id>& ids;
+            std::unordered_set<string_id>& attrs;
+        };
+
+        void collect_ancestor_names(const css_selector& selector, bool self, selector_names& names)
+        {
+            for(const css_selector* sel = &selector; sel; sel = sel->m_left.get())
+            {
+                const bool ancestor = !self || sel != &selector;
+                for(const auto& attr : sel->m_right.m_attrs)
+                {
+                    if(ancestor)
+                    {
+                        if(attr.type == select_class)
+                            names.classes.insert(attr.name);
+                        else if(attr.type == select_id)
+                            names.ids.insert(attr.name);
+                        else if(attr.type == select_attr)
+                            names.attrs.insert(attr.name);
+                    }
+                    for(const auto& inner : attr.selector_list)
+                    {
+                        if(inner)
+                            collect_ancestor_names(*inner, !ancestor, names);
+                    }
+                }
+            }
+        }
+
+        bool restylable_in_place(const element& el)
+        {
+            const std::type_info& type = typeid(el);
+            return type == typeid(html_tag) || type == typeid(el_div) || type == typeid(el_para) || type == typeid(el_td) ||
+                   type == typeid(el_tr) || type == typeid(el_body);
+        }
+
+        void scan_selector(const css_selector& selector, bool& attributes, bool& positions)
+        {
+            for(const css_selector* sel = &selector; sel; sel = sel->m_left.get())
+            {
+                if(sel->m_left && (sel->m_combinator == combinator_adjacent_sibling || sel->m_combinator == combinator_general_sibling))
+                {
+                    attributes = true;
+                    positions  = true;
+                }
+                for(const auto& attr : sel->m_right.m_attrs)
+                {
+                    if(attr.type == select_pseudo_class)
+                    {
+                        switch(attr.name)
+                        {
+                        case _only_child_:
+                        case _only_of_type_:
+                        case _first_child_:
+                        case _first_of_type_:
+                        case _last_child_:
+                        case _last_of_type_:
+                        case _nth_child_:
+                        case _nth_of_type_:
+                        case _nth_last_child_:
+                        case _nth_last_of_type_:
+                            positions = true;
+                            if(!attr.selector_list.empty())
+                                attributes = true;
+                            break;
+                        default:
+                            break;
+                        }
+                    }
+                    for(const auto& inner : attr.selector_list)
+                    {
+                        if(inner)
+                            scan_selector(*inner, attributes, positions);
+                    }
+                }
             }
         }
     }
@@ -389,6 +525,7 @@ namespace litehtml
         m_literals.clear();
         m_holes.clear();
         m_style_holes.clear();
+        m_node_holes.clear();
         if(!m_gumbo)
             return;
         const char* base = m_text.data();
@@ -450,6 +587,8 @@ namespace litehtml
                     if(geometry)
                         s.hole.attr = attr->name;
                     s.hole.owner  = it->second.front();
+                    s.hole.node   = node;
+                    s.hole.name   = attr->name;
                     s.hole.value  = std::string(base + s.start, s.end - s.start);
                     spans.push_back(std::move(s));
                 }
@@ -475,6 +614,7 @@ namespace litehtml
                 s.start                = (size_t)(t.data - base);
                 s.end                  = s.start + t.length;
                 s.hole.text            = true;
+                s.hole.node            = node;
                 s.hole.text_elements   = it->second;
                 s.hole.value           = std::string(base + s.start, t.length);
                 if(s.end >= size || base[s.end] != '<')
@@ -503,6 +643,8 @@ namespace litehtml
             pos = s.end;
         }
         m_literals.emplace_back(base + pos, size - pos);
+        for(size_t i = 0; i < m_holes.size(); i++)
+            m_node_holes[m_holes[i].node].push_back(i);
         m_template_ok = true;
     }
 
@@ -775,7 +917,6 @@ namespace litehtml
             hole.text_elements.assign(created.begin(), created.end());
             new_text.insert(new_text.end(), created.begin(), created.end());
         }
-        m_gumbo_stale = true;
         std::vector<bool> groups;
         if(paint_only)
         {
@@ -820,14 +961,31 @@ namespace litehtml
                                        bool keep_tree)
     {
         m_share_cache.clear();
+        std::unordered_set<const element*> pending;
         for(const auto& el : restyle)
         {
             if(auto tag = std::dynamic_pointer_cast<html_tag>(el))
                 tag->restore_base_style();
-            el->compute_styles(true);
+            pending.insert(el.get());
         }
         for(const auto& el : new_text)
-            el->compute_styles(true);
+            pending.insert(el.get());
+        auto covered = [&pending](const element::ptr& el) {
+            for(auto p = el->parent(); p; p = p->parent())
+            {
+                if(pending.count(p.get()))
+                    return true;
+            }
+            return false;
+        };
+        for(const auto& list : {&restyle, &new_text})
+        {
+            for(const auto& el : *list)
+            {
+                if(!covered(el))
+                    el->compute_styles(true);
+            }
+        }
 
         if(keep_tree && new_text.empty() && m_root_render)
             return;
@@ -848,16 +1006,45 @@ namespace litehtml
             *changed = false;
         if(!m_gumbo || !m_root || !m_finalized)
             return false;
-        if(m_template_ok && !getenv("LH_NO_TEMPLATE"))
+        if(m_template_ok && !getenv("LH_NO_TEMPLATE") && update_from_template(html, changed) == 1)
+            return true;
+        return update_structure(html, changed);
+    }
+
+    int document::selector_scope()
+    {
+        if(m_selector_scope >= 0)
+            return m_selector_scope;
+        bool           attributes = false;
+        bool           positions  = false;
+        selector_names names{m_left_classes, m_left_ids, m_left_attrs};
+        for(const css* sheet : {&m_master_css, &m_styles, &m_user_css})
         {
-            int result = update_from_template(html, changed);
-            if(result == 1)
-                return true;
-            if(result == -1)
-                return false;
+            for(const auto& sel : sheet->selectors())
+            {
+                if(!sel)
+                    continue;
+                scan_selector(*sel, attributes, positions);
+                collect_ancestor_names(*sel, !(sel->m_style && sel->m_style->declares_custom_property()), names);
+            }
         }
-        if(m_gumbo_stale)
+        bool counters = mentions_counters(m_master_styles);
+        for(const auto& sheet : m_css)
+            counters = counters || mentions_counters(sheet.text);
+        m_selector_scope = (attributes ? 1 : 0) | (positions ? 2 : 0) | (counters ? 4 : 0);
+        return m_selector_scope;
+    }
+
+    bool document::update_structure(const std::string& html, bool* changed)
+    {
+        if(!m_gumbo || !m_root || !m_finalized || m_build_limited || getenv("LH_NO_STRUCTURE"))
             return false;
+        const int scope = selector_scope();
+        if((scope & 4) || mentions_counters(html))
+            return false;
+        const bool attribute_scope = (scope & 1) != 0;
+        const bool position_scope  = (scope & 2) != 0;
+
         std::string  text   = html;
         GumboOutput* output = gumbo_parse_with_options(&kGumboDefaultOptions, text.data(), text.size());
         if(!output)
@@ -868,73 +1055,514 @@ namespace litehtml
         };
         if(output->document->v.document.doc_type_quirks_mode != m_gumbo->document->v.document.doc_type_quirks_mode)
             return fail();
-        std::vector<node_patch>                                     patches;
-        std::vector<std::pair<const GumboNode*, const GumboNode*>> pairs;
-        if(!diff_nodes(m_gumbo->document, output->document, patches, pairs, false))
+        int total = 0, deepest = 0;
+        count_elements(output->document, 0, total, deepest);
+        if(total > max_build_elements || deepest >= max_build_depth)
             return fail();
-        for(const auto& patch : patches)
-        {
-            auto it = m_node_elements.find(patch.old_node);
-            if(it == m_node_elements.end() || (!patch.text && it->second.size() != 1))
-                return fail();
-            if(patch.text && (it->second.empty() || !it->second.front()->parent()))
-                return fail();
-        }
 
-        // Everything below can no longer fail.
-        std::vector<element::ptr> restyle;
-        std::vector<element::ptr> new_text;
-        for(const auto& patch : patches)
-        {
-            auto& old_elements = m_node_elements[patch.old_node];
-            if(!patch.text)
+        auto holes_of = [&](const GumboNode* node) -> const std::vector<size_t>* {
+            if(!m_template_ok)
+                return nullptr;
+            auto it = m_node_holes.find(node);
+            return it == m_node_holes.end() ? nullptr : &it->second;
+        };
+        auto hole_in = [&](const std::vector<size_t>* holes, const char* name) -> const html_hole* {
+            if(!holes)
+                return nullptr;
+            for(size_t index : *holes)
             {
-                const GumboElement& e = patch.new_node->v.element;
-                for(unsigned int i = 0; i < e.attributes.length; i++)
-                {
-                    auto* attr = static_cast<const GumboAttribute*>(e.attributes.data[i]);
-                    if(!strcmp(attr->name, "style"))
-                        old_elements.front()->set_attr(attr->name, attr->value);
-                }
-                restyle.push_back(old_elements.front());
-                continue;
+                const html_hole& hole = m_holes[index];
+                if(name ? (!hole.text && hole.name == name) : hole.text)
+                    return &hole;
             }
-            elements_list created;
-            m_track_nodes = true;
-            create_node(const_cast<GumboNode*>(patch.new_node), created, true, true);
-            m_track_nodes = false;
-            auto parent = old_elements.front()->parent();
-            parent->replace_children(old_elements, created);
-            for(const auto& el : created)
-                new_text.push_back(el);
-            m_node_elements.erase(patch.old_node);
-        }
+            return nullptr;
+        };
+        auto mapped_element = [&](const GumboNode* node) -> const element::ptr* {
+            auto it = m_node_elements.find(node);
+            return it == m_node_elements.end() || it->second.size() != 1 ? nullptr : &it->second.front();
+        };
+        auto current_text = [&](const GumboNode* node) -> std::vector<element::ptr> {
+            if(const html_hole* hole = hole_in(holes_of(node), nullptr))
+                return hole->text_elements;
+            auto it = m_node_elements.find(node);
+            return it == m_node_elements.end() ? std::vector<element::ptr>() : it->second;
+        };
+        auto same_text_node = [&](const GumboNode* a, const GumboNode* b) {
+            if(const html_hole* hole = hole_in(holes_of(a), nullptr))
+            {
+                const GumboStringPiece& t = b->v.text.original_text;
+                return t.data && std::string_view(t.data, t.length) == hole->value;
+            }
+            return same_text(a->v.text.text, b->v.text.text);
+        };
+        std::function<bool(const GumboNode*, const GumboNode*)> same_subtree = [&](const GumboNode* a, const GumboNode* b) {
+            if(a->type != b->type)
+                return false;
+            if(is_element_node(a))
+            {
+                if(!same_element_kind(a, b))
+                    return false;
+                const GumboVector& x = a->v.element.attributes;
+                const GumboVector& y = b->v.element.attributes;
+                if(x.length != y.length)
+                    return false;
+                for(unsigned int i = 0; i < x.length; i++)
+                {
+                    auto* p = static_cast<const GumboAttribute*>(x.data[i]);
+                    auto* q = static_cast<const GumboAttribute*>(y.data[i]);
+                    if(!same_text(p->name, q->name) || !same_text(p->value, q->value))
+                        return false;
+                }
+            } else if(a->type != GUMBO_NODE_DOCUMENT)
+            {
+                return same_text(a->v.text.text, b->v.text.text);
+            }
+            const GumboVector* ca = node_children(a);
+            const GumboVector* cb = node_children(b);
+            if(ca->length != cb->length)
+                return false;
+            for(unsigned int i = 0; i < ca->length; i++)
+            {
+                if(!same_subtree(static_cast<const GumboNode*>(ca->data[i]), static_cast<const GumboNode*>(cb->data[i])))
+                    return false;
+            }
+            return true;
+        };
+
+        struct rebuild
+        {
+            element::ptr                           parent;
+            const GumboNode*                       node;
+            std::vector<std::vector<element::ptr>> keep;
+            std::vector<char>                      create;
+        };
+        std::vector<std::pair<element::ptr, std::string>>                    styles;
+        std::vector<std::pair<element::ptr, string_map>>                     retags;
+        std::vector<rebuild>                                                 rebuilds;
+        std::vector<std::pair<const GumboNode*, element::ptr>>               kept;
+        std::vector<std::pair<const GumboNode*, std::vector<element::ptr>>> kept_text;
+        kept.reserve(m_node_elements.size());
+        enum
+        {
+            diff_kept,
+            diff_replace,
+            diff_failed
+        };
+        auto unsafe_style = [](std::string_view value) {
+            return value.find("counter") != std::string_view::npos || value.find("var(") != std::string_view::npos ||
+                   value.find("--") != std::string_view::npos;
+        };
+        auto retag = [&](const GumboNode* b, const element::ptr& el, bool in_select) {
+            auto tag = std::dynamic_pointer_cast<html_tag>(el);
+            if(!tag || attribute_scope || in_select || !restylable_in_place(*el))
+                return false;
+            string_map attrs;
+            for(unsigned int i = 0; i < b->v.element.attributes.length; i++)
+            {
+                auto* attr        = static_cast<const GumboAttribute*>(b->v.element.attributes.data[i]);
+                attrs[attr->name] = attr->value;
+            }
+            std::string name(element_name(b));
+            if(name.empty() || lowcase(name) != el->get_tagName() ||
+               !m_container->sanitize_element(name, b->v.element.tag_namespace == GUMBO_NAMESPACE_SVG, attrs) ||
+               lowcase(name) != el->get_tagName())
+                return false;
+            const string_map& before = tag->attributes();
+            auto              was    = before.find("style");
+            auto              now    = attrs.find("style");
+            const std::string old_style = was == before.end() ? std::string() : was->second;
+            const std::string new_style = now == attrs.end() ? std::string() : now->second;
+            if(old_style != new_style && (unsafe_style(old_style) || unsafe_style(new_style)))
+                return false;
+            auto normalized = [this](const std::string* value) {
+                std::string text = value ? *value : std::string();
+                if(m_mode == quirks_mode)
+                    lcase(text);
+                return text;
+            };
+            auto reaches_others = [&](const std::string& attr, const std::string* old, const std::string* next) {
+                if(m_left_attrs.count(_id(attr)))
+                    return true;
+                if(attr == "id")
+                    return m_left_ids.count(_id(normalized(old))) != 0 || m_left_ids.count(_id(normalized(next))) != 0;
+                if(attr != "class")
+                    return false;
+                std::unordered_set<string_id> a, c;
+                for(const auto& cls : split_string(normalized(old), whitespace, "", ""))
+                    a.insert(_id(cls));
+                for(const auto& cls : split_string(normalized(next), whitespace, "", ""))
+                    c.insert(_id(cls));
+                for(string_id cls : a)
+                {
+                    if(!c.count(cls) && m_left_classes.count(cls))
+                        return true;
+                }
+                for(string_id cls : c)
+                {
+                    if(!a.count(cls) && m_left_classes.count(cls))
+                        return true;
+                }
+                return false;
+            };
+            for(const auto& entry : before)
+            {
+                auto it = attrs.find(entry.first);
+                if((it == attrs.end() || it->second != entry.second) &&
+                   reaches_others(entry.first, &entry.second, it == attrs.end() ? nullptr : &it->second))
+                    return false;
+            }
+            for(const auto& entry : attrs)
+            {
+                if(!before.count(entry.first) && reaches_others(entry.first, nullptr, &entry.second))
+                    return false;
+            }
+            retags.emplace_back(el, std::move(attrs));
+            return true;
+        };
+        std::function<bool(const GumboNode*, const GumboNode*, const element::ptr&, bool)> diff_children;
+        auto diff_element = [&](const GumboNode* a, const GumboNode* b, const element::ptr& el, bool in_select) {
+            const GumboVector&           x       = a->v.element.attributes;
+            const GumboVector&           y       = b->v.element.attributes;
+            const std::vector<size_t>*   holes   = holes_of(a);
+            const GumboAttribute*        style   = nullptr;
+            bool                         renamed = x.length != y.length;
+            for(unsigned int i = 0; i < x.length && !renamed; i++)
+            {
+                auto* p = static_cast<const GumboAttribute*>(x.data[i]);
+                auto* q = static_cast<const GumboAttribute*>(y.data[i]);
+                if(!same_text(p->name, q->name))
+                {
+                    renamed = true;
+                    break;
+                }
+                const html_hole* hole   = hole_in(holes, p->name);
+                std::string_view before = hole ? std::string_view(hole->value) : std::string_view(p->value);
+                bool             same   = false;
+                if(hole)
+                {
+                    const GumboStringPiece& v = q->original_value;
+                    same = v.data && v.length >= 2 && v.data[0] == hole->close && v.data[v.length - 1] == hole->close &&
+                           std::string_view(v.data + 1, v.length - 2) == before;
+                } else
+                {
+                    same = before == std::string_view(q->value);
+                }
+                if(same)
+                    continue;
+                if(strcmp(p->name, "style") != 0)
+                {
+                    renamed = true;
+                    break;
+                }
+                if(unsafe_style(before) || unsafe_style(q->value))
+                    return diff_replace;
+                style = q;
+            }
+            if(raw_text_element(a))
+            {
+                if(renamed || style || !same_subtree(a, b))
+                    return diff_replace;
+                kept.emplace_back(b, el);
+                return diff_kept;
+            }
+            if(renamed)
+            {
+                style = nullptr;
+                if(!retag(b, el, in_select))
+                    return diff_replace;
+            }
+            if(!diff_children(a, b, el, in_select || a->v.element.tag == GUMBO_TAG_SELECT))
+                return diff_failed;
+            if(style)
+                styles.emplace_back(el, style->value);
+            kept.emplace_back(b, el);
+            return diff_kept;
+        };
+        diff_children = [&](const GumboNode* a, const GumboNode* b, const element::ptr& parent, bool in_select) {
+            const GumboVector* ca = node_children(a);
+            const GumboVector* cb = node_children(b);
+            bool               aligned = ca->length == cb->length;
+            for(unsigned int i = 0; aligned && i < ca->length; i++)
+            {
+                auto* x = static_cast<const GumboNode*>(ca->data[i]);
+                auto* y = static_cast<const GumboNode*>(cb->data[i]);
+                if(x->type != y->type || (is_element_node(x) && (!same_element_kind(x, y) || node_key(x) != node_key(y))))
+                    aligned = false;
+            }
+            const size_t styles_mark    = styles.size();
+            const size_t retags_mark    = retags.size();
+            const size_t rebuilds_mark  = rebuilds.size();
+            const size_t kept_mark      = kept.size();
+            const size_t kept_text_mark = kept_text.size();
+            rebuild      plan;
+            if(aligned)
+            {
+                bool replaced = false;
+                for(unsigned int i = 0; i < cb->length; i++)
+                {
+                    auto* x      = static_cast<const GumboNode*>(ca->data[i]);
+                    auto* y      = static_cast<const GumboNode*>(cb->data[i]);
+                    bool  create = false;
+                    if(is_element_node(x))
+                    {
+                        const element::ptr* el = mapped_element(x);
+                        if(!el)
+                        {
+                            create = !same_subtree(x, y);
+                            replaced = replaced || create;
+                        } else
+                        {
+                            const int result = diff_element(x, y, *el, in_select);
+                            if(result == diff_failed)
+                                return false;
+                            create   = result == diff_replace;
+                            replaced = replaced || create;
+                        }
+                    } else if(x->type == GUMBO_NODE_TEXT)
+                    {
+                        create = !same_text_node(x, y);
+                        if(!create)
+                            kept_text.emplace_back(y, current_text(x));
+                    } else
+                    {
+                        create = !same_text(x->v.text.text, y->v.text.text);
+                    }
+                    if(create && plan.create.empty())
+                        plan.create.assign(cb->length, 0);
+                    if(create)
+                        plan.create[i] = 1;
+                }
+                if(plan.create.empty())
+                    return true;
+                plan.keep.resize(cb->length);
+                const bool everything = replaced && attribute_scope;
+                if(everything)
+                {
+                    styles.resize(styles_mark);
+                    retags.resize(retags_mark);
+                    rebuilds.resize(rebuilds_mark);
+                    kept.resize(kept_mark);
+                    kept_text.resize(kept_text_mark);
+                }
+                for(unsigned int i = 0; i < cb->length; i++)
+                {
+                    auto* x = static_cast<const GumboNode*>(ca->data[i]);
+                    if(everything || (x->type != GUMBO_NODE_TEXT && !is_element_node(x)))
+                        plan.create[i] = 1;
+                    if(plan.create[i])
+                        continue;
+                    if(x->type == GUMBO_NODE_TEXT)
+                        plan.keep[i] = current_text(x);
+                    else if(const element::ptr* el = mapped_element(x))
+                        plan.keep[i] = {*el};
+                }
+            } else
+            {
+                plan.keep.resize(cb->length);
+                plan.create.assign(cb->length, 1);
+                std::unordered_map<std::string_view, const GumboNode*> keyed;
+                std::unordered_set<std::string_view>                   duplicates;
+                std::unordered_set<std::string_view>                   seen;
+                if(!position_scope)
+                {
+                    for(unsigned int i = 0; i < ca->length; i++)
+                    {
+                        std::string_view key = node_key(static_cast<const GumboNode*>(ca->data[i]));
+                        if(!key.empty() && !keyed.emplace(key, static_cast<const GumboNode*>(ca->data[i])).second)
+                            duplicates.insert(key);
+                    }
+                    for(unsigned int i = 0; i < cb->length; i++)
+                    {
+                        std::string_view key = node_key(static_cast<const GumboNode*>(cb->data[i]));
+                        if(!key.empty() && !seen.insert(key).second)
+                            duplicates.insert(key);
+                    }
+                }
+                for(unsigned int i = 0; i < cb->length && !position_scope; i++)
+                {
+                    auto*            y   = static_cast<const GumboNode*>(cb->data[i]);
+                    std::string_view key = node_key(y);
+                    if(key.empty() || duplicates.count(key))
+                        continue;
+                    auto match = keyed.find(key);
+                    if(match == keyed.end() || !same_element_kind(match->second, y))
+                        continue;
+                    const element::ptr* el = mapped_element(match->second);
+                    if(!el)
+                        continue;
+                    const int result = diff_element(match->second, y, *el, in_select);
+                    if(result == diff_failed)
+                        return false;
+                    if(result == diff_kept)
+                    {
+                        plan.create[i] = 0;
+                        plan.keep[i]   = {*el};
+                    }
+                }
+            }
+            if(!parent || in_select || (is_element_node(a) && (a->v.element.tag == GUMBO_TAG_HTML || a->v.element.tag == GUMBO_TAG_HEAD)))
+                return false;
+            std::unordered_set<const element*> reused;
+            for(unsigned int i = 0; i < cb->length; i++)
+            {
+                if(plan.create[i] && has_document_level_element(static_cast<const GumboNode*>(cb->data[i])))
+                    return false;
+                for(const auto& el : plan.keep[i])
+                    reused.insert(el.get());
+            }
+            for(unsigned int i = 0; i < ca->length; i++)
+            {
+                auto* x = static_cast<const GumboNode*>(ca->data[i]);
+                if(!is_element_node(x))
+                    continue;
+                const element::ptr* el = mapped_element(x);
+                if((!el || !reused.count(el->get())) && has_document_level_element(x))
+                    return false;
+            }
+            plan.parent = parent;
+            plan.node   = b;
+            rebuilds.push_back(std::move(plan));
+            return true;
+        };
+        if(!diff_children(m_gumbo->document, output->document, nullptr, false))
+            return fail();
+
+        auto chain = [](element::ptr el) {
+            std::vector<element::ptr> out;
+            for(; el; el = el->parent())
+                out.push_back(el);
+            return out;
+        };
+        auto nearest_attached = [this](const std::vector<element::ptr>& path) -> element::ptr {
+            for(const auto& candidate : path)
+            {
+                element::ptr el = candidate;
+                while(el && el != m_root)
+                    el = el->parent();
+                if(el == m_root)
+                    return candidate;
+            }
+            return nullptr;
+        };
+        const std::vector<element::ptr> over_chain   = chain(m_over_element);
+        const std::vector<element::ptr> active_chain = chain(m_active_element);
 
         std::unordered_map<const void*, std::vector<element::ptr>> remapped;
-        remapped.reserve(m_node_elements.size());
-        for(const auto& pair : pairs)
-        {
-            auto it = m_node_elements.find(pair.second);
-            if(it != m_node_elements.end())
-            {
-                remapped[pair.second] = it->second;
-                continue;
-            }
-            it = m_node_elements.find(pair.first);
-            if(it != m_node_elements.end())
-                remapped[pair.second] = it->second;
-        }
+        remapped.reserve(kept.size() + kept_text.size());
+        for(auto& entry : kept)
+            remapped[entry.first] = {std::move(entry.second)};
+        for(auto& entry : kept_text)
+            remapped[entry.first] = std::move(entry.second);
         m_node_elements.swap(remapped);
+
+        std::vector<element::ptr> restyle;
+        for(const auto& patch : styles)
+        {
+            patch.first->set_attr("style", patch.second.c_str());
+            restyle.push_back(patch.first);
+        }
+        std::vector<element::ptr> fresh;
+        std::vector<element::ptr> created;
+        m_track_nodes    = true;
+        m_build_elements = 0;
+        for(auto& plan : rebuilds)
+        {
+            const element::ptr& parent = plan.parent;
+            int                 depth  = 0;
+            for(auto p = parent->parent(); p; p = p->parent())
+                depth++;
+            m_build_depth = depth + 1;
+            element::ptr before, after;
+            if(!parent->m_children.empty() && parent->m_children.front()->tag() == __tag_before_)
+                before = parent->m_children.front();
+            if(!parent->m_children.empty() && parent->m_children.back()->tag() == __tag_after_)
+                after = parent->m_children.back();
+            std::unordered_set<const element*> reused;
+            elements_list                      children;
+            if(before)
+                children.push_back(before);
+            const GumboVector* nodes = node_children(plan.node);
+            for(unsigned int i = 0; i < nodes->length; i++)
+            {
+                if(!plan.create[i])
+                {
+                    for(const auto& el : plan.keep[i])
+                    {
+                        reused.insert(el.get());
+                        children.push_back(el);
+                    }
+                    continue;
+                }
+                elements_list made;
+                create_node(static_cast<GumboNode*>(nodes->data[i]), made, true, true);
+                for(const auto& el : made)
+                {
+                    children.push_back(el);
+                    if(std::dynamic_pointer_cast<html_tag>(el))
+                        fresh.push_back(el);
+                    created.push_back(el);
+                }
+            }
+            if(after)
+                children.push_back(after);
+            for(const auto& old : parent->m_children)
+            {
+                if(old != before && old != after && !reused.count(old.get()))
+                    old->parent(nullptr);
+            }
+            for(const auto& el : children)
+                el->parent(parent);
+            parent->m_children.swap(children);
+        }
+        m_track_nodes = false;
+        m_build_depth = 0;
+
+        for(auto& entry : retags)
+        {
+            auto tag = std::static_pointer_cast<html_tag>(entry.first);
+            tag->reset_attributes(entry.second);
+            tag->forget_matched_styles();
+            elements_list children;
+            children.swap(tag->m_children);
+            tag->apply_stylesheet(m_master_css);
+            tag->parse_attributes();
+            tag->apply_stylesheet(m_styles);
+            tag->apply_stylesheet(m_user_css);
+            elements_list pseudo;
+            pseudo.swap(tag->m_children);
+            for(const auto& el : pseudo)
+            {
+                if(el->tag() == __tag_before_)
+                    children.push_front(el);
+                else
+                    children.push_back(el);
+            }
+            tag->m_children.swap(children);
+            restyle.push_back(entry.first);
+        }
+
+        const bool any = !styles.empty() || !rebuilds.empty() || !retags.empty();
+        if(any)
+        {
+            for(const auto& el : fresh)
+                el->apply_stylesheet(m_master_css);
+            for(const auto& el : fresh)
+                el->parse_attributes();
+            for(const auto& el : fresh)
+                el->apply_stylesheet(m_styles);
+            for(const auto& el : fresh)
+                el->apply_stylesheet(m_user_css);
+            restyle_after_patch(restyle, created);
+            m_over_element   = nearest_attached(over_chain);
+            m_active_element = nearest_attached(active_chain);
+        }
+
         gumbo_destroy_output(&kGumboDefaultOptions, m_gumbo);
         m_gumbo = output;
         m_text.swap(text);
         build_template();
-
-        if(patches.empty())
-            return true;
         if(changed)
-            *changed = true;
-        restyle_after_patch(restyle, new_text);
+            *changed = any;
         return true;
     }
 
@@ -1276,6 +1904,7 @@ namespace litehtml
                         if(m_build_depth >= max_build_depth || m_build_elements >= max_build_elements)
                         {
                             m_container->sanitizer_limit(m_build_depth >= max_build_depth ? "depth" : "elements");
+                            m_build_limited = true;
                             break;
                         }
                         if(!m_container->sanitize_element(name, node->v.element.tag_namespace == GUMBO_NAMESPACE_SVG, attrs))

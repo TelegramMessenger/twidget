@@ -1627,6 +1627,37 @@ namespace litehtml
         }
     }
 
+    void litehtml::html_tag::reset_attributes(const string_map& attrs)
+    {
+        m_attrs.clear();
+        m_str_classes.clear();
+        m_classes.clear();
+        m_id = empty_id;
+        for(const auto& attr : attrs)
+        {
+            set_attr(attr.first.c_str(), attr.second.c_str());
+        }
+    }
+
+    void litehtml::html_tag::forget_matched_styles()
+    {
+        for(auto it = m_children.begin(); it != m_children.end();)
+        {
+            if((*it)->tag() == __tag_before_ || (*it)->tag() == __tag_after_)
+            {
+                (*it)->parent(nullptr);
+                it = m_children.erase(it);
+            } else
+            {
+                ++it;
+            }
+        }
+        m_style.clear();
+        m_style_base     = style();
+        m_has_style_base = false;
+        m_used_styles.clear();
+    }
+
     void litehtml::html_tag::refresh_styles()
     {
         m_has_style_base = false;
