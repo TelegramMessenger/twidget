@@ -35,6 +35,14 @@ namespace litehtml
         string_map             m_attrs;
         std::vector<string_id> m_pseudo_classes;
 
+        struct match_memo
+        {
+            uint64_t                       epoch = 0;
+            string_map                     attrs;
+            std::vector<css_selector::ptr> rules[3];
+        };
+        std::vector<match_memo> m_match_memos;
+
         void select_all(const css_selector& selector, elements_list& res) override;
 
       public:
@@ -62,6 +70,8 @@ namespace litehtml
         void        set_attr(const char* name, const char* val) override;
         const char* get_attr(const char* name, const char* def = nullptr) const override;
         void        apply_stylesheet(const litehtml::css& stylesheet) override;
+        void        apply_matching(const litehtml::css* sheets[3], uint64_t epoch);
+        void        apply_selector(const std::shared_ptr<css_selector>& sel);
         void        refresh_styles() override;
         // Puts back the style the element had before its inline `style` attribute was applied, so a changed
         // attribute can be applied by compute_styles exactly like on a freshly built element.

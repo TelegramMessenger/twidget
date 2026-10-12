@@ -1480,10 +1480,8 @@ namespace litehtml
         tag->forget_matched_styles();
         elements_list children;
         children.swap(tag->m_children);
-        tag->apply_stylesheet(m_master_css);
-        tag->parse_attributes();
-        tag->apply_stylesheet(m_styles);
-        tag->apply_stylesheet(m_user_css);
+        const css* sheets[3] = {&m_master_css, &m_styles, &m_user_css};
+        tag->apply_matching(sheets, m_match_epoch);
         elements_list pseudo;
         pseudo.swap(tag->m_children);
         for(const auto& child : pseudo)
@@ -1524,6 +1522,7 @@ namespace litehtml
 
     bool document::update_structure(const std::string& html, bool* changed)
     {
+        m_match_epoch++;
         begin_layout_patch();
         invalidate_paint();
         note_style_change();

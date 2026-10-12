@@ -231,13 +231,69 @@ namespace litehtml
     {
         apply_scope scope;
         for(const auto& sel : stylesheet.selectors())
+            apply_selector(sel);
+
+        for(auto& el : m_children)
         {
-            // optimization
+            if(el->css().get_display() != display_inline_text)
+            {
+                el->apply_stylesheet(stylesheet);
+            }
+        }
+    }
+
+    void litehtml::html_tag::apply_matching(const litehtml::css* sheets[3], uint64_t epoch)
+    {
+        static const bool disabled = getenv("LH_NO_MATCH_MEMO") != nullptr;
+        if(!disabled)
+        {
+            for(const auto& memo : m_match_memos)
+            {
+                if(memo.epoch != epoch || memo.attrs != m_attrs)
+                    continue;
+                for(int k = 0; k < 3; k++)
+                {
+                    if(k == 1)
+                        parse_attributes();
+                    for(const auto& sel : memo.rules[k])
+                        apply_selector(sel);
+                }
+                return;
+            }
+        }
+        size_t       bounds[4] = {0, 0, 0, 0};
+        const size_t start     = m_used_styles.size();
+        for(int k = 0; k < 3; k++)
+        {
+            if(k == 1)
+                parse_attributes();
+            bounds[k] = m_used_styles.size();
+            apply_stylesheet(*sheets[k]);
+        }
+        bounds[3] = m_used_styles.size();
+        if(disabled || start != 0 || !m_children.empty())
+            return;
+        match_memo memo;
+        memo.epoch = epoch;
+        memo.attrs = m_attrs;
+        for(int k = 0; k < 3; k++)
+        {
+            for(size_t i = bounds[k]; i < bounds[k + 1]; i++)
+                memo.rules[k].push_back(m_used_styles[i]->m_selector);
+        }
+        if(m_match_memos.size() >= 2)
+            m_match_memos.erase(m_match_memos.begin());
+        m_match_memos.push_back(std::move(memo));
+    }
+
+    void litehtml::html_tag::apply_selector(const css_selector::ptr& sel)
+    {
+        {
             {
                 const auto& r = sel->m_right;
                 if(r.m_tag != star_id && r.m_tag != m_tag)
                 {
-                    continue;
+                    return;
                 }
 
                 if(!r.m_attrs.empty())
@@ -245,7 +301,7 @@ namespace litehtml
                     const auto& attr = r.m_attrs[0];
                     if(attr.type == select_class && !(attr.name in m_classes))
                     {
-                        continue;
+                        return;
                     }
                 }
             }
@@ -318,14 +374,6 @@ namespace litehtml
                     }
                 }
                 m_used_styles.push_back(std::move(us));
-            }
-        }
-
-        for(auto& el : m_children)
-        {
-            if(el->css().get_display() != display_inline_text)
-            {
-                el->apply_stylesheet(stylesheet);
             }
         }
     }

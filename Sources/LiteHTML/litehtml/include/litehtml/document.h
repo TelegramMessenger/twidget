@@ -148,6 +148,7 @@ namespace litehtml
         std::unordered_map<const void*, std::vector<std::shared_ptr<element>>> m_node_elements;
         std::string                             m_master_styles;
         mutable uint32_t                        m_paint_generation = 1;
+        uint64_t                                m_match_epoch      = 1;
         bool                                    m_cull_paint       = false;
         struct html_hole
         {
