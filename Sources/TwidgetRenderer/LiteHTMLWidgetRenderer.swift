@@ -2274,6 +2274,10 @@ final class WidgetDocumentView: NSView {
         owner?.handleMouseExited(event)
     }
 
+    override static var isCompatibleWithResponsiveScrolling: Bool {
+        return true
+    }
+
     override func scrollWheel(with event: NSEvent) {
         if owner?.handleScroll(point(event), event: event) != true {
             super.scrollWheel(with: event)
