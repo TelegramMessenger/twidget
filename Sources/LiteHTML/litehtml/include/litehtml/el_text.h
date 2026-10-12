@@ -19,6 +19,7 @@ namespace litehtml
         el_text(const char* text, const document::ptr& doc);
 
         void get_text(std::string& text) const override;
+        void set_text(const std::string& text);
         void compute_styles(bool recursive) override;
         bool is_text() const override
         {

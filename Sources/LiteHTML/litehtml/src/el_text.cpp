@@ -25,6 +25,17 @@ void litehtml::el_text::get_text(std::string& text) const
     text += m_text;
 }
 
+void litehtml::el_text::set_text(const std::string& text)
+{
+    m_text = text;
+    m_transformed_text.clear();
+    m_use_transformed = false;
+    m_draw_spaces     = true;
+    m_size            = size();
+    css_w()           = css_properties();
+    css_w().set_display(display_inline_text);
+}
+
 void litehtml::el_text::compute_styles(bool /*recursive*/)
 {
     element::ptr el_parent = parent();

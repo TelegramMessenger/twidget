@@ -80,6 +80,14 @@ namespace litehtml
             return false;
         }
 
+        template <class F> bool only_declares(F allowed) const
+        {
+            for(const auto& p : m_properties)
+                if(!allowed(p.first))
+                    return false;
+            return true;
+        }
+
         bool has_var_property() const
         {
             for(const auto& p : m_properties)

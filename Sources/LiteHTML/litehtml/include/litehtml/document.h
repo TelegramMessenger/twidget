@@ -92,6 +92,7 @@ namespace litehtml
         int                                     m_build_elements = 0;
         bool                                    m_build_limited  = false;
         int                                     m_selector_scope = -1;
+        int                                     m_ids_selectable = -1;
         std::unordered_set<string_id>           m_left_classes;
         std::unordered_set<string_id>           m_left_ids;
         std::unordered_set<string_id>           m_left_attrs;
@@ -124,6 +125,7 @@ namespace litehtml
 
       public:
         bool style_sharing_enabled() const;
+        bool ids_selectable();
         int  next_share_id()
         {
             return ++m_next_share_id;
@@ -243,7 +245,14 @@ namespace litehtml
         bool     update_structure(const std::string& html, bool* changed);
         int      selector_scope();
         void     restyle_after_patch(const std::vector<std::shared_ptr<element>>& restyle,
-                                     const std::vector<std::shared_ptr<element>>& new_text, bool keep_tree = false);
+                                     const std::vector<std::shared_ptr<element>>& new_text, bool keep_tree = false,
+                                     const std::vector<std::shared_ptr<element>>& retext = {});
+        bool     retag_allowed(const std::shared_ptr<element>& el, std::string name, bool svg, string_map& attrs,
+                               bool blocked);
+        bool     apply_retag(const std::shared_ptr<element>& el, const string_map& attrs, bool check);
+        void     forget_positions();
+        bool     retext_in_place(const std::vector<std::shared_ptr<element>>& current, const char* text,
+                                 std::vector<std::string>& words) const;
 
         GumboOutput* parse_html(estring str);
         void         create_node(void* gnode, elements_list& elements, bool parseTextNode, bool process_root);

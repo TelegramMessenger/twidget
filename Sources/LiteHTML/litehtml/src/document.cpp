@@ -416,7 +416,7 @@ namespace litehtml
 
     // A style hole may be patched in place unless the edit touches custom properties, var() or counters,
     // whose effects reach other elements.
-    static bool style_change_is_paint_only(const std::string& before, const std::string& after)
+    static bool paint_only_property(const std::string& name)
     {
         static const std::unordered_set<std::string> paint = {
             "color", "background", "background-color", "background-image", "background-position", "background-repeat",
@@ -425,6 +425,11 @@ namespace litehtml
             "stroke-width", "stroke-dasharray", "stroke-dashoffset", "stop-color", "stop-opacity", "border-color",
             "border-top-color", "border-right-color", "border-bottom-color", "border-left-color", "text-decoration-color",
             "caret-color", "cursor", "-lh-anim"};
+        return paint.count(name) != 0;
+    }
+
+    static bool style_change_is_paint_only(const std::string& before, const std::string& after)
+    {
         auto a = split_style_declarations(before), b = split_style_declarations(after);
         std::map<std::string, std::string> left, right;
         for(const auto& d : a)
@@ -434,12 +439,12 @@ namespace litehtml
         for(const auto& d : left)
         {
             auto it = right.find(d.first);
-            if((it == right.end() || it->second != d.second) && !paint.count(d.first))
+            if((it == right.end() || it->second != d.second) && !paint_only_property(d.first))
                 return false;
         }
         for(const auto& d : right)
         {
-            if(!left.count(d.first) && !paint.count(d.first))
+            if(!left.count(d.first) && !paint_only_property(d.first))
                 return false;
         }
         return true;
@@ -650,7 +655,25 @@ namespace litehtml
 
     namespace
     {
-        bool tree_neutral_change(const std::string& before, const std::string& after, bool inline_box)
+        bool table_part(style_display display)
+        {
+            switch(display)
+            {
+            case display_table_cell:
+            case display_table_row:
+            case display_table_column:
+            case display_table_column_group:
+            case display_table_row_group:
+            case display_table_header_group:
+            case display_table_footer_group:
+            case display_table_caption:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        bool tree_neutral_change(const std::string& before, const std::string& after, bool inline_box, bool table_cached)
         {
             static const std::unordered_set<std::string> neutral = {
                 "width", "height", "min-width", "min-height", "max-width", "max-height", "left", "top", "right", "bottom",
@@ -695,6 +718,10 @@ namespace litehtml
             auto allowed = [&](const std::string& name) {
                 if(inline_box && (name.compare(0, 6, "margin") == 0 || name.compare(0, 7, "padding") == 0 || name == "left" ||
                                   name == "top" || name == "right" || name == "bottom"))
+                    return false;
+                if(table_cached && (name == "width" || name == "height" || name.compare(0, 4, "min-") == 0 ||
+                                    name.compare(0, 4, "max-") == 0 || name.compare(0, 7, "padding") == 0 ||
+                                    name.compare(0, 6, "margin") == 0))
                     return false;
                 return neutral.count(name) != 0;
             };
@@ -835,6 +862,8 @@ namespace litehtml
 
         std::vector<element::ptr> restyle;
         std::vector<element::ptr> new_text;
+        std::vector<element::ptr> retext;
+        std::vector<std::string>  words;
         bool                      keep_tree  = !getenv("LH_NO_KEEP_TREE");
         bool                      paint_only = !getenv("LH_NO_PAINT_ONLY");
         m_patch_regions.clear();
@@ -881,8 +910,19 @@ namespace litehtml
                     paint_only = style_change_is_paint_only(hole.value, value);
                 }
             }
+            if(hole.text && retext_in_place(hole.text_elements, value.c_str(), words))
+            {
+                hole.value = value;
+                for(size_t w = 0; w < words.size(); w++)
+                {
+                    std::static_pointer_cast<el_text>(hole.text_elements[w])->set_text(words[w]);
+                    retext.push_back(hole.text_elements[w]);
+                }
+                continue;
+            }
             if(keep_tree && (hole.text || hole.src ||
-                             (hole.attr.empty() && !tree_neutral_change(hole.value, value, hole.owner->css().get_display() == display_inline))))
+                             (hole.attr.empty() && !tree_neutral_change(hole.value, value, hole.owner->css().get_display() == display_inline,
+                                                                         table_part(hole.owner->css().get_display())))))
                 keep_tree = false;
             hole.value      = value;
             if(hole.src)
@@ -927,7 +967,7 @@ namespace litehtml
             for(const auto& el : restyle)
                 groups.push_back(el->css().is_paint_group());
         }
-        restyle_after_patch(restyle, new_text, keep_tree);
+        restyle_after_patch(restyle, new_text, keep_tree, retext);
         if(paint_only)
         {
             for(size_t k = 0; k < restyle.size() && paint_only; k++)
@@ -937,6 +977,8 @@ namespace litehtml
             }
         }
         m_paint_only_patch = paint_only && keep_tree;
+        if(keep_tree && !m_paint_only_patch)
+            forget_positions();
         if(!m_paint_only_patch)
         {
             m_patch_confined = false;
@@ -960,8 +1002,58 @@ namespace litehtml
         return true;
     }
 
+    void document::forget_positions()
+    {
+        if(!m_root_render)
+            return;
+        std::vector<render_item*> pending{m_root_render.get()};
+        while(!pending.empty())
+        {
+            render_item* item = pending.back();
+            pending.pop_back();
+            item->pos() = position();
+            for(const auto& child : item->children())
+                pending.push_back(child.get());
+        }
+    }
+
+    bool document::retext_in_place(const std::vector<element::ptr>& current, const char* text,
+                                   std::vector<std::string>& words) const
+    {
+        static const bool disabled = getenv("LH_NO_INPLACE_TEXT") != nullptr;
+        if(disabled || current.empty() || !text)
+            return false;
+        const element::ptr parent = current.front()->parent();
+        if(!parent)
+            return false;
+        std::vector<std::pair<bool, std::string>> parts;
+        m_container->split_text(
+            text, [&parts](const char* word) { parts.emplace_back(false, word); },
+            [&parts](const char* space) { parts.emplace_back(true, space); });
+        if(parts.size() != current.size())
+            return false;
+        words.clear();
+        words.reserve(parts.size());
+        for(size_t i = 0; i < parts.size(); i++)
+        {
+            const element& el    = *current[i];
+            const bool     space = typeid(el) == typeid(el_space);
+            if((!space && typeid(el) != typeid(el_text)) || space != parts[i].first || current[i]->parent() != parent)
+                return false;
+            if(space)
+            {
+                std::string before;
+                el.get_text(before);
+                if(before != parts[i].second)
+                    return false;
+            }
+            words.push_back(std::move(parts[i].second));
+        }
+        return true;
+    }
+
     void document::restyle_after_patch(const std::vector<element::ptr>& restyle, const std::vector<element::ptr>& new_text,
-                                       bool keep_tree)
+                                       bool keep_tree, const std::vector<element::ptr>& retext)
     {
         invalidate_paint();
         m_share_cache.clear();
@@ -974,6 +1066,8 @@ namespace litehtml
         }
         for(const auto& el : new_text)
             pending.insert(el.get());
+        for(const auto& el : retext)
+            pending.insert(el.get());
         auto covered = [&pending](const element::ptr& el) {
             for(auto p = el->parent(); p; p = p->parent())
             {
@@ -982,7 +1076,7 @@ namespace litehtml
             }
             return false;
         };
-        for(const auto& list : {&restyle, &new_text})
+        for(const auto& list : {&restyle, &new_text, &retext})
         {
             for(const auto& el : *list)
             {
@@ -1038,6 +1132,135 @@ namespace litehtml
             counters = counters || mentions_counters(sheet.text);
         m_selector_scope = (attributes ? 1 : 0) | (positions ? 2 : 0) | (counters ? 4 : 0);
         return m_selector_scope;
+    }
+
+    bool document::retag_allowed(const element::ptr& el, std::string name, bool svg, string_map& attrs, bool blocked)
+    {
+        auto tag = std::dynamic_pointer_cast<html_tag>(el);
+        if(!tag || blocked || !restylable_in_place(*el))
+            return false;
+        if(name.empty() || lowcase(name) != el->get_tagName() || !m_container->sanitize_element(name, svg, attrs) ||
+           lowcase(name) != el->get_tagName())
+            return false;
+        auto unsafe_style = [](std::string_view value) {
+            return value.find("counter") != std::string_view::npos || value.find("var(") != std::string_view::npos ||
+                   value.find("--") != std::string_view::npos;
+        };
+        const string_map& before    = tag->attributes();
+        auto              was       = before.find("style");
+        auto              now       = attrs.find("style");
+        const std::string old_style = was == before.end() ? std::string() : was->second;
+        const std::string new_style = now == attrs.end() ? std::string() : now->second;
+        if(old_style != new_style && (unsafe_style(old_style) || unsafe_style(new_style)))
+            return false;
+        auto normalized = [this](const std::string* value) {
+            std::string text = value ? *value : std::string();
+            if(m_mode == quirks_mode)
+                lcase(text);
+            return text;
+        };
+        auto reaches_others = [&](const std::string& attr, const std::string* old, const std::string* next) {
+            if(m_left_attrs.count(_id(attr)))
+                return true;
+            if(attr == "id")
+                return m_left_ids.count(_id(normalized(old))) != 0 || m_left_ids.count(_id(normalized(next))) != 0;
+            if(attr != "class")
+                return false;
+            std::unordered_set<string_id> a, c;
+            for(const auto& cls : split_string(normalized(old), whitespace, "", ""))
+                a.insert(_id(cls));
+            for(const auto& cls : split_string(normalized(next), whitespace, "", ""))
+                c.insert(_id(cls));
+            for(string_id cls : a)
+            {
+                if(!c.count(cls) && m_left_classes.count(cls))
+                    return true;
+            }
+            for(string_id cls : c)
+            {
+                if(!a.count(cls) && m_left_classes.count(cls))
+                    return true;
+            }
+            return false;
+        };
+        for(const auto& entry : before)
+        {
+            auto it = attrs.find(entry.first);
+            if((it == attrs.end() || it->second != entry.second) &&
+               reaches_others(entry.first, &entry.second, it == attrs.end() ? nullptr : &it->second))
+                return false;
+        }
+        for(const auto& entry : attrs)
+        {
+            if(!before.count(entry.first) && reaches_others(entry.first, nullptr, &entry.second))
+                return false;
+        }
+        return true;
+    }
+
+    bool document::apply_retag(const element::ptr& el, const string_map& attrs, bool check)
+    {
+        auto has_pseudo = [&el]() {
+            for(const auto& child : el->m_children)
+                if(child->tag() == __tag_before_ || child->tag() == __tag_after_)
+                    return true;
+            return false;
+        };
+        auto used_rules = [&el]() {
+            std::vector<std::pair<const css_selector*, bool>> rules;
+            rules.reserve(el->m_used_styles.size());
+            for(const auto& used : el->m_used_styles)
+                rules.emplace_back(used->m_selector.get(), used->m_used);
+            std::sort(rules.begin(), rules.end());
+            return rules;
+        };
+        auto                                              tag     = std::static_pointer_cast<html_tag>(el);
+        bool                                              neutral = check && !has_pseudo();
+        std::vector<std::pair<const css_selector*, bool>> rules_before;
+        string_map                                        attrs_before;
+        if(neutral)
+        {
+            rules_before = used_rules();
+            attrs_before = tag->attributes();
+        }
+        tag->reset_attributes(attrs);
+        tag->forget_matched_styles();
+        elements_list children;
+        children.swap(tag->m_children);
+        tag->apply_stylesheet(m_master_css);
+        tag->parse_attributes();
+        tag->apply_stylesheet(m_styles);
+        tag->apply_stylesheet(m_user_css);
+        elements_list pseudo;
+        pseudo.swap(tag->m_children);
+        for(const auto& child : pseudo)
+        {
+            if(child->tag() == __tag_before_)
+                children.push_front(child);
+            else
+                children.push_back(child);
+        }
+        tag->m_children.swap(children);
+        if(!neutral || has_pseudo())
+            return false;
+        attrs_before.erase("class");
+        string_map attrs_after = tag->attributes();
+        attrs_after.erase("class");
+        if(attrs_before != attrs_after)
+            return false;
+        const auto                                        rules_after = used_rules();
+        std::vector<std::pair<const css_selector*, bool>> changed;
+        std::set_symmetric_difference(rules_before.begin(), rules_before.end(), rules_after.begin(), rules_after.end(),
+                                      std::back_inserter(changed));
+        for(const auto& rule : changed)
+        {
+            if(!rule.first->m_style || !rule.first->m_style->only_declares([](string_id name) {
+                   const std::string& text = _s(name);
+                   return paint_only_property(text.compare(0, 8, "-lh-raw-") == 0 ? text.substr(8) : text);
+               }))
+                return false;
+        }
+        return true;
     }
 
     bool document::update_structure(const std::string& html, bool* changed)
@@ -1147,6 +1370,7 @@ namespace litehtml
         std::vector<rebuild>                                                 rebuilds;
         std::vector<std::pair<const GumboNode*, element::ptr>>               kept;
         std::vector<std::pair<const GumboNode*, std::vector<element::ptr>>> kept_text;
+        std::vector<std::pair<std::vector<element::ptr>, std::vector<std::string>>> retexts;
         kept.reserve(m_node_elements.size());
         enum
         {
@@ -1159,69 +1383,15 @@ namespace litehtml
                    value.find("--") != std::string_view::npos;
         };
         auto retag = [&](const GumboNode* b, const element::ptr& el, bool in_select) {
-            auto tag = std::dynamic_pointer_cast<html_tag>(el);
-            if(!tag || attribute_scope || in_select || !restylable_in_place(*el))
-                return false;
             string_map attrs;
             for(unsigned int i = 0; i < b->v.element.attributes.length; i++)
             {
                 auto* attr        = static_cast<const GumboAttribute*>(b->v.element.attributes.data[i]);
                 attrs[attr->name] = attr->value;
             }
-            std::string name(element_name(b));
-            if(name.empty() || lowcase(name) != el->get_tagName() ||
-               !m_container->sanitize_element(name, b->v.element.tag_namespace == GUMBO_NAMESPACE_SVG, attrs) ||
-               lowcase(name) != el->get_tagName())
+            if(!retag_allowed(el, std::string(element_name(b)), b->v.element.tag_namespace == GUMBO_NAMESPACE_SVG, attrs,
+                              in_select || attribute_scope))
                 return false;
-            const string_map& before = tag->attributes();
-            auto              was    = before.find("style");
-            auto              now    = attrs.find("style");
-            const std::string old_style = was == before.end() ? std::string() : was->second;
-            const std::string new_style = now == attrs.end() ? std::string() : now->second;
-            if(old_style != new_style && (unsafe_style(old_style) || unsafe_style(new_style)))
-                return false;
-            auto normalized = [this](const std::string* value) {
-                std::string text = value ? *value : std::string();
-                if(m_mode == quirks_mode)
-                    lcase(text);
-                return text;
-            };
-            auto reaches_others = [&](const std::string& attr, const std::string* old, const std::string* next) {
-                if(m_left_attrs.count(_id(attr)))
-                    return true;
-                if(attr == "id")
-                    return m_left_ids.count(_id(normalized(old))) != 0 || m_left_ids.count(_id(normalized(next))) != 0;
-                if(attr != "class")
-                    return false;
-                std::unordered_set<string_id> a, c;
-                for(const auto& cls : split_string(normalized(old), whitespace, "", ""))
-                    a.insert(_id(cls));
-                for(const auto& cls : split_string(normalized(next), whitespace, "", ""))
-                    c.insert(_id(cls));
-                for(string_id cls : a)
-                {
-                    if(!c.count(cls) && m_left_classes.count(cls))
-                        return true;
-                }
-                for(string_id cls : c)
-                {
-                    if(!a.count(cls) && m_left_classes.count(cls))
-                        return true;
-                }
-                return false;
-            };
-            for(const auto& entry : before)
-            {
-                auto it = attrs.find(entry.first);
-                if((it == attrs.end() || it->second != entry.second) &&
-                   reaches_others(entry.first, &entry.second, it == attrs.end() ? nullptr : &it->second))
-                    return false;
-            }
-            for(const auto& entry : attrs)
-            {
-                if(!before.count(entry.first) && reaches_others(entry.first, nullptr, &entry.second))
-                    return false;
-            }
             retags.emplace_back(el, std::move(attrs));
             return true;
         };
@@ -1300,6 +1470,7 @@ namespace litehtml
             const size_t rebuilds_mark  = rebuilds.size();
             const size_t kept_mark      = kept.size();
             const size_t kept_text_mark = kept_text.size();
+            const size_t retexts_mark   = retexts.size();
             rebuild      plan;
             if(aligned)
             {
@@ -1327,6 +1498,12 @@ namespace litehtml
                     } else if(x->type == GUMBO_NODE_TEXT)
                     {
                         create = !same_text_node(x, y);
+                        std::vector<std::string> words;
+                        if(create && !in_select && retext_in_place(current_text(x), y->v.text.text, words))
+                        {
+                            create = false;
+                            retexts.emplace_back(current_text(x), std::move(words));
+                        }
                         if(!create)
                             kept_text.emplace_back(y, current_text(x));
                     } else
@@ -1349,6 +1526,7 @@ namespace litehtml
                     rebuilds.resize(rebuilds_mark);
                     kept.resize(kept_mark);
                     kept_text.resize(kept_text_mark);
+                    retexts.resize(retexts_mark);
                 }
                 for(unsigned int i = 0; i < cb->length; i++)
                 {
@@ -1467,6 +1645,17 @@ namespace litehtml
             patch.first->set_attr("style", patch.second.c_str());
             restyle.push_back(patch.first);
         }
+        std::vector<element::ptr> retext;
+        for(auto& entry : retexts)
+        {
+            for(size_t w = 0; w < entry.second.size(); w++)
+            {
+                std::static_pointer_cast<el_text>(entry.first[w])->set_text(entry.second[w]);
+                retext.push_back(entry.first[w]);
+            }
+        }
+        static const bool no_keep_tree = getenv("LH_NO_KEEP_TREE") != nullptr;
+        bool              keep_tree    = !no_keep_tree && rebuilds.empty() && styles.empty();
         std::vector<element::ptr> fresh;
         std::vector<element::ptr> created;
         m_track_nodes    = true;
@@ -1525,29 +1714,11 @@ namespace litehtml
 
         for(auto& entry : retags)
         {
-            auto tag = std::static_pointer_cast<html_tag>(entry.first);
-            tag->reset_attributes(entry.second);
-            tag->forget_matched_styles();
-            elements_list children;
-            children.swap(tag->m_children);
-            tag->apply_stylesheet(m_master_css);
-            tag->parse_attributes();
-            tag->apply_stylesheet(m_styles);
-            tag->apply_stylesheet(m_user_css);
-            elements_list pseudo;
-            pseudo.swap(tag->m_children);
-            for(const auto& el : pseudo)
-            {
-                if(el->tag() == __tag_before_)
-                    children.push_front(el);
-                else
-                    children.push_back(el);
-            }
-            tag->m_children.swap(children);
+            keep_tree = apply_retag(entry.first, entry.second, keep_tree) && keep_tree;
             restyle.push_back(entry.first);
         }
 
-        const bool any = !styles.empty() || !rebuilds.empty() || !retags.empty();
+        const bool any = !styles.empty() || !rebuilds.empty() || !retags.empty() || !retexts.empty();
         if(any)
         {
             for(const auto& el : fresh)
@@ -1558,7 +1729,9 @@ namespace litehtml
                 el->apply_stylesheet(m_styles);
             for(const auto& el : fresh)
                 el->apply_stylesheet(m_user_css);
-            restyle_after_patch(restyle, created);
+            restyle_after_patch(restyle, created, keep_tree, retext);
+            if(keep_tree)
+                forget_positions();
             m_over_element   = nearest_attached(over_chain);
             m_active_element = nearest_attached(active_chain);
         }
@@ -1570,6 +1743,41 @@ namespace litehtml
         if(changed)
             *changed = any;
         return true;
+    }
+
+    bool document::ids_selectable()
+    {
+        if(m_ids_selectable >= 0)
+            return m_ids_selectable != 0;
+        static const bool disabled = getenv("LH_NO_ID_SHARE") != nullptr;
+        std::function<bool(const css_selector&)> sees_ids = [&](const css_selector& selector) {
+            for(const css_selector* sel = &selector; sel; sel = sel->m_left.get())
+            {
+                for(const auto& attr : sel->m_right.m_attrs)
+                {
+                    if(attr.type == select_id || (attr.type == select_attr && strcasecmp(_s(attr.name).c_str(), "id") == 0))
+                        return true;
+                    for(const auto& inner : attr.selector_list)
+                    {
+                        if(inner && sees_ids(*inner))
+                            return true;
+                    }
+                }
+            }
+            return false;
+        };
+        bool seen = disabled;
+        for(const css* sheet : {&m_master_css, &m_styles, &m_user_css})
+        {
+            for(const auto& sel : sheet->selectors())
+            {
+                if(seen)
+                    break;
+                seen = sel && sees_ids(*sel);
+            }
+        }
+        m_ids_selectable = seen ? 1 : 0;
+        return seen;
     }
 
     bool document::style_sharing_enabled() const
