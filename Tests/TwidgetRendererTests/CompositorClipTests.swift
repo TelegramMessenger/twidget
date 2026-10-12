@@ -49,6 +49,21 @@ final class CompositorClipTests: XCTestCase {
         XCTAssertEqual(transparentInk, transparentBox)
     }
 
+    func testElementSnapshotsPaintPositionedDescendantsOwnedByAncestors() throws {
+        let document = LHDocument(html: "<div data-x='a' style='width:100px;height:60px;background:#ffffff'><div style='position:relative;height:40px'><div style='position:absolute;left:10px;top:10px;width:30px;height:20px;background:#ff0000'></div></div></div>", css: nil)
+        _ = document.layout(maxWidth: 200, preferredWidth: 200)
+        var ink = CGRect.zero, box = CGRect.zero
+        let image = try XCTUnwrap(document.copyImageOfElement(attribute: "data-x", value: "a", scale: 1, inkBounds: &ink, borderBox: &box))
+        let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        let x = Int(box.minX - ink.minX) + 25, y = Int(box.minY - ink.minY) + 20
+        let offset = (y * image.width + x) * 4
+        XCTAssertEqual(pixels[offset], 255)
+        XCTAssertEqual(pixels[offset + 1], 0)
+        XCTAssertEqual(pixels[offset + 2], 0)
+    }
+
     func testFractionalScaleCropsOnWholePixels() throws {
         let (image, ink, box) = try XCTUnwrap(snapshot("background:#3390ec", scale: 2.5))
         XCTAssertTrue(ink.contains(box))

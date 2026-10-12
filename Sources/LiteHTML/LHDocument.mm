@@ -19,6 +19,8 @@
 #include <memory>
 #include <mutex>
 
+#include <set>
+
 namespace lh = litehtml;
 
 static double NowMs()
@@ -80,6 +82,32 @@ static bool NeedsViewportHeight(const lh::document::ptr &doc)
         if(child->tag() == lh::_body_ && UsesPercentHeight(child))
             return true;
     return false;
+}
+
+static void CollectPositionedZ(const std::shared_ptr<lh::render_item> &item, std::set<int> &z)
+{
+    for(const auto &child : item->children())
+    {
+        if(child->src_el()->is_positioned())
+            z.insert(child->src_el()->css().get_z_index());
+        else
+            CollectPositionedZ(child, z);
+    }
+}
+
+static void DrawAsStackingContext(const std::shared_ptr<lh::render_item> &ri, lh::uint_ptr hdc, lh::pixel_t x, lh::pixel_t y)
+{
+    std::set<int> z;
+    CollectPositionedZ(ri, z);
+    for(int index : z)
+        if(index < 0)
+            ri->draw_children(hdc, x, y, nullptr, lh::draw_positioned, index);
+    ri->draw_children(hdc, x, y, nullptr, lh::draw_block, 0);
+    ri->draw_children(hdc, x, y, nullptr, lh::draw_floats, 0);
+    ri->draw_children(hdc, x, y, nullptr, lh::draw_inlines, 0);
+    for(int index : z)
+        if(index >= 0)
+            ri->draw_children(hdc, x, y, nullptr, lh::draw_positioned, index);
 }
 
 static bool CopyPixels(CGImageRef image, CGContextRef ctx)
@@ -949,7 +977,8 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     _doc->skip_paint.erase(ri->src_el().get());
     PixelSnap snap(ctx);
     ri->src_el()->draw(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, ri);
-    ri->draw_stacking_context(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, true);
+    if(ri->is_visible())
+        DrawAsStackingContext(ri, reinterpret_cast<lh::uint_ptr>(ctx), x, y);
     CGRect tight = TightInk(ctx, ink, box, scale);
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
