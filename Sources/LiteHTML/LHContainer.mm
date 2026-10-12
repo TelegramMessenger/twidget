@@ -660,6 +660,66 @@ void AppendNumber(std::string& key, double v)
 // relative to the current clip, so drawing them straight into a partially redrawn tile gives
 // slightly different pixels than a full redraw; a pixel-aligned copy does not. Returns false when the
 // transform is not axis-aligned or r is not on device pixels, and the caller draws directly.
+static bool DrawDownsampled(CGContextRef ctx, CGRect r, std::string key, CGFloat blur, const std::function<void(CGContextRef)>& paint)
+{
+    CGAffineTransform m = CGContextGetCTM(ctx);
+    if(std::fabs(m.b) > 1e-9 || std::fabs(m.c) > 1e-9 || r.size.width <= 0 || r.size.height <= 0)
+        return false;
+    CGRect device = CGContextConvertRectToDeviceSpace(ctx, r);
+    CGFloat sx = std::fabs(m.a), sy = std::fabs(m.d);
+    CGFloat pixels = device.size.width * device.size.height;
+    CGFloat k = std::min<CGFloat>(1, 24 / std::max<CGFloat>(blur * std::max(sx, sy), 1));
+    if(k >= 0.999 || !(k > 0))
+        return false;
+    k = std::min<CGFloat>(k, std::sqrt((1 << 20) / std::max<CGFloat>(pixels, 1)));
+    size_t pw = (size_t)std::max<double>(1, std::ceil(device.size.width * k)), ph = (size_t)std::max<double>(1, std::ceil(device.size.height * k));
+    CGFloat kx = pw / std::max<CGFloat>(r.size.width, 1e-6), ky = ph / std::max<CGFloat>(r.size.height, 1e-6);
+    AppendNumber(key, (double)pw);
+    AppendNumber(key, (double)ph);
+    AppendNumber(key, sx);
+    AppendNumber(key, sy);
+    AppendNumber(key, m.d < 0 ? -1 : 1);
+    CGColorSpaceRef space = CGBitmapContextGetColorSpace(ctx);
+    if(!space || CGColorSpaceGetModel(space) != kCGColorSpaceModelRGB)
+        space = SRGB();
+    AppendInteger(key, (uintptr_t)space);
+    CGImageRef image = SharedRasterCache().copy(key);
+    if(!image)
+    {
+        CGContextRef bitmap = CGBitmapContextCreate(nullptr, pw, ph, 8, 0, space, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+        if(!bitmap)
+            return false;
+        if(m.d < 0)
+        {
+            CGContextTranslateCTM(bitmap, 0, ph);
+            CGContextScaleCTM(bitmap, kx, -ky);
+        }
+        else
+            CGContextScaleCTM(bitmap, kx, ky);
+        CGContextTranslateCTM(bitmap, -r.origin.x, -r.origin.y);
+        CGContextSetShouldAntialias(bitmap, true);
+        paint(bitmap);
+        image = CGBitmapContextCreateImage(bitmap);
+        CGContextRelease(bitmap);
+        if(!image)
+            return false;
+        SharedRasterCache().put(key, image, pw * ph * 4);
+    }
+    CGContextSaveGState(ctx);
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    if(m.d < 0)
+    {
+        CGContextTranslateCTM(ctx, r.origin.x, r.origin.y + r.size.height);
+        CGContextScaleCTM(ctx, 1, -1);
+    }
+    else
+        CGContextTranslateCTM(ctx, r.origin.x, r.origin.y);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, r.size.width, r.size.height), image);
+    CGContextRestoreGState(ctx);
+    CGImageRelease(image);
+    return true;
+}
+
 static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const std::function<void(CGContextRef)>& paint, bool store = true)
 {
     static const bool disabled = getenv("LH_NO_RASTER_CACHE") != nullptr;
@@ -2810,6 +2870,22 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
         apply_clips(ctx, ink);
         lh::shadow_paint copy = shadow;
         bool drawn = DrawRasterized(ctx, aligned, key, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, r, radius, copy); });
+        if(!drawn)
+        {
+            CGContextSaveGState(ctx);
+            CGMutablePathRef clip = CGPathCreateMutable();
+            if(!shadow.inset)
+                CGPathAddRect(clip, nullptr, CGRectInset(ink, -1, -1));
+            AddRoundedRect(clip, r, radius);
+            CGContextAddPath(ctx, clip);
+            if(shadow.inset)
+                CGContextClip(ctx);
+            else
+                CGContextEOClip(ctx);
+            CGPathRelease(clip);
+            drawn = DrawDownsampled(ctx, aligned, key + "|down", blur, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, r, radius, copy); });
+            CGContextRestoreGState(ctx);
+        }
         CGContextRestoreGState(ctx);
         if(drawn)
             return;
