@@ -7,6 +7,9 @@ final class WidgetCanvasPresenter {
     static let maxSurfaces = 3
 
     let layer = CALayer()
+    let container = CALayer()
+    private(set) var frame = CGRect.zero
+    private(set) var clip: (rect: CGRect, radius: CGFloat, corners: CACornerMask)?
     private var surfaces: [IOSurfaceRef] = []
     private var shown: IOSurfaceRef?
     private var busy = false
@@ -21,10 +24,35 @@ final class WidgetCanvasPresenter {
         layer.contentsGravity = .resize
         layer.isOpaque = false
         layer.name = "twidget-canvas"
+        container.actions = layer.actions
+        container.name = "twidget-canvas-clip"
+        container.addSublayer(layer)
+    }
+
+    func place(_ frame: CGRect, clip: (rect: CGRect, radius: CGFloat, corners: CACornerMask)?) {
+        self.frame = frame
+        self.clip = clip
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let clip = clip {
+            container.frame = clip.rect
+            container.masksToBounds = true
+            container.cornerRadius = clip.radius
+            if #available(macOS 10.13, *) {
+                container.maskedCorners = clip.corners
+            }
+            layer.frame = frame.offsetBy(dx: -clip.rect.minX, dy: -clip.rect.minY)
+        } else {
+            container.frame = frame
+            container.masksToBounds = false
+            container.cornerRadius = 0
+            layer.frame = CGRect(origin: .zero, size: frame.size)
+        }
+        CATransaction.commit()
     }
 
     func remove() {
-        layer.removeFromSuperlayer()
+        container.removeFromSuperlayer()
         layer.contents = nil
         surfaces = []
         shown = nil
@@ -111,7 +139,7 @@ final class WidgetCanvasPresenter {
                     return
                 }
                 self.busy = false
-                if self.layer.superlayer != nil {
+                if self.container.superlayer != nil {
                     self.show(target)
                 }
                 if self.dirty {
@@ -134,11 +162,27 @@ final class WidgetCanvasPresenter {
         }
     }
 
-    func draw(into ctx: CGContext, frame: CGRect) {
+    func draw(into ctx: CGContext) {
         guard let image = canvas?.image else {
             return
         }
         ctx.saveGState()
+        if let clip = clip {
+            let r = clip.rect, radius = min(clip.radius, r.width / 2, r.height / 2)
+            let path = CGMutablePath()
+            func corner(_ mask: CACornerMask) -> CGFloat {
+                return clip.corners.contains(mask) ? radius : 0
+            }
+            let tl = corner(.layerMinXMinYCorner), tr = corner(.layerMaxXMinYCorner), br = corner(.layerMaxXMaxYCorner), bl = corner(.layerMinXMaxYCorner)
+            path.move(to: CGPoint(x: r.minX + tl, y: r.minY))
+            path.addArc(tangent1End: CGPoint(x: r.maxX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.maxY), radius: tr)
+            path.addArc(tangent1End: CGPoint(x: r.maxX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.maxY), radius: br)
+            path.addArc(tangent1End: CGPoint(x: r.minX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.minY), radius: bl)
+            path.addArc(tangent1End: CGPoint(x: r.minX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.minY), radius: tl)
+            path.closeSubpath()
+            ctx.addPath(path)
+            ctx.clip()
+        }
         ctx.translateBy(x: frame.minX, y: frame.maxY)
         ctx.scaleBy(x: 1, y: -1)
         ctx.draw(image, in: CGRect(origin: .zero, size: frame.size))

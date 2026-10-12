@@ -161,7 +161,7 @@ public final class LiteHTMLWidgetRenderer {
         ctx.translateBy(x: 0, y: CGFloat(image.height))
         ctx.scaleBy(x: scale, y: -scale)
         for (_, presenter) in presenters.sorted(by: { $0.key < $1.key }) {
-            presenter.draw(into: ctx, frame: presenter.layer.frame)
+            presenter.draw(into: ctx)
         }
         compositor.draw(into: ctx)
         magic.draw(into: ctx)
@@ -406,7 +406,7 @@ public final class LiteHTMLWidgetRenderer {
         #endif
     }
 
-    private func canvasPresentable(_ id: Int, _ canvas: WidgetCanvas, document: LHDocument, boxes: [String: NSValue]) -> CGRect? {
+    private func canvasPresentable(_ id: Int, _ canvas: WidgetCanvas, document: LHDocument, boxes: [String: NSValue]) -> (frame: CGRect, clip: (rect: CGRect, radius: CGFloat, corners: CACornerMask)?)? {
         guard WidgetCanvasPresenter.enabled, canvas.storage != nil, canvas.width > 0, canvas.height > 0, !magic.isActive, let node = dom.node(id), node.tag == "canvas", !node.svg else {
             return nil
         }
@@ -437,17 +437,34 @@ public final class LiteHTMLWidgetRenderer {
             }
             return nil
         }
-        guard document.isElement(attribute: WidgetDOM.idAttribute, value: key, unobscuredIn: box) else {
-            return nil
-        }
-        var clip = CGRect.zero
+        var clipRect = CGRect.zero
         var radii = [CGFloat](repeating: 0, count: 8)
-        if document.clipOfElement(attribute: WidgetDOM.idAttribute, value: key, rect: &clip, radii: &radii) {
-            guard clip.contains(box) || radii.allSatisfy({ $0 == 0 }) && clip.intersection(box) == box else {
+        var clip: (rect: CGRect, radius: CGFloat, corners: CACornerMask)?
+        if document.clipOfElement(attribute: WidgetDOM.idAttribute, value: key, rect: &clipRect, radii: &radii) {
+            let rounded = radii.filter { $0 > 0.01 }
+            guard clipRect.intersects(box), rounded.allSatisfy({ abs($0 - rounded[0]) < 0.01 }) else {
                 return nil
             }
+            var corners: CACornerMask = []
+            let masks: [CACornerMask] = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMaxXMaxYCorner, .layerMinXMaxYCorner]
+            for (index, mask) in masks.enumerated() {
+                let x = radii[index * 2], y = radii[index * 2 + 1]
+                guard (x > 0.01) == (y > 0.01) else {
+                    return nil
+                }
+                if x > 0.01 {
+                    corners.insert(mask)
+                }
+            }
+            if !rounded.isEmpty || !clipRect.contains(box) {
+                clip = (clipRect, rounded.first ?? 0, corners)
+            }
         }
-        return box
+        let visible = clip.map { box.intersection($0.rect) } ?? box
+        guard !visible.isNull, !visible.isEmpty, document.isElement(attribute: WidgetDOM.idAttribute, value: key, unobscuredIn: visible, ignoring: [], clipped: clip != nil || !clipRect.isEmpty) else {
+            return nil
+        }
+        return (box, clip)
     }
 
     private func updateCanvasPresentation() {
@@ -469,11 +486,11 @@ public final class LiteHTMLWidgetRenderer {
         for (id, canvas) in canvases.sorted(by: { $0.key < $1.key }) {
             let wanted = presenters[id] != nil || (canvasDraws[id] ?? 0) >= LiteHTMLWidgetRenderer.canvasGPUAfter
             let affordable = canvas.pixelCount <= budget
-            let frame = wanted && affordable ? canvasPresentable(id, canvas, document: document, boxes: boxes) : nil
-            if frame != nil {
+            let placement = wanted && affordable ? canvasPresentable(id, canvas, document: document, boxes: boxes) : nil
+            if placement != nil {
                 budget -= canvas.pixelCount
             }
-            if let frame = frame {
+            if let placement = placement {
                 let presenter: WidgetCanvasPresenter
                 if let existing = presenters[id] {
                     presenter = existing
@@ -483,11 +500,8 @@ public final class LiteHTMLWidgetRenderer {
                     added.append(presenter)
                     changed = true
                 }
-                if presenter.layer.frame != frame {
-                    CATransaction.begin()
-                    CATransaction.setDisableActions(true)
-                    presenter.layer.frame = frame
-                    CATransaction.commit()
+                if presenter.frame != placement.frame || presenter.clip?.rect != placement.clip?.rect || presenter.clip?.radius != placement.clip?.radius || presenter.clip?.corners != placement.clip?.corners {
+                    presenter.place(placement.frame, clip: placement.clip)
                 }
             } else if let removed = presenters.removeValue(forKey: id) {
                 removed.remove()
@@ -505,7 +519,7 @@ public final class LiteHTMLWidgetRenderer {
         CATransaction.setDisableActions(true)
         for presenter in added {
             presenter.presentNow()
-            documentView.insertOverlay(presenter.layer)
+            documentView.insertOverlay(presenter.container)
         }
         layout(overrides)
         presentationChecked = document
