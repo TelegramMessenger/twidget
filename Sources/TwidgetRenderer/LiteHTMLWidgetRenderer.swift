@@ -582,7 +582,18 @@ public final class LiteHTMLWidgetRenderer {
         _ = reference.layout(maxWidth: width, preferredWidth: width)
         let size = CGSize(width: width, height: max(1, ceil(document.size.height)))
         let scale = documentView.window?.backingScaleFactor ?? 2
-        guard let expected = reference.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: scale), let shot = snapshot(), let actual = shot.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        let pw = Int(ceil(size.width * scale)), ph = Int(ceil(size.height * scale))
+        func render(_ body: (CGContext) -> Void) -> CGImage? {
+            guard let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                return nil
+            }
+            ctx.translateBy(x: 0, y: CGFloat(ph))
+            ctx.scaleBy(x: scale, y: -scale)
+            ctx.setAllowsFontSmoothing(false)
+            body(ctx)
+            return ctx.makeImage()
+        }
+        guard let expected = render({ reference.draw(in: $0, origin: .zero, clip: CGRect(origin: .zero, size: size)) }), let root = documentView.layer, let actual = render({ root.render(in: $0) }) else {
             return
         }
         let w = expected.width, h = expected.height
