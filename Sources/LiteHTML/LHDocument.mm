@@ -191,12 +191,61 @@ static bool CopyPixels(CGImageRef image, CGContextRef ctx)
 - (instancetype)initWithOps:(std::vector<LHDrawOp>)ops;
 @end
 
+static uint64_t OpKey(const LHDrawOp &op)
+{
+    uint64_t     key       = op.hash;
+    const double values[4] = {op.bounds.origin.x, op.bounds.origin.y, op.bounds.size.width, op.bounds.size.height};
+    const auto  *bytes     = reinterpret_cast<const unsigned char *>(values);
+    for(size_t i = 0; i < sizeof(values); i++)
+        key = (key ^ bytes[i]) * 0x100000001b3ULL;
+    return key;
+}
+
+static std::vector<std::pair<uint64_t, size_t>> OpIdentities(const std::vector<LHDrawOp> &ops)
+{
+    std::unordered_map<uint64_t, size_t>      seen;
+    std::vector<std::pair<uint64_t, size_t>> result;
+    result.reserve(ops.size());
+    for(const auto &op : ops)
+    {
+        uint64_t key = OpKey(op);
+        result.emplace_back(key, seen[key]++);
+    }
+    return result;
+}
+
+struct OpIdentityHash
+{
+    size_t operator()(const std::pair<uint64_t, size_t> &v) const { return std::hash<uint64_t>()(v.first ^ (v.second * 0x9e3779b97f4a7c15ULL)); }
+};
+
+using OpIdentitySet = std::unordered_set<std::pair<uint64_t, size_t>, OpIdentityHash>;
+
 @implementation LHDisplayList
 {
-    std::vector<LHDrawOp> _ops;
-    std::vector<LHGPUOp>  _gpuOps;
-    BOOL                  _hasGPU;
-    BOOL                  _gpuUnsupported;
+    std::vector<LHDrawOp>                    _ops;
+    std::vector<LHGPUOp>                     _gpuOps;
+    BOOL                                     _hasGPU;
+    BOOL                                     _gpuUnsupported;
+    std::once_flag                           _identitiesOnce;
+    std::vector<std::pair<uint64_t, size_t>> _identities;
+    OpIdentitySet                            _identitySet;
+}
+
+- (const std::vector<std::pair<uint64_t, size_t>> &)identities
+{
+    std::call_once(_identitiesOnce, [self] {
+        _identities = OpIdentities(_ops);
+        _identitySet.reserve(_identities.size());
+        _identitySet.insert(_identities.begin(), _identities.end());
+    });
+    return _identities;
+}
+
+- (const OpIdentitySet &)identitySet
+{
+    [self identities];
+    return _identitySet;
 }
 
 - (void)setGPUOps:(std::vector<LHGPUOp>)ops unsupported:(BOOL)unsupported
@@ -228,34 +277,6 @@ static bool CopyPixels(CGImageRef image, CGContextRef ctx)
     return self;
 }
 
-static uint64_t OpKey(const LHDrawOp &op)
-{
-    uint64_t     key       = op.hash;
-    const double values[4] = {op.bounds.origin.x, op.bounds.origin.y, op.bounds.size.width, op.bounds.size.height};
-    const auto  *bytes     = reinterpret_cast<const unsigned char *>(values);
-    for(size_t i = 0; i < sizeof(values); i++)
-        key = (key ^ bytes[i]) * 0x100000001b3ULL;
-    return key;
-}
-
-static std::vector<std::pair<uint64_t, size_t>> OpIdentities(const std::vector<LHDrawOp> &ops)
-{
-    std::unordered_map<uint64_t, size_t>      seen;
-    std::vector<std::pair<uint64_t, size_t>> result;
-    result.reserve(ops.size());
-    for(const auto &op : ops)
-    {
-        uint64_t key = OpKey(op);
-        result.emplace_back(key, seen[key]++);
-    }
-    return result;
-}
-
-struct OpIdentityHash
-{
-    size_t operator()(const std::pair<uint64_t, size_t> &v) const { return std::hash<uint64_t>()(v.first ^ (v.second * 0x9e3779b97f4a7c15ULL)); }
-};
-
 - (NSArray<NSValue *> *)changedRectsSince:(LHDisplayList *)previous
 {
     const std::vector<LHDrawOp> &a = previous->_ops;
@@ -265,8 +286,8 @@ struct OpIdentityHash
         if(!CGRectIsNull(op.bounds) && !CGRectIsEmpty(op.bounds))
             [rects addObject:[NSValue valueWithRect:NSRectFromCGRect(op.bounds)]];
     };
-    auto ida = OpIdentities(a), idb = OpIdentities(b);
-    std::unordered_set<std::pair<uint64_t, size_t>, OpIdentityHash> inA(ida.begin(), ida.end()), inB(idb.begin(), idb.end());
+    const auto &ida = [previous identities], &idb = [self identities];
+    const auto &inA = [previous identitySet], &inB = [self identitySet];
     std::vector<std::pair<uint64_t, size_t>> commonA, commonB;
     for(size_t i = 0; i < a.size(); i++)
     {
