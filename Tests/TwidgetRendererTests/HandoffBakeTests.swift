@@ -67,4 +67,33 @@ final class HandoffBakeTests: XCTestCase {
         XCTAssertNil(baked("@keyframes a { to { opacity: 0; } } @keyframes b { to { transform: scale(2); } }", "a 1s infinite, b 1s infinite"))
         XCTAssertNil(baked("@keyframes a { to { opacity: 0; } }", "a 1s infinite paused"))
     }
+
+    func testResolvesVariablesAndCalc() {
+        let variables = ["--w": "21.5", "--a": "var(--b)", "--b": "3"]
+        let resolve = { (text: String) in CSSTransform.resolve(text) { variables[$0] } }
+        XCTAssertEqual(resolve("translateX(calc(var(--w) * 2px))"), "translateX(43.000000px)")
+        XCTAssertEqual(resolve("rotate(calc((var(--a) + 1) * 10deg))"), "rotate(40.000000deg)")
+        XCTAssertEqual(resolve("translate(calc(10px - -5px), 0)"), "translate(15.000000px, 0)")
+        XCTAssertNil(resolve("translateX(var(--missing))"))
+        XCTAssertEqual(resolve("translateX(var(--missing, 4px))"), "translateX(4px)")
+        XCTAssertNil(resolve("translateX(calc(10px * 2px))"))
+        XCTAssertNil(resolve("translateX(calc(10px + 5%))"))
+        XCTAssertNil(resolve("translateX(calc(1px / 0))"))
+        XCTAssertNil(CSSTransform.resolve("var(--x)") { _ in "var(--x)" })
+    }
+
+    func testResolverSurvivesHostileInput() {
+        var rng = SystemRandomNumberGenerator()
+        let pieces = ["calc(", "var(--w", ")", "(", "*", "/", "+", "-", "1e308", "px", "deg", " ", ",", "var(--a)", "0", "nan", "%"]
+        for _ in 0..<20000 {
+            var text = ""
+            for _ in 0..<Int.random(in: 1...40, using: &rng) {
+                text += pieces.randomElement(using: &rng)!
+            }
+            _ = CSSTransform.resolve(text) { $0 == "--a" ? "var(--a)" : "2" }
+            _ = Calc.evaluate(text)
+        }
+        let deep = String(repeating: "calc(", count: 2000) + "1px" + String(repeating: ")", count: 2000)
+        _ = CSSTransform.resolve(deep) { _ in nil }
+    }
 }

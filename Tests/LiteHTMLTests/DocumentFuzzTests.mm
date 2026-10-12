@@ -126,4 +126,26 @@ static NSArray<NSString *> *Seeds(void)
     }
 }
 
+- (void)testTransformArgumentsEvaluateCalc
+{
+    NSString *(^page)(NSString *) = ^NSString *(NSString *transform) {
+        return [NSString stringWithFormat:@"<!doctype html><style>body{margin:0} .b{width:40px;height:40px;background:#f00;transform:%@}</style><div style=\"padding:30px; --w: 5\"><div class=\"b\"></div></div>", transform];
+    };
+    CGImageRef (^render)(NSString *) = ^CGImageRef(NSString *transform) {
+        LHDocument *document = [[LHDocument alloc] initWithHTML:page(transform) css:nil];
+        [document layoutWithMaxWidth:200];
+        return [document copyImageWithMaxWidth:200 rect:CGRectMake(0, 0, 200, 100) scale:1];
+    };
+    CGImageRef expected = render(@"translateX(25px) rotate(10deg)");
+    for(NSString *variant in @[@"translateX(calc(10px * 2 + 5px)) rotate(calc(20deg / 2))", @"translateX(calc(var(--w) * 5px)) rotate(10deg)"])
+    {
+        CGImageRef actual = render(variant);
+        NSData *a = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(expected));
+        NSData *b = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(actual));
+        XCTAssertEqualObjects(a, b, @"%@", variant);
+        CGImageRelease(actual);
+    }
+    CGImageRelease(expected);
+}
+
 @end
