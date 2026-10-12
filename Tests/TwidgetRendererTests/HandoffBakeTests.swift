@@ -53,6 +53,25 @@ final class HandoffBakeTests: XCTestCase {
         check("@keyframes k { to { transform: skewX(20deg) translate(10px, 5px); } }", "k 1.4s ease-in-out infinite")
     }
 
+    func testStepsBakeIntoNarrowJumps() {
+        check("@keyframes t { to { transform: translateY(20px); } }", "t 1s steps(4) infinite")
+        check("@keyframes t { to { transform: translateY(20px); opacity: 0; } }", "t 1s steps(3, jump-start) infinite")
+        check("@keyframes t { 0% { transform: rotate(0deg); } 50% { transform: rotate(90deg); animation-timing-function: steps(2); } 100% { transform: rotate(180deg); } }", "t 2s ease infinite alternate")
+        guard let (item, base) = baked("@keyframes t { to { transform: translateY(20px); } }", "t 1s steps(4) infinite"), let track = WidgetCompositor.bake(item, base: base, box: CGSize(width: 40, height: 40), origin: CGPoint(x: 20, y: 20)) else {
+            return XCTFail("steps did not bake")
+        }
+        XCTAssertLessThan(track.times.count, 16)
+        for jump in [0.25, 0.5, 0.75] {
+            guard let after = track.times.firstIndex(where: { $0 >= jump }) else {
+                return XCTFail("no keyframe at \(jump)")
+            }
+            XCTAssertEqual(track.times[after], jump, accuracy: 1e-9)
+            XCTAssertLessThanOrEqual(jump - track.times[after - 1], WidgetCompositor.jumpWidth)
+            XCTAssertGreaterThan(jump - track.times[after - 1], 0)
+        }
+        XCTAssertEqual(track.times, track.times.sorted())
+    }
+
     func testRasterScaleRoundsUpToQuarterPixels() {
         XCTAssertEqual(WidgetCompositor.rasterScale(2, 1), 2)
         XCTAssertEqual(WidgetCompositor.rasterScale(2, 1.2), 2.5)
@@ -69,10 +88,7 @@ final class HandoffBakeTests: XCTestCase {
         }
     }
 
-    func testStepsAndUnparseableTransformsStayOnTheFrameClock() {
-        if let (item, base) = baked("@keyframes t { to { transform: translateY(20px); } }", "t 1s steps(4) infinite") {
-            XCTAssertNil(WidgetCompositor.bake(item, base: base, box: CGSize(width: 40, height: 40), origin: CGPoint(x: 20, y: 20)))
-        }
+    func testUnparseableTransformsStayOnTheFrameClock() {
         if let (item, base) = baked("@keyframes p { to { transform: perspective(100px) rotateY(40deg); } }", "p 1s infinite") {
             XCTAssertNil(WidgetCompositor.bake(item, base: base, box: CGSize(width: 40, height: 40), origin: CGPoint(x: 20, y: 20)))
         }

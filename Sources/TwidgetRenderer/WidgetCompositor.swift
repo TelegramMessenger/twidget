@@ -562,6 +562,8 @@ final class WidgetCompositor {
     static var handoffEnabled = ProcessInfo.processInfo.environment["TW_NO_HANDOFF"] == nil
     static let bakeTolerance: CGFloat = 0.05
     static let maxBakeDepth = 9
+    static let maxBakeJumps = 64
+    static let jumpWidth = 2e-6
 
     static func bake(_ baked: WidgetAnimator.Baked, base: [String: String], box: CGSize, origin: CGPoint, resolve: (String?) -> String? = { $0 }) -> Track? {
         func eval(_ p: Double) -> (CGAffineTransform, Float)? {
@@ -586,9 +588,36 @@ final class WidgetCompositor {
             }
             return (worst, abs(mid.1 - (a.1 + b.1) / 2))
         }
+        func distance(_ a: (CGAffineTransform, Float), _ b: (CGAffineTransform, Float)) -> CGFloat {
+            var worst: CGFloat = 0
+            for corner in corners {
+                let pa = corner.applying(a.0), pb = corner.applying(b.0)
+                worst = max(worst, hypot(pa.x - pb.x, pa.y - pb.y))
+            }
+            return worst + CGFloat(abs(a.1 - b.1)) * 100
+        }
+        func locateJump(_ t0: Double, _ s0: (CGAffineTransform, Float), _ t1: Double, _ s1: (CGAffineTransform, Float)) -> (before: Double, left: (CGAffineTransform, Float), after: Double, right: (CGAffineTransform, Float))? {
+            var a = (t0, s0), b = (t1, s1)
+            while b.0 - a.0 > jumpWidth {
+                let t = (a.0 + b.0) / 2
+                guard let value = eval(t) else {
+                    return nil
+                }
+                if distance(a.1, value) >= distance(value, b.1) {
+                    b = (t, value)
+                } else {
+                    a = (t, value)
+                }
+            }
+            guard distance(a.1, b.1) > bakeTolerance else {
+                return nil
+            }
+            return (a.0, a.1, b.0, b.1)
+        }
         var times: [Double] = []
         var samples: [(CGAffineTransform, Float)] = []
         var failed = false
+        var jumpBudget = maxBakeJumps
         func subdivide(_ t0: Double, _ s0: (CGAffineTransform, Float), _ t1: Double, _ s1: (CGAffineTransform, Float), _ depth: Int) {
             if failed {
                 return
@@ -605,7 +634,19 @@ final class WidgetCompositor {
                 return
             }
             if depth >= maxBakeDepth {
-                failed = true
+                guard jumpBudget > 0, let jump = locateJump(t0, s0, t1, s1) else {
+                    failed = true
+                    return
+                }
+                jumpBudget -= 1
+                if jump.before > t0 {
+                    subdivide(t0, s0, jump.before, jump.left, depth)
+                }
+                times.append(jump.after)
+                samples.append(jump.right)
+                if jump.after < t1 {
+                    subdivide(jump.after, jump.right, t1, s1, depth)
+                }
                 return
             }
             subdivide(t0, s0, tm, sm, depth + 1)
@@ -628,7 +669,18 @@ final class WidgetCompositor {
         if failed || times.count > 4096 {
             return nil
         }
-        return Track(times: times, transforms: samples.map { $0.0 }, opacities: samples.map { $0.1 })
+        var keptTimes: [Double] = [times[0]]
+        var kept: [(CGAffineTransform, Float)] = [samples[0]]
+        for index in 1..<times.count {
+            let last = kept.count - 1
+            if index < times.count - 1, last > 0, kept[last - 1] == kept[last], kept[last] == samples[index] {
+                keptTimes[last] = times[index]
+                continue
+            }
+            keptTimes.append(times[index])
+            kept.append(samples[index])
+        }
+        return Track(times: keptTimes, transforms: kept.map { $0.0 }, opacities: kept.map { $0.1 })
     }
 
     func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
