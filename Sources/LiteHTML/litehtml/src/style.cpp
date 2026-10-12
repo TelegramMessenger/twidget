@@ -2251,7 +2251,7 @@ namespace litehtml
         {
             return it->second;
         }
-        static property_value dummy;
+        static const property_value& dummy = *new property_value();
         return dummy;
     }
 
