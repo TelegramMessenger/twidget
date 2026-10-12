@@ -363,6 +363,82 @@ static std::string RegionRetext(std::mt19937 &random, const std::string &text)
     }
 }
 
+static void RegionChange(NSMutableData *changes, int idValue, NSString *name, NSString *value)
+{
+    for(NSString *part in @[[NSString stringWithFormat:@"%d", idValue], name, value])
+    {
+        [changes appendData:[part dataUsingEncoding:NSUTF8StringEncoding]];
+        [changes appendBytes:"" length:1];
+    }
+}
+
+- (void)testRandomHolePatchesMatchTheHTML
+{
+    const char *budget   = getenv("TWIDGET_FUZZ_SECONDS");
+    NSDate     *deadline = [NSDate dateWithTimeIntervalSinceNow:budget ? atof(budget) / 2 : 0];
+    int         frames = 0, patched = 0;
+    for(unsigned seed = 1; seed <= 40 || [deadline timeIntervalSinceNow] > 0; seed++)
+    {
+        @autoreleasepool
+        {
+            std::mt19937  random(seed + 1000);
+            RegionNode    root     = RegionDocument(random, true);
+            const CGFloat width    = 160 + random() % 160;
+            LHDocument   *document = [[LHDocument alloc] initWithHTML:RegionPage(root) css:nil previous:nil];
+            [document layoutWithMaxWidth:width preferredWidth:width];
+            for(int step = 0; step < 16; step++)
+            {
+                std::vector<RegionNode *> elements;
+                RegionGather(root, elements);
+                NSMutableData *changes = [NSMutableData data];
+                std::vector<int> touched;
+                for(int e = 0, edits = 1 + random() % 4; e < edits; e++)
+                {
+                    RegionNode *element = elements[random() % elements.size()];
+                    if(std::find(touched.begin(), touched.end(), element->id) != touched.end())
+                        continue;
+                    const int kind = random() % 3;
+                    if(kind == 0 && element->children.size() == 1 && element->children[0].tag.empty())
+                    {
+                        element->children[0].text = RegionRetext(random, element->children[0].text);
+                        std::string escaped;
+                        RegionEscape(element->children[0].text, escaped);
+                        RegionChange(changes, element->id, @"", @(escaped.c_str()));
+                    } else if(kind == 1 && !element->cls.empty() && element->tag != "tr" && element->tag != "table")
+                    {
+                        element->cls = random() % 3 ? (element->cls == "up" ? "down" : "up") : RegionClasses[random() % (sizeof(RegionClasses) / sizeof(RegionClasses[0]))];
+                        RegionChange(changes, element->id, @"class", @(element->cls.c_str()));
+                    } else if(kind == 2 && !element->style.empty())
+                    {
+                        element->style = random() % 2 ? "background-color:#ffe" : (random() % 2 ? "padding:2px" : "color:#a0a");
+                        RegionChange(changes, element->id, @"style", @(element->style.c_str()));
+                    } else
+                        continue;
+                    touched.push_back(element->id);
+                }
+                if(changes.length == 0)
+                    continue;
+                frames++;
+                NSString   *page  = RegionPage(root);
+                LHDocument *patch = [[LHDocument alloc] initWithPrevious:document changes:changes attribute:RegionAttribute css:nil];
+                if(patch)
+                {
+                    patched++;
+                    XCTAssertEqualObjects(patch.html, page, @"seed %u step %d", seed, step);
+                } else
+                    patch = [[LHDocument alloc] initWithHTML:page css:nil previous:document];
+                LHDocument *fresh = [[LHDocument alloc] initWithHTML:page css:nil];
+                NSString   *label = [NSString stringWithFormat:@"seed %u step %d %@", seed, step, page];
+                XCTAssertEqualObjects(RegionPixels(patch, width), RegionPixels(fresh, width), @"%@", label);
+                XCTAssertEqualObjects(patch.layoutSignature, fresh.layoutSignature, @"%@", label);
+                document = patch;
+            }
+        }
+    }
+    NSLog(@"HOLE PATCHES frames=%d patched=%d", frames, patched);
+    XCTAssertGreaterThan(patched, frames * 3 / 4);
+}
+
 - (void)testLeadingNewlineInPreformattedTextMatchesAFreshParse
 {
     for(NSString *tag in @[@"pre", @"listing", @"textarea", @"div"])
@@ -377,6 +453,41 @@ static std::string RegionRetext(std::mt19937 &random, const std::string &text)
         XCTAssertEqualObjects(RegionPixels(patch, 200), RegionPixels(fresh, 200), @"%@", tag);
         XCTAssertEqualObjects(patch.layoutSignature, fresh.layoutSignature, @"%@", tag);
     }
+}
+
+- (void)testHolePatchesRefuseWhatTheHTMLCouldNotCarry
+{
+    NSString *page = @"<!DOCTYPE html><div data-lh-id=\"1\" class=\"a\" style=\"color:red\">one</div><p data-lh-id=\"2\">two <b data-lh-id=\"3\">three</b></p>"
+                      "<span data-lh-id=\"4\">four</span><pre data-lh-id=\"5\">five</pre><div data-lh-id=\"6\">   </div>";
+    NSArray<NSArray<NSString *> *> *refused = @[
+        @[@"9", @"", @"nine"], @[@"5", @"", @"\nfive"], @[@"4", @"class", @"x"], @[@"1", @"title", @"x"], @[@"1", @"", @"a<b"],
+        @[@"1", @"class", @"a\"b"], @[@"1", @"", @"a &amp; b"], @[@"1", @"", @"  "], @[@"6", @"", @"six"], @[@"1", @"", @""],
+    ];
+    for(NSArray<NSString *> *change in refused)
+    {
+        LHDocument *previous = [[LHDocument alloc] initWithHTML:page css:nil previous:nil];
+        [previous layoutWithMaxWidth:200 preferredWidth:200];
+        NSMutableData *changes = [NSMutableData data];
+        RegionChange(changes, change[0].intValue, change[1], change[2]);
+        XCTAssertNil([[LHDocument alloc] initWithPrevious:previous changes:changes attribute:RegionAttribute css:nil], @"%@", change);
+        XCTAssertEqualObjects(RegionPixels(previous, 200), RegionPixels([[LHDocument alloc] initWithHTML:page css:nil], 200), @"%@", change);
+        LHDocument *next = [[LHDocument alloc] initWithHTML:page css:nil previous:previous];
+        XCTAssertTrue(next.reusedPrevious, @"%@", change);
+    }
+    LHDocument *previous = [[LHDocument alloc] initWithHTML:page css:nil previous:nil];
+    [previous layoutWithMaxWidth:200 preferredWidth:200];
+    NSMutableData *changes = [NSMutableData data];
+    RegionChange(changes, 1, @"", @"uno");
+    RegionChange(changes, 1, @"class", @"b");
+    RegionChange(changes, 3, @"", @"tres");
+    RegionChange(changes, 1, @"style", @"color:blue");
+    LHDocument *next = [[LHDocument alloc] initWithPrevious:previous changes:changes attribute:RegionAttribute css:nil];
+    NSString   *want = @"<!DOCTYPE html><div data-lh-id=\"1\" class=\"b\" style=\"color:blue\">uno</div><p data-lh-id=\"2\">two <b data-lh-id=\"3\">tres</b></p>"
+                        "<span data-lh-id=\"4\">four</span><pre data-lh-id=\"5\">five</pre><div data-lh-id=\"6\">   </div>";
+    XCTAssertEqualObjects(next.html, want);
+    XCTAssertEqualObjects(RegionPixels(next, 200), RegionPixels([[LHDocument alloc] initWithHTML:want css:nil], 200));
+    RegionChange(changes, 1, @"", @"again");
+    XCTAssertNil([[LHDocument alloc] initWithPrevious:next changes:changes attribute:RegionAttribute css:nil]);
 }
 
 @end

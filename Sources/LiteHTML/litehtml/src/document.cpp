@@ -572,6 +572,7 @@ namespace litehtml
         m_literals.clear();
         m_holes.clear();
         m_style_holes.clear();
+        m_owner_holes.clear();
         m_node_holes.clear();
         if(!m_gumbo)
             return;
@@ -850,6 +851,66 @@ namespace litehtml
         }
         std::sort(changes.begin(), changes.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         return apply_template_values(changes, changed) == 1;
+    }
+
+    bool document::update_holes(const std::vector<hole_change>& changes, bool* changed)
+    {
+        invalidate_paint();
+        m_paint_only_patch = false;
+        m_patch_confined   = false;
+        m_patch_regions.clear();
+        if(changed)
+            *changed = false;
+        if(!m_root || !m_finalized || !m_template_ok || getenv("LH_NO_TEMPLATE"))
+            return false;
+        if(m_owner_holes.empty())
+        {
+            for(size_t i = 0; i < m_holes.size(); i++)
+            {
+                const html_hole& hole = m_holes[i];
+                const element*   owner = nullptr;
+                if(!hole.text)
+                    owner = hole.owner.get();
+                else if(!hole.text_elements.empty() && hole.text_elements.front()->parent())
+                    owner = hole.text_elements.front()->parent().get();
+                if(owner)
+                    m_owner_holes[owner].push_back(i);
+            }
+        }
+        std::vector<std::pair<size_t, std::string>> list;
+        std::vector<size_t>                         seen;
+        list.reserve(changes.size());
+        seen.reserve(changes.size());
+        for(const auto& change : changes)
+        {
+            auto it = change.owner ? m_owner_holes.find(change.owner.get()) : m_owner_holes.end();
+            if(it == m_owner_holes.end())
+                return false;
+            size_t found = m_holes.size();
+            for(size_t i : it->second)
+            {
+                const html_hole& hole = m_holes[i];
+                if(change.text ? !hole.text : (hole.text || hole.name != change.name))
+                    continue;
+                if(found != m_holes.size())
+                    return false;
+                found = i;
+            }
+            if(found == m_holes.size())
+                return false;
+            const html_hole& hole = m_holes[found];
+            if(change.value.find('<') != std::string::npos || (!hole.text && change.value.find(hole.close) != std::string::npos))
+                return false;
+            if(hole.text && (hole.text_elements.empty() || hole.text_elements.front()->parent().get() != change.owner.get()))
+                return false;
+            if(std::find(seen.begin(), seen.end(), found) != seen.end())
+                return false;
+            seen.push_back(found);
+            if(change.value != hole.value)
+                list.emplace_back(found, change.value);
+        }
+        std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        return apply_template_values(list, changed) == 1;
     }
 
     bool document::template_html(std::string& out) const

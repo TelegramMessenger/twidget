@@ -26,6 +26,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// Each value must be the exact `style` attribute text the full HTML would carry, and every element must already have a
 /// style attribute. Runs the same checks as an HTML patch and returns nil, leaving `previous` usable, when it can't apply.
 - (nullable instancetype)initWithPrevious:(LHDocument *)previous styles:(NSDictionary<NSString *, NSString *> *)styles attribute:(NSString *)attribute css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
+/// Patches `previous` in place with new attribute values and texts. `changes` holds NUL-terminated triples: the value of
+/// `attribute` naming the element, an attribute name or the empty name for the text of an element whose only child is one
+/// text run, and the value. Each value must be the exact text the full HTML would carry there, and every changed attribute
+/// and text must already be there. Returns nil, leaving `previous` usable, when it can't apply.
+- (nullable instancetype)initWithPrevious:(LHDocument *)previous changes:(NSData *)changes attribute:(NSString *)attribute css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
 /// Whether this document was made by patching the previous one.
 /// Fonts resolved and cached for every document in the process; fonts no document uses are dropped past a bound.
 + (NSUInteger)cachedFontCount;

@@ -286,12 +286,158 @@ final class WidgetDOM {
         node.setAttribute(name, value)
     }
 
+    struct PatchLog {
+        var valid = true
+        var texts: [ObjectIdentifier: (node: WidgetNode, soleText: Bool)] = [:]
+        var attributes: [ObjectIdentifier: (node: WidgetNode, names: Set<String>)] = [:]
+    }
+
+    private(set) var patchLog = PatchLog()
+
+    func resetPatchLog() {
+        patchLog = PatchLog()
+    }
+
+    private func isAttached(_ node: WidgetNode) -> Bool {
+        var current: WidgetNode? = node
+        while let next = current {
+            if next === html {
+                return true
+            }
+            current = next.parent
+        }
+        return false
+    }
+
+    static func hasSoleText(_ node: WidgetNode) -> Bool {
+        return node.children.count == 1 && node.children[0].isText && !node.children[0].synthetic
+    }
+
+    private func noteChildren(of parent: WidgetNode?, moving child: WidgetNode) {
+        guard patchLog.valid, let parent = parent, isAttached(parent) else {
+            return
+        }
+        if !child.isText {
+            patchLog.valid = false
+            return
+        }
+        let key = ObjectIdentifier(parent)
+        if patchLog.texts[key] == nil {
+            patchLog.texts[key] = (parent, WidgetDOM.hasSoleText(parent))
+        }
+    }
+
+    private func noteAttribute(_ node: WidgetNode, _ name: String) {
+        guard patchLog.valid, isAttached(node) else {
+            return
+        }
+        if node.isText || !(name == "class" || name == "style" || name == "src" || node.svg) {
+            patchLog.valid = false
+            return
+        }
+        let key = ObjectIdentifier(node)
+        if patchLog.attributes[key] == nil {
+            patchLog.attributes[key] = (node, [])
+        }
+        patchLog.attributes[key]!.names.insert(name)
+    }
+
+    private func notePatch(_ kind: String, _ id: Int, _ op: [String: Any]) {
+        guard patchLog.valid else {
+            return
+        }
+        switch kind {
+        case "el":
+            if op["adopt"] != nil || nodes[id].map(isAttached) == true {
+                patchLog.valid = false
+            }
+        case "text", "comment", "prop", "call", "canvas":
+            break
+        case "attr":
+            if let node = nodes[id], let name = op["name"] as? String {
+                noteAttribute(node, name.lowercased())
+            }
+        case "style":
+            if let node = nodes[id] {
+                noteAttribute(node, "style")
+            }
+        case "data":
+            if let node = nodes[id], node.isText {
+                noteChildren(of: node.parent, moving: node)
+            } else if let node = nodes[id], isAttached(node) {
+                patchLog.valid = false
+            }
+        case "ins":
+            if let node = nodes[id], !isRoot(node) {
+                noteChildren(of: node.parent, moving: node)
+                let parentId = (op["parent"] as? NSNumber)?.intValue ?? 0
+                if parentId != 0 {
+                    noteChildren(of: nodes[parentId], moving: node)
+                }
+            }
+        case "rm":
+            if let node = nodes[id], !isRoot(node) {
+                noteChildren(of: node.parent, moving: node)
+            }
+        default:
+            if let node = nodes[id], isAttached(node) {
+                patchLog.valid = false
+            }
+        }
+    }
+
+    func patchChanges(theme: String, overrides: [Int: [(String, String)]], previous: [Int: [(String, String)]]) -> [UInt8]? {
+        guard patchLog.valid else {
+            return nil
+        }
+        var changes: [UInt8] = []
+        var styled: Set<Int> = []
+        func put(_ id: Int, _ name: String, _ value: String) -> Bool {
+            if id == 0 || value.utf8.contains(0) {
+                return false
+            }
+            WidgetDOM.append(String(id), to: &changes)
+            changes.append(0)
+            WidgetDOM.append(name, to: &changes)
+            changes.append(0)
+            WidgetDOM.append(value, to: &changes)
+            changes.append(0)
+            return true
+        }
+        for id in Set(previous.keys).union(overrides.keys) {
+            let before = previous[id], after = overrides[id]
+            if before?.count == after?.count, zip(before ?? [], after ?? []).allSatisfy({ $0.0 == $1.0 && $0.1 == $1.1 }) {
+                continue
+            }
+            guard let node = nodes[id], let value = WidgetDOM.styleValue(node, animated: after, theme: theme), put(id, "style", value) else {
+                return nil
+            }
+            styled.insert(id)
+        }
+        for entry in patchLog.attributes.values {
+            let id = publicId(entry.node)
+            for name in entry.names where name != "style" || !styled.contains(id) {
+                let value = name == "style" ? WidgetDOM.styleValue(entry.node, animated: overrides[id], theme: theme) : WidgetDOM.patchedAttribute(of: entry.node, name)
+                guard let found = value, put(id, name, found) else {
+                    return nil
+                }
+            }
+        }
+        for entry in patchLog.texts.values {
+            guard entry.soleText, let value = WidgetDOM.patchedText(of: entry.node), put(publicId(entry.node), "", value) else {
+                return nil
+            }
+        }
+        return changes
+    }
+
     func apply(_ op: [String: Any]) {
         WidgetDOM.revision &+= 1
         guard let kind = op["op"] as? String else {
             return
         }
         let id = (op["id"] as? NSNumber)?.intValue ?? 0
+        notePatch(kind, id, op)
         switch kind {
         case "el":
             let tag = (op["tag"] as? String) ?? "span"
@@ -418,6 +564,26 @@ final class WidgetDOM {
         default:
             break
         }
+    }
+
+    static let unpatchableTextParents: Set<String> = ["style", "script", "textarea", "title", "noscript", "xmp", "iframe", "noembed", "noframes", "plaintext", "pre", "listing", "template"]
+
+    static func patchedText(of node: WidgetNode) -> String? {
+        guard hasSoleText(node), WidgetNames.isTag(node.tag), !unpatchableTextParents.contains(node.tag.lowercased()), !voidElements.contains(node.tag) || node.svg else {
+            return nil
+        }
+        var bytes: [UInt8] = []
+        escape(node.children[0].text, into: &bytes, attribute: false)
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    static func patchedAttribute(of node: WidgetNode, _ name: String) -> String? {
+        guard let attribute = node.attributes.first(where: { $0.name.lowercased() == name }), WidgetNames.isAttribute(attribute.name) else {
+            return nil
+        }
+        var bytes: [UInt8] = []
+        escape(attribute.value, into: &bytes, attribute: true)
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     static func clip(_ text: String) -> String {

@@ -122,6 +122,7 @@ namespace litehtml
         std::vector<html_hole>                  m_holes;
         bool                                    m_template_ok = false;
         std::unordered_map<const element*, size_t> m_style_holes;
+        std::unordered_map<const element*, std::vector<size_t>> m_owner_holes;
         std::unordered_map<const void*, std::vector<size_t>> m_node_holes;
 
       public:
@@ -225,6 +226,18 @@ namespace litehtml
         // checks and restyle as update_from_string. Fails, leaving the document unchanged, when an element has
         // no style attribute in the source or a value could not have come from serialized HTML.
         bool update_styles(const std::vector<std::pair<std::shared_ptr<element>, std::string>>& styles, bool* changed);
+        struct hole_change
+        {
+            std::shared_ptr<element> owner;
+            std::string              name;
+            bool                     text = false;
+            std::string              value;
+        };
+        // Patches attribute values (`name`) and the text of elements whose only content is one text run (`text`)
+        // without an HTML string, through the same checks and restyle as update_from_string. Each value must be the
+        // exact text serialized HTML would carry there. Fails, leaving the document unchanged, when a change has no
+        // matching hole in the source.
+        bool update_holes(const std::vector<hole_change>& changes, bool* changed);
         // The HTML the document currently stands for: the parsed source with every patch applied.
         bool template_html(std::string& out) const;
 

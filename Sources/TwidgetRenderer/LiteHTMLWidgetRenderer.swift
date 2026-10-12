@@ -436,32 +436,24 @@ public final class LiteHTMLWidgetRenderer {
     private var listDebt: [CGRect] = []
     static let slowLayoutMilliseconds = ProcessInfo.processInfo.environment["TW_SLOW_MS"].flatMap { Double($0) }
     static let patchRegions = ProcessInfo.processInfo.environment["TW_NO_PATCH_REGIONS"] == nil
-    private var lastLayoutRevision: UInt64 = .max
     private var lastLayoutTheme = ""
     private var lastLayoutOverrides: [Int: [(String, String)]]?
     private var lastExclusions: Set<Int> = []
     public private(set) var styleFastMismatches = 0
     static let styleFastPath = ProcessInfo.processInfo.environment["TW_NO_STYLE_FAST"] == nil
+    static let holePatches = ProcessInfo.processInfo.environment["TW_NO_HOLE_PATCH"] == nil
 
-    private func styleOnlyDocument(_ overrides: [Int: [(String, String)]]) -> LHDocument? {
-        guard LiteHTMLWidgetRenderer.styleFastPath, let document = document, onSerialized == nil, canvases.isEmpty, lastLayoutRevision == WidgetDOM.revision, lastLayoutTheme == theme, let last = lastLayoutOverrides else {
+    private func patchedDocument(_ overrides: [Int: [(String, String)]]) -> LHDocument? {
+        guard LiteHTMLWidgetRenderer.styleFastPath, let document = document, onSerialized == nil, canvases.isEmpty, lastLayoutTheme == theme, let last = lastLayoutOverrides else {
             return nil
         }
-        var styles: [String: String] = [:]
-        for id in Set(last.keys).union(overrides.keys) {
-            let before = last[id], after = overrides[id]
-            if before?.count == after?.count, zip(before ?? [], after ?? []).allSatisfy({ $0.0 == $1.0 && $0.1 == $1.1 }) {
-                continue
-            }
-            guard let node = dom.node(id), let value = WidgetDOM.styleValue(node, animated: after, theme: theme) else {
-                return nil
-            }
-            styles[String(id)] = value
-        }
-        if styles.isEmpty {
+        if !LiteHTMLWidgetRenderer.holePatches && (!dom.patchLog.attributes.isEmpty || !dom.patchLog.texts.isEmpty) {
             return nil
         }
-        return LHDocument(previous: document, styles: styles, attribute: WidgetDOM.idAttribute, css: nil)
+        guard let changes = dom.patchChanges(theme: theme, overrides: overrides, previous: last), !changes.isEmpty else {
+            return nil
+        }
+        return LHDocument(previous: document, changes: Data(changes), attribute: WidgetDOM.idAttribute, css: nil)
     }
 
     private func layout(_ overrides: [Int: [(String, String)]]) {
@@ -484,11 +476,12 @@ public final class LiteHTMLWidgetRenderer {
             stages.append((name, (now - mark) * 1000))
             mark = now
         }
-        let fast = styleOnlyDocument(overrides)
+        let fast = patchedDocument(overrides)
         stage("style-patch")
         let html = fast == nil || LiteHTMLWidgetRenderer.patchCheck ? dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) }) : ""
         stage("serialize")
         let next = fast ?? LHDocument(html: html, css: nil, previous: document)
+        dom.resetPatchLog()
         if fast != nil {
             stageMilliseconds["style-fast", default: 0] += 1
             if LiteHTMLWidgetRenderer.patchCheck && next.html != html {
@@ -496,7 +489,6 @@ public final class LiteHTMLWidgetRenderer {
                 print("STYLEFAST source differs from serialized HTML")
             }
         }
-        lastLayoutRevision = WidgetDOM.revision
         lastLayoutTheme = theme
         lastLayoutOverrides = overrides
         let excluded = compositor.ids.union(magic.excluded)

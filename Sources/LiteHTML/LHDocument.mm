@@ -14,6 +14,7 @@
 #include <cstring>
 #include <cmath>
 #include <functional>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -554,9 +555,98 @@ static std::string MasterWithCSS(NSString *css)
             visit(child);
     };
     visit(previous->_doc->root());
-    std::string html;
-    if(patches.size() != wanted.size() || !previous->_doc->update_styles(patches, nullptr) || !previous->_doc->template_html(html))
+    if(patches.size() != wanted.size() || !previous->_doc->update_styles(patches, nullptr))
         return nil;
+    if(![self adoptPatchedLocked:previous])
+        return nil;
+    _parseMilliseconds = NowMs() - t0;
+    return self;
+}
+
+- (nullable instancetype)initWithPrevious:(LHDocument *)previous changes:(NSData *)changes attribute:(NSString *)attribute css:(NSString *)css
+{
+    if(!(self = [super init]))
+        return nil;
+    _lastMaxWidth = -1;
+    _cursor       = @"auto";
+    _updatable    = YES;
+    _master       = MasterWithCSS(css);
+    double t0     = NowMs();
+    std::lock_guard<std::mutex> guard(previous->_lock);
+    if(!previous->_doc || !previous->_updatable || previous->_master != _master || !previous->_doc->root() || changes.length == 0)
+        return nil;
+    const char *bytes = static_cast<const char *>(changes.bytes);
+    const char *limit = bytes + changes.length;
+    if(limit[-1] != 0)
+        return nil;
+    struct entry
+    {
+        std::string_view name, value;
+    };
+    std::unordered_map<std::string_view, std::vector<entry>> wanted;
+    for(const char *p = bytes; p < limit;)
+    {
+        std::string_view parts[3];
+        for(auto &part : parts)
+        {
+            if(p >= limit)
+                return nil;
+            part = std::string_view(p);
+            p += part.size() + 1;
+        }
+        wanted[parts[0]].push_back({parts[1], parts[2]});
+    }
+    std::vector<lh::document::hole_change> patches;
+    size_t matched = 0;
+    const char *name = attribute.UTF8String;
+    std::vector<lh::element *> pending{previous->_doc->root().get()};
+    while(!pending.empty() && matched < wanted.size())
+    {
+        lh::element *el = pending.back();
+        pending.pop_back();
+        if(const char *v = el->get_attr(name))
+        {
+            auto it = wanted.find(std::string_view(v));
+            if(it != wanted.end() && !it->second.empty())
+            {
+                matched++;
+                const lh::element::ptr owner = el->shared_from_this();
+                for(const auto &item : it->second)
+                {
+                    lh::document::hole_change change;
+                    change.owner = owner;
+                    change.text  = item.name.empty();
+                    change.name  = std::string(item.name);
+                    change.value = std::string(item.value);
+                    patches.push_back(std::move(change));
+                }
+                it->second.clear();
+            }
+        }
+        const auto &children = el->children();
+        for(auto child = children.rbegin(); child != children.rend(); ++child)
+            pending.push_back(child->get());
+    }
+    if(matched != wanted.size() || !previous->_doc->update_holes(patches, nullptr))
+        return nil;
+    if(![self adoptPatchedLocked:previous])
+        return nil;
+    _parseMilliseconds = NowMs() - t0;
+    return self;
+}
+
+- (BOOL)adoptPatchedLocked:(LHDocument *)previous
+{
+    std::string html;
+    if(!previous->_doc->template_html(html))
+    {
+        previous->_updatable = NO;
+        previous->_doc.reset();
+        previous->_container.reset();
+        previous->_consumed         = YES;
+        previous->_consumedMaxWidth = previous->_lastMaxWidth;
+        return NO;
+    }
     _htmlSource                 = std::move(html);
     _doc                        = std::move(previous->_doc);
     _container                  = std::move(previous->_container);
@@ -572,8 +662,7 @@ static std::string MasterWithCSS(NSString *css)
         _paintOnly    = YES;
     }
     [self bindContainerLocked];
-    _parseMilliseconds = NowMs() - t0;
-    return self;
+    return YES;
 }
 
 + (NSUInteger)cachedFontCount
