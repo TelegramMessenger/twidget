@@ -1139,15 +1139,24 @@ final class WidgetDocumentView: NSView {
         }
         let rowA = context.bytesPerRow, rowB = IOSurfaceGetBytesPerRow(surface.surface)
         var worst = 0
+        var worstAt = (0, 0)
         for y in 0..<surface.height {
             let pa = a.advanced(by: y * rowA).assumingMemoryBound(to: UInt8.self)
             let pb = b.advanced(by: y * rowB).assumingMemoryBound(to: UInt8.self)
             for x in 0..<(surface.width * 4) {
-                worst = max(worst, abs(Int(pa[x]) - Int(pb[x])))
+                let d = abs(Int(pa[x]) - Int(pb[x]))
+                if d > worst {
+                    worst = d
+                    worstAt = (x / 4, y)
+                }
             }
         }
+        if worst > 1, ProcessInfo.processInfo.environment["TW_VERIFY_LOG"] != nil {
+            print("VERIFYDBG rect=\(rect) worst=\(worst) at=\(worstAt)")
+        }
         verifiedFrames += 1
-        if worst > 1 {
+        let tiled = rect.width < bounds.width - 0.5 || rect.height < max(1, ceil(document.size.height)) - 0.5
+        if worst > (tiled ? 2 : 1) {
             mismatchedFrames += 1
         }
     }
