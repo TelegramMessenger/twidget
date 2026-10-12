@@ -463,7 +463,11 @@ enum CSSInterpolate {
         } else if to.lowercased() == "none", from.contains("(") {
             to = identity(of: from)
         }
-        let left = tokenize(from), right = tokenize(to)
+        var left = tokenize(from), right = tokenize(to)
+        if left.count != right.count, let a = primitive(from), let b = primitive(to) {
+            left = tokenize(a)
+            right = tokenize(b)
+        }
         let result: ([Token], [Token])? = left.count == right.count ? (left, right) : nil
         pairLock.lock()
         if pairs.count >= 2048 {
@@ -526,6 +530,40 @@ enum CSSInterpolate {
         }
         let text = String(format: "%.4f", value).replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
         return text.hasSuffix(".") ? String(text.dropLast()) : text
+    }
+
+    private static func primitive(_ transform: String) -> String? {
+        var out: [String] = []
+        var rest = Substring(transform)
+        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+            let name = rest[..<open].trimmingCharacters(in: .whitespaces).lowercased()
+            let args = WidgetNode.splitTopLevel(String(rest[rest.index(after: open)..<close]), separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let one = args.count == 1 ? args[0] : nil
+            switch (name, one) {
+            case let ("translatex", a?):
+                out.append("translate(\(a), 0)")
+            case let ("translatey", a?):
+                out.append("translate(0, \(a))")
+            case let ("translate", a?):
+                out.append("translate(\(a), 0)")
+            case let ("scalex", a?):
+                out.append("scale(\(a), 1)")
+            case let ("scaley", a?):
+                out.append("scale(1, \(a))")
+            case let ("scale", a?):
+                out.append("scale(\(a), \(a))")
+            case let ("skewx", a?):
+                out.append("skew(\(a), 0)")
+            case let ("skewy", a?):
+                out.append("skew(0, \(a))")
+            case let ("skew", a?):
+                out.append("skew(\(a), 0)")
+            default:
+                out.append(name + "(" + args.joined(separator: ", ") + ")")
+            }
+            rest = rest[rest.index(after: close)...]
+        }
+        return rest.trimmingCharacters(in: .whitespaces).isEmpty && !out.isEmpty ? out.joined(separator: " ") : nil
     }
 
     private static func identity(of transform: String) -> String {

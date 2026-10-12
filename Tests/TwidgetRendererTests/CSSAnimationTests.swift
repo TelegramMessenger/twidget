@@ -147,3 +147,13 @@ final class MixedUnitTranslationTests: XCTestCase {
         XCTAssertEqual(CSSInterpolate.mix("10px", "20%", 0.25), "10px")
     }
 }
+
+final class TransformPrimitiveTests: XCTestCase {
+    func testDifferentArityInterpolatesThroughCommonPrimitives() {
+        XCTAssertEqual(CSSInterpolate.mix("scale(1)", "scale(1.6,0.7)", 0.5), "scale(1.3, 0.85)")
+        XCTAssertEqual(CSSInterpolate.mix("translateX(10px)", "translate(30px, 8px)", 0.5), "translate(20px, 4px)")
+        XCTAssertEqual(CSSInterpolate.mix("translateY(10px) scale(2)", "translate(4px, 20px) scaleX(3)", 0.5), "translate(2px, 15px) scale(2.5, 1.5)")
+        XCTAssertEqual(CSSInterpolate.mix("skewX(10deg)", "skew(20deg, 4deg)", 0.5), "skew(15deg, 2deg)")
+        XCTAssertEqual(CSSInterpolate.mix("scale(1)", "rotate(10deg)", 0.25), "scale(1)")
+    }
+}
