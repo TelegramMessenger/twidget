@@ -484,7 +484,8 @@ final class WidgetCompositor {
             }
             let origin = CSSTransform.origin(style["transform-origin"], box: box.size)
             let current = CGRect(origin: .zero, size: box.size).applying(WidgetCompositor.anchored(transform, box: box, origin: origin))
-            let scale: CGFloat = min(3, max(1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
+            let rotated = abs(transform.b) > 0.0001 || abs(transform.c) > 0.0001
+            let scale: CGFloat = min(3, max(rotated ? 2 : 1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
             guard let reach = [max(48, max(box.width, box.height) / 2), 16, 2].lazy.map({ box.union(current).insetBy(dx: -$0, dy: -$0) }).first(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: $0) }) else {
                 continue
             }
