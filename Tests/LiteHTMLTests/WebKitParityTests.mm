@@ -61,4 +61,17 @@ namespace
     XCTAssertEqualWithAccuracy(inherited, smooth, 0.5);
 }
 
+- (void)testStylesheetFillReferencesPaintServers
+{
+    NSString* html = @"<style>.a{fill:url(#g)}.b{fill:url(#missing)}.c{fill:url(#missing) red}</style>"
+                     @"<svg width=\"300\" height=\"60\" style=\"display:block\"><defs><linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"#00f\"/><stop offset=\"1\" stop-color=\"#00f\"/></linearGradient></defs>"
+                     @"<rect class=\"a\" x=\"0\" width=\"80\" height=\"60\"/><rect class=\"b\" x=\"100\" width=\"80\" height=\"60\"/><rect class=\"c\" x=\"200\" width=\"80\" height=\"60\"/></svg>";
+    Pixels p = Render(html, 300);
+    XCTAssertEqual(p.at(80, 60)[2], 255);
+    XCTAssertEqual(p.at(80, 60)[3], 255);
+    XCTAssertEqual(p.at(280, 60)[3], 0);
+    XCTAssertEqual(p.at(480, 60)[0], 255);
+    XCTAssertEqual(p.at(480, 60)[3], 255);
+}
+
 @end

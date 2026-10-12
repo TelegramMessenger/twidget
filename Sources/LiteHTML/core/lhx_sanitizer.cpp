@@ -280,7 +280,7 @@ bool Sanitizer::valueAllowed(const litehtml::css_token_vector& tokens, std::vect
     {
         if(tok.type == litehtml::URL || tok.type == litehtml::BAD_URL)
         {
-            if(tok.type == litehtml::BAD_URL || !imageAllowed(tok.str()))
+            if(tok.type == litehtml::BAD_URL || (!imageAllowed(tok.str()) && !IsFragment(Trimmed(tok.str()))))
             {
                 why = "url(" + tok.str() + ")";
                 return false;
@@ -306,7 +306,8 @@ bool Sanitizer::valueAllowed(const litehtml::css_token_vector& tokens, std::vect
             }
             if(fn == "url")
             {
-                if(tok.value.size() != 1 || tok.value[0].type != litehtml::STRING || !imageAllowed(tok.value[0].str()))
+                if(tok.value.size() != 1 || tok.value[0].type != litehtml::STRING ||
+                   (!imageAllowed(tok.value[0].str()) && !IsFragment(Trimmed(tok.value[0].str()))))
                 {
                     why = "url() with a blocked source or modifiers";
                     return false;
