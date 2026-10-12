@@ -325,14 +325,14 @@ namespace litehtml
                 bdr_radius -= ri->get_borders();
                 bdr_radius -= ri->get_paddings();
 
-                get_document()->container()->set_clip(pos, bdr_radius);
+                doc_ptr()->container()->set_clip(pos, bdr_radius);
             }
 
             draw_list_marker(hdc, pos, ri);
 
             if(m_css.get_overflow() > overflow_visible)
             {
-                get_document()->container()->del_clip();
+                doc_ptr()->container()->del_clip();
             }
         }
     }
@@ -1060,7 +1060,7 @@ namespace litehtml
                         layer.clip_box.round();
                         layer.origin_box.round();
 
-                        bg->draw_layer(hdc, i, layer, get_document()->container());
+                        bg->draw_layer(hdc, i, layer, doc_ptr()->container());
                     }
                 }
                 if(bdr.is_visible())
@@ -1068,7 +1068,7 @@ namespace litehtml
                     borders b = bdr;
                     b.radius  = bdr.radius.calc_percents(box.width, box.height);
                     box.round();
-                    get_document()->container()->draw_borders(hdc, b, box, false);
+                    doc_ptr()->container()->draw_borders(hdc, b, box, false);
                 }
             }
             return true;
@@ -1115,7 +1115,7 @@ namespace litehtml
                 {
                     if(!it->inset)
                     {
-                        get_document()->container()->draw_box_shadow(hdc, shadow_box, shadow_radius,
+                        doc_ptr()->container()->draw_box_shadow(hdc, shadow_box, shadow_radius,
                                                                      shadow_paint_for(*it));
                     }
                 }
@@ -1143,7 +1143,7 @@ namespace litehtml
                         layer.clip_box.round();
                         layer.origin_box.round();
 
-                        bg->draw_layer(hdc, i, layer, get_document()->container());
+                        bg->draw_layer(hdc, i, layer, doc_ptr()->container());
                     }
                 }
 
@@ -1157,7 +1157,7 @@ namespace litehtml
                     {
                         if(it->inset)
                         {
-                            get_document()->container()->draw_box_shadow(hdc, padding_box, inner, shadow_paint_for(*it));
+                            doc_ptr()->container()->draw_box_shadow(hdc, padding_box, inner, shadow_paint_for(*it));
                         }
                     }
                 }
@@ -1167,7 +1167,7 @@ namespace litehtml
                 {
                     border_box.round();
                     bdr.radius = m_css.get_borders().radius.calc_percents(border_box.width, border_box.height);
-                    get_document()->container()->draw_borders(hdc, bdr, border_box, is_root());
+                    doc_ptr()->container()->draw_borders(hdc, bdr, border_box, is_root());
                 }
 
                 const css_border& outline = m_css.get_outline();
@@ -1184,7 +1184,7 @@ namespace litehtml
                     {
                         ob.radius += margins{grow, grow, grow, grow};
                     }
-                    get_document()->container()->draw_borders(hdc, ob, outline_box, false);
+                    doc_ptr()->container()->draw_borders(hdc, ob, outline_box, false);
                 }
             }
         }

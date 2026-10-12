@@ -471,7 +471,7 @@ void litehtml::render_item_table::draw_children(uint_ptr hdc, pixel_t x, pixel_t
     position pos  = m_pos;
     pos.x        += x;
     pos.y        += y;
-    document::ptr  doc        = src_el()->get_document();
+    document*      doc        = src_el()->doc_ptr();
     const bool     cull       = clip && doc->culls_paint();
     const uint32_t generation = doc->paint_generation();
     for(auto& caption : m_grid->captions())

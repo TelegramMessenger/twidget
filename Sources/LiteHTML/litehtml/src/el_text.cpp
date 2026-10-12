@@ -121,7 +121,7 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
         element::ptr el_parent = parent();
         if(el_parent)
         {
-            document::ptr doc = get_document();
+            document* doc = doc_ptr();
 
             uint_ptr font = el_parent->css().get_font();
             if(font)

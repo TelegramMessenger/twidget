@@ -1050,7 +1050,7 @@ namespace litehtml
             ty += (pos.height.value() - view[3] * s) * fy;
             sx = sy = s;
         }
-        auto            container = get_document()->container();
+        auto            container = doc_ptr()->container();
         border_radiuses no_radius{};
         container->set_clip(pos, no_radius);
         paint_group group;
@@ -1094,7 +1094,7 @@ namespace litehtml
 
     bool el_svg::cached_paint_key(uint64_t& key)
     {
-        const uint32_t generation = get_document()->paint_generation();
+        const uint32_t generation = doc_ptr()->paint_generation();
         if(m_content_generation != generation)
         {
             m_content_generation = generation;

@@ -1120,7 +1120,7 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
         group.matrix = group_transform(el_css, border_box);
     }
 
-    auto container = src_el()->get_document()->container();
+    auto container = src_el()->doc_ptr()->container();
     container->begin_group(hdc, group);
     const position* inner_clip = group.matrix.is_identity() ? clip : nullptr;
     if(g_paint_trace) g_paint_trace->push_back(el.get());
@@ -1136,7 +1136,7 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
     pos.x        += x - get_scroll_left();
     pos.y        += y - get_scroll_top();
 
-    document::ptr doc = src_el()->get_document();
+    document* doc = src_el()->doc_ptr();
 
     if(src_el()->css().get_overflow() > overflow_visible)
     {

@@ -21,7 +21,8 @@ namespace litehtml
     }
 
     element::element(const document::ptr& doc) :
-        m_doc(doc)
+        m_doc(doc),
+        m_doc_ptr(doc.get())
     {
     }
 

@@ -66,7 +66,7 @@ void litehtml::el_image::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position
             layer.repeat      = background_repeat_no_repeat;
             layer.border_radius =
                 css().get_borders().radius.calc_percents(layer.border_box.width, layer.border_box.height);
-            get_document()->container()->draw_image(hdc, layer, m_src, {});
+            doc_ptr()->container()->draw_image(hdc, layer, m_src, {});
         }
     }
 }

@@ -30,6 +30,7 @@ namespace litehtml
       protected:
         std::weak_ptr<element>                m_parent;
         std::weak_ptr<document>               m_doc;
+        document*                             m_doc_ptr = nullptr;
         elements_list                         m_children;
         css_properties                        m_css;
         std::list<std::weak_ptr<render_item>> m_renders;
@@ -68,6 +69,7 @@ namespace litehtml
         bool is_table_skip() const;
 
         std::shared_ptr<document>                  get_document() const;
+        document*                                  doc_ptr() const { return m_doc_ptr; }
         const std::list<std::shared_ptr<element>>& children() const;
 
         std::shared_ptr<render_item> get_render_item();
