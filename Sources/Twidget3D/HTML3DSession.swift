@@ -286,6 +286,7 @@ public final class HTML3DSession {
         let indexType: MTLIndexType
         let vertexCount: Int
         let indexCount: Int
+        let bounds: SIMD4<Float>
 
         var bytes: Int {
             return positions.length + (normals?.length ?? 0) + (colors?.length ?? 0) + (index?.length ?? 0)
@@ -308,6 +309,7 @@ public final class HTML3DSession {
         let geometry: Int
         let material: Int
         let flags: Int
+        let visibility: Int
         let start: Int
         let count: Int
     }
@@ -325,6 +327,8 @@ public final class HTML3DSession {
         var instanceCount: Int
         var instanceOffset: Int
         var depth: Float
+        var main: Bool
+        var shadow: Bool
     }
 
     private static let maxFloats = 4 << 20
@@ -610,7 +614,7 @@ public final class HTML3DSession {
         let normal = normals.flatMap { gpu.device.makeBuffer(bytes: $0.pointer, length: vertexCount * 12, options: .storageModeShared) }
         let color = usesColors ? colors.flatMap { gpu.device.makeBuffer(bytes: $0.pointer, length: vertexCount * colorSize * 4, options: .storageModeShared) } : nil
         let indexBuffer = indexCount > 0 ? index.flatMap { gpu.device.makeBuffer(bytes: $0.pointer, length: indexCount * (indexType == .uint16 ? 2 : 4), options: .storageModeShared) } : nil
-        let geometry = Geometry(positions: position, normals: normal, colors: color, colorSize: color == nil ? 0 : UInt32(colorSize), index: indexBuffer, indexType: indexType, vertexCount: vertexCount, indexCount: indexBuffer == nil ? 0 : indexCount)
+        let geometry = Geometry(positions: position, normals: normal, colors: color, colorSize: color == nil ? 0 : UInt32(colorSize), index: indexBuffer, indexType: indexType, vertexCount: vertexCount, indexCount: indexBuffer == nil ? 0 : indexCount, bounds: HTML3DSession.boundingSphere(positions.pointer, vertexCount))
         lock.lock()
         if stopped != nil {
             lock.unlock()
@@ -857,6 +861,9 @@ public final class HTML3DSession {
             var work = 0
             var clipped = 0
             let view = uniforms.view
+            let shadowsActive = uniforms.shadowParams.w > 0.5 && uniforms.directionalColor.w > 0.5
+            let viewPlanes = HTML3DSession.planes(HTML3DSession.matrix(f + HTML3DLayout.projection) * view)
+            let shadowPlanes = HTML3DSession.planes(HTML3DSession.matrix(f + HTML3DLayout.shadowViewProjection))
             for r in 0 ..< recordCount {
                 let p = f + HTML3DLayout.header + r * HTML3DLayout.record
                 let geometryId = HTML3DSession.count(p[HTML3DLayout.recordGeometry], upTo: Int(Int32.max))
@@ -887,7 +894,17 @@ public final class HTML3DSession {
                 draw.specular = SIMD4<Float>(p[HTML3DLayout.recordSpecular], p[HTML3DLayout.recordSpecular + 1], p[HTML3DLayout.recordSpecular + 2], max(p[HTML3DLayout.recordSpecular + 3], 0.0001))
                 draw.params = SIMD4<Float>(p[HTML3DLayout.recordParams], p[HTML3DLayout.recordParams + 1], Float(materialFlags), p[HTML3DLayout.recordParams + 3])
                 let castShadow = flags & 1 != 0
-                let passes = castShadow && primitive == 0 ? 2 : 1
+                var main = true
+                var shadow = castShadow && primitive == 0
+                if flags & 64 != 0, instanceId == 0, primitive != 3 {
+                    let sphere = HTML3DSession.worldSphere(geometry.bounds, matrix)
+                    main = HTML3DSession.intersects(viewPlanes, sphere)
+                    shadow = shadow && shadowsActive && HTML3DSession.intersects(shadowPlanes, sphere)
+                    if !main && !shadow {
+                        continue
+                    }
+                }
+                let passes = (main ? 1 : 0) + (shadow ? 1 : 0)
                 if instanceId > 0 {
                     guard let set = instanceSets[instanceId] else {
                         continue
@@ -904,7 +921,7 @@ public final class HTML3DSession {
                     work += cost
                     draw.base = matrix
                     draw.layout = SIMD4<UInt32>(geometry.normals != nil ? 1 : 0, vertexColors ? geometry.colorSize : 0, set.colors != nil ? 1 : 0, shaderFlags)
-                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [], instanceSet: set, instanceCount: instanceCount, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix)))
+                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [], instanceSet: set, instanceCount: instanceCount, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix), main: main, shadow: shadow))
                     continue
                 }
                 let cost = drawCount * passes
@@ -920,10 +937,10 @@ public final class HTML3DSession {
                     }
                     work += cost
                     instanceTotal += 1
-                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix)))
+                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix), main: main, shadow: shadow))
                     continue
                 }
-                let key = BatchKey(geometry: geometryId, material: HTML3DSession.count(p[HTML3DLayout.recordMaterial], upTo: Int(Int32.max)), flags: flags, start: start, count: drawCount)
+                let key = BatchKey(geometry: geometryId, material: HTML3DSession.count(p[HTML3DLayout.recordMaterial], upTo: Int(Int32.max)), flags: flags, visibility: (main ? 1 : 0) | (shadow ? 2 : 0), start: start, count: drawCount)
                 if let index = opaqueIndex[key] {
                     work += cost
                     instanceTotal += 1
@@ -937,7 +954,7 @@ public final class HTML3DSession {
                     work += cost
                     instanceTotal += 1
                     opaqueIndex[key] = batches.count
-                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: 0))
+                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: 0, main: main, shadow: shadow))
                 }
             }
 
@@ -967,7 +984,7 @@ public final class HTML3DSession {
                 return false
             }
 
-            let shadowsOn = uniforms.shadowParams.w > 0.5 && uniforms.directionalColor.w > 0.5 && batches.contains(where: { $0.castShadow && $0.primitive == 0 })
+            let shadowsOn = shadowsActive && batches.contains(where: { $0.shadow && $0.primitive == 0 })
             var shadowTexture = gpu.dummyDepth
             if shadowsOn, let map = ensureShadowMap(gpu: gpu, size: HTML3DSession.count(f[HTML3DLayout.shadowMapSize], upTo: 4096)) {
                 shadowTexture = map
@@ -983,7 +1000,7 @@ public final class HTML3DSession {
                     encoder.setFrontFacing(.counterClockwise)
                     encoder.setDepthBias(0, slopeScale: 1.5, clamp: 0.02)
                     encoder.setVertexBytes(&uniforms, length: MemoryLayout<HTML3DFrameUniforms>.stride, index: 6)
-                    for batch in batches where batch.castShadow && batch.primitive == 0 {
+                    for batch in batches where batch.shadow && batch.primitive == 0 {
                         var draw = batch.draw
                         let side = (batch.materialFlags >> 4) & 3
                         encoder.setCullMode(side == 0 ? .front : side == 1 ? .back : .none)
@@ -1022,8 +1039,8 @@ public final class HTML3DSession {
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<HTML3DFrameUniforms>.stride, index: 1)
             encoder.setFragmentTexture(shadowTexture, index: 0)
             encoder.setFragmentSamplerState(gpu.shadowSampler, index: 0)
-            let opaque = batches.filter { $0.materialFlags & 1 == 0 }
-            let transparent = batches.filter { $0.materialFlags & 1 != 0 }.sorted { $0.depth > $1.depth }
+            let opaque = batches.filter { $0.main && $0.materialFlags & 1 == 0 }
+            let transparent = batches.filter { $0.main && $0.materialFlags & 1 != 0 }.sorted { $0.depth > $1.depth }
             var triangles = 0
             for batch in opaque + transparent {
                 if batch.primitive == 0 {
@@ -1190,6 +1207,51 @@ public final class HTML3DSession {
 
     private static func vector(_ p: UnsafePointer<Float>, _ w: Float) -> SIMD4<Float> {
         return SIMD4<Float>(p[0], p[1], p[2], w)
+    }
+
+    static func boundingSphere(_ pointer: UnsafeRawPointer, _ count: Int) -> SIMD4<Float> {
+        let p = pointer.bindMemory(to: Float.self, capacity: count * 3)
+        var low = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var high = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for i in 0 ..< count {
+            let v = SIMD3<Float>(p[i * 3], p[i * 3 + 1], p[i * 3 + 2])
+            guard v.x.isFinite, v.y.isFinite, v.z.isFinite else {
+                return SIMD4<Float>(0, 0, 0, .infinity)
+            }
+            low = simd_min(low, v)
+            high = simd_max(high, v)
+        }
+        let center = (low + high) * 0.5
+        var radius: Float = 0
+        for i in 0 ..< count {
+            radius = max(radius, simd_distance_squared(SIMD3<Float>(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]), center))
+        }
+        return SIMD4<Float>(center, radius.squareRoot() * 1.0001 + 1e-5)
+    }
+
+    static func planes(_ m: simd_float4x4) -> [SIMD4<Float>] {
+        let r0 = SIMD4<Float>(m.columns.0.x, m.columns.1.x, m.columns.2.x, m.columns.3.x)
+        let r1 = SIMD4<Float>(m.columns.0.y, m.columns.1.y, m.columns.2.y, m.columns.3.y)
+        let r2 = SIMD4<Float>(m.columns.0.z, m.columns.1.z, m.columns.2.z, m.columns.3.z)
+        let r3 = SIMD4<Float>(m.columns.0.w, m.columns.1.w, m.columns.2.w, m.columns.3.w)
+        return [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2]
+    }
+
+    static func worldSphere(_ bounds: SIMD4<Float>, _ m: simd_float4x4) -> SIMD4<Float> {
+        let center = m * SIMD4<Float>(bounds.x, bounds.y, bounds.z, 1)
+        let scale = max(simd_length(SIMD3<Float>(m.columns.0.x, m.columns.0.y, m.columns.0.z)), simd_length(SIMD3<Float>(m.columns.1.x, m.columns.1.y, m.columns.1.z)), simd_length(SIMD3<Float>(m.columns.2.x, m.columns.2.y, m.columns.2.z)))
+        return SIMD4<Float>(center.x, center.y, center.z, bounds.w * scale)
+    }
+
+    static func intersects(_ planes: [SIMD4<Float>], _ sphere: SIMD4<Float>) -> Bool {
+        let center = SIMD4<Float>(sphere.x, sphere.y, sphere.z, 1)
+        for plane in planes {
+            let length = simd_length(SIMD3<Float>(plane.x, plane.y, plane.z))
+            if simd_dot(plane, center) < -sphere.w * length {
+                return false
+            }
+        }
+        return true
     }
 
     private static func viewDepth(_ view: simd_float4x4, _ model: simd_float4x4) -> Float {

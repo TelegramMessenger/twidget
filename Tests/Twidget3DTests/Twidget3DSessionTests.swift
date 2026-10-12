@@ -1,5 +1,6 @@
 import XCTest
 import Metal
+import simd
 @testable import Twidget3D
 
 final class Twidget3DSessionTests: XCTestCase {
@@ -280,5 +281,31 @@ final class Twidget3DSessionTests: XCTestCase {
         let faulted = HTML3DSession()
         faulted.recordCompleted(gpuSeconds: 0, failed: true)
         XCTAssertNotNil(faulted.stopReason)
+    }
+
+    func testRecordsOutsideTheFrustumAreCulledOnlyWhenAllowed() throws {
+        let session = HTML3DSession()
+        XCTAssertTrue(define(session, id: 1, positions: [-0.1, -0.1, 0, 0.1, -0.1, 0, 0, 0.1, 0]))
+        var f = header(records: 3)
+        record(&f, 0, geometry: 1, count: 3, flags: 64)
+        record(&f, 1, geometry: 1, count: 3, flags: 64)
+        record(&f, 2, geometry: 1, count: 3)
+        f[HTML3DLayout.header + HTML3DLayout.record + HTML3DLayout.recordMatrix + 12] = 50
+        f[HTML3DLayout.header + 2 * HTML3DLayout.record + HTML3DLayout.recordMatrix + 12] = 50
+        f[HTML3DLayout.header + 2 * HTML3DLayout.record + HTML3DLayout.recordMaterial] = 2
+        submit(session, f)
+        XCTAssertNotNil(session.renderOffscreen(width: size, height: size))
+        XCTAssertEqual(session.stats.triangles, 2)
+    }
+
+    func testBoundingSphereIgnoresNothingAndRejectsNonFinite() {
+        let positions: [Float] = [-1, 0, 0, 1, 0, 0, 0, 2, 0]
+        let sphere = positions.withUnsafeBytes { HTML3DSession.boundingSphere($0.baseAddress!, 3) }
+        for i in 0 ..< 3 {
+            let v = SIMD3<Float>(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2])
+            XCTAssertLessThanOrEqual(simd_distance(v, SIMD3<Float>(sphere.x, sphere.y, sphere.z)), sphere.w)
+        }
+        let broken: [Float] = [0, 0, 0, .nan, 0, 0]
+        XCTAssertEqual(broken.withUnsafeBytes { HTML3DSession.boundingSphere($0.baseAddress!, 2) }.w, .infinity)
     }
 }

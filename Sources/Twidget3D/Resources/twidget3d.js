@@ -171,7 +171,7 @@
     T.__tw3d = true;
     const geometryIds = new WeakMap(), instanceIds = new WeakMap();
     let nextGeometry = 1, nextInstanceSet = 1;
-    const frustum = new T.Frustum(), viewProjection = new T.Matrix4(), shadowViewProjection = new T.Matrix4();
+    const shadowViewProjection = new T.Matrix4();
     const v1 = new T.Vector3(), v2 = new T.Vector3();
 
     const version = attribute => attribute ? attribute.version : -1;
@@ -341,8 +341,6 @@
         this._target();
         if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
         if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
-        viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-        frustum.setFromProjectionMatrix(viewProjection);
 
         let out = this._buffer, count = 0, triangles = 0;
         let ambientR = 0, ambientG = 0, ambientB = 0, hemi = null, directional = null;
@@ -357,7 +355,7 @@
           out = this._reserve(count + 1);
           const o = HEADER + count * RECORD;
           out[o] = entry.id; out[o + 1] = material.id; out[o + 2] = start; out[o + 3] = drawCount;
-          out[o + 4] = (object.castShadow ? 1 : 0) | (object.receiveShadow ? 2 : 0) | (primitive << 4);
+          out[o + 4] = (object.castShadow ? 1 : 0) | (object.receiveShadow ? 2 : 0) | (primitive << 4) | (object.frustumCulled !== false ? 64 : 0);
           out[o + 5] = instances ? instances.id : 0;
           out[o + 6] = instances ? object.count : 1;
           out[o + 7] = 0;
@@ -370,7 +368,6 @@
         const drawObject = (object, primitive) => {
           const geometry = object.geometry, material = object.material;
           if (!geometry || !geometry.attributes || !geometry.attributes.position) return;
-          if (object.frustumCulled !== false && !object.isInstancedMesh && !frustum.intersectsObject(object)) return;
           const instances = object.isInstancedMesh ? this._syncInstances(object) : null;
           const total = geometry.index ? geometry.index.count : geometry.attributes.position.count;
           const range = geometry.drawRange;
