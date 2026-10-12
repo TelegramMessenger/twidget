@@ -2460,7 +2460,9 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
 
 bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_t key, const std::function<void(lh::uint_ptr)>& paint)
 {
-    if(m_painter || m_runs || m_capture || m_hidden_depth > 0)
+    if(m_hidden_depth > 0 && !m_painter)
+        return true;
+    if(m_painter || m_runs || m_capture)
         return false;
     CGRect r = R(box);
     if(r.size.width <= 0 || r.size.height <= 0)
@@ -2488,6 +2490,8 @@ bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_
 
 void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const std::function<void(lh::uint_ptr)>& paint)
 {
+    if(m_hidden_depth > 0 && !m_painter)
+        return;
     auto ctx = reinterpret_cast<CGContextRef>(hdc);
     if(m_painter || m_runs || m_ops || !ctx)
     {
