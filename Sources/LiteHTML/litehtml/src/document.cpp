@@ -1268,13 +1268,49 @@ namespace litehtml
             }
             return false;
         };
+        const bool positioned_fresh = keep_tree && new_text.empty() && m_positioned_epoch == m_style_epoch &&
+                                      m_positioned_tree == m_render_tree_serial;
+        std::vector<std::pair<const element*, element_position>> positions;
+        auto collect_positions = [&positions](const element::ptr& root) {
+            std::vector<const element*> stack{root.get()};
+            while(!stack.empty())
+            {
+                const element* el = stack.back();
+                stack.pop_back();
+                positions.emplace_back(el, el->css().get_position());
+                for(const auto& child : el->children())
+                    stack.push_back(child.get());
+            }
+        };
+        std::vector<element::ptr> roots;
         for(const auto& list : {&restyle, &new_text, &retext})
         {
             for(const auto& el : *list)
             {
                 if(!covered(el))
-                    el->compute_styles(true);
+                    roots.push_back(el);
             }
+        }
+        if(positioned_fresh)
+        {
+            for(const auto& el : roots)
+                collect_positions(el);
+        }
+        for(const auto& el : roots)
+            el->compute_styles(true);
+        if(positioned_fresh)
+        {
+            bool same = true;
+            for(const auto& entry : positions)
+            {
+                if(entry.first->css().get_position() != entry.second)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if(same)
+                m_positioned_epoch = m_style_epoch;
         }
 
         if(keep_tree && new_text.empty() && m_root_render)
@@ -1282,6 +1318,7 @@ namespace litehtml
         m_tabular_elements.clear();
         m_table_cells = 0;
         m_root_render = m_root->create_render_item(nullptr);
+        m_render_tree_serial++;
         fix_tables_layout();
         if(m_root_render)
             m_root_render = m_root_render->init();
@@ -2139,6 +2176,7 @@ namespace litehtml
             // Create rendering tree
             m_table_cells = 0;
             m_root_render = m_root->create_render_item(nullptr);
+            m_render_tree_serial++;
 
             // Now the m_tabular_elements is filled with tabular elements.
             // We have to check the tabular elements for missing table elements
@@ -2572,7 +2610,14 @@ namespace litehtml
             } else
             {
                 ret = m_root_render->render(0_px, 0_px, cb_context, nullptr).natural_width;
-                if(m_root_render->fetch_positioned())
+                static const bool refetch = getenv("LH_NO_POSITIONED_REUSE") != nullptr;
+                if(refetch || m_positioned_epoch != m_style_epoch || m_positioned_tree != m_render_tree_serial)
+                {
+                    m_has_positioned   = m_root_render->fetch_positioned();
+                    m_positioned_epoch = m_style_epoch;
+                    m_positioned_tree  = m_render_tree_serial;
+                }
+                if(m_has_positioned)
                 {
                     m_fixed_boxes.clear();
                     m_root_render->render_positioned(rt);
@@ -2924,6 +2969,7 @@ namespace litehtml
             // never lays out (it collapses to zero).
             m_table_cells = 0;
             m_root_render = m_root->create_render_item(nullptr);
+            m_render_tree_serial++;
             if(m_root_render)
             {
                 m_root_render = m_root_render->init();

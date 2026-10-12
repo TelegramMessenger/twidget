@@ -69,6 +69,10 @@ namespace litehtml
         // styles can have changed since it last looked.
         uint64_t style_epoch() const { return m_style_epoch; }
         void     note_style_change() { m_style_epoch++; }
+        uint64_t m_render_tree_serial = 0;
+        uint64_t m_positioned_epoch   = UINT64_MAX;
+        uint64_t m_positioned_tree    = UINT64_MAX;
+        bool     m_has_positioned     = false;
         using ptr      = std::shared_ptr<document>;
         using weak_ptr = std::weak_ptr<document>;
 
