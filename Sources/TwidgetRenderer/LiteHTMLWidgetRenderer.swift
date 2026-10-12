@@ -271,6 +271,10 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func apply(_ ops: [WidgetOp]) {
+        if LiteHTMLWidgetRenderer.canvasFastPath, !ops.isEmpty, ops.allSatisfy({ $0.kind == .canvas && $0.canvas != nil }) {
+            sendCanvas(ops.map { ($0.id, CanvasStream(batch: $0.canvas!)) })
+            return
+        }
         if LiteHTMLWidgetRenderer.messageLog {
             print(String(format: "MSG %.4f ops %@", CACurrentMediaTime(), ops.map { "\($0.op ?? "?"):\($0.kind == .other ? ($0["name"] as? String) ?? "" : $0.name)" }.joined(separator: ",")))
         }

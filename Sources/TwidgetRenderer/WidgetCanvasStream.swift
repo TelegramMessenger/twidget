@@ -1,4 +1,5 @@
 import Foundation
+import TwidgetProtocol
 
 enum CanvasArg: Equatable {
     case number(Double)
@@ -183,6 +184,79 @@ struct CanvasStream {
                 }
             }
             ops.append(CanvasOp(kind: kind, name: name, ident: ident, start: Int32(start), count: Int32(args.count - start)))
+        }
+    }
+
+    init(batch: WidgetCanvasBatch) {
+        var elements: [CanvasArg] = []
+        func arg(_ value: WidgetCanvasBatch.Value) -> CanvasArg {
+            switch value {
+            case .number(let d):
+                return d.isFinite ? .number(d) : .other
+            case .string(let index):
+                return .string(batch.strings[index])
+            case .gradient(let id):
+                return .gradient(WidgetCanvas.int(NSNumber(value: id)))
+            case .path(let id):
+                return .path(WidgetCanvas.int(NSNumber(value: id)))
+            case .node(let id):
+                return .node(WidgetCanvas.int(NSNumber(value: id)))
+            case .list(let range):
+                return .list(batch.words[range].map { $0.isFinite ? $0 : 0 })
+            case .null:
+                return .other
+            case .bool(let b):
+                return .number(b ? 1 : 0)
+            }
+        }
+        _ = batch.forEach { command, values in
+            guard ops.count < CanvasStream.maxOps, args.count < CanvasStream.maxArgs, let kind = CanvasOpKind(rawValue: UInt8(command.kind)) else {
+                return false
+            }
+            elements.removeAll(keepingCapacity: true)
+            if WidgetCanvasBatch.hasIdent(command.kind) {
+                elements.append(command.ident.isFinite ? .number(command.ident) : .other)
+            }
+            if WidgetCanvasBatch.hasName(command.kind), command.name >= 0 {
+                elements.append(.string(batch.strings[command.name]))
+            }
+            for value in values {
+                elements.append(arg(value))
+            }
+            guard !elements.isEmpty else {
+                return true
+            }
+            var name = CanvasName.none
+            var ident = 0.0
+            var rest = 1
+            func number(_ a: CanvasArg) -> Double {
+                if case .number(let d) = a {
+                    return d
+                }
+                return 0
+            }
+            switch kind {
+            case .call, .set:
+                guard case .string(let method) = elements[0] else {
+                    return true
+                }
+                name = CanvasName.lookup(method)
+            case .pathCall:
+                ident = number(elements[0])
+                guard elements.count >= 2, case .string(let method) = elements[1] else {
+                    return true
+                }
+                name = CanvasName.lookup(method)
+                rest = 2
+            default:
+                ident = number(elements[0])
+            }
+            let start = args.count
+            if elements.count > rest {
+                args.append(contentsOf: elements[rest...])
+            }
+            ops.append(CanvasOp(kind: kind, name: name, ident: ident, start: Int32(start), count: Int32(args.count - start)))
+            return true
         }
     }
 

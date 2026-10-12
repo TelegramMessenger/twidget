@@ -4,6 +4,7 @@ public struct WidgetOp {
     public enum Kind: UInt8 {
         case style
         case attribute
+        case canvas
         case other
     }
 
@@ -13,6 +14,7 @@ public struct WidgetOp {
     public let value: String
     public let important: Bool
     public let fields: [String: Any]?
+    public let canvas: WidgetCanvasBatch?
 
     public init(style id: Int, name: String, value: String, important: Bool) {
         kind = .style
@@ -21,6 +23,17 @@ public struct WidgetOp {
         self.value = value
         self.important = important
         fields = nil
+        canvas = nil
+    }
+
+    public init(canvas id: Int, batch: WidgetCanvasBatch) {
+        kind = .canvas
+        self.id = id
+        name = ""
+        value = ""
+        important = false
+        fields = nil
+        canvas = batch
     }
 
     public init(attribute id: Int, name: String, value: String) {
@@ -30,6 +43,7 @@ public struct WidgetOp {
         self.value = value
         important = false
         fields = nil
+        canvas = nil
     }
 
     public init(_ fields: [String: Any]) {
@@ -52,6 +66,7 @@ public struct WidgetOp {
         value = ""
         important = false
         self.fields = fields
+        canvas = nil
     }
 
     public var op: String? {
@@ -60,6 +75,8 @@ public struct WidgetOp {
             return "style"
         case .attribute:
             return "attr"
+        case .canvas:
+            return "canvas"
         case .other:
             return fields?["op"] as? String
         }
@@ -80,6 +97,8 @@ public struct WidgetOp {
             return value
         case "important":
             return kind == .style ? important : nil
+        case "cmds":
+            return canvas?.commands()
         default:
             return nil
         }
@@ -104,6 +123,10 @@ public struct WidgetOp {
                 appendString(op.name, to: &out)
                 out += ",\"value\":"
                 appendString(op.value, to: &out)
+                out += "}"
+            case .canvas:
+                out += "{\"op\":\"canvas\",\"id\":\(op.id),\"cmds\":"
+                out += op.canvas?.json(number: { $0.isFinite ? "\($0)" : "null" }) ?? "[]"
                 out += "}"
             case .other:
                 if let fields = op.fields, JSONSerialization.isValidJSONObject(fields), let data = try? JSONSerialization.data(withJSONObject: fields) {
