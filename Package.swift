@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "HTMLScript", targets: ["HTMLScript"]),
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
         .library(name: "HTML3D", targets: ["HTML3D"]),
+        .library(name: "Twidget3D", targets: ["Twidget3D"]),
         .library(name: "TwidgetRenderer", targets: ["TwidgetRenderer"]),
         .library(name: "CQuickJSNG", targets: ["CQuickJSNG"]),
     ],
@@ -76,11 +77,15 @@ let package = Package(
             path: "Sources/HTMLScript",
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("QuartzCore")]),
         .target(
+            name: "Twidget3D",
+            path: "Sources/Twidget3D",
+            resources: [.copy("Resources/three.js"), .copy("Resources/twidget3d.js")],
+            linkerSettings: [.linkedFramework("Metal"), .linkedFramework("QuartzCore")]),
+        .target(
             name: "HTML3D",
-            dependencies: ["HTMLScript"],
+            dependencies: ["HTMLScript", "Twidget3D"],
             path: "Sources/HTML3D",
-            resources: [.copy("Resources/three.js")],
-            linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("Metal"), .linkedFramework("QuartzCore")]),
+            linkerSettings: [.linkedFramework("JavaScriptCore")]),
         .target(
             name: "TwidgetRenderer",
             dependencies: ["LiteHTML"],
@@ -90,6 +95,10 @@ let package = Package(
             name: "TwidgetRendererTests",
             dependencies: ["TwidgetRenderer", "HTMLScript", "HTMLSandbox", "LiteHTML", "CQuickJSNG"],
             path: "Tests/TwidgetRendererTests"),
+        .testTarget(
+            name: "Twidget3DTests",
+            dependencies: ["Twidget3D"],
+            path: "Tests/Twidget3DTests"),
         .testTarget(
             name: "LiteHTMLTests",
             dependencies: ["LiteHTML", "TwidgetAssets"],

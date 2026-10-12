@@ -1,12 +1,10 @@
 import Foundation
 import HTMLScript
+@_exported import Twidget3D
 
 extension HTML3DSession: HTMLScriptLibrary {
     public static var threeSource: () -> String? = {
-        guard let url = Bundle.module.url(forResource: "three", withExtension: "js") else {
-            return nil
-        }
-        return try? String(contentsOf: url, encoding: .utf8)
+        return Twidget3D.threeSource()
     }
 
     public static func register() {

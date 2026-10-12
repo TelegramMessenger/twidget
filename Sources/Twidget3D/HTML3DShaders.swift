@@ -119,7 +119,7 @@ vertex PointOut html3DPointVertex(uint vid [[vertex_id]], uint iid [[instance_id
     out.position = frame.projection * viewPosition;
     out.color = vertexColor(draw, colors, instanceColors, vid, iid);
     out.viewDepth = -viewPosition.z;
-    out.size = max(1.0, draw.params.w * frame.viewport.z);
+    out.size = clamp(draw.params.w * frame.viewport.z, 1.0, 64.0 * frame.viewport.z);
     return out;
 }
 

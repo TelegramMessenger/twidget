@@ -1,46 +1,45 @@
 import Foundation
-import JavaScriptCore
 import Metal
 import QuartzCore
 import simd
 
-enum HTML3DLayout {
-    static let header = 160
-    static let record = 40
-    static let maxLights = 4
+public enum HTML3DLayout {
+    public static let header = 160
+    public static let record = 40
+    public static let maxLights = 4
 
-    static let view = 0
-    static let projection = 16
-    static let shadowViewProjection = 32
-    static let camera = 48
-    static let clear = 52
-    static let fog = 56
-    static let fogParams = 60
-    static let ambient = 64
-    static let hemiSky = 68
-    static let hemiGround = 72
-    static let hemiDirection = 76
-    static let directionalColor = 80
-    static let directionalDirection = 84
-    static let shadow = 88
-    static let shadowMapSize = 92
-    static let lightCount = 93
-    static let recordCount = 94
-    static let pixelRatio = 95
-    static let lights = 96
+    public static let view = 0
+    public static let projection = 16
+    public static let shadowViewProjection = 32
+    public static let camera = 48
+    public static let clear = 52
+    public static let fog = 56
+    public static let fogParams = 60
+    public static let ambient = 64
+    public static let hemiSky = 68
+    public static let hemiGround = 72
+    public static let hemiDirection = 76
+    public static let directionalColor = 80
+    public static let directionalDirection = 84
+    public static let shadow = 88
+    public static let shadowMapSize = 92
+    public static let lightCount = 93
+    public static let recordCount = 94
+    public static let pixelRatio = 95
+    public static let lights = 96
 
-    static let recordGeometry = 0
-    static let recordMaterial = 1
-    static let recordStart = 2
-    static let recordCount_ = 3
-    static let recordFlags = 4
-    static let recordInstances = 5
-    static let recordInstanceCount = 6
-    static let recordMatrix = 8
-    static let recordColor = 24
-    static let recordEmissive = 28
-    static let recordSpecular = 32
-    static let recordParams = 36
+    public static let recordGeometry = 0
+    public static let recordMaterial = 1
+    public static let recordStart = 2
+    public static let recordCount_ = 3
+    public static let recordFlags = 4
+    public static let recordInstances = 5
+    public static let recordInstanceCount = 6
+    public static let recordMatrix = 8
+    public static let recordColor = 24
+    public static let recordEmissive = 28
+    public static let recordSpecular = 32
+    public static let recordParams = 36
 }
 
 public struct HTML3DStats {
@@ -52,6 +51,8 @@ public struct HTML3DStats {
     public let draws: Int
     public let triangles: Int
     public let memoryBytes: Int
+    public let rejected: Int
+    public let clipped: Int
 }
 
 struct HTML3DFrameUniforms {
@@ -102,6 +103,34 @@ final class HTML3DGPU {
     private let lock = NSLock()
     private var compiled: Pipelines?
     private var failed = false
+    private var reserved = 0
+
+    public static var processBudgetBytes = 512 << 20
+
+    func reserve(_ bytes: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if bytes <= 0 {
+            return true
+        }
+        if reserved + bytes > HTML3DGPU.processBudgetBytes {
+            return false
+        }
+        reserved += bytes
+        return true
+    }
+
+    func unreserve(_ bytes: Int) {
+        lock.lock()
+        reserved = max(0, reserved - bytes)
+        lock.unlock()
+    }
+
+    var reservedBytes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return reserved
+    }
 
     struct Pipelines {
         let mesh: MTLRenderPipelineState
@@ -216,17 +245,37 @@ final class HTML3DGPU {
     }
 }
 
-struct HTML3DArray {
-    enum Kind {
+public struct HTML3DArray {
+    public enum Kind {
         case float32
         case uint16
         case uint32
         case other
     }
 
-    let pointer: UnsafeRawPointer
-    let length: Int
-    let kind: Kind
+    public let pointer: UnsafeRawPointer
+    public let length: Int
+    public let kind: Kind
+
+    public init(pointer: UnsafeRawPointer, length: Int, kind: Kind) {
+        self.pointer = pointer
+        self.length = length
+        self.kind = kind
+    }
+}
+
+public struct HTML3DLimits {
+    public var maxGeometryBytes = 64 << 20
+    public var maxDraws = 4096
+    public var maxVertexWork = 6_000_000
+    public var maxDrawablePixels = 4096 * 4096
+    public var maxShadowMapSize = 2048
+    public var maxPixelRatio: Float = 4
+    public var slowFrameMilliseconds = 40.0
+    public var slowFramesToStop = 90
+    public var hungFrameMilliseconds = 400.0
+
+    public init() {}
 }
 
 public final class HTML3DSession {
@@ -239,6 +288,10 @@ public final class HTML3DSession {
         let indexType: MTLIndexType
         let vertexCount: Int
         let indexCount: Int
+
+        var bytes: Int {
+            return positions.length + (normals?.length ?? 0) + (colors?.length ?? 0) + (index?.length ?? 0)
+        }
     }
 
     private struct InstanceSet {
@@ -277,9 +330,10 @@ public final class HTML3DSession {
     }
 
     private static let maxFloats = 4 << 20
-    private static let maxGeometryBytes = 64 << 20
 
     public let isSupported: Bool
+    public let limits: HTML3DLimits
+    public var onStop: ((String) -> Void)?
     private let gpu: HTML3DGPU?
     private let lock = NSLock()
     private var geometries: [Int: Geometry] = [:]
@@ -294,6 +348,11 @@ public final class HTML3DSession {
     private var statDraws = 0
     private var statTriangles = 0
     private var statMemory = 0
+    private var statRejected = 0
+    private var statClipped = 0
+    private var slowFrames = 0
+    private var stopped: String?
+    private var paused = false
     private var pending: [Float] = []
     private var pendingCount = 0
     private var hasPending = false
@@ -302,7 +361,6 @@ public final class HTML3DSession {
     private var viewportSize: CGSize = .zero
     private var viewportScale: CGFloat = 2
     private var radius: CGFloat = 0
-    private var pixelRatioHint: Double = 2
 
     private let renderQueue = DispatchQueue(label: "HTML3D", qos: .userInteractive)
     private let inFlight = DispatchSemaphore(value: 3)
@@ -313,9 +371,14 @@ public final class HTML3DSession {
     private var depthTarget: MTLTexture?
     private var shadowMap: MTLTexture?
 
-    public init() {
+    public static var isAvailable: Bool {
+        return HTML3DGPU.shared != nil
+    }
+
+    public init(limits: HTML3DLimits = HTML3DLimits()) {
         gpu = HTML3DGPU.shared
         isSupported = gpu != nil
+        self.limits = limits
         if let gpu = gpu {
             renderQueue.async {
                 _ = gpu.pipelines
@@ -323,10 +386,20 @@ public final class HTML3DSession {
         }
     }
 
+    deinit {
+        gpu?.unreserve(geometryBytes + instanceBytes)
+    }
+
     public var cornerRadius: CGFloat {
         lock.lock()
         defer { lock.unlock() }
         return radius
+    }
+
+    public var stopReason: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
     }
 
     public var stats: HTML3DStats {
@@ -336,7 +409,7 @@ public final class HTML3DSession {
         }
         lock.lock()
         defer { lock.unlock() }
-        return HTML3DStats(frames: statFrames, submitted: statSubmitted, gpuSeconds: statGPUSeconds, cpuSeconds: statCPUSeconds, gpuTimed: gpuTimed, draws: statDraws, triangles: statTriangles, memoryBytes: statMemory)
+        return HTML3DStats(frames: statFrames, submitted: statSubmitted, gpuSeconds: statGPUSeconds, cpuSeconds: statCPUSeconds, gpuTimed: gpuTimed, draws: statDraws, triangles: statTriangles, memoryBytes: statMemory, rejected: statRejected, clipped: statClipped)
     }
 
     public func makeLayer() -> CAMetalLayer? {
@@ -357,12 +430,34 @@ public final class HTML3DSession {
         return layer
     }
 
+    public func drawableSize(for size: CGSize, scale: CGFloat) -> CGSize {
+        var width = max(1, (size.width * scale).rounded())
+        var height = max(1, (size.height * scale).rounded())
+        let pixels = width * height
+        let limit = CGFloat(limits.maxDrawablePixels)
+        if pixels > limit {
+            let factor = (limit / pixels).squareRoot()
+            width = max(1, (width * factor).rounded(.down))
+            height = max(1, (height * factor).rounded(.down))
+        }
+        return CGSize(width: min(width, 8192), height: min(height, 8192))
+    }
+
     public func attach(_ layer: CAMetalLayer, size: CGSize, scale: CGFloat) {
         lock.lock()
         self.layer = layer
         viewportSize = size
         viewportScale = scale
+        let schedule = hasPending && !renderScheduled && !paused
+        if schedule {
+            renderScheduled = true
+        }
         lock.unlock()
+        if schedule {
+            renderQueue.async { [self] in
+                renderLoop()
+            }
+        }
     }
 
     public func detach(_ layer: CAMetalLayer) {
@@ -373,47 +468,56 @@ public final class HTML3DSession {
         lock.unlock()
     }
 
-    func install(in context: JSContext) -> JSValue {
-        let native = JSValue(newObjectIn: context)!
-        native.setObject(isSupported, forKeyedSubscript: "supported" as NSString)
-        let size: @convention(block) () -> [Double] = { [weak self] in
-            return self?.viewportInfo() ?? [0, 0, 2]
+    public func setPaused(_ value: Bool) {
+        lock.lock()
+        let changed = paused != value
+        paused = value
+        let schedule = !value && hasPending && !renderScheduled && layer != nil
+        if schedule {
+            renderScheduled = true
         }
-        let configure: @convention(block) (Double) -> Void = { [weak self] radius in
-            self?.configure(radius: radius)
+        lock.unlock()
+        if changed && value {
+            renderQueue.async { [self] in
+                colorTarget = nil
+                depthTarget = nil
+                shadowMap = nil
+            }
         }
-        let geometry: @convention(block) (Int, JSValue, JSValue, JSValue, Int, JSValue) -> Void = { [weak self] id, positions, normals, colors, colorSize, index in
-            self?.defineGeometry(id: id, positions: HTML3DSession.array(positions), normals: HTML3DSession.array(normals), colors: HTML3DSession.array(colors), colorSize: colorSize, index: HTML3DSession.array(index))
+        if schedule {
+            renderQueue.async { [self] in
+                renderLoop()
+            }
         }
-        let release: @convention(block) (Int) -> Void = { [weak self] id in
-            self?.releaseGeometry(id: id)
-        }
-        let instances: @convention(block) (Int, JSValue, Int, JSValue) -> Void = { [weak self] id, matrices, count, colors in
-            self?.defineInstances(id: id, matrices: HTML3DSession.array(matrices), count: count, colors: HTML3DSession.array(colors))
-        }
-        let releaseInstances: @convention(block) (Int) -> Void = { [weak self] id in
-            self?.releaseInstances(id: id)
-        }
-        let frame: @convention(block) (JSValue, Int) -> Void = { [weak self] data, count in
-            self?.submit(data: HTML3DSession.array(data), count: count)
-        }
-        native.setObject(size, forKeyedSubscript: "size" as NSString)
-        native.setObject(configure, forKeyedSubscript: "configure" as NSString)
-        native.setObject(geometry, forKeyedSubscript: "geometry" as NSString)
-        native.setObject(release, forKeyedSubscript: "release" as NSString)
-        native.setObject(instances, forKeyedSubscript: "instances" as NSString)
-        native.setObject(releaseInstances, forKeyedSubscript: "releaseInstances" as NSString)
-        native.setObject(frame, forKeyedSubscript: "frame" as NSString)
-        return native
     }
 
-    func viewportInfo() -> [Double] {
+    public func stop(_ reason: String) {
+        lock.lock()
+        if stopped != nil {
+            lock.unlock()
+            return
+        }
+        stopped = reason
+        hasPending = false
+        let released = geometryBytes + instanceBytes
+        geometries.removeAll()
+        instanceSets.removeAll()
+        instanceSlots.removeAll()
+        geometryBytes = 0
+        instanceBytes = 0
+        let callback = onStop
+        lock.unlock()
+        gpu?.unreserve(released)
+        callback?(reason)
+    }
+
+    public func viewportInfo() -> [Double] {
         lock.lock()
         defer { lock.unlock() }
         return [Double(viewportSize.width), Double(viewportSize.height), Double(viewportScale)]
     }
 
-    func configure(radius: Double) {
+    public func configure(radius: Double) {
         guard radius.isFinite else {
             return
         }
@@ -429,19 +533,31 @@ public final class HTML3DSession {
         return value >= Float(limit) ? limit : Int(value)
     }
 
-    static func array(_ value: JSValue) -> HTML3DArray? {
-        guard let context = value.context?.jsGlobalContextRef, let ref = value.jsValueRef else {
-            return nil
+    static func maxIndex(_ bytes: HTML3DArray) -> Int {
+        switch bytes.kind {
+        case .uint16:
+            let values = bytes.pointer.bindMemory(to: UInt16.self, capacity: bytes.length / 2)
+            var top: UInt16 = 0
+            for i in 0 ..< bytes.length / 2 where values[i] > top {
+                top = values[i]
+            }
+            return Int(top)
+        case .uint32:
+            let values = bytes.pointer.bindMemory(to: UInt32.self, capacity: bytes.length / 4)
+            var top: UInt32 = 0
+            for i in 0 ..< bytes.length / 4 where values[i] > top {
+                top = values[i]
+            }
+            return Int(top)
+        default:
+            return Int.max
         }
-        let type = JSValueGetTypedArrayType(context, ref, nil)
-        if type == kJSTypedArrayTypeNone || type == kJSTypedArrayTypeArrayBuffer {
-            return nil
-        }
-        guard let object = JSValueToObject(context, ref, nil), let pointer = JSObjectGetTypedArrayBytesPtr(context, object, nil) else {
-            return nil
-        }
-        let kind: HTML3DArray.Kind = type == kJSTypedArrayTypeFloat32Array ? .float32 : type == kJSTypedArrayTypeUint16Array ? .uint16 : type == kJSTypedArrayTypeUint32Array ? .uint32 : .other
-        return HTML3DArray(pointer: UnsafeRawPointer(pointer), length: JSObjectGetTypedArrayByteLength(context, object, nil), kind: kind)
+    }
+
+    private func reject() {
+        lock.lock()
+        statRejected += 1
+        lock.unlock()
     }
 
     private func makeBuffer(_ value: HTML3DArray?, expected: HTML3DArray.Kind) -> MTLBuffer? {
@@ -451,102 +567,143 @@ public final class HTML3DSession {
         return gpu.device.makeBuffer(bytes: bytes.pointer, length: bytes.length, options: .storageModeShared)
     }
 
-    func defineGeometry(id: Int, positions: HTML3DArray?, normals: HTML3DArray?, colors: HTML3DArray?, colorSize: Int, index: HTML3DArray?) {
-        guard let gpu = gpu, let position = makeBuffer(positions, expected: .float32) else {
-            return
+    @discardableResult
+    public func defineGeometry(id: Int, positions: HTML3DArray?, normals: HTML3DArray?, colors: HTML3DArray?, colorSize: Int, index: HTML3DArray?) -> Bool {
+        guard let gpu = gpu, stopReason == nil, let positions = positions, positions.kind == .float32, positions.length >= 12 else {
+            reject()
+            return false
         }
-        let normal = makeBuffer(normals, expected: .float32)
-        let color = colorSize == 3 || colorSize == 4 ? makeBuffer(colors, expected: .float32) : nil
-        var indexBuffer: MTLBuffer?
+        let vertexCount = positions.length / 12
+        if let normals = normals, normals.kind != .float32 || normals.length < vertexCount * 12 {
+            reject()
+            return false
+        }
+        let usesColors = colorSize == 3 || colorSize == 4
+        if usesColors, let colors = colors, colors.kind != .float32 || colors.length < vertexCount * colorSize * 4 {
+            reject()
+            return false
+        }
         var indexType = MTLIndexType.uint16
         var indexCount = 0
         if let bytes = index, bytes.length > 0 {
-            if bytes.kind == .uint16 {
-                indexBuffer = gpu.device.makeBuffer(bytes: bytes.pointer, length: bytes.length, options: .storageModeShared)
-                indexCount = bytes.length / 2
-            } else if bytes.kind == .uint32 {
-                indexBuffer = gpu.device.makeBuffer(bytes: bytes.pointer, length: bytes.length, options: .storageModeShared)
-                indexType = .uint32
-                indexCount = bytes.length / 4
+            guard bytes.kind == .uint16 || bytes.kind == .uint32, HTML3DSession.maxIndex(bytes) < vertexCount else {
+                reject()
+                return false
             }
+            indexType = bytes.kind == .uint16 ? .uint16 : .uint32
+            indexCount = bytes.length / (bytes.kind == .uint16 ? 2 : 4)
         }
-        let vertexCount = position.length / 12
-        if let normal = normal, normal.length < vertexCount * 12 {
-            return
-        }
-        if let color = color, color.length < vertexCount * colorSize * 4 {
-            return
-        }
-        let total = position.length + (normal?.length ?? 0) + (color?.length ?? 0) + (indexBuffer?.length ?? 0)
-        let geometry = Geometry(positions: position, normals: normal, colors: color, colorSize: color == nil ? 0 : UInt32(colorSize), index: indexBuffer, indexType: indexType, vertexCount: vertexCount, indexCount: indexCount)
+        let total = vertexCount * 12 + (normals == nil ? 0 : vertexCount * 12) + (usesColors && colors != nil ? vertexCount * colorSize * 4 : 0) + indexCount * (indexType == .uint16 ? 2 : 4)
         lock.lock()
-        let previous = geometries[id].map { $0.positions.length + ($0.normals?.length ?? 0) + ($0.colors?.length ?? 0) + ($0.index?.length ?? 0) } ?? 0
-        if geometryBytes + instanceBytes - previous + total <= HTML3DSession.maxGeometryBytes {
-            geometryBytes += total - previous
-            geometries[id] = geometry
-        }
+        let previous = geometries[id]?.bytes ?? 0
+        let fits = geometryBytes + instanceBytes - previous + total <= limits.maxGeometryBytes
         lock.unlock()
+        guard fits, gpu.reserve(total) else {
+            reject()
+            return false
+        }
+        guard let position = gpu.device.makeBuffer(bytes: positions.pointer, length: vertexCount * 12, options: .storageModeShared) else {
+            gpu.unreserve(total)
+            return false
+        }
+        let normal = normals.flatMap { gpu.device.makeBuffer(bytes: $0.pointer, length: vertexCount * 12, options: .storageModeShared) }
+        let color = usesColors ? colors.flatMap { gpu.device.makeBuffer(bytes: $0.pointer, length: vertexCount * colorSize * 4, options: .storageModeShared) } : nil
+        let indexBuffer = indexCount > 0 ? index.flatMap { gpu.device.makeBuffer(bytes: $0.pointer, length: indexCount * (indexType == .uint16 ? 2 : 4), options: .storageModeShared) } : nil
+        let geometry = Geometry(positions: position, normals: normal, colors: color, colorSize: color == nil ? 0 : UInt32(colorSize), index: indexBuffer, indexType: indexType, vertexCount: vertexCount, indexCount: indexBuffer == nil ? 0 : indexCount)
+        lock.lock()
+        if stopped != nil {
+            lock.unlock()
+            gpu.unreserve(total)
+            return false
+        }
+        let replaced = geometries[id]?.bytes ?? 0
+        geometries[id] = geometry
+        geometryBytes += geometry.bytes - replaced
+        lock.unlock()
+        gpu.unreserve(replaced + total - geometry.bytes)
+        return true
     }
 
-    func releaseGeometry(id: Int) {
+    public func releaseGeometry(id: Int) {
         lock.lock()
+        var released = 0
         if let geometry = geometries.removeValue(forKey: id) {
-            geometryBytes -= geometry.positions.length + (geometry.normals?.length ?? 0) + (geometry.colors?.length ?? 0) + (geometry.index?.length ?? 0)
+            released = geometry.bytes
+            geometryBytes -= released
         }
         lock.unlock()
+        gpu?.unreserve(released)
     }
 
-    func defineInstances(id: Int, matrices: HTML3DArray?, count: Int, colors: HTML3DArray?) {
+    @discardableResult
+    public func defineInstances(id: Int, matrices: HTML3DArray?, count: Int, colors: HTML3DArray?) -> Bool {
         guard let gpu = gpu, let source = matrices, source.kind == .float32, source.length >= 64 else {
-            return
+            reject()
+            return false
         }
         let instanceCount = max(0, min(count, source.length / 64))
+        if instanceCount == 0 {
+            reject()
+            return false
+        }
         var colorSource = colors
         if let bytes = colorSource, bytes.kind != .float32 || bytes.length < instanceCount * 12 {
             colorSource = nil
         }
         lock.lock()
         defer { lock.unlock() }
+        if stopped != nil {
+            return false
+        }
         var slots = instanceSlots[id] ?? InstanceSlots()
         let slot = slots.next
         slots.next = (slot + 1) % slots.matrices.count
-        func fill(_ buffer: MTLBuffer?, _ bytes: HTML3DArray) -> MTLBuffer? {
+        func fill(_ buffer: MTLBuffer?, _ pointer: UnsafeRawPointer, _ length: Int) -> MTLBuffer? {
             var target = buffer
-            if target == nil || target!.length < bytes.length {
-                let length = bytes.length + bytes.length / 2
-                let added = length - (buffer?.length ?? 0)
-                guard geometryBytes + instanceBytes + added <= HTML3DSession.maxGeometryBytes, let created = gpu.device.makeBuffer(length: length, options: .storageModeShared) else {
+            if target == nil || target!.length < length {
+                let size = length + length / 2
+                let added = size - (buffer?.length ?? 0)
+                guard geometryBytes + instanceBytes + added <= limits.maxGeometryBytes, gpu.reserve(added) else {
+                    return nil
+                }
+                guard let created = gpu.device.makeBuffer(length: size, options: .storageModeShared) else {
+                    gpu.unreserve(added)
                     return nil
                 }
                 instanceBytes += added
                 target = created
             }
-            target?.contents().copyMemory(from: bytes.pointer, byteCount: bytes.length)
+            target?.contents().copyMemory(from: pointer, byteCount: length)
             return target
         }
-        guard let matrixBuffer = fill(slots.matrices[slot], source) else {
-            return
+        guard let matrixBuffer = fill(slots.matrices[slot], source.pointer, instanceCount * 64) else {
+            statRejected += 1
+            return false
         }
         slots.matrices[slot] = matrixBuffer
         var colorBuffer: MTLBuffer?
         if let colorSource = colorSource {
-            colorBuffer = fill(slots.colors[slot], colorSource)
+            colorBuffer = fill(slots.colors[slot], colorSource.pointer, instanceCount * 12)
             slots.colors[slot] = colorBuffer
         }
         instanceSlots[id] = slots
         instanceSets[id] = InstanceSet(matrices: matrixBuffer, colors: colorBuffer, count: instanceCount)
+        return true
     }
 
-    func releaseInstances(id: Int) {
+    public func releaseInstances(id: Int) {
         lock.lock()
         instanceSets.removeValue(forKey: id)
+        var released = 0
         if let slots = instanceSlots.removeValue(forKey: id) {
-            instanceBytes -= (slots.matrices + slots.colors).reduce(0) { $0 + ($1?.length ?? 0) }
+            released = (slots.matrices + slots.colors).reduce(0) { $0 + ($1?.length ?? 0) }
+            instanceBytes -= released
         }
         lock.unlock()
+        gpu?.unreserve(released)
     }
 
-    func submit(data: HTML3DArray?, count: Int) {
+    public func submit(data: HTML3DArray?, count: Int) {
         guard isSupported, let bytes = data, bytes.kind == .float32 else {
             return
         }
@@ -555,6 +712,10 @@ public final class HTML3DSession {
             return
         }
         lock.lock()
+        if stopped != nil {
+            lock.unlock()
+            return
+        }
         if pending.count < floats {
             pending = [Float](repeating: 0, count: max(floats, pending.count * 2))
         }
@@ -564,7 +725,7 @@ public final class HTML3DSession {
         pendingCount = floats
         hasPending = true
         statSubmitted += 1
-        let schedule = !renderScheduled && layer != nil
+        let schedule = !renderScheduled && layer != nil && !paused
         if schedule {
             renderScheduled = true
         }
@@ -576,10 +737,49 @@ public final class HTML3DSession {
         }
     }
 
+    public func renderOffscreen(width: Int, height: Int) -> [UInt8]? {
+        guard let gpu = gpu, width > 0, height > 0, width * height <= limits.maxDrawablePixels else {
+            return nil
+        }
+        return renderQueue.sync { () -> [UInt8]? in
+            lock.lock()
+            guard hasPending, stopped == nil else {
+                lock.unlock()
+                return nil
+            }
+            swap(&pending, &working)
+            let count = pendingCount
+            hasPending = false
+            let geometries = self.geometries
+            let instanceSets = self.instanceSets
+            lock.unlock()
+            let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: HTML3DGPU.colorFormat, width: width, height: height, mipmapped: false)
+            desc.usage = [.renderTarget]
+            desc.storageMode = .private
+            guard let texture = gpu.device.makeTexture(descriptor: desc), let readback = gpu.device.makeBuffer(length: width * height * 4, options: .storageModeShared), let commandBuffer = gpu.queue.makeCommandBuffer() else {
+                return nil
+            }
+            inFlight.wait()
+            let encoded = encode(count: count, target: texture, commandBuffer: commandBuffer, geometries: geometries, instanceSets: instanceSets)
+            if !encoded {
+                inFlight.signal()
+                return nil
+            }
+            if let blit = commandBuffer.makeBlitCommandEncoder() {
+                blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0), sourceSize: MTLSize(width: width, height: height, depth: 1), to: readback, destinationOffset: 0, destinationBytesPerRow: width * 4, destinationBytesPerImage: width * height * 4)
+                blit.endEncoding()
+            }
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            let pointer = readback.contents().bindMemory(to: UInt8.self, capacity: width * height * 4)
+            return Array(UnsafeBufferPointer(start: pointer, count: width * height * 4))
+        }
+    }
+
     private func renderLoop() {
         while true {
             lock.lock()
-            guard hasPending, let layer = layer else {
+            guard hasPending, stopped == nil, !paused, let layer = layer else {
                 renderScheduled = false
                 lock.unlock()
                 return
@@ -591,8 +791,19 @@ public final class HTML3DSession {
             let instanceSets = self.instanceSets
             lock.unlock()
             inFlight.wait()
-            let committed = autoreleasepool {
-                return encode(count: count, layer: layer, geometries: geometries, instanceSets: instanceSets)
+            let committed = autoreleasepool { () -> Bool in
+                guard let gpu = gpu, let drawable = layer.nextDrawable(), let commandBuffer = gpu.queue.makeCommandBuffer() else {
+                    return false
+                }
+                guard drawable.texture.width * drawable.texture.height <= limits.maxDrawablePixels else {
+                    return false
+                }
+                guard encode(count: count, target: drawable.texture, commandBuffer: commandBuffer, geometries: geometries, instanceSets: instanceSets) else {
+                    return false
+                }
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
+                return true
             }
             if !committed {
                 inFlight.signal()
@@ -600,7 +811,7 @@ public final class HTML3DSession {
         }
     }
 
-    private func encode(count: Int, layer: CAMetalLayer, geometries: [Int: Geometry], instanceSets: [Int: InstanceSet]) -> Bool {
+    private func encode(count: Int, target: MTLTexture, commandBuffer: MTLCommandBuffer, geometries: [Int: Geometry], instanceSets: [Int: InstanceSet]) -> Bool {
         guard let gpu = gpu, let pipelines = gpu.pipelines else {
             return false
         }
@@ -642,6 +853,8 @@ public final class HTML3DSession {
             var batches: [Batch] = []
             var opaqueIndex: [BatchKey: Int] = [:]
             var instanceTotal = 0
+            var work = 0
+            var clipped = 0
             let view = uniforms.view
             for r in 0 ..< recordCount {
                 let p = f + HTML3DLayout.header + r * HTML3DLayout.record
@@ -672,6 +885,8 @@ public final class HTML3DSession {
                 draw.emissive = SIMD4<Float>(p[HTML3DLayout.recordEmissive], p[HTML3DLayout.recordEmissive + 1], p[HTML3DLayout.recordEmissive + 2], p[HTML3DLayout.recordEmissive + 3])
                 draw.specular = SIMD4<Float>(p[HTML3DLayout.recordSpecular], p[HTML3DLayout.recordSpecular + 1], p[HTML3DLayout.recordSpecular + 2], max(p[HTML3DLayout.recordSpecular + 3], 0.0001))
                 draw.params = SIMD4<Float>(p[HTML3DLayout.recordParams], p[HTML3DLayout.recordParams + 1], Float(materialFlags), p[HTML3DLayout.recordParams + 3])
+                let castShadow = flags & 1 != 0
+                let passes = castShadow && primitive == 0 ? 2 : 1
                 if instanceId > 0 {
                     guard let set = instanceSets[instanceId] else {
                         continue
@@ -680,24 +895,48 @@ public final class HTML3DSession {
                     if instanceCount == 0 {
                         continue
                     }
+                    let cost = drawCount * instanceCount * passes
+                    if batches.count >= limits.maxDraws || work + cost > limits.maxVertexWork {
+                        clipped += 1
+                        continue
+                    }
+                    work += cost
                     draw.base = matrix
                     draw.layout = SIMD4<UInt32>(geometry.normals != nil ? 1 : 0, vertexColors ? geometry.colorSize : 0, set.colors != nil ? 1 : 0, shaderFlags)
-                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: flags & 1 != 0, start: start, count: drawCount, matrices: [], instanceSet: set, instanceCount: instanceCount, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix)))
+                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [], instanceSet: set, instanceCount: instanceCount, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix)))
+                    continue
+                }
+                let cost = drawCount * passes
+                if work + cost > limits.maxVertexWork {
+                    clipped += 1
                     continue
                 }
                 draw.layout = SIMD4<UInt32>(geometry.normals != nil ? 1 : 0, vertexColors ? geometry.colorSize : 0, 0, shaderFlags)
-                instanceTotal += 1
                 if transparent {
-                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: flags & 1 != 0, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix)))
+                    if batches.count >= limits.maxDraws {
+                        clipped += 1
+                        continue
+                    }
+                    work += cost
+                    instanceTotal += 1
+                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: HTML3DSession.viewDepth(view, matrix)))
                     continue
                 }
                 let key = BatchKey(geometry: geometryId, material: HTML3DSession.count(p[HTML3DLayout.recordMaterial], upTo: Int(Int32.max)), flags: flags, start: start, count: drawCount)
                 if let index = opaqueIndex[key] {
+                    work += cost
+                    instanceTotal += 1
                     batches[index].matrices.append(matrix)
                     batches[index].instanceCount += 1
                 } else {
+                    if batches.count >= limits.maxDraws {
+                        clipped += 1
+                        continue
+                    }
+                    work += cost
+                    instanceTotal += 1
                     opaqueIndex[key] = batches.count
-                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: flags & 1 != 0, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: 0))
+                    batches.append(Batch(geometry: geometry, draw: draw, primitive: primitive, materialFlags: materialFlags, castShadow: castShadow, start: start, count: drawCount, matrices: [matrix], instanceSet: nil, instanceCount: 1, instanceOffset: 0, depth: 0))
                 }
             }
 
@@ -710,21 +949,19 @@ public final class HTML3DSession {
                 return false
             }
             var offset = 0
-            let target = instanceBuffer.contents()
+            let targetBytes = instanceBuffer.contents()
             for index in batches.indices where batches[index].instanceSet == nil {
                 batches[index].instanceOffset = offset
                 batches[index].matrices.withUnsafeBytes { bytes in
-                    (target + offset).copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+                    (targetBytes + offset).copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
                 }
                 offset += batches[index].matrices.count * 64
             }
 
-            guard let drawable = layer.nextDrawable(), let commandBuffer = gpu.queue.makeCommandBuffer() else {
-                return false
-            }
-            let width = drawable.texture.width
-            let height = drawable.texture.height
-            uniforms.viewport = SIMD4<Float>(Float(width), Float(height), max(f[HTML3DLayout.pixelRatio], 1), 0)
+            let width = target.width
+            let height = target.height
+            let ratio = min(max(f[HTML3DLayout.pixelRatio], 1), limits.maxPixelRatio)
+            uniforms.viewport = SIMD4<Float>(Float(width), Float(height), ratio.isFinite ? ratio : 1, 0)
             guard ensureTargets(gpu: gpu, width: width, height: height) else {
                 return false
             }
@@ -766,11 +1003,12 @@ public final class HTML3DSession {
 
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = colorTarget
-            pass.colorAttachments[0].resolveTexture = drawable.texture
+            pass.colorAttachments[0].resolveTexture = target
             pass.colorAttachments[0].loadAction = .clear
             pass.colorAttachments[0].storeAction = .multisampleResolve
-            let clear = SIMD4<Float>(f[HTML3DLayout.clear], f[HTML3DLayout.clear + 1], f[HTML3DLayout.clear + 2], f[HTML3DLayout.clear + 3])
-            pass.colorAttachments[0].clearColor = MTLClearColor(red: Double(clear.x * clear.w), green: Double(clear.y * clear.w), blue: Double(clear.z * clear.w), alpha: Double(clear.w))
+            let clear = SIMD4<Float>(f[HTML3DLayout.clear], f[HTML3DLayout.clear + 1], f[HTML3DLayout.clear + 2], f[HTML3DLayout.clear + 3]).clamped(lowerBound: SIMD4<Float>(repeating: 0), upperBound: SIMD4<Float>(repeating: 1))
+            let safeClear = SIMD4<Float>(clear.x.isNaN ? 0 : clear.x, clear.y.isNaN ? 0 : clear.y, clear.z.isNaN ? 0 : clear.z, clear.w.isNaN ? 0 : clear.w)
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: Double(safeClear.x * safeClear.w), green: Double(safeClear.y * safeClear.w), blue: Double(safeClear.z * safeClear.w), alpha: Double(safeClear.w))
             pass.depthAttachment.texture = depthTarget
             pass.depthAttachment.loadAction = .clear
             pass.depthAttachment.storeAction = .dontCare
@@ -822,11 +1060,9 @@ public final class HTML3DSession {
                 if #available(macOS 10.15, *) {
                     seconds = max(0, buffer.gpuEndTime - buffer.gpuStartTime)
                 }
-                self?.recordCompleted(gpuSeconds: seconds)
+                self?.recordCompleted(gpuSeconds: seconds, failed: buffer.status == .error)
                 semaphore.signal()
             }
-            commandBuffer.present(drawable)
-            commandBuffer.commit()
             var memory = ring.reduce(0) { $0 + ($1?.length ?? 0) } + width * height * 4 * 3
             memory += (colorTarget?.allocatedSize ?? 0) + (depthTarget?.allocatedSize ?? 0) + (shadowMap?.allocatedSize ?? 0)
             let cpuSeconds = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStart) / 1_000_000_000
@@ -834,17 +1070,35 @@ public final class HTML3DSession {
             statCPUSeconds += cpuSeconds
             statDraws = opaque.count + transparent.count
             statTriangles = triangles
+            statClipped += clipped
             statMemory = memory + geometryBytes + instanceBytes
             lock.unlock()
             return true
         }
     }
 
-    private func recordCompleted(gpuSeconds: Double) {
+    func recordCompleted(gpuSeconds: Double, failed: Bool) {
+        let milliseconds = gpuSeconds * 1000
+        var reason: String?
         lock.lock()
         statFrames += 1
         statGPUSeconds += gpuSeconds
+        if failed {
+            reason = "the GPU rejected a frame"
+        } else if milliseconds > limits.hungFrameMilliseconds {
+            reason = String(format: "one frame took %.0f ms of GPU time", milliseconds)
+        } else if milliseconds > limits.slowFrameMilliseconds {
+            slowFrames += 1
+            if slowFrames >= limits.slowFramesToStop {
+                reason = String(format: "%d frames in a row took over %.0f ms of GPU time", slowFrames, limits.slowFrameMilliseconds)
+            }
+        } else {
+            slowFrames = 0
+        }
         lock.unlock()
+        if let reason = reason {
+            stop(reason)
+        }
     }
 
     private static func draw(_ encoder: MTLRenderCommandEncoder, batch: Batch, type: MTLPrimitiveType) {
@@ -881,7 +1135,7 @@ public final class HTML3DSession {
     }
 
     private func ensureShadowMap(gpu: HTML3DGPU, size requested: Int) -> MTLTexture? {
-        let size = max(256, min(requested > 0 ? requested : 1024, 4096))
+        let size = max(256, min(requested > 0 ? requested : 1024, limits.maxShadowMapSize))
         if let map = shadowMap, map.width == size {
             return map
         }
