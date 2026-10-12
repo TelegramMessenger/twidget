@@ -62,14 +62,24 @@ public final class JSThread {
 
     public final class Scheduled {
         fileprivate var cancelled = false
-        fileprivate var timer: Timer?
+        fileprivate weak var timer: Timer?
+        fileprivate weak var owner: JSThread?
         /// Safe from any thread; the block will not run after this returns.
-        public func cancel() { cancelled = true }
+        public func cancel() {
+            cancelled = true
+            guard let owner else { return }
+            if owner.isCurrent {
+                timer?.invalidate()
+            } else {
+                owner.async { [weak self] in self?.timer?.invalidate() }
+            }
+        }
     }
 
     /// Runs `block` on the thread after `delay` seconds unless cancelled.
     public func after(_ delay: TimeInterval, _ block: @escaping () -> Void) -> Scheduled {
         let handle = Scheduled()
+        handle.owner = self
         async { [runLoop] in
             if handle.cancelled { return }
             let t = Timer(timeInterval: max(0, delay), repeats: false) { _ in
