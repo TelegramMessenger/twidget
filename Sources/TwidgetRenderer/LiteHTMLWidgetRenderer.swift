@@ -1776,7 +1776,7 @@ public final class LiteHTMLWidgetRenderer {
 
     private func startClock() {
         if clock == nil {
-            clock = WidgetFrameClock { [weak self] in
+            clock = WidgetFrameClock(post: { [weak self] block in self?.schedule(block) }) { [weak self] in
                 self?.tick()
             }
             if let display = display {
@@ -3292,14 +3292,16 @@ public struct ScriptFramePacer {
 final class WidgetFrameClock {
     private var link: CVDisplayLink?
     private let tick: () -> Void
+    private let post: (@escaping () -> Void) -> Void
     private var running = false
     private var scheduled = false
     private var lastFire: CFTimeInterval = 0
     private let lock = NSLock()
     private static let minimumInterval = ProcessInfo.processInfo.environment["TW_FPS"].flatMap { Double($0) }.map { 1 / $0 - 0.002 } ?? 0
 
-    init(tick: @escaping () -> Void) {
+    init(post: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }, tick: @escaping () -> Void) {
         self.tick = tick
+        self.post = post
         CVDisplayLinkCreateWithActiveCGDisplays(&link)
         if let link = link {
             CVDisplayLinkSetOutputHandler(link) { [weak self] _, _, _, _, _ in
@@ -3325,7 +3327,7 @@ final class WidgetFrameClock {
         lastFire = now
         scheduled = true
         lock.unlock()
-        DispatchQueue.main.async { [weak self] in
+        post { [weak self] in
             guard let self = self else {
                 return
             }
