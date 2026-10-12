@@ -2,6 +2,9 @@
 
 import PackageDescription
 
+let localCheckout = !#filePath.contains("/checkouts/")
+let optimizedDebugC: [CSetting] = localCheckout ? [.unsafeFlags(["-O2"], .when(configuration: .debug))] : []
+
 let package = Package(
     name: "twidget",
     platforms: [.macOS(.v10_13)],
@@ -63,7 +66,7 @@ let package = Package(
                 .define("_GNU_SOURCE"),
                 .define("QUICKJS_NG_BUILD"),
                 .define("QJS_DISABLE_DUMPS"),
-            ]),
+            ] + optimizedDebugC),
         .target(
             name: "HTMLSandbox",
             path: "Sources/HTMLSandbox"),

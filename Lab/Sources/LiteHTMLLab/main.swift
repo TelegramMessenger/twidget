@@ -843,7 +843,7 @@ case "threetest":
     function render() { return '<p>frames ' + frames + '</p>'; }
     </script>
     """
-    let script = HTMLScript.make(html: html)!
+    let script = HTMLScript.make(html: option("--html").flatMap { try? String(contentsOfFile: $0) } ?? html)!
     guard let scene = script.scene3D, let layer = scene.makeLayer() else { print("no 3D session"); exit(1) }
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
     window.ignoresMouseEvents = true
