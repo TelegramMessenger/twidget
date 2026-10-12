@@ -518,7 +518,7 @@ struct CSSTransitionSpec {
 }
 
 enum CSSInterpolate {
-    private static let identityValues: [String: String] = ["scale": "1", "scalex": "1", "scaley": "1", "scale3d": "1,1,1"]
+    private static let identityValues: [String: String] = ["scale": "1", "scalex": "1", "scaley": "1", "scale3d": "1,1,1", "brightness": "1", "contrast": "1", "opacity": "1", "saturate": "1"]
 
     static func mix(_ a: String, _ b: String, _ t: Double) -> String {
         if t == 0 || !t.isFinite {
@@ -808,7 +808,7 @@ final class WidgetAnimator {
 
     private(set) var keyframes: [String: [CSSKeyframe]] = [:]
 
-    static let compositedProperties: Set<String> = ["transform", "opacity"]
+    static let compositedProperties: Set<String> = ["transform", "opacity", "filter", "box-shadow"]
 
     func base(_ id: Int) -> [String: String] {
         return bases[id] ?? [:]
@@ -840,31 +840,55 @@ final class WidgetAnimator {
         return transitions[id] != nil || running[id]?.contains(where: { !$0.ended && keyframes[$0.spec.name] != nil }) == true
     }
 
-    func reachableValues(_ id: Int, samples: Int = 48) -> [(transform: String?, opacity: String?)] {
-        var out: [(String?, String?)] = []
+    typealias Sample = (transform: String?, opacity: String?, filter: String?, shadow: String?)
+
+    func reachableValues(_ id: Int, samples: Int = 48) -> [Sample] {
+        var out: [Sample] = []
         let base = bases[id] ?? [:]
-        out.append((base["transform"], base["opacity"]))
+        out.append((base["transform"], base["opacity"], base["filter"], base["box-shadow"]))
         for item in running[id] ?? [] where !item.ended {
             guard let frames = keyframes[item.spec.name] else {
                 continue
             }
             for step in 0...samples {
                 let values = self.values(frames: frames, base: base, progress: Double(step) / Double(samples), spec: item.spec)
-                out.append((values.first { $0.0 == "transform" }?.1, values.first { $0.0 == "opacity" }?.1))
+                out.append((values.first { $0.0 == "transform" }?.1, values.first { $0.0 == "opacity" }?.1, values.first { $0.0 == "filter" }?.1 ?? base["filter"], values.first { $0.0 == "box-shadow" }?.1 ?? base["box-shadow"]))
             }
         }
         for (property, transition) in transitions[id] ?? [:] {
             for step in 0...16 {
                 let value = CSSInterpolate.mix(transition.from, transition.to, Double(step) / 16)
-                out.append(property == "transform" ? (value, nil) : (nil, value))
+                switch property {
+                case "transform":
+                    out.append((value, nil, base["filter"], base["box-shadow"]))
+                case "opacity":
+                    out.append((nil, value, base["filter"], base["box-shadow"]))
+                case "filter":
+                    out.append((nil, nil, value, base["box-shadow"]))
+                default:
+                    out.append((nil, nil, base["filter"], value))
+                }
             }
         }
         return out
     }
+
+    func animatesEffects(_ id: Int) -> Bool {
+        if let list = transitions[id], list.keys.contains(where: { $0 == "filter" || $0 == "box-shadow" }) {
+            return true
+        }
+        for item in running[id] ?? [] where !item.ended {
+            if let frames = keyframes[item.spec.name], frames.contains(where: { $0.declarations.contains { $0.name == "filter" || $0.name == "box-shadow" } }) {
+                return true
+            }
+        }
+        return false
+    }
+
     struct Baked {
         let spec: CSSAnimationSpec
         let start: CFTimeInterval
-        let value: (Double) -> (transform: String?, opacity: String?)
+        let value: (Double) -> Sample
     }
 
     func bakeable(_ id: Int) -> Baked? {
@@ -882,7 +906,7 @@ final class WidgetAnimator {
         let spec = item.spec
         return Baked(spec: spec, start: item.start, value: { [self] progress in
             let values = self.values(frames: frames, base: base, progress: progress, spec: spec)
-            return (values.last { $0.0 == "transform" }?.1, values.last { $0.0 == "opacity" }?.1)
+            return (values.last { $0.0 == "transform" }?.1, values.last { $0.0 == "opacity" }?.1, values.last { $0.0 == "filter" }?.1 ?? base["filter"], values.last { $0.0 == "box-shadow" }?.1 ?? base["box-shadow"])
         })
     }
 
@@ -962,6 +986,7 @@ final class WidgetAnimator {
         "transition-timing-function", "transition-delay", "transform", "opacity", "color", "background-color", "background", "width", "height",
         "top", "left", "right", "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
         "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow", "transform-origin",
+        "backdrop-filter",
     ]
 
     var isActive: Bool {

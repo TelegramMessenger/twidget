@@ -350,6 +350,20 @@ final class WidgetCompositor {
         var box: CGRect
         var origin: CGPoint
         var ink: CGRect
+        var effects: WidgetEffectLayers? = nil
+        var template: WidgetEffects? = nil
+        var ownsEffects: Bool {
+            return template != nil
+        }
+    }
+
+    private var effectKeys: [Int: [(CALayer, String)]] = [:]
+
+    private func removeEffectAnimations(_ id: Int) {
+        for (layer, key) in effectKeys[id] ?? [] {
+            layer.removeAnimation(forKey: key)
+        }
+        effectKeys[id] = nil
     }
 
     static let maxLayers = ProcessInfo.processInfo.environment["TW_MAX_LAYERS"].flatMap { Int($0) } ?? 256
@@ -448,7 +462,7 @@ final class WidgetCompositor {
         for (id, item) in members {
             container.addSublayer(item.layer)
             item.layer.position = CGPoint(x: item.box.minX + item.origin.x - clip.rect.minX, y: item.box.minY + item.origin.y - clip.rect.minY)
-            container.zPosition = min(container.zPosition == 0 ? item.layer.zPosition : container.zPosition, item.layer.zPosition)
+            WidgetCompositor.setOrder(container, min(WidgetCompositor.order(container) == 0 ? WidgetCompositor.order(item.layer) : WidgetCompositor.order(container), WidgetCompositor.order(item.layer)))
             clipOf[id] = clip
         }
         let layers = Set(promoted.values.map { ObjectIdentifier($0.layer) }).union(containers.values.map { ObjectIdentifier($0) })
@@ -532,6 +546,7 @@ final class WidgetCompositor {
 
     func reset() {
         for item in promoted.values {
+            item.effects?.backdropLayer?.removeFromSuperlayer()
             item.layer.removeFromSuperlayer()
         }
         promoted.removeAll()
@@ -555,6 +570,7 @@ final class WidgetCompositor {
         for id in driven.keys {
             promoted[id]?.layer.removeAnimation(forKey: "tw.transform")
             promoted[id]?.layer.removeAnimation(forKey: "tw.opacity")
+            removeEffectAnimations(id)
         }
         driven.removeAll()
     }
@@ -563,6 +579,7 @@ final class WidgetCompositor {
         for id in driven.keys where promoted[id] == nil || !enabled {
             promoted[id]?.layer.removeAnimation(forKey: "tw.transform")
             promoted[id]?.layer.removeAnimation(forKey: "tw.opacity")
+            removeEffectAnimations(id)
             driven[id] = nil
         }
         guard enabled else {
@@ -573,6 +590,7 @@ final class WidgetCompositor {
                 if driven[id] != nil {
                     item.layer.removeAnimation(forKey: "tw.transform")
                     item.layer.removeAnimation(forKey: "tw.opacity")
+                    removeEffectAnimations(id)
                     driven[id] = nil
                 }
                 continue
@@ -584,9 +602,10 @@ final class WidgetCompositor {
             }
             item.layer.removeAnimation(forKey: "tw.transform")
             item.layer.removeAnimation(forKey: "tw.opacity")
+            removeEffectAnimations(id)
             driven[id] = nil
             let base = animator.base(id)
-            guard let track = WidgetCompositor.bake(baked, base: base, box: item.box.size, origin: item.origin, resolve: { [self] in self.resolved($0, id: id) }) else {
+            guard let track = WidgetCompositor.bake(baked, base: base, box: item.box.size, origin: item.origin, effects: item.template, resolve: { [self] in self.resolved($0, id: id) }) else {
                 continue
             }
             var begin = item.layer.convertTime(baked.start + spec.delay + mediaOffset, from: nil)
@@ -627,6 +646,21 @@ final class WidgetCompositor {
                 let animation = CAKeyframeAnimation(keyPath: "opacity")
                 configure(animation, track.opacities.map { NSNumber(value: $0) })
                 item.layer.add(animation, forKey: "tw.opacity")
+            }
+            if let effects = item.effects, item.ownsEffects, !track.effects.isEmpty {
+                var keys: [(CALayer, String)] = []
+                let baseEffects = effects.effects
+                for (index, channel) in effects.channels(of: item.layer).enumerated() {
+                    if track.effects.allSatisfy({ $0 == baseEffects }) {
+                        break
+                    }
+                    let animation = CAKeyframeAnimation(keyPath: channel.keyPath)
+                    configure(animation, track.effects.map { channel.value($0) })
+                    let key = "tw.fx.\(index)"
+                    channel.layer.add(animation, forKey: key)
+                    keys.append((channel.layer, key))
+                }
+                effectKeys[id] = keys
             }
             driven[id] = signature
             drivenSince[id] = CACurrentMediaTime()
@@ -698,18 +732,30 @@ final class WidgetCompositor {
         var times: [Double]
         var transforms: [CGAffineTransform]
         var opacities: [Float]
+        var effects: [WidgetEffects] = []
     }
 
     static let log = ProcessInfo.processInfo.environment["TW_COMPOSITE_LOG"] != nil
     static let overlapPromotion = ProcessInfo.processInfo.environment["TW_NO_OVERLAP"] == nil
+    static let overlapBudget = 24
     static var handoffEnabled = ProcessInfo.processInfo.environment["TW_NO_HANDOFF"] == nil
+    static let effectsEnabled = ProcessInfo.processInfo.environment["TW_NO_EFFECTS"] == nil
     static let bakeTolerance: CGFloat = 0.05
+    static let effectTolerance = 0.004
     static let maxBakeDepth = 9
     static let maxBakeJumps = 64
     static let jumpWidth = 2e-6
 
-    static func bake(_ baked: WidgetAnimator.Baked, base: [String: String], box: CGSize, origin: CGPoint, resolve: (String?) -> String? = { $0 }) -> Track? {
-        func eval(_ p: Double) -> (CGAffineTransform, Float)? {
+    private struct BakeSample: Equatable {
+        var transform: CGAffineTransform
+        var opacity: Float
+        var effects: WidgetEffects?
+        var parameters: [Double]
+    }
+
+    static func bake(_ baked: WidgetAnimator.Baked, base: [String: String], box: CGSize, origin: CGPoint, effects template: WidgetEffects? = nil, resolve: (String?) -> String? = { $0 }) -> Track? {
+        let effects = template != nil
+        func eval(_ p: Double) -> BakeSample? {
             let value = baked.value(p)
             let raw = value.transform ?? base["transform"]
             let text = resolve(raw)
@@ -720,26 +766,42 @@ final class WidgetCompositor {
             guard let opacity = Double(opacityText.trimmingCharacters(in: .whitespaces)), opacity.isFinite else {
                 return nil
             }
-            return (transform, Float(max(0, min(1, opacity))))
+            var sample = BakeSample(transform: transform, opacity: Float(max(0, min(1, opacity))), effects: nil, parameters: [])
+            if effects {
+                guard let template = template, let parsed = WidgetEffects.parse(filter: resolve(value.filter), shadow: resolve(value.shadow))?.aligned(to: template) else {
+                    return nil
+                }
+                sample.effects = parsed
+                sample.parameters = parsed.parameters
+            }
+            return sample
         }
         let corners = [CGPoint(x: -origin.x, y: -origin.y), CGPoint(x: box.width - origin.x, y: -origin.y), CGPoint(x: -origin.x, y: box.height - origin.y), CGPoint(x: box.width - origin.x, y: box.height - origin.y)]
-        func error(_ a: (CGAffineTransform, Float), _ b: (CGAffineTransform, Float), _ mid: (CGAffineTransform, Float)) -> (CGFloat, Float) {
+        func error(_ a: BakeSample, _ b: BakeSample, _ mid: BakeSample) -> (CGFloat, Float, Double) {
             var worst: CGFloat = 0
             for corner in corners {
-                let pa = corner.applying(a.0), pb = corner.applying(b.0), pm = corner.applying(mid.0)
+                let pa = corner.applying(a.transform), pb = corner.applying(b.transform), pm = corner.applying(mid.transform)
                 worst = max(worst, hypot(pm.x - (pa.x + pb.x) / 2, pm.y - (pa.y + pb.y) / 2))
             }
-            return (worst, abs(mid.1 - (a.1 + b.1) / 2))
+            var effect = 0.0
+            for index in mid.parameters.indices where index < a.parameters.count && index < b.parameters.count {
+                effect = max(effect, abs(mid.parameters[index] - (a.parameters[index] + b.parameters[index]) / 2))
+            }
+            return (worst, abs(mid.opacity - (a.opacity + b.opacity) / 2), effect)
         }
-        func distance(_ a: (CGAffineTransform, Float), _ b: (CGAffineTransform, Float)) -> CGFloat {
+        func distance(_ a: BakeSample, _ b: BakeSample) -> CGFloat {
             var worst: CGFloat = 0
             for corner in corners {
-                let pa = corner.applying(a.0), pb = corner.applying(b.0)
+                let pa = corner.applying(a.transform), pb = corner.applying(b.transform)
                 worst = max(worst, hypot(pa.x - pb.x, pa.y - pb.y))
             }
-            return worst + CGFloat(abs(a.1 - b.1)) * 100
+            var effect = 0.0
+            for index in a.parameters.indices where index < b.parameters.count {
+                effect = max(effect, abs(a.parameters[index] - b.parameters[index]))
+            }
+            return worst + CGFloat(abs(a.opacity - b.opacity)) * 100 + CGFloat(effect) * 100
         }
-        func locateJump(_ t0: Double, _ s0: (CGAffineTransform, Float), _ t1: Double, _ s1: (CGAffineTransform, Float)) -> (before: Double, left: (CGAffineTransform, Float), after: Double, right: (CGAffineTransform, Float))? {
+        func locateJump(_ t0: Double, _ s0: BakeSample, _ t1: Double, _ s1: BakeSample) -> (before: Double, left: BakeSample, after: Double, right: BakeSample)? {
             var a = (t0, s0), b = (t1, s1)
             while b.0 - a.0 > jumpWidth {
                 let t = (a.0 + b.0) / 2
@@ -758,10 +820,10 @@ final class WidgetCompositor {
             return (a.0, a.1, b.0, b.1)
         }
         var times: [Double] = []
-        var samples: [(CGAffineTransform, Float)] = []
+        var samples: [BakeSample] = []
         var failed = false
         var jumpBudget = maxBakeJumps
-        func subdivide(_ t0: Double, _ s0: (CGAffineTransform, Float), _ t1: Double, _ s1: (CGAffineTransform, Float), _ depth: Int) {
+        func subdivide(_ t0: Double, _ s0: BakeSample, _ t1: Double, _ s1: BakeSample, _ depth: Int) {
             if failed {
                 return
             }
@@ -770,8 +832,8 @@ final class WidgetCompositor {
                 failed = true
                 return
             }
-            let (geometry, alpha) = error(s0, s1, sm)
-            if geometry <= bakeTolerance && alpha <= 0.002 {
+            let (geometry, alpha, effect) = error(s0, s1, sm)
+            if geometry <= bakeTolerance && alpha <= 0.002 && effect <= effectTolerance {
                 times.append(t1)
                 samples.append(s1)
                 return
@@ -813,7 +875,7 @@ final class WidgetCompositor {
             return nil
         }
         var keptTimes: [Double] = [times[0]]
-        var kept: [(CGAffineTransform, Float)] = [samples[0]]
+        var kept: [BakeSample] = [samples[0]]
         for index in 1..<times.count {
             let last = kept.count - 1
             if index < times.count - 1, last > 0, kept[last - 1] == kept[last], kept[last] == samples[index] {
@@ -823,7 +885,7 @@ final class WidgetCompositor {
             keptTimes.append(times[index])
             kept.append(samples[index])
         }
-        return Track(times: keptTimes, transforms: kept.map { $0.0 }, opacities: kept.map { $0.1 })
+        return Track(times: keptTimes, transforms: kept.map { $0.transform }, opacities: kept.map { $0.opacity }, effects: effects ? kept.map { $0.effects ?? WidgetEffects() } : [])
     }
 
     func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
@@ -835,6 +897,9 @@ final class WidgetCompositor {
         let animated = animator.animatedIDs()
         let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
         var wanted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
+        var effectOwners: [Int: Double] = [:]
+        var effectTemplates: [Int: WidgetEffects] = [:]
+        var backdrops: [Int: [CSSFilterStep]] = [:]
         var reaches: [Int: [CGRect]] = [:]
         let log = WidgetCompositor.log
         for id in animated {
@@ -850,7 +915,43 @@ final class WidgetCompositor {
             var reach = box
             var maxScale: CGFloat = 1
             var ok = true
-            for value in animator.reachableValues(id) {
+            let values = animator.reachableValues(id)
+            var effectReach = 0.0
+            if WidgetCompositor.effectsEnabled {
+                var parsed: [WidgetEffects] = []
+                for value in values {
+                    guard let effects = WidgetEffects.parse(filter: resolved(value.filter, id: id), shadow: resolved(value.shadow, id: id)) else {
+                        ok = false
+                        break
+                    }
+                    parsed.append(effects)
+                    effectReach = max(effectReach, effects.reach)
+                }
+                let template = ok ? WidgetEffects.template(parsed) : nil
+                if template == nil {
+                    ok = false
+                }
+                if !ok {
+                    let staticFilter = CSSFilterStep.parseList(resolved(declarations[id]?["filter"], id: id)).map { $0.isEmpty } ?? false
+                    if animator.animatesEffects(id) || !staticFilter {
+                        if log { print("COMPOSITE \(id) effects not compositable") }
+                        continue
+                    }
+                    ok = true
+                } else if let template = template, !template.isEmpty {
+                    effectOwners[id] = effectReach
+                    effectTemplates[id] = template
+                }
+            } else if animator.animatesEffects(id) || !(CSSFilterStep.parseList(resolved(declarations[id]?["filter"], id: id)).map { $0.isEmpty } ?? false) {
+                continue
+            }
+            if let text = declarations[id]?["backdrop-filter"], let steps = CSSFilterStep.parseList(resolved(text, id: id)), !steps.isEmpty {
+                if !WidgetCompositor.effectsEnabled || steps.contains(where: { $0.kind == .dropShadow }) || effectOwners[id].map({ _ in values.contains { CSSFilterStep.parseList(resolved($0.filter, id: id))?.isEmpty == false } }) == true {
+                    continue
+                }
+                backdrops[id] = steps
+            }
+            for value in values {
                 guard let transform = parse(value.transform, box: box.size, id: id) else {
                     if log { print("COMPOSITE \(id) unparsed \(value.transform ?? "nil") resolved \(resolved(value.transform, id: id) ?? "nil")") }
                     ok = false
@@ -859,16 +960,34 @@ final class WidgetCompositor {
                 let anchored = CGAffineTransform(translationX: -origin.x, y: -origin.y).concatenating(transform).concatenating(CGAffineTransform(translationX: origin.x + box.minX, y: origin.y + box.minY))
                 reach = reach.union(CGRect(origin: .zero, size: box.size).applying(anchored))
                 maxScale = max(maxScale, sqrt(abs(transform.a * transform.d - transform.b * transform.c)))
-                if let opacity = value.opacity, Double(opacity) == nil {
+                if let opacity = value.opacity, Double(opacity) == nil || (backdrops[id] != nil && Double(opacity) != 1) {
                     ok = false
                     break
                 }
             }
             if !ok {
+                effectOwners[id] = nil
+                backdrops[id] = nil
                 continue
             }
             wanted[id] = (box, origin, min(maxScale, 3))
-            reaches[id] = [reach]
+            reaches[id] = [reach.insetBy(dx: -CGFloat(effectReach), dy: -CGFloat(effectReach))]
+        }
+        if WidgetCompositor.effectsEnabled {
+            for (id, values) in declarations where wanted[id] == nil && !animated.contains(id) {
+                guard let text = values["backdrop-filter"], let steps = CSSFilterStep.parseList(resolved(text, id: id)), !steps.isEmpty, !steps.contains(where: { $0.kind == .dropShadow }) else {
+                    continue
+                }
+                guard CSSFilterStep.parseList(resolved(values["filter"], id: id))?.isEmpty == true, (Double(values["opacity"] ?? "1") ?? 0) >= 1 else {
+                    continue
+                }
+                guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
+                    continue
+                }
+                wanted[id] = (box, CGPoint(x: box.width / 2, y: box.height / 2), 1)
+                reaches[id] = [box]
+                backdrops[id] = steps
+            }
         }
         var scriptedWanted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
         var scriptedBases: [Int: CGRect] = [:]
@@ -930,10 +1049,32 @@ final class WidgetCompositor {
         func unobscured(_ id: Int, _ reach: CGRect, _ ignoring: Set<String>) -> Bool {
             return WidgetCompositor.unobscured(document, id, reach, clip: clips[id], ignoring: ignoring)
         }
+        func adoptStaticEffects(_ id: Int) -> Bool {
+            guard effectTemplates[id] == nil, !animated.contains(id), let values = declarations[id], values["filter"] != nil || values["box-shadow"] != nil else {
+                return true
+            }
+            let filterText = resolved(values["filter"], id: id)
+            guard WidgetCompositor.effectsEnabled, let effects = WidgetEffects.parse(filter: filterText, shadow: resolved(values["box-shadow"], id: id)) else {
+                return CSSFilterStep.parseList(filterText)?.isEmpty == true
+            }
+            if !effects.isEmpty && (backdrops[id] == nil || effects.filter.isEmpty) {
+                effectOwners[id] = effects.reach
+                effectTemplates[id] = effects
+                reaches[id] = reaches[id]?.map { $0.insetBy(dx: -CGFloat(effects.reach), dy: -CGFloat(effects.reach)) }
+                return true
+            }
+            return effects.filter.isEmpty
+        }
+        for id in Array(wanted.keys) where !adoptStaticEffects(id) {
+            wanted[id] = nil
+            reaches[id] = nil
+        }
         var overlapAdded: Set<Int> = []
         if WidgetCompositor.overlapPromotion {
-            let ignoringAll = Set(wanted.keys.map { String($0) })
-            for (id, _) in wanted where !overlapAdded.contains(id) {
+            var ignoringAll = Set(wanted.keys.map { String($0) })
+            var queue = Array(wanted.keys)
+            var budget = WidgetCompositor.overlapBudget
+            while let id = queue.popLast(), budget > 0 {
                 guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll) else {
                     continue
                 }
@@ -954,12 +1095,22 @@ final class WidgetCompositor {
                     }
                     wanted[other] = (box, CGPoint(x: box.width / 2, y: box.height / 2), 1)
                     reaches[other] = [box]
+                    guard adoptStaticEffects(other) else {
+                        wanted[other] = nil
+                        reaches[other] = nil
+                        continue
+                    }
                     var rect = CGRect.zero
                     var radii = [CGFloat](repeating: 0, count: 8)
                     if document.clipOfElement(attribute: WidgetDOM.idAttribute, value: String(other), rect: &rect, radii: &radii) {
                         clips[other] = Clip(rect: rect, radii: radii)
                     }
                     overlapAdded.insert(other)
+                    ignoringAll.insert(String(other))
+                    budget -= 1
+                    if effectTemplates[other] != nil {
+                        queue.append(other)
+                    }
                 }
             }
         }
@@ -1019,46 +1170,76 @@ final class WidgetCompositor {
             zOrderStale = false
         }
         for (id, item) in promoted where wanted[id] == nil {
+            removeEffectAnimations(id)
+            item.effects?.backdropLayer?.removeFromSuperlayer()
             item.layer.removeFromSuperlayer()
             promoted[id] = nil
         }
         document.setPaintExclusions(Set(wanted.keys.map { String($0) }).union(extraExclusions.map { String($0) }), attribute: WidgetDOM.idAttribute)
         for (id, want) in wanted {
             let inner = wanted.keys.filter { $0 != id && WidgetCompositor.isAncestor(id, of: $0, dom: dom) }.sorted()
-            let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: WidgetCompositor.rasterScale(scale, want.maxScale), styleKey: styleKey ^ inner.hashValue)
+            let owns = effectOwners[id] != nil
+            let backdrop = backdrops[id] ?? []
+            var effectKey = Hasher()
+            effectKey.combine(owns)
+            effectKey.combine(backdrop.map { $0.parameters })
+            effectKey.combine(effectOwners[id] ?? 0)
+            effectKey.combine(effectTemplates[id]?.parameters ?? [])
+            let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: WidgetCompositor.rasterScale(scale, want.maxScale), styleKey: styleKey ^ inner.hashValue ^ effectKey.finalize())
             if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer != nil {
                 if let index = order[String(id)] {
-                    existing.layer.zPosition = 1 + CGFloat(index.intValue) * 1e-6
+                    WidgetCompositor.setOrder(existing.layer, 1 + CGFloat(index.intValue) * 1e-6)
                 }
                 continue
             }
             var ink = CGRect.zero, border = CGRect.zero
-            guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: WidgetCompositor.rasterScale(scale, want.maxScale), inkBounds: &ink, borderBox: &border) else {
-                promoted[id]?.layer.removeFromSuperlayer()
+            var radii = [CGFloat](repeating: 0, count: 8)
+            guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: WidgetCompositor.rasterScale(scale, want.maxScale), inkBounds: &ink, borderBox: &border, radii: &radii, bareShadows: owns) else {
+                if let old = promoted[id] {
+                    removeEffectAnimations(id)
+                    old.effects?.backdropLayer?.removeFromSuperlayer()
+                    old.layer.removeFromSuperlayer()
+                }
                 promoted[id] = nil
                 continue
             }
             let layer = promoted[id]?.layer ?? CALayer()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer.contents = image
-            layer.contentsScale = WidgetCompositor.rasterScale(scale, want.maxScale)
-            layer.contentsGravity = .resize
-            layer.minificationFilter = want.maxScale > 1 && ProcessInfo.processInfo.environment["TW_LINEAR"] == nil ? .trilinear : .linear
             layer.bounds = CGRect(origin: .zero, size: ink.size)
+            var effects = promoted[id]?.effects
+            if owns || !backdrop.isEmpty {
+                let fx = effects ?? WidgetEffectLayers()
+                let base = animator.base(id)
+                let template = effectTemplates[id] ?? WidgetEffects()
+                let initial = owns ? WidgetEffects.parse(filter: resolved(base["filter"] ?? declarations[id]?["filter"], id: id), shadow: resolved(base["box-shadow"] ?? declarations[id]?["box-shadow"], id: id))?.aligned(to: template) ?? template : WidgetEffects()
+                fx.configure(layer: layer, effects: initial, backdrop: backdrop, box: border.offsetBy(dx: -ink.minX, dy: -ink.minY), radii: radii, maxReach: effectOwners[id] ?? 0)
+                effects = fx
+            } else if let fx = effects {
+                fx.reset(layer)
+                effects = nil
+            }
+            let target = effects?.content ?? layer
+            if target !== layer {
+                layer.contents = nil
+            }
+            target.contents = image
+            target.contentsScale = WidgetCompositor.rasterScale(scale, want.maxScale)
+            target.contentsGravity = .resize
+            target.minificationFilter = want.maxScale > 1 && ProcessInfo.processInfo.environment["TW_LINEAR"] == nil ? .trilinear : .linear
             let anchor = CGPoint(x: border.minX + want.origin.x, y: border.minY + want.origin.y)
             layer.anchorPoint = CGPoint(x: (anchor.x - ink.minX) / ink.width, y: (anchor.y - ink.minY) / ink.height)
             layer.position = anchor
             if let index = order[String(id)] {
-                layer.zPosition = 1 + CGFloat(index.intValue) * 1e-6
+                WidgetCompositor.setOrder(layer, 1 + CGFloat(index.intValue) * 1e-6)
             } else if promoted[id] == nil {
-                layer.zPosition = 1
+                WidgetCompositor.setOrder(layer, 1)
             }
             CATransaction.commit()
             if promoted[id] == nil {
                 promotions += 1
             }
-            promoted[id] = Promoted(layer: layer, box: border, origin: want.origin, ink: ink)
+            promoted[id] = Promoted(layer: layer, box: border, origin: want.origin, ink: ink, effects: effects, template: owns ? effectTemplates[id] : nil)
             rasterSignatures[id] = signature
         }
         for id in rasterSignatures.keys where promoted[id] == nil {
@@ -1066,7 +1247,7 @@ final class WidgetCompositor {
         }
         var usedContainers: Set<ObjectIdentifier> = []
         for container in containers.values {
-            container.zPosition = 0
+            WidgetCompositor.setOrder(container, 0)
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -1096,13 +1277,27 @@ final class WidgetCompositor {
                     container.addSublayer(item.layer)
                 }
                 item.layer.position = CGPoint(x: anchor.x - clip.rect.minX, y: anchor.y - clip.rect.minY)
-                container.zPosition = min(container.zPosition == 0 ? item.layer.zPosition : container.zPosition, item.layer.zPosition)
+                WidgetCompositor.setOrder(container, min(WidgetCompositor.order(container) == 0 ? WidgetCompositor.order(item.layer) : WidgetCompositor.order(container), WidgetCompositor.order(item.layer)))
             } else {
                 if item.layer.superlayer !== host {
                     host.addSublayer(item.layer)
                 }
                 item.layer.position = anchor
             }
+        }
+        for item in promoted.values {
+            guard let effects = item.effects, let backdrop = effects.backdropLayer else {
+                continue
+            }
+            guard let parent = item.layer.superlayer else {
+                backdrop.removeFromSuperlayer()
+                continue
+            }
+            if backdrop.superlayer !== parent {
+                parent.insertSublayer(backdrop, below: item.layer)
+            }
+            backdrop.frame = item.layer.convert(effects.box, to: parent)
+            WidgetCompositor.setOrder(backdrop, WidgetCompositor.order(item.layer) - 1e-7)
         }
         for (key, container) in containers where !usedContainers.contains(ObjectIdentifier(container)) {
             container.removeFromSuperlayer()
@@ -1111,7 +1306,7 @@ final class WidgetCompositor {
         clipOf = clips.filter { entry in promoted[entry.key].map { $0.layer.superlayer !== host } ?? false }
         promotedClips = clips.filter { promoted[$0.key] != nil }
         ignoredIDs = Set(promoted.keys.map { String($0) })
-        let members = Set(promoted.values.map { ObjectIdentifier($0.layer) }).union(containers.values.map { ObjectIdentifier($0) })
+        let members = Set(promoted.values.map { ObjectIdentifier($0.layer) }).union(containers.values.map { ObjectIdentifier($0) }).union(promoted.values.compactMap { $0.effects?.backdropLayer.map { ObjectIdentifier($0) } })
         WidgetCompositor.orderSublayers(of: host, members: members)
         for container in containers.values {
             WidgetCompositor.orderSublayers(of: container, members: members)
@@ -1122,17 +1317,43 @@ final class WidgetCompositor {
         CATransaction.commit()
     }
 
+    static let orderKey = "twOrder"
+
+    static func order(_ layer: CALayer) -> CGFloat {
+        return (layer.value(forKey: orderKey) as? CGFloat) ?? layer.zPosition
+    }
+
+    static func flattens(_ layer: CALayer) -> Bool {
+        if layer.filters?.isEmpty == false || layer.backgroundFilters?.isEmpty == false {
+            return true
+        }
+        return layer.sublayers?.contains { $0.backgroundFilters?.isEmpty == false || $0.filters?.isEmpty == false } == true
+    }
+
+    static func setOrder(_ layer: CALayer, _ value: CGFloat) {
+        layer.setValue(value, forKey: orderKey)
+        let flat = layer.superlayer?.sublayers?.contains { ($0.value(forKey: orderKey) as? CGFloat) != nil && flattens($0) } ?? false
+        layer.zPosition = flat || flattens(layer) ? 0 : value
+    }
+
     static func orderSublayers(of parent: CALayer, members: Set<ObjectIdentifier>) {
         let children = (parent.sublayers ?? []).filter { members.contains(ObjectIdentifier($0)) }
+        let flat = children.contains { flattens($0) }
+        for child in children {
+            let z = flat ? 0 : order(child)
+            if child.zPosition != z {
+                child.zPosition = z
+            }
+        }
         var sorted = true
-        for index in children.indices.dropFirst() where children[index - 1].zPosition > children[index].zPosition {
+        for index in children.indices.dropFirst() where order(children[index - 1]) > order(children[index]) {
             sorted = false
             break
         }
-        if sorted || children.contains(where: { $0.animationKeys()?.isEmpty == false }) {
+        if sorted || children.contains(where: { $0.animationKeys()?.isEmpty == false }) && !children.contains(where: { $0.zPosition != order($0) }) {
             return
         }
-        for child in children.enumerated().sorted(by: { ($0.element.zPosition, $0.offset) < ($1.element.zPosition, $1.offset) }).map({ $0.element }) {
+        for child in children.enumerated().sorted(by: { (order($0.element), $0.offset) < (order($1.element), $1.offset) }).map({ $0.element }) {
             parent.addSublayer(child)
         }
     }
@@ -1353,29 +1574,29 @@ final class WidgetCompositor {
             ctx.translateBy(x: -layer.anchorPoint.x * size.width, y: -layer.anchorPoint.y * size.height)
             ctx.setAlpha(CGFloat(layer.opacity))
             ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-            if let contents = model.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+            if let contents = model.contents ?? model.sublayers?.first(where: { $0.name == "tw.content" })?.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
                 ctx.saveGState()
                 ctx.translateBy(x: 0, y: size.height)
                 ctx.scaleBy(x: 1, y: -1)
                 ctx.draw(contents as! CGImage, in: CGRect(origin: .zero, size: size))
                 ctx.restoreGState()
             }
-            for child in (model.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { $0.zPosition < $1.zPosition }) {
+            for child in (model.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
                 paint(child)
             }
             ctx.endTransparencyLayer()
             ctx.restoreGState()
         }
-        for item in promoted.values.filter({ $0.layer.superlayer === host }).sorted(by: { $0.layer.zPosition < $1.layer.zPosition }) {
+        for item in promoted.values.filter({ $0.layer.superlayer === host }).sorted(by: { WidgetCompositor.order($0.layer) < WidgetCompositor.order($1.layer) }) {
             paint(item.layer)
         }
-        for container in containers.values.sorted(by: { $0.zPosition < $1.zPosition }) {
+        for container in containers.values.sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
             ctx.saveGState()
             ctx.translateBy(x: container.frame.minX, y: container.frame.minY)
             let clip = clipOf.values.first { $0.rect == container.frame }
             ctx.addPath(WidgetCompositor.roundedPath(CGRect(origin: .zero, size: container.bounds.size), clip?.radii ?? [CGFloat](repeating: 0, count: 8)))
             ctx.clip()
-            for child in (container.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { $0.zPosition < $1.zPosition }) {
+            for child in (container.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
                 paint(child)
             }
             ctx.restoreGState()
@@ -1401,6 +1622,13 @@ final class WidgetCompositor {
             let transform = parse(transformText, box: item.box.size, id: id) ?? .identity
             item.layer.setAffineTransform(transform)
             item.layer.opacity = Float(opacityText.flatMap { Double($0) } ?? 1)
+            if item.ownsEffects, let effects = item.effects {
+                let filterText = values.last { $0.0 == "filter" }?.1 ?? base["filter"]
+                let shadowText = values.last { $0.0 == "box-shadow" }?.1 ?? base["box-shadow"]
+                if let template = item.template, let current = WidgetEffects.parse(filter: resolved(filterText, id: id), shadow: resolved(shadowText, id: id))?.aligned(to: template), current != effects.effects {
+                    effects.apply(current, to: item.layer)
+                }
+            }
         }
         CATransaction.commit()
         return rest

@@ -338,7 +338,7 @@ public final class LiteHTMLWidgetRenderer {
         layout(overrides)
         let scanStart = CACurrentMediaTime()
         var declarations: [Int: [String: String]] = [:]
-        for (key, values) in document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: WidgetAnimator.entryProperties) ?? [:] {
+        for (key, values) in document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow"]) ?? [:] {
             if let id = Int(key) {
                 declarations[id] = values
             }
@@ -1663,6 +1663,7 @@ final class WidgetDocumentView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        layerUsesCoreImageFilters = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
