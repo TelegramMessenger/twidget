@@ -250,6 +250,9 @@ struct CSSTiming {
 enum CSSTime {
     static func parse(_ text: String) -> Double? {
         let t = text.trimmingCharacters(in: .whitespaces).lowercased()
+        if t.hasPrefix("calc(") {
+            return calc(t)
+        }
         if t.hasSuffix("ms"), let value = Double(t.dropLast(2)) {
             return value / 1000
         }
@@ -257,6 +260,127 @@ enum CSSTime {
             return value
         }
         return nil
+    }
+
+    private struct Quantity {
+        var value: Double
+        var time: Bool
+    }
+
+    private static func calc(_ text: String) -> Double? {
+        guard text.utf8.count <= 512 else {
+            return nil
+        }
+        var scanner = Scanner(Array(text.utf8))
+        guard let result = scanner.sum(depth: 0), scanner.atEnd, result.time, result.value.isFinite else {
+            return nil
+        }
+        return result.value
+    }
+
+    private struct Scanner {
+        let bytes: [UInt8]
+        var index = 0
+
+        init(_ bytes: [UInt8]) {
+            self.bytes = bytes
+        }
+
+        var atEnd: Bool {
+            mutating get {
+                skipSpaces()
+                return index == bytes.count
+            }
+        }
+
+        mutating func skipSpaces() {
+            while index < bytes.count, bytes[index] == 0x20 || bytes[index] == 0x09 || bytes[index] == 0x0A {
+                index += 1
+            }
+        }
+
+        mutating func take(_ byte: UInt8) -> Bool {
+            skipSpaces()
+            if index < bytes.count, bytes[index] == byte {
+                index += 1
+                return true
+            }
+            return false
+        }
+
+        mutating func sum(depth: Int) -> Quantity? {
+            guard depth < 16, var left = product(depth: depth) else {
+                return nil
+            }
+            while true {
+                if take(0x2B) {
+                    guard let right = product(depth: depth), right.time == left.time else {
+                        return nil
+                    }
+                    left.value += right.value
+                } else if take(0x2D) {
+                    guard let right = product(depth: depth), right.time == left.time else {
+                        return nil
+                    }
+                    left.value -= right.value
+                } else {
+                    return left
+                }
+            }
+        }
+
+        mutating func product(depth: Int) -> Quantity? {
+            guard var left = factor(depth: depth) else {
+                return nil
+            }
+            while true {
+                if take(0x2A) {
+                    guard let right = factor(depth: depth), !(left.time && right.time) else {
+                        return nil
+                    }
+                    left = Quantity(value: left.value * right.value, time: left.time || right.time)
+                } else if take(0x2F) {
+                    guard let right = factor(depth: depth), !right.time, right.value != 0 else {
+                        return nil
+                    }
+                    left.value /= right.value
+                } else {
+                    return left
+                }
+            }
+        }
+
+        mutating func factor(depth: Int) -> Quantity? {
+            skipSpaces()
+            if bytes[index...].starts(with: Array("calc(".utf8)) {
+                index += 4
+            }
+            if take(0x28) {
+                guard let inner = sum(depth: depth + 1), take(0x29) else {
+                    return nil
+                }
+                return inner
+            }
+            let start = index
+            if index < bytes.count, bytes[index] == 0x2D || bytes[index] == 0x2B {
+                index += 1
+            }
+            while index < bytes.count, (bytes[index] >= 0x30 && bytes[index] <= 0x39) || bytes[index] == 0x2E {
+                index += 1
+            }
+            guard index > start, let number = Double(String(decoding: bytes[start..<index], as: UTF8.self)) else {
+                return nil
+            }
+            if bytes[index...].starts(with: Array("ms".utf8)) {
+                index += 2
+                return Quantity(value: number / 1000, time: true)
+            }
+            if index < bytes.count, bytes[index] == 0x73 {
+                index += 1
+                return Quantity(value: number, time: true)
+            }
+            return Quantity(value: number, time: false)
+        }
     }
 }
 

@@ -156,4 +156,25 @@ final class TransformPrimitiveTests: XCTestCase {
         XCTAssertEqual(CSSInterpolate.mix("skewX(10deg)", "skew(20deg, 4deg)", 0.5), "skew(15deg, 2deg)")
         XCTAssertEqual(CSSInterpolate.mix("scale(1)", "rotate(10deg)", 0.25), "scale(1)")
     }
+
+    func testTimesEvaluateCalc() {
+        XCTAssertEqual(CSSTime.parse("calc(2 * 30ms)")!, 0.06, accuracy: 1e-9)
+        XCTAssertEqual(CSSTime.parse("calc(30ms * 2 + 0.1s)")!, 0.16, accuracy: 1e-9)
+        XCTAssertEqual(CSSTime.parse("calc((1s - 200ms) / 4)")!, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(CSSTime.parse("calc(0 * 30ms)")!, 0, accuracy: 1e-9)
+        XCTAssertNil(CSSTime.parse("calc(2 * 3)"))
+        XCTAssertNil(CSSTime.parse("calc(1s * 2s)"))
+        XCTAssertNil(CSSTime.parse("calc(1s / 0)"))
+        XCTAssertNil(CSSTime.parse("calc(1s + 2)"))
+        XCTAssertNil(CSSTime.parse("calc(1s"))
+        XCTAssertNil(CSSTime.parse("calc(" + String(repeating: "(", count: 40) + "1s" + String(repeating: ")", count: 41)))
+        XCTAssertNil(CSSTime.parse("calc(" + String(repeating: "1s + ", count: 200) + "1s)"))
+    }
+
+    func testTransitionShorthandTakesCalcDelay() {
+        let specs = CSSTransitionSpec.list(["transition": "height 560ms cubic-bezier(.33 , 1 , .68 , 1) calc(3 * 30ms) , opacity 350ms ease"])
+        XCTAssertEqual(specs.map { $0.property }, ["height", "opacity"])
+        XCTAssertEqual(specs[0].duration, 0.56, accuracy: 1e-9)
+        XCTAssertEqual(specs[0].delay, 0.09, accuracy: 1e-9)
+    }
 }
