@@ -78,7 +78,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(
             name: "TwidgetRendererTests",
-            dependencies: ["TwidgetRenderer", "HTMLScript"],
+            dependencies: ["TwidgetRenderer", "HTMLScript", "HTMLSandbox", "LiteHTML", "CQuickJSNG"],
             path: "Tests/TwidgetRendererTests"),
         .testTarget(
             name: "LiteHTMLTests",
