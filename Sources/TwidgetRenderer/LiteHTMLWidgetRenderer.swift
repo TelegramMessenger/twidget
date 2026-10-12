@@ -37,6 +37,7 @@ public final class LiteHTMLWidgetRenderer {
     private var listened: Set<String> = []
     private var prevented: Set<String> = []
     private var lastSize = ""
+    private var sizeTransition = false
     private var frozen = false
     private var destroyed = false
     private var needsRender = false
@@ -198,7 +199,7 @@ public final class LiteHTMLWidgetRenderer {
             }
             noteScriptedTransforms(ops)
             var capture: WidgetMagicMove.Capture?
-            if dom.usesTransitions, let document = document, !frozen, isOnScreen, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, WidgetMagicMove.isStructural(ops, dom: dom) {
+            if dom.usesTransitions, let document = document, !frozen, isOnScreen, WidgetMagicMove.isStructural(ops, dom: dom) {
                 capture = magic.capture(dom: dom, document: document)
             }
             for op in ops {
@@ -208,7 +209,9 @@ public final class LiteHTMLWidgetRenderer {
                 magic.collectLeaving(&pending, dom: dom, document: document, scale: documentView.scale)
                 capture = pending
             }
+            sizeTransition = capture != nil
             render()
+            sizeTransition = false
             if let capture = capture, let document = document, magic.run(capture, dom: dom, document: document, skip: animator.animatedIDs().union(compositor.ids), scale: documentView.scale) {
                 applyExclusions()
             }
@@ -777,7 +780,7 @@ public final class LiteHTMLWidgetRenderer {
         guard let document = document else {
             return
         }
-        let message: [String: Any] = [
+        var message: [String: Any] = [
             "type": "size",
             "width": Double(width),
             "height": Double(ceil(document.size.height)),
@@ -787,6 +790,9 @@ public final class LiteHTMLWidgetRenderer {
         ]
         let key = "\(message["height"]!)|\(message["width"]!)|\(message["innerHeight"]!)|\(message["dpr"]!)"
         if key != lastSize {
+            if sizeTransition {
+                message["transition"] = MagicMoveStage.timing
+            }
             lastSize = key
             post(message)
         }

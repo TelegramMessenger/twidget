@@ -9,10 +9,12 @@ final class WidgetMagicMove {
         let presented: [String: CGRect]
         let signatures: [String: Int]
         var leaving: [MagicMoveStage.Snapshot] = []
-        var changed: [String: MagicMoveStage.Snapshot] = [:]
+        var previous: [String: MagicMoveStage.Snapshot] = [:]
+        var changed: Set<String> = []
     }
 
     static let attribute = "data-transition"
+    static let frozenTime = ProcessInfo.processInfo.environment["TW_MAGIC_TIME"].flatMap(Double.init)
 
     private let stage: MagicMoveStage
     private(set) var excluded: Set<Int> = []
@@ -149,10 +151,11 @@ final class WidgetMagicMove {
 
     private static func snapshot(_ document: LHDocument, id: Int, scale: CGFloat) -> MagicMoveStage.Snapshot? {
         var ink = CGRect.zero, border = CGRect.zero
-        guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: scale, inkBounds: &ink, borderBox: &border) else {
+        var radii = [CGFloat](repeating: 0, count: 8)
+        guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: scale, inkBounds: &ink, borderBox: &border, radii: &radii) else {
             return nil
         }
-        return MagicMoveStage.Snapshot(image: image, ink: ink, border: border)
+        return MagicMoveStage.Snapshot(image: image, ink: ink, border: border, corners: MagicMoveCorners(radii: radii))
     }
 
     func capture(dom: WidgetDOM, document: LHDocument) -> Capture? {
@@ -168,12 +171,19 @@ final class WidgetMagicMove {
         var signatures: [String: Int] = [:]
         let now = WidgetMagicMove.keyedNodes(dom, signatures: &signatures).keyed
         let gone = Set(capture.keyed.keys.filter { now[$0] == nil })
-        let changed = Set(capture.signatures.compactMap { entry in signatures[entry.key].flatMap { $0 != entry.value ? entry.key : nil } })
+        capture.changed = Set(capture.signatures.compactMap { entry in signatures[entry.key].flatMap { $0 != entry.value ? entry.key : nil } })
         var pixels = 0
         var count = 0
-        for key in (gone.sorted() + changed.sorted()) {
-            let group = gone.contains(key) ? gone : changed
-            if !(capture.ancestors[key] ?? []).isDisjoint(with: group) {
+        let ranked = capture.keyed.keys.sorted { a, b in
+            let ga = gone.contains(a), gb = gone.contains(b)
+            if ga != gb {
+                return ga
+            }
+            let da = capture.ancestors[a]?.count ?? 0, db = capture.ancestors[b]?.count ?? 0
+            return da != db ? da < db : a < b
+        }
+        for key in ranked {
+            if gone.contains(key), !(capture.ancestors[key] ?? []).isDisjoint(with: gone) {
                 continue
             }
             guard let id = capture.keyed[key], let rect = capture.rects[id], rect.width > 0, rect.height > 0 else {
@@ -184,11 +194,17 @@ final class WidgetMagicMove {
             if count > MagicMoveStage.maxLayers / 2 || pixels > MagicMoveStage.maxPixels / 2 {
                 break
             }
+            if stage.isInFlight(key) {
+                if gone.contains(key), let presented = stage.presentedSnapshot(for: key, scale: scale) {
+                    capture.leaving.append(presented)
+                }
+                continue
+            }
             if let snapshot = WidgetMagicMove.snapshot(document, id: id, scale: scale) {
                 if gone.contains(key) {
                     capture.leaving.append(snapshot)
                 } else {
-                    capture.changed[key] = snapshot
+                    capture.previous[key] = snapshot
                 }
             }
         }
@@ -198,12 +214,16 @@ final class WidgetMagicMove {
         let (keyed, ancestors) = WidgetMagicMove.keyedNodes(dom)
         let rects = WidgetMagicMove.rects(document, of: Array(keyed.values))
         var candidates: [String: (id: Int, from: CGRect?, rect: CGRect)] = [:]
+        var inPlace: [String: (id: Int, from: CGRect?, rect: CGRect)] = [:]
         for (key, id) in keyed {
             guard !skip.contains(id), let rect = rects[id], rect.width > 0, rect.height > 0 else {
                 continue
             }
             if let old = capture.presented[key] ?? capture.keyed[key].flatMap({ capture.rects[$0] }) {
                 if MagicMoveStage.close(old, rect) {
+                    if capture.changed.contains(key), capture.previous[key] != nil {
+                        inPlace[key] = (id, old, rect)
+                    }
                     continue
                 }
                 candidates[key] = (id, old, rect)
@@ -213,29 +233,44 @@ final class WidgetMagicMove {
         }
         let chosen = Set(candidates.keys)
         candidates = candidates.filter { (ancestors[$0.key] ?? []).isDisjoint(with: chosen) }
+        let riding = Set(chosen.flatMap { ancestors[$0] ?? [] })
+        let fading = Set(inPlace.keys)
+        for (key, item) in inPlace where !riding.contains(key) && (ancestors[key] ?? []).isDisjoint(with: chosen.union(fading)) {
+            candidates[key] = item
+        }
         if candidates.isEmpty && capture.leaving.isEmpty {
             return false
         }
         var budget = MagicMoveStage.maxPixels
         var items: [MagicMoveStage.Item] = capture.leaving.map { .leave($0) }
         var exclusions: Set<Int> = []
+        let paintOrder = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(candidates.values.map { String($0.id) }))
+        var moving: [(order: Int, item: MagicMoveStage.Item)] = []
         for (key, item) in candidates.sorted(by: { $0.value.rect.width * $0.value.rect.height > $1.value.rect.width * $1.value.rect.height }) {
             let pixels = Int((item.rect.width + 32) * scale * (item.rect.height + 32) * scale)
-            guard items.count < MagicMoveStage.maxLayers, pixels <= budget, let snapshot = WidgetMagicMove.snapshot(document, id: item.id, scale: scale) else {
+            guard items.count + moving.count < MagicMoveStage.maxLayers, pixels <= budget, let snapshot = WidgetMagicMove.snapshot(document, id: item.id, scale: scale) else {
                 stage.cancel()
                 excluded = []
                 return true
             }
             budget -= pixels
+            let order = paintOrder[String(item.id)]?.intValue ?? Int.max
             if let from = item.from {
-                items.append(.move(key: key, from: from, to: snapshot, previous: capture.changed[key]))
+                let old = capture.previous[key]
+                let differs = capture.changed.contains(key) || old.map { MagicMoveGeometry.kind(from: $0.border, to: snapshot.border) == .resize } ?? false
+                moving.append((order, .move(key: key, from: from, to: snapshot, previous: differs ? old : nil)))
             } else {
-                items.append(.enter(key: key, snapshot))
+                moving.append((order, .enter(key: key, snapshot)))
             }
             exclusions.insert(item.id)
         }
+        items += moving.enumerated().sorted { ($0.element.order, $0.offset) < ($1.element.order, $1.offset) }.map { $0.element.item }
         transitions += 1
+        let begin = stage.clock()
         stage.play(items, scale: scale)
+        if let frozen = WidgetMagicMove.frozenTime {
+            stage.freeze(at: begin + frozen)
+        }
         excluded = exclusions
         return true
     }
