@@ -682,7 +682,7 @@ final class WidgetCompositor {
         driven[id] = nil
         var added: [(String, CAKeyframeAnimation)] = []
         for bake in bakes {
-            guard let begin = bake.begin, let track = WidgetCompositor.bake(WidgetAnimator.Baked(spec: CSSAnimationSpec(), start: 0, value: bake.value), base: [:], box: item.box.size, origin: item.origin, resolve: { [self] in self.resolved($0, id: id) }) else {
+            guard let begin = bake.begin, let track = WidgetCompositor.bake(WidgetAnimator.Baked(spec: CSSAnimationSpec(), start: 0, value: { progress in let v = bake.value(progress); return (v.transform, v.opacity, nil, nil) }), base: [:], box: item.box.size, origin: item.origin, resolve: { [self] in self.resolved($0, id: id) }) else {
                 return
             }
             func configure(_ animation: CAKeyframeAnimation, _ values: [Any]) {

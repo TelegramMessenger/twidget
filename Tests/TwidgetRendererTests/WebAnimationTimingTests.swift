@@ -206,7 +206,7 @@ final class WebAnimationHandoffTests: XCTestCase {
         var base: [String: Any] = ["aid": 1, "target": 5, "startTime": 1000, "playbackRate": 1, "keyframes": [["offset": 0, "values": ["opacity": "0"]], ["offset": 0.3, "easing": "ease-in", "values": ["opacity": "0.8"]], ["offset": 1, "values": ["opacity": "0.2"]]]]
         base.merge(object) { $1 }
         let animation = WebAnimation.parse(base)!
-        guard let bake = WidgetWebAnimations.bake(animation, base: [:]), let track = WidgetCompositor.bake(WidgetAnimator.Baked(spec: CSSAnimationSpec(), start: 0, value: bake.value), base: [:], box: CGSize(width: 100, height: 40), origin: CGPoint(x: 50, y: 20)) else {
+        guard let bake = WidgetWebAnimations.bake(animation, base: [:]), let track = WidgetCompositor.bake(WidgetAnimator.Baked(spec: CSSAnimationSpec(), start: 0, value: { progress in let v = bake.value(progress); return (v.transform, v.opacity, nil, nil) }), base: [:], box: CGSize(width: 100, height: 40), origin: CGPoint(x: 50, y: 20)) else {
             XCTFail("not bakeable", file: file, line: line)
             return
         }

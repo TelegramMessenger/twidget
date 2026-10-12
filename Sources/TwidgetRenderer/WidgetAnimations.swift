@@ -945,7 +945,7 @@ final class WidgetAnimator {
             for property in WebAnimation.compositable where webBase[property] == nil {
                 webBase[property] = underlying?(id, property)
             }
-            out.append(contentsOf: web.reachableValues(id, base: webBase))
+            out.append(contentsOf: web.reachableValues(id, base: webBase).map { ($0.transform, $0.opacity, base["filter"], base["box-shadow"]) })
         }
         return out
     }
