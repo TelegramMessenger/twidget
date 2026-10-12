@@ -443,8 +443,9 @@ public final class LiteHTMLWidgetRenderer {
         if let previous = previousList, documentView.document != nil {
             let rects = list.changedRects(since: previous).map { $0.rectValue }
             if !rects.isEmpty {
-                let union = rects.reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -1, dy: -1)
-                documentView.invalidate(union)
+                for rect in rects {
+                    documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
+                }
             }
         } else {
             documentView.invalidate(nil)
@@ -1250,8 +1251,9 @@ final class WidgetDocumentView: NSView {
             surfaceSpace = space
             surfaceWidth = pixelWidth
         }
-        let tileHeight = WidgetDocumentView.tileHeight
-        let count = Int(ceil(height / tileHeight))
+        let tileSize = WidgetDocumentView.tileHeight
+        let columns = max(1, Int(ceil(bounds.width / tileSize)))
+        let count = columns * Int(ceil(height / tileSize))
         while tiles.count > count {
             tiles.removeLast().layer.removeFromSuperlayer()
         }
@@ -1268,8 +1270,9 @@ final class WidgetDocumentView: NSView {
         CATransaction.setDisableActions(true)
         layer.contents = nil
         for (index, tile) in tiles.enumerated() {
-            let top = CGFloat(index) * tileHeight
-            let rect = CGRect(x: 0, y: top, width: bounds.width, height: min(tileHeight, height - top))
+            let top = CGFloat(index / columns) * tileSize
+            let left = CGFloat(index % columns) * tileSize
+            let rect = CGRect(x: left, y: top, width: min(tileSize, bounds.width - left), height: min(tileSize, height - top))
             if rect != tile.rect {
                 tile.rect = rect
                 tile.surfaces.removeAll()
@@ -1280,8 +1283,9 @@ final class WidgetDocumentView: NSView {
                 continue
             }
             let pixelHeight = Int(ceil(rect.height * scale))
+            let tileWidth = Int(ceil(rect.maxX * scale)) - Int(floor(rect.minX * scale))
             var target = tile.surfaces.first { $0 !== tile.shown && !IOSurfaceIsInUse($0.surface) }
-            if target == nil && tile.surfaces.count < 3, let made = Surface(width: pixelWidth, height: pixelHeight, space: space) {
+            if target == nil && tile.surfaces.count < 3, let made = Surface(width: max(1, tileWidth), height: pixelHeight, space: space) {
                 made.stale = rect
                 tile.surfaces.append(made)
                 target = made
@@ -1299,7 +1303,7 @@ final class WidgetDocumentView: NSView {
                 ctx.saveGState()
                 ctx.translateBy(x: 0, y: CGFloat(surface.height))
                 ctx.scaleBy(x: scale, y: -scale)
-                ctx.translateBy(x: 0, y: -top)
+                ctx.translateBy(x: -left, y: -top)
                 ctx.setAllowsFontSmoothing(false)
                 ctx.setShouldAntialias(true)
                 ctx.clip(to: aligned)
