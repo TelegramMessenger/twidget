@@ -386,6 +386,10 @@ final class WidgetCompositor {
         }
         promoted.removeAll()
         driven.removeAll()
+        for container in containers.values {
+            container.removeFromSuperlayer()
+        }
+        containers.removeAll()
     }
 
     func undrive() {
@@ -661,12 +665,32 @@ final class WidgetCompositor {
                 reaches[id] = reaches[id]?.map { $0.insetBy(dx: -dx, dy: -dy) }
             }
         }
+        var clips: [Int: Clip] = [:]
+        for id in wanted.keys {
+            var rect = CGRect.zero
+            var radii = [CGFloat](repeating: 0, count: 8)
+            if document.clipOfElement(attribute: WidgetDOM.idAttribute, value: String(id), rect: &rect, radii: &radii) {
+                clips[id] = Clip(rect: rect, radii: radii)
+            }
+        }
+        for id in wanted.keys {
+            for other in wanted.keys where other != id && WidgetCompositor.isAncestor(other, of: id, dom: dom) && clips[other] != clips[id] {
+                wanted[id] = nil
+            }
+        }
+        func unobscured(_ id: Int, _ reach: CGRect, _ ignoring: Set<String>) -> Bool {
+            if let clip = clips[id] {
+                let clipped = reach.intersection(clip.rect)
+                return !clipped.isNull && document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: clipped, ignoring: ignoring, clipped: true)
+            }
+            return document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach, ignoring: ignoring)
+        }
         var accepted = wanted
         for _ in 0..<4 {
             let ignoring = Set(accepted.keys.map { String($0) })
             var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
             for (id, want) in accepted {
-                if let reach = reaches[id]?.first(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: $0, ignoring: ignoring) }) {
+                if let reach = reaches[id]?.first(where: { unobscured(id, $0, ignoring) }) {
                     next[id] = want
                     if scriptedWanted[id] != nil {
                         scriptedWanted[id]?.reach = reach
@@ -693,8 +717,8 @@ final class WidgetCompositor {
         }
         if accepted.count > 1 {
             let ignoring = Set(accepted.keys.map { String($0) })
-            accepted = accepted.filter { entry in reaches[entry.key]?.contains(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(entry.key), unobscuredIn: $0, ignoring: ignoring) }) ?? false }
-        } else if let only = accepted.first, !(reaches[only.key]?.contains(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(only.key), unobscuredIn: $0) }) ?? false) {
+            accepted = accepted.filter { entry in reaches[entry.key]?.contains(where: { unobscured(entry.key, $0, ignoring) }) ?? false }
+        } else if let only = accepted.first, !(reaches[only.key]?.contains(where: { unobscured(only.key, $0, []) }) ?? false) {
             accepted = [:]
         }
         wanted = accepted
@@ -744,6 +768,10 @@ final class WidgetCompositor {
         for id in rasterSignatures.keys where promoted[id] == nil {
             rasterSignatures[id] = nil
         }
+        var usedContainers: Set<ObjectIdentifier> = []
+        for container in containers.values {
+            container.zPosition = 0
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (id, item) in promoted.sorted(by: { WidgetDOM.depth(of: dom.node($0.key) ?? dom.body) < WidgetDOM.depth(of: dom.node($1.key) ?? dom.body) }) {
@@ -759,6 +787,14 @@ final class WidgetCompositor {
                     parent.layer.addSublayer(item.layer)
                 }
                 item.layer.position = CGPoint(x: anchor.x - parent.ink.minX, y: anchor.y - parent.ink.minY)
+            } else if let clip = clips[id] {
+                let container = clipContainer(clip, host: host)
+                usedContainers.insert(ObjectIdentifier(container))
+                if item.layer.superlayer !== container {
+                    container.addSublayer(item.layer)
+                }
+                item.layer.position = CGPoint(x: anchor.x - clip.rect.minX, y: anchor.y - clip.rect.minY)
+                container.zPosition = min(container.zPosition == 0 ? item.layer.zPosition : container.zPosition, item.layer.zPosition)
             } else {
                 if item.layer.superlayer !== host {
                     host.addSublayer(item.layer)
@@ -766,7 +802,73 @@ final class WidgetCompositor {
                 item.layer.position = anchor
             }
         }
+        for (key, container) in containers where !usedContainers.contains(ObjectIdentifier(container)) {
+            container.removeFromSuperlayer()
+            containers[key] = nil
+        }
+        clipOf = clips.filter { promoted[$0.key] != nil }
         CATransaction.commit()
+    }
+
+    struct Clip: Equatable {
+        let rect: CGRect
+        let radii: [CGFloat]
+    }
+
+    private var containers: [String: CALayer] = [:]
+    private var clipOf: [Int: Clip] = [:]
+
+    private func clipContainer(_ clip: Clip, host: CALayer) -> CALayer {
+        let key = "\(clip.rect)|\(clip.radii)"
+        if let existing = containers[key] {
+            return existing
+        }
+        let container = CALayer()
+        container.anchorPoint = .zero
+        container.frame = clip.rect
+        container.masksToBounds = true
+        if clip.radii.contains(where: { $0 > 0 }) {
+            let mask = CAShapeLayer()
+            mask.frame = CGRect(origin: .zero, size: clip.rect.size)
+            mask.path = WidgetCompositor.roundedPath(CGRect(origin: .zero, size: clip.rect.size), clip.radii)
+            container.mask = mask
+        }
+        host.addSublayer(container)
+        containers[key] = container
+        return container
+    }
+
+    static func roundedPath(_ rect: CGRect, _ r: [CGFloat]) -> CGPath {
+        let path = CGMutablePath()
+        guard rect.width > 0, rect.height > 0 else {
+            return path
+        }
+        let k: CGFloat = 0.5522847498
+        let hw = rect.width / 2, hh = rect.height / 2
+        let tlx = min(max(r[0], 0), hw), tly = min(max(r[1], 0), hh)
+        let trx = min(max(r[2], 0), hw), try_ = min(max(r[3], 0), hh)
+        let brx = min(max(r[4], 0), hw), bry = min(max(r[5], 0), hh)
+        let blx = min(max(r[6], 0), hw), bly = min(max(r[7], 0), hh)
+        let x0 = rect.minX, y0 = rect.minY, x1 = rect.maxX, y1 = rect.maxY
+        path.move(to: CGPoint(x: x0 + tlx, y: y0))
+        path.addLine(to: CGPoint(x: x1 - trx, y: y0))
+        if trx > 0 && try_ > 0 {
+            path.addCurve(to: CGPoint(x: x1, y: y0 + try_), control1: CGPoint(x: x1 - trx + trx * k, y: y0), control2: CGPoint(x: x1, y: y0 + try_ - try_ * k))
+        }
+        path.addLine(to: CGPoint(x: x1, y: y1 - bry))
+        if brx > 0 && bry > 0 {
+            path.addCurve(to: CGPoint(x: x1 - brx, y: y1), control1: CGPoint(x: x1, y: y1 - bry + bry * k), control2: CGPoint(x: x1 - brx + brx * k, y: y1))
+        }
+        path.addLine(to: CGPoint(x: x0 + blx, y: y1))
+        if blx > 0 && bly > 0 {
+            path.addCurve(to: CGPoint(x: x0, y: y1 - bly), control1: CGPoint(x: x0 + blx - blx * k, y: y1), control2: CGPoint(x: x0, y: y1 - bly + bly * k))
+        }
+        path.addLine(to: CGPoint(x: x0, y: y0 + tly))
+        if tlx > 0 && tly > 0 {
+            path.addCurve(to: CGPoint(x: x0 + tlx, y: y0), control1: CGPoint(x: x0, y: y0 + tly - tly * k), control2: CGPoint(x: x0 + tlx - tlx * k, y: y0))
+        }
+        path.closeSubpath()
+        return path
     }
 
     private weak var currentDOM: WidgetDOM?
@@ -856,6 +958,9 @@ final class WidgetCompositor {
             if shown.opacity <= 0 {
                 continue
             }
+            if let clip = clipOf.first(where: { promoted[$0.key]?.layer === item.layer })?.value, !clip.rect.contains(point) {
+                continue
+            }
             let local = shown.convert(point, from: host?.presentation() ?? host)
             if item.layer.bounds.contains(local) {
                 let mapped = CGPoint(x: item.ink.minX + local.x, y: item.ink.minY + local.y)
@@ -893,6 +998,17 @@ final class WidgetCompositor {
         }
         for item in promoted.values.filter({ $0.layer.superlayer === host }).sorted(by: { $0.layer.zPosition < $1.layer.zPosition }) {
             paint(item.layer)
+        }
+        for container in containers.values.sorted(by: { $0.zPosition < $1.zPosition }) {
+            ctx.saveGState()
+            ctx.translateBy(x: container.frame.minX, y: container.frame.minY)
+            let clip = clipOf.values.first { $0.rect == container.frame }
+            ctx.addPath(WidgetCompositor.roundedPath(CGRect(origin: .zero, size: container.bounds.size), clip?.radii ?? [CGFloat](repeating: 0, count: 8)))
+            ctx.clip()
+            for child in (container.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { $0.zPosition < $1.zPosition }) {
+                paint(child)
+            }
+            ctx.restoreGState()
         }
     }
 

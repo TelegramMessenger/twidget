@@ -789,7 +789,42 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     return result;
 }
 
+- (BOOL)clipOfElementWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect *)rect radii:(CGFloat *)radii
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri)
+        return NO;
+    std::shared_ptr<lh::render_item> clip;
+    for(auto p = ri->parent(); p; p = p->parent())
+    {
+        if(p->src_el()->css().get_overflow() > lh::overflow_visible)
+        {
+            if(clip)
+                return NO;
+            clip = p;
+        }
+    }
+    if(!clip)
+        return NO;
+    CGRect border = BorderBox(clip);
+    CGFloat bl = clip->border_left().value(), bt = clip->border_top().value(), br = clip->border_right().value(), bb = clip->border_bottom().value();
+    *rect = CGRectMake(border.origin.x + bl, border.origin.y + bt, border.size.width - bl - br, border.size.height - bt - bb);
+    const auto r = clip->src_el()->css().get_borders().radius.calc_percents(lh::pixel_t(static_cast<float>(border.size.width)), lh::pixel_t(static_cast<float>(border.size.height)));
+    CGFloat values[8] = {r.top_left_x.value() - bl, r.top_left_y.value() - bt, r.top_right_x.value() - br, r.top_right_y.value() - bt,
+                         r.bottom_right_x.value() - br, r.bottom_right_y.value() - bb, r.bottom_left_x.value() - bl, r.bottom_left_y.value() - bb};
+    for(int i = 0; i < 8; i++)
+        radii[i] = std::max<CGFloat>(0, values[i]);
+    return YES;
+}
+
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring
+{
+    return [self isElementWithAttribute:attribute value:value unobscuredInRect:rect ignoring:ignoring clipped:NO];
+}
+
+- (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring clipped:(BOOL)clipped
 {
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
@@ -800,7 +835,7 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     {
         if(p->src_el()->css().is_paint_group())
             return NO;
-        if(p->src_el()->css().get_overflow() > lh::overflow_visible)
+        if(p->src_el()->css().get_overflow() > lh::overflow_visible && !clipped)
         {
             CGRect border = BorderBox(p);
             CGFloat bl = p->border_left().value(), bt = p->border_top().value(), br = p->border_right().value(), bb = p->border_bottom().value();
