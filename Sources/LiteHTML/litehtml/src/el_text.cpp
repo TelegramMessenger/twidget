@@ -140,7 +140,15 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
         pos.y         = std::round(pos.y.value() * k) / k;
     }
 
-    if(pos.does_intersect(clip))
+    position ink = pos;
+    {
+        const pixel_t slack = std::max(pixel_t(4), ink.height / 2_px);
+        ink.x     -= slack;
+        ink.y     -= slack;
+        ink.width += slack * 2_px;
+        ink.height += slack * 2_px;
+    }
+    if(ink.does_intersect(clip))
     {
         element::ptr el_parent = parent();
         if(el_parent)
