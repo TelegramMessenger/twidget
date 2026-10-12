@@ -38,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)purgeCaches;
 @property (class, nonatomic) BOOL simpleTextEnabled;
 + (NSDictionary<NSString*, NSNumber*>*)simpleTextStats;
++ (NSUInteger)textMeasureCount;
 @property (readonly) BOOL reusedPrevious;
 @property (readonly) BOOL reusedLayout;
 /// After a paint-only patch, the document rects that hold every pixel it can have changed; nil when the change may

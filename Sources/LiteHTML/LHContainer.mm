@@ -1153,6 +1153,13 @@ static CTLineRef CopyLine(SharedFont& sf, const char* text)
     return line;
 }
 
+static std::atomic<size_t> gTextMeasures{0};
+
+size_t LHContainer::text_measure_count()
+{
+    return gTextMeasures.load(std::memory_order_relaxed);
+}
+
 static bool CheckSimpleText()
 {
     static const bool check = getenv("TW_SIMPLE_TEXT_CHECK") != nullptr;
@@ -1180,6 +1187,7 @@ lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
     auto* f = reinterpret_cast<Font*>(hFont);
     if(!f || !f->shared || !text || !*text)
         return 0_px;
+    gTextMeasures.fetch_add(1, std::memory_order_relaxed);
     auto& sf = *f->shared;
     {
         std::lock_guard<std::mutex> lock(sf.widthsMutex);

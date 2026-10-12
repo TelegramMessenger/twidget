@@ -50,6 +50,7 @@ class LHContainer : public litehtml::document_container
 {
   public:
     static size_t cached_font_count();
+    static size_t text_measure_count();
     static size_t raster_cache_bytes();
     static void   purge_caches();
     LHContainer();

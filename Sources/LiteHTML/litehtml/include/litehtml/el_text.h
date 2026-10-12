@@ -14,6 +14,8 @@ namespace litehtml
         size        m_size;
         bool        m_use_transformed;
         bool        m_draw_spaces;
+        uint_ptr    m_measured_font = 0;
+        int         m_measured_transform = -1;
 
       public:
         el_text(const char* text, const document::ptr& doc);

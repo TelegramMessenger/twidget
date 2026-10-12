@@ -32,6 +32,7 @@ void litehtml::el_text::set_text(const std::string& text)
     m_use_transformed = false;
     m_draw_spaces     = true;
     m_size            = size();
+    m_measured_font   = 0;
     css_w()           = css_properties();
     css_w().set_display(display_inline_text);
 }
@@ -103,13 +104,20 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
     }
     if(is_break() || !font)
     {
-        m_size.height = 0;
-        m_size.width  = 0;
+        m_size.height      = 0;
+        m_size.width       = 0;
+        m_measured_font    = 0;
     } else
     {
         m_size.height = fm.height;
-        m_size.width  = get_document()->container()->text_width(
-            m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font);
+        const int transform = m_use_transformed ? (is_white_space() ? -2 : int(m_css.get_text_transform())) : -3;
+        if(m_measured_font != font || m_measured_transform != transform)
+        {
+            m_size.width = get_document()->container()->text_width(
+                m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font);
+            m_measured_font      = font;
+            m_measured_transform = transform;
+        }
     }
     m_draw_spaces = fm.draw_spaces;
 }

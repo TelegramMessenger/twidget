@@ -819,6 +819,11 @@ static std::string MasterWithCSS(NSString *css)
     return @{@"hits": @(stats.hits), @"misses": @(stats.misses), @"learned": @(stats.learned), @"rejected": @(stats.rejected)};
 }
 
++ (NSUInteger)textMeasureCount
+{
+    return LHContainer::text_measure_count();
+}
+
 + (void)purgeCaches
 {
     LHContainer::purge_caches();

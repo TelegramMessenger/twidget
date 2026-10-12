@@ -254,4 +254,31 @@ static LHDocument *Laid(NSString *html)
     XCTAssertEqualObjects(Pixels(Laid(svg(@"<circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\" display=\"inline\" visibility=\"visible\"/>"))), one);
 }
 
+- (void)testColorOnlyRestylesKeepTextMeasurements
+{
+    NSString *(^page)(NSString *, NSString *) = ^NSString *(NSString *cls, NSString *text) {
+        NSMutableString *html = [NSMutableString stringWithString:@"<!DOCTYPE html><style>td{font:11px -apple-system;text-align:right}.up{color:#34c759}.down{color:#ff3b30}.big{font-size:15px}</style><table>"];
+        for(int i = 0; i < 24; i++)
+            [html appendFormat:@"<tr><td data-lh-id=\"%d\" class=\"%@\">%@%d</td></tr>", i + 1, i % 3 == 0 ? cls : @"up", text, i];
+        [html appendString:@"</table>"];
+        return html;
+    };
+    LHDocument *previous = Laid(page(@"up", @"1.0"));
+    NSUInteger  before   = LHDocument.textMeasureCount;
+    LHDocument *colored  = [[LHDocument alloc] initWithHTML:page(@"down", @"1.0") css:nil previous:previous];
+    [colored layoutWithMaxWidth:240 preferredWidth:240];
+    XCTAssertTrue(colored.reusedPrevious);
+    XCTAssertEqual(LHDocument.textMeasureCount, before);
+    XCTAssertEqualObjects(Pixels(colored), Pixels(Laid(page(@"down", @"1.0"))));
+
+    before                = LHDocument.textMeasureCount;
+    LHDocument *resized   = [[LHDocument alloc] initWithHTML:page(@"big", @"1.0") css:nil previous:colored];
+    [resized layoutWithMaxWidth:240 preferredWidth:240];
+    XCTAssertGreaterThanOrEqual(LHDocument.textMeasureCount - before, 8u);
+    XCTAssertEqualObjects(Pixels(resized), Pixels(Laid(page(@"big", @"1.0"))));
+
+    LHDocument *retexted = [[LHDocument alloc] initWithHTML:page(@"big", @"2.5") css:nil previous:resized];
+    XCTAssertEqualObjects(Pixels(retexted), Pixels(Laid(page(@"big", @"2.5"))));
+}
+
 @end
