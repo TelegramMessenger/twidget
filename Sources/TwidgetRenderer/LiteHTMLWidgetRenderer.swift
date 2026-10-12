@@ -192,6 +192,9 @@ public final class LiteHTMLWidgetRenderer {
                 }
                 stageMilliseconds["scripted-fast", default: 0] += 1
                 if compositor.applyScripted(touched, dom: dom) {
+                    if !animator.isActive {
+                        compositeCheck([:])
+                    }
                     return
                 }
                 render()

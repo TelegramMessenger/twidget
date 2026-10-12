@@ -910,7 +910,11 @@ final class WidgetCompositor {
             let anchor = CGPoint(x: border.minX + want.origin.x, y: border.minY + want.origin.y)
             layer.anchorPoint = CGPoint(x: (anchor.x - ink.minX) / ink.width, y: (anchor.y - ink.minY) / ink.height)
             layer.position = anchor
-            layer.zPosition = 1 + CGFloat(order[String(id)]?.intValue ?? 0) * 1e-6
+            if let index = order[String(id)] {
+                layer.zPosition = 1 + CGFloat(index.intValue) * 1e-6
+            } else if promoted[id] == nil {
+                layer.zPosition = 1
+            }
             CATransaction.commit()
             if promoted[id] == nil {
                 promotions += 1
@@ -927,20 +931,26 @@ final class WidgetCompositor {
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for (id, item) in promoted.sorted(by: { WidgetDOM.depth(of: dom.node($0.key) ?? dom.body) < WidgetDOM.depth(of: dom.node($1.key) ?? dom.body) }) {
-            let anchor = CGPoint(x: item.box.minX + item.origin.x, y: item.box.minY + item.origin.y)
-            var parent: Promoted?
+        var parents: [Int: Promoted] = [:]
+        var containedClips: [Clip] = []
+        for (id, item) in promoted {
             var walk = dom.node(id)?.parent
-            while let node = walk, parent == nil {
-                parent = promoted[dom.publicId(node)]
+            while let node = walk, parents[id] == nil {
+                parents[id] = promoted[dom.publicId(node)]
                 walk = node.parent
             }
-            if let parent = parent {
+            if parents[id] == nil, let clip = clips[id], !containedClips.contains(clip), !WidgetCompositor.clipIsInert(clip, reach: chosenReach[id], box: item.box, ink: item.ink, scale: wanted[id]?.maxScale ?? 1) {
+                containedClips.append(clip)
+            }
+        }
+        for (id, item) in promoted.sorted(by: { WidgetDOM.depth(of: dom.node($0.key) ?? dom.body) < WidgetDOM.depth(of: dom.node($1.key) ?? dom.body) }) {
+            let anchor = CGPoint(x: item.box.minX + item.origin.x, y: item.box.minY + item.origin.y)
+            if let parent = parents[id] {
                 if item.layer.superlayer !== parent.layer {
                     parent.layer.addSublayer(item.layer)
                 }
                 item.layer.position = CGPoint(x: anchor.x - parent.ink.minX, y: anchor.y - parent.ink.minY)
-            } else if let clip = clips[id], !WidgetCompositor.clipIsInert(clip, reach: chosenReach[id], box: item.box, ink: item.ink, scale: wanted[id]?.maxScale ?? 1) {
+            } else if let clip = clips[id], containedClips.contains(clip) {
                 let container = clipContainer(clip, host: host)
                 usedContainers.insert(ObjectIdentifier(container))
                 if item.layer.superlayer !== container {
@@ -960,7 +970,30 @@ final class WidgetCompositor {
             containers[key] = nil
         }
         clipOf = clips.filter { entry in promoted[entry.key].map { $0.layer.superlayer !== host } ?? false }
+        let members = Set(promoted.values.map { ObjectIdentifier($0.layer) }).union(containers.values.map { ObjectIdentifier($0) })
+        WidgetCompositor.orderSublayers(of: host, members: members)
+        for container in containers.values {
+            WidgetCompositor.orderSublayers(of: container, members: members)
+        }
+        for item in promoted.values where item.layer.sublayers?.isEmpty == false {
+            WidgetCompositor.orderSublayers(of: item.layer, members: members)
+        }
         CATransaction.commit()
+    }
+
+    static func orderSublayers(of parent: CALayer, members: Set<ObjectIdentifier>) {
+        let children = (parent.sublayers ?? []).filter { members.contains(ObjectIdentifier($0)) }
+        var sorted = true
+        for index in children.indices.dropFirst() where children[index - 1].zPosition > children[index].zPosition {
+            sorted = false
+            break
+        }
+        if sorted || children.contains(where: { $0.animationKeys()?.isEmpty == false }) {
+            return
+        }
+        for child in children.enumerated().sorted(by: { ($0.element.zPosition, $0.offset) < ($1.element.zPosition, $1.offset) }).map({ $0.element }) {
+            parent.addSublayer(child)
+        }
     }
 
     static func rasterScale(_ display: CGFloat, _ magnification: CGFloat) -> CGFloat {
