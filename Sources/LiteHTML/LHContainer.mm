@@ -33,41 +33,62 @@ namespace {
 
 struct ColorCache
 {
-    uint32_t   keys[64]   = {};
-    CGColorRef colors[64] = {};
+    uint32_t        keys[64]   = {};
+    CGColorSpaceRef spaces[64] = {};
+    CGColorRef      colors[64] = {};
 
     ~ColorCache()
     {
-        for(CGColorRef color : colors)
-            CGColorRelease(color);
+        for(int i = 0; i < 64; i++)
+        {
+            CGColorRelease(colors[i]);
+            CGColorSpaceRelease(spaces[i]);
+        }
     }
 
-    CGColorRef get(const lh::web_color& c)
+    CGColorRef get(const lh::web_color& c, CGColorSpaceRef space)
     {
         const uint32_t key  = uint32_t(c.red) << 24 | uint32_t(c.green) << 16 | uint32_t(c.blue) << 8 | uint32_t(c.alpha);
-        const uint32_t slot = (key * 2654435761u) >> 26;
-        if(colors[slot] && keys[slot] == key)
+        const uint32_t slot = ((key ^ static_cast<uint32_t>(reinterpret_cast<uintptr_t>(space) >> 4)) * 2654435761u) >> 26;
+        if(colors[slot] && keys[slot] == key && spaces[slot] == space)
             return colors[slot];
         CGColorRelease(colors[slot]);
-        colors[slot] = CreateColor(c);
+        CGColorSpaceRelease(spaces[slot]);
+        CGColorRef color = CreateColor(c);
+        if(space)
+        {
+            if(CGColorRef matched = CGColorCreateCopyByMatchingToColorSpace(space, kCGRenderingIntentDefault, color, nullptr))
+            {
+                CGColorRelease(color);
+                color = matched;
+            }
+        }
+        colors[slot] = color;
+        spaces[slot] = space ? CGColorSpaceRetain(space) : nullptr;
         keys[slot]   = key;
-        return colors[slot];
+        return color;
     }
 };
 
 }
 
-static void SetFill(CGContextRef ctx, const lh::web_color& c)
+static CGColorRef ContextColor(CGContextRef ctx, const lh::web_color& c)
 {
     static thread_local ColorCache cache;
-    CGContextSetFillColorWithColor(ctx, cache.get(c));
+    CGColorSpaceRef space = CGBitmapContextGetColorSpace(ctx);
+    if(space && CGColorSpaceGetModel(space) != kCGColorSpaceModelRGB)
+        space = nullptr;
+    return cache.get(c, space);
+}
+
+static void SetFill(CGContextRef ctx, const lh::web_color& c)
+{
+    CGContextSetFillColorWithColor(ctx, ContextColor(ctx, c));
 }
 
 static void SetStroke(CGContextRef ctx, const lh::web_color& c)
 {
-    CGColorRef col = CreateColor(c);
-    CGContextSetStrokeColorWithColor(ctx, col);
-    CGColorRelease(col);
+    CGContextSetStrokeColorWithColor(ctx, ContextColor(ctx, c));
 }
 
 static void AddRoundedRect(CGMutablePathRef path, CGRect r, const lh::border_radiuses& rad)
