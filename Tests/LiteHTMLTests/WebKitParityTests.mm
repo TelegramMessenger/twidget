@@ -168,4 +168,15 @@ namespace
     }
 }
 
+- (void)testTableCellsCenterBlockContentVertically
+{
+    Pixels p = Render(@"<table style=\"border-spacing:0\"><tr><td style=\"padding:0;height:60px\"><div style=\"width:20px;height:20px;background:#f00\"></div></td>"
+                      @"<td style=\"padding:0;vertical-align:bottom\"><div style=\"width:20px;height:20px;background:#00f\"></div></td></tr></table>", 100);
+    XCTAssertEqual(p.at(20, 30)[3], 0);
+    XCTAssertEqual(p.at(20, 60)[0], 255);
+    XCTAssertEqual(p.at(20, 90)[3], 0);
+    XCTAssertEqual(p.at(60, 110)[2], 255);
+    XCTAssertEqual(p.at(60, 60)[3], 0);
+}
+
 @end

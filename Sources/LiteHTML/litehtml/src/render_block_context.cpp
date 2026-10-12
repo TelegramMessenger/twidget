@@ -9,6 +9,7 @@ litehtml::rendered_width litehtml::render_item_block_context::_render_content(pi
                                                                               const containing_block_context& self_size,
                                                                               formatting_context*             fmt_ctx)
 {
+    m_va_applied = 0_px;
     std::shared_ptr<render_item> last_margin_el;
 
     rendered_width ret_width;
@@ -191,4 +192,51 @@ litehtml::pixel_t litehtml::render_item_block_context::get_last_baseline()
         }
     }
     return height() - margin_bottom();
+}
+
+void litehtml::render_item_block_context::apply_vertical_align()
+{
+    const vertical_align va = src_el()->css().get_vertical_align();
+    bool                 any = false;
+    pixel_t              content_bottom = 0_px;
+    for(const auto& el : m_children)
+    {
+        if(el->src_el()->css().get_display() == display_none ||
+           el->src_el()->css().get_position() == element_position_absolute ||
+           el->src_el()->css().get_position() == element_position_fixed)
+        {
+            continue;
+        }
+        content_bottom = any ? std::max(content_bottom, el->bottom()) : el->bottom();
+        any            = true;
+    }
+    if(!any)
+    {
+        return;
+    }
+    content_bottom -= m_va_applied;
+    pixel_t add = 0_px;
+    if(m_pos.height > content_bottom)
+    {
+        if(va == va_middle)
+        {
+            add = (m_pos.height - content_bottom) / 2_px;
+        } else if(va == va_bottom)
+        {
+            add = m_pos.height - content_bottom;
+        }
+    }
+    const pixel_t shift = add - m_va_applied;
+    if(shift != 0_px)
+    {
+        for(const auto& el : m_children)
+        {
+            if(el->src_el()->css().get_position() != element_position_absolute &&
+               el->src_el()->css().get_position() != element_position_fixed)
+            {
+                el->pos().y += shift;
+            }
+        }
+    }
+    m_va_applied = add;
 }

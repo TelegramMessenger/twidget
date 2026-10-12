@@ -13,6 +13,7 @@ namespace litehtml
     class render_item_block_context : public render_item_block
     {
       protected:
+        pixel_t        m_va_applied = 0_px;
         rendered_width _render_content(pixel_t x, pixel_t y, bool second_pass,
                                        const containing_block_context& self_size, formatting_context* fmt_ctx) override;
 
@@ -28,6 +29,7 @@ namespace litehtml
         }
         pixel_t get_first_baseline() override;
         pixel_t get_last_baseline() override;
+        void    apply_vertical_align() override;
     };
 } // namespace litehtml
 
