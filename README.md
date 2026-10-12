@@ -19,7 +19,7 @@ This repository is the Apple renderer. Validated operations come in, events and 
 macOS 10.13+, Swift 5.5+, C++17.
 
 ```swift
-.package(url: "https://github.com/macosswift/twidget.git", branch: "main")
+.package(url: "https://github.com/TelegramMessenger/twidget.git", branch: "main")
 ```
 
 ## twidget widgets
@@ -174,7 +174,7 @@ public protocol HTMLScriptContext: AnyObject {
 - `invoke` calls one of the hooks: `fire`, `frame`, `callRender`, `callAction`, `callInput` or `describe`.
 - An engine throws `HTMLScriptError` with `.timeLimit`, `.outOfMemory` or `.exception`. The sandbox turns those into a stopped script or an error line.
 
-`QuickJSScriptRuntime` (the default) and `JSCScriptRuntime` are the two implementations. QuickJS comes from the [macosswift/quickjs](https://github.com/macosswift/quickjs) submodule; clone with `--recurse-submodules` (SwiftPM fetches it automatically). To switch engines:
+`QuickJSScriptRuntime` (the default) and `JSCScriptRuntime` are the two implementations. QuickJS comes from the [TelegramMessenger/quickjs](https://github.com/TelegramMessenger/quickjs) submodule; clone with `--recurse-submodules` (SwiftPM fetches it automatically). To switch engines:
 
 ```swift
 HTMLScript.runtime = JSCScriptRuntime.shared
