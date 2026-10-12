@@ -853,6 +853,20 @@ static std::string MasterWithCSS(NSString *css)
     return _paintOnly;
 }
 
+- (NSArray<NSValue *> *)layoutDirtyRects
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    if(!_reusedPrevious || _paintOnly || !_doc)
+        return nil;
+    std::vector<lh::position> regions;
+    if(!_doc->layout_dirty_regions(regions))
+        return nil;
+    NSMutableArray<NSValue *> *rects = [NSMutableArray arrayWithCapacity:regions.size()];
+    for(const auto &region : regions)
+        [rects addObject:[NSValue valueWithRect:NSMakeRect(region.x.value(), region.y.value(), region.width.value(), region.height.value())]];
+    return rects;
+}
+
 - (NSArray<NSValue *> *)patchDirtyRects
 {
     std::lock_guard<std::mutex> guard(_lock);

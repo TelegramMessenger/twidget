@@ -233,6 +233,8 @@ namespace litehtml
 
     void element::mark_layout_dirty()
     {
+        if(m_doc_ptr)
+            m_doc_ptr->note_layout_origin(this);
         for(const auto& weak_ri : m_renders)
         {
             if(auto ri = weak_ri.lock())

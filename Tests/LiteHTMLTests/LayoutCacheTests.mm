@@ -14,7 +14,7 @@ static NSString *const Sheet = @"body{margin:4px;font:12px -apple-system}table{b
                                 ".mid{vertical-align:middle}.bot{vertical-align:bottom}.top{vertical-align:top}.two{height:34px}"
                                 ".ib{display:inline-block;padding:2px;border:1px solid #888}.fl{float:left;width:18px;height:10px;background:#c00}"
                                 ".row{display:flex;gap:4px}.row>span{flex:1 1 auto}.card{padding:3px;border:1px solid #ccc;margin:2px 0}"
-                                ".full{width:100%}.hot{color:#c00}";
+                                ".full{width:100%}.hot{color:#c00}.mono{font-family:Menlo}.v{width:90px;text-align:right}";
 
 static NSData *Image(LHDocument *document, CGFloat width)
 {
@@ -152,6 +152,116 @@ static long Hits()
         }
     }
     XCTAssertGreaterThan(Hits() - hits, 1000);
+}
+
+static NSData *Raw(LHDocument *document, CGFloat width, size_t *stride)
+{
+    CGSize     size  = [document layoutWithMaxWidth:width preferredWidth:width];
+    CGImageRef image = [document copyImageWithMaxWidth:width rect:CGRectMake(0, 0, width, MAX(1, ceil(size.height))) scale:2];
+    NSData    *data  = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(image));
+    *stride          = CGImageGetBytesPerRow(image);
+    CGImageRelease(image);
+    return data;
+}
+
+- (void)testLayoutRegionsCoverEveryChangedPixel
+{
+    std::mt19937 random(5);
+    auto         body = [&](int frame) {
+        std::string out = "<table data-lh-id=\"5\" class=\"full\">";
+        int         id  = 10;
+        for(int r = 0; r < 30; r++)
+        {
+            out += "<tr data-lh-id=\"" + std::to_string(id++) + "\"><td data-lh-id=\"" + std::to_string(id++) + "\">Row " + std::to_string(r) + "</td>";
+            const bool edit = frame > 0 && r % 7 == frame % 7;
+            char       text[32];
+            snprintf(text, sizeof(text), "%d.%02d", edit ? int(random() % 5000) : 500, edit ? int(random() % 100) : 0);
+            out += "<td data-lh-id=\"" + std::to_string(id++) + "\" class=\"" + (edit && random() % 2 ? "hot mid v" : "mid v") + "\">" + text + "</td></tr>";
+        }
+        out += "</table>";
+        for(int k = 0; k < 12; k++)
+        {
+            const bool edit = frame > 0 && k == frame % 12;
+            out += "<div data-lh-id=\"" + std::to_string(id++) + "\" class=\"row card\"><span data-lh-id=\"" + std::to_string(id++) + "\">Item</span><span data-lh-id=\"" +
+                   std::to_string(id++) + "\">" + (edit ? std::to_string(random() % 100000) : std::string("42")) + "</span></div>";
+        }
+        return out;
+    };
+    LHDocument *document = [[LHDocument alloc] initWithHTML:Page(body(0)) css:nil previous:nil];
+    [document layoutWithMaxWidth:300 preferredWidth:300];
+    int confined = 0;
+    for(int frame = 1; frame < 30; frame++)
+    {
+        size_t      stride = 0;
+        NSData     *before = Raw(document, 300, &stride);
+        NSString   *html   = Page(body(frame));
+        LHDocument *patch  = [[LHDocument alloc] initWithHTML:html css:nil previous:document];
+        NSData     *after  = Raw(patch, 300, &stride);
+        NSArray<NSValue *> *rects = patch.reusedLayout ? patch.patchDirtyRects : patch.layoutDirtyRects;
+        if(rects && before.length == after.length)
+        {
+            confined++;
+            const uint32_t *a = (const uint32_t *)before.bytes, *b = (const uint32_t *)after.bytes;
+            const size_t    row = stride / 4, rows = before.length / stride;
+            for(size_t y = 0; y < rows; y++)
+            {
+                for(size_t x = 0; x < 600; x++)
+                {
+                    if(a[y * row + x] == b[y * row + x])
+                        continue;
+                    BOOL inside = NO;
+                    for(NSValue *value in rects)
+                        inside = inside || CGRectContainsPoint(value.rectValue, CGPointMake((x + 0.5) / 2, (y + 0.5) / 2));
+                    if(!inside)
+                    {
+                        XCTFail(@"frame %d pixel %zu,%zu outside %@", frame, x, y, rects);
+                        return;
+                    }
+                }
+            }
+        }
+        document = patch;
+    }
+    XCTAssertGreaterThan(confined, 10);
+}
+
+- (void)testRegionsCoverUnrenderedOrigins
+{
+    auto body = [](int frame) {
+        return std::string("<div data-lh-id=\"5\" class=\"row\"><span data-lh-id=\"6\">") + std::to_string(frame * 731 % 10007) +
+               "</span><svg data-lh-id=\"7\" width=\"40\" height=\"20\"><circle data-lh-id=\"8\" cx=\"" + std::to_string(5 + frame % 3 * 10) +
+               "\" cy=\"10\" r=\"6\" fill=\"" + (frame % 2 ? "#c00" : "#0a0") + "\"/></svg><b data-lh-id=\"9\" class=\"" + (frame % 2 ? "hidden-x" : "") +
+               "\">" + std::to_string(frame) + "</b></div>";
+    };
+    LHDocument *document = [[LHDocument alloc] initWithHTML:Page(body(0)) css:nil previous:nil];
+    [document layoutWithMaxWidth:240 preferredWidth:240];
+    for(int frame = 1; frame < 16; frame++)
+    {
+        size_t      stride = 0;
+        NSData     *before = Raw(document, 240, &stride);
+        LHDocument *patch  = [[LHDocument alloc] initWithHTML:Page(body(frame)) css:nil previous:document];
+        NSData     *after  = Raw(patch, 240, &stride);
+        NSArray<NSValue *> *rects = patch.reusedLayout ? patch.patchDirtyRects : patch.layoutDirtyRects;
+        if(rects && before.length == after.length)
+        {
+            const uint32_t *a = (const uint32_t *)before.bytes, *b = (const uint32_t *)after.bytes;
+            for(size_t y = 0; y < before.length / stride; y++)
+            {
+                for(size_t x = 0; x < 480; x++)
+                {
+                    if(a[y * (stride / 4) + x] == b[y * (stride / 4) + x])
+                        continue;
+                    BOOL inside = NO;
+                    for(NSValue *value in rects)
+                        inside = inside || CGRectContainsPoint(value.rectValue, CGPointMake((x + 0.5) / 2, (y + 0.5) / 2));
+                    XCTAssertTrue(inside, @"frame %d pixel %zu,%zu", frame, x, y);
+                    if(!inside)
+                        return;
+                }
+            }
+        }
+        document = patch;
+    }
 }
 
 @end

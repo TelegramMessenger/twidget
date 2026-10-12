@@ -77,6 +77,19 @@ namespace litehtml
         position m_layout_viewport;
         std::vector<render_item*> m_layout_marked;
         std::vector<render_item*> m_relayout_roots;
+        struct layout_box
+        {
+            const render_item* item;
+            position           box;
+        };
+        std::vector<layout_box>                      m_layout_before;
+        bool                                         m_layout_before_valid = false;
+        bool                                         m_layout_after_render = false;
+        std::unordered_set<const element*>           m_layout_origins;
+        void     snapshot_layout();
+        void     begin_layout_patch();
+        bool     layout_dirty_regions(std::vector<position>& out);
+        void     note_layout_origin(const element* el) { m_layout_origins.insert(el); }
         bool     layout_cache_enabled() const;
         bool     layout_cache_check() const;
         uint64_t layout_epoch() const { return m_layout_epoch; }

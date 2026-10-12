@@ -859,6 +859,15 @@ namespace litehtml
         return apply_template_values(changes, changed) == 1;
     }
 
+    void document::begin_layout_patch()
+    {
+        m_layout_origins.clear();
+        m_layout_before_valid = false;
+        m_layout_after_render = false;
+        if(m_root_render && layout_cache_enabled())
+            snapshot_layout();
+    }
+
     bool document::update_holes(const std::vector<hole_change>& changes, bool* changed)
     {
         invalidate_paint();
@@ -959,6 +968,7 @@ namespace litehtml
 
     int document::apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed)
     {
+        begin_layout_patch();
         invalidate_paint();
         std::vector<size_t>                             dirty;
         std::vector<std::pair<size_t, string_map>>      classes;
@@ -1275,6 +1285,8 @@ namespace litehtml
             }
             return false;
         };
+        if(!keep_tree || !new_text.empty())
+            m_layout_before_valid = false;
         const bool positioned_fresh = keep_tree && new_text.empty() && m_positioned_epoch == m_style_epoch &&
                                       m_positioned_tree == m_render_tree_serial;
         std::vector<std::pair<const element*, element_position>> positions;
@@ -1328,6 +1340,7 @@ namespace litehtml
         m_render_tree_serial++;
         m_layout_marked.clear();
         m_relayout_roots.clear();
+        m_layout_before_valid = false;
         fix_tables_layout();
         if(m_root_render)
             m_root_render = m_root_render->init();
@@ -1511,6 +1524,7 @@ namespace litehtml
 
     bool document::update_structure(const std::string& html, bool* changed)
     {
+        begin_layout_patch();
         invalidate_paint();
         note_style_change();
         if(!m_gumbo || !m_root || !m_finalized || m_build_limited || getenv("LH_NO_STRUCTURE"))
@@ -2188,6 +2202,7 @@ namespace litehtml
             m_render_tree_serial++;
             m_layout_marked.clear();
             m_relayout_roots.clear();
+            m_layout_before_valid = false;
 
             // Now the m_tabular_elements is filled with tabular elements.
             // We have to check the tabular elements for missing table elements
@@ -2616,6 +2631,125 @@ namespace litehtml
         return check;
     }
 
+    namespace
+    {
+        template <class F> void walk_boxes(render_item* item, float x, float y, bool unsafe, F&& visit)
+        {
+            const css_properties& css = item->src_el()->css();
+            unsafe = unsafe || css.get_position() == element_position_absolute || css.get_position() == element_position_fixed ||
+                     css.is_paint_group();
+            const position& pos = item->pos_const();
+            visit(item, x, y, unsafe);
+            unsafe = unsafe || !css.get_transform().empty() || is_one_of(css.get_overflow(), overflow_scroll, overflow_auto);
+            const float cx = x + pos.x.value();
+            const float cy = y + pos.y.value();
+            for(const auto& child : item->children())
+                walk_boxes(child.get(), cx, cy, unsafe, visit);
+        }
+
+        bool paints_inside_box(const render_item* item)
+        {
+            const element::ptr&   el  = item->src_el();
+            const css_properties& css = el->css();
+            if(el->is_text())
+            {
+                const element::ptr parent = el->parent();
+                return parent && parent->css().get_text_shadows().empty();
+            }
+            if(css.get_display() == display_list_item || !css.get_box_shadows().empty() || !css.get_text_shadows().empty() ||
+               (css.get_outline().style != border_style_none && css.get_outline().style != border_style_hidden))
+                return false;
+            if(el->is_inline() && !el->is_inline_box())
+            {
+                const background* bg = el->get_background();
+                if((bg && !bg->is_empty()) || css.get_borders().is_visible())
+                    return false;
+            }
+            return !std::dynamic_pointer_cast<el_svg>(el);
+        }
+    }
+
+    void document::snapshot_layout()
+    {
+        m_layout_before.clear();
+        m_layout_before.reserve(m_layout_before.capacity());
+        walk_boxes(m_root_render.get(), 0, 0, false, [this](const render_item* item, float x, float y, bool) {
+            position box  = item->pos_const();
+            box.x        += pixel_t(x);
+            box.y        += pixel_t(y);
+            m_layout_before.push_back({item, box});
+        });
+        m_layout_before_valid = true;
+    }
+
+    bool document::layout_dirty_regions(std::vector<position>& out)
+    {
+        out.clear();
+        if(!m_layout_before_valid || !m_layout_after_render || !m_root_render)
+            return false;
+        std::unordered_set<const element*> origins;
+        for(const element* el : m_layout_origins)
+        {
+            const element* owner = el;
+            while(owner && !const_cast<element*>(owner)->get_render_item())
+            {
+                const element::ptr parent = owner->parent();
+                owner                     = parent.get();
+            }
+            if(!owner)
+                return false;
+            origins.insert(owner);
+        }
+        size_t index = 0;
+        bool   ok    = true;
+        double area  = 0;
+        auto   add   = [&](const render_item* item, position box) {
+            box += item->get_paddings_const();
+            box += item->get_borders_const();
+            pixel_t slack = 1_px;
+            if(item->src_el()->is_text())
+                slack = std::max(4_px, pixel_t(std::ceil(float(box.height) / 2) + 1)) + 1_px;
+            box.x      -= slack;
+            box.y      -= slack;
+            box.width  += slack * 2;
+            box.height += slack * 2;
+            if(box.width <= 0_px || box.height <= 0_px)
+                return;
+            area += double(float(box.width)) * double(float(box.height));
+            out.push_back(box);
+        };
+        walk_boxes(m_root_render.get(), 0, 0, false, [&](const render_item* item, float x, float y, bool unsafe) {
+            if(!ok)
+                return;
+            if(index >= m_layout_before.size() || m_layout_before[index].item != item)
+            {
+                ok = false;
+                return;
+            }
+            const position& before = m_layout_before[index++].box;
+            position        box    = item->pos_const();
+            box.x                 += pixel_t(x);
+            box.y                 += pixel_t(y);
+            if(before == box && !origins.count(item->src_el().get()))
+                return;
+            if(unsafe || !paints_inside_box(item))
+            {
+                ok = false;
+                return;
+            }
+            add(item, before);
+            add(item, box);
+            if(out.size() > 128)
+                ok = false;
+        });
+        if(!ok || index != m_layout_before.size())
+            return false;
+        const position& root = m_root_render->pos_const();
+        if(!(area <= 0.5 * std::max(1.0, double(float(root.width)) * double(float(root.height)))))
+            return false;
+        return true;
+    }
+
     pixel_t document::render(pixel_t max_width, render_type rt)
     {
         invalidate_paint();
@@ -2646,6 +2780,7 @@ namespace litehtml
                 for(render_item* item : m_relayout_roots)
                     item->relayout();
                 m_relayout_roots.clear();
+                m_layout_after_render = true;
                 static const bool refetch = getenv("LH_NO_POSITIONED_REUSE") != nullptr;
                 if(refetch || m_positioned_epoch != m_style_epoch || m_positioned_tree != m_render_tree_serial)
                 {
@@ -3008,6 +3143,7 @@ namespace litehtml
             m_render_tree_serial++;
             m_layout_marked.clear();
             m_relayout_roots.clear();
+            m_layout_before_valid = false;
             if(m_root_render)
             {
                 m_root_render = m_root_render->init();

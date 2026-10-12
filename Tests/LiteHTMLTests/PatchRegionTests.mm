@@ -275,6 +275,62 @@ static std::string RegionRetext(std::mt19937 &random, const std::string &text)
     XCTAssertGreaterThan(classFrames, 2);
 }
 
+- (void)testRandomLayoutRegionsCoverEveryChangedPixel
+{
+    const char  *budget   = getenv("TWIDGET_FUZZ_SECONDS");
+    NSDate      *deadline = [NSDate dateWithTimeIntervalSinceNow:budget ? atof(budget) / 2 : 0];
+    int          confined = 0, frames = 0;
+    for(unsigned seed = 1; seed <= 60 || [deadline timeIntervalSinceNow] > 0; seed++)
+    {
+        @autoreleasepool
+        {
+            std::mt19937  random(seed + 1000);
+            RegionNode    root     = RegionDocument(random, seed % 2);
+            const CGFloat width    = 160 + random() % 160;
+            LHDocument   *document = [[LHDocument alloc] initWithHTML:RegionPage(root) css:nil previous:nil];
+            [document layoutWithMaxWidth:width preferredWidth:width];
+            for(int step = 0; step < 16; step++)
+            {
+                std::vector<RegionNode *> elements;
+                RegionGather(root, elements);
+                for(int e = 0, edits = 1 + random() % 2; e < edits; e++)
+                {
+                    RegionNode *element = elements[random() % elements.size()];
+                    if(random() % 3)
+                    {
+                        for(auto &child : element->children)
+                        {
+                            if(child.tag.empty())
+                            {
+                                child.text = RegionRetext(random, child.text);
+                                break;
+                            }
+                        }
+                    } else if(element->tag != "tr" && element->tag != "table")
+                        element->cls = RegionClasses[random() % (sizeof(RegionClasses) / sizeof(RegionClasses[0]))];
+                }
+                size_t      stride = 0;
+                NSData     *before = RegionPixels(document, width, &stride);
+                NSString   *page   = RegionPage(root);
+                LHDocument *patch  = [[LHDocument alloc] initWithHTML:page css:nil previous:document];
+                NSData     *after  = RegionPixels(patch, width);
+                NSArray<NSValue *> *rects = patch.reusedLayout ? nil : patch.layoutDirtyRects;
+                NSString   *label  = [NSString stringWithFormat:@"seed %u step %d width %.0f %@", seed, step, width, page];
+                frames++;
+                if(rects && before.length == after.length)
+                {
+                    confined++;
+                    if(![self covered:before after:after stride:stride rects:rects width:width label:label])
+                        return;
+                }
+                document = patch;
+            }
+        }
+    }
+    NSLog(@"LAYOUT REGIONS confined=%d of %d", confined, frames);
+    XCTAssertGreaterThan(confined, 10);
+}
+
 - (void)testColorClassTogglesRepaintOnlyTheirCells
 {
     auto page = [](const std::vector<int> &state) {

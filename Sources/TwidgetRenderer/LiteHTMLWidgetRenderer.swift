@@ -865,7 +865,7 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         defer { stage("report") }
-        if LiteHTMLWidgetRenderer.patchRegions, next.reusedLayout, !exclusionsChanged, displayList != nil, documentView.document != nil, let regions = next.patchDirtyRects?.map({ $0.rectValue }) {
+        if LiteHTMLWidgetRenderer.patchRegions, next.reusedPrevious, !exclusionsChanged, displayList != nil, documentView.document != nil, let regions = (next.reusedLayout ? next.patchDirtyRects : next.layoutDirtyRects)?.map({ $0.rectValue }) {
             stage("diff-list")
             stageMilliseconds["regions", default: 0] += 1
             if listDebt.count + regions.count > 32 {

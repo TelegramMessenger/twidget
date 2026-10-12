@@ -42,6 +42,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString*, NSNumber*>*)layoutCacheStats;
 @property (readonly) BOOL reusedPrevious;
 @property (readonly) BOOL reusedLayout;
+@property (readonly, nullable) NSArray<NSValue *> *layoutDirtyRects;
 /// After a paint-only patch, the document rects that hold every pixel it can have changed; nil when the change may
 /// paint anywhere else, so the caller has to diff display lists.
 @property (readonly, nullable) NSArray<NSValue *> *patchDirtyRects;

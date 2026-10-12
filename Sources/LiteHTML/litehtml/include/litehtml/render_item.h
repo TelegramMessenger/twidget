@@ -189,6 +189,11 @@ namespace litehtml
         }
 
         // Access to the m_pos
+        const position& pos_const() const
+        {
+            return m_pos;
+        }
+
         position& pos()
         {
             return m_pos;
@@ -318,6 +323,16 @@ namespace litehtml
         margins& get_paddings()
         {
             return m_padding;
+        }
+
+        const margins& get_paddings_const() const
+        {
+            return m_padding;
+        }
+
+        const margins& get_borders_const() const
+        {
+            return m_borders;
         }
 
         void set_paddings(const margins& val)
