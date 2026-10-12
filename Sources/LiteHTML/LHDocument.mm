@@ -754,6 +754,43 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
 
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect
 {
+    return [self isElementWithAttribute:attribute value:value unobscuredInRect:rect ignoring:[NSSet set]];
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableDictionary<NSString *, NSNumber *> *result = [NSMutableDictionary dictionary];
+    if(!_doc || !_doc->root_render() || values.count == 0)
+        return result;
+    std::vector<const lh::render_item *> trace;
+    trace.reserve(512);
+    CGContextRef ctx = [self createContextWithWidth:1 height:1];
+    if(!ctx)
+        return result;
+    auto saved        = _doc->skip_paint;
+    _doc->skip_paint.clear();
+    lh::g_paint_trace = &trace;
+    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, nullptr);
+    lh::g_paint_trace = nullptr;
+    _doc->skip_paint  = saved;
+    CGContextRelease(ctx);
+    const char *key = attribute.UTF8String;
+    for(size_t index = 0; index < trace.size(); index++)
+    {
+        const char *v = trace[index]->src_el()->get_attr(key);
+        if(!v)
+            continue;
+        NSString *string = @(v);
+        if([values containsObject:string] && !result[string])
+            result[string] = @(index);
+    }
+    return result;
+}
+
+- (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
@@ -807,6 +844,19 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
         }
         if(descendant || std::dynamic_pointer_cast<lh::el_space>(item->src_el()))
             continue;
+        if(ignoring.count > 0)
+        {
+            const char *key     = attribute.UTF8String;
+            bool        skipped = false;
+            for(const lh::render_item *walk = item; walk && !skipped; walk = walk->parent().get())
+            {
+                const char *v = walk->src_el()->get_attr(key);
+                if(v && [ignoring containsObject:@(v)])
+                    skipped = true;
+            }
+            if(skipped)
+                continue;
+        }
         CGRect box = BorderBox(std::const_pointer_cast<lh::render_item>(item->shared_from_this()));
         if(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect))
             return NO;

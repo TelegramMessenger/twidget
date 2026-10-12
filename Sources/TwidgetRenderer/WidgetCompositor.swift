@@ -440,6 +440,7 @@ final class WidgetCompositor {
         let animated = animator.animatedIDs()
         let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
         var wanted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
+        var reaches: [Int: [CGRect]] = [:]
         for id in animated where animator.isCompositable(id) {
             guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                 continue
@@ -464,10 +465,11 @@ final class WidgetCompositor {
                     break
                 }
             }
-            if !ok || !document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach) {
+            if !ok {
                 continue
             }
             wanted[id] = (box, origin, min(maxScale, 3))
+            reaches[id] = [reach]
         }
         var scriptedWanted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
         scriptedCandidates = scriptedCandidates.filter { dom.node($0) != nil }
@@ -486,30 +488,64 @@ final class WidgetCompositor {
             let current = CGRect(origin: .zero, size: box.size).applying(WidgetCompositor.anchored(transform, box: box, origin: origin))
             let rotated = abs(transform.b) > 0.0001 || abs(transform.c) > 0.0001
             let scale: CGFloat = min(3, max(rotated ? 2 : 1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
-            guard let reach = [max(48, max(box.width, box.height) / 2), 16, 2].lazy.map({ box.union(current).insetBy(dx: -$0, dy: -$0) }).first(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: $0) }) else {
-                continue
-            }
             wanted[id] = (box, origin, scale)
-            scriptedWanted[id] = (reach, scale)
+            reaches[id] = [max(48, max(box.width, box.height) / 2), 16, 2].map { box.union(current).insetBy(dx: -$0, dy: -$0) }
+            scriptedWanted[id] = (.null, scale)
         }
-        var budget = WidgetCompositor.maxPixels
-        var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
-        for (id, want) in wanted.sorted(by: { $0.value.box.width * $0.value.box.height < $1.value.box.width * $1.value.box.height }) {
-            let factor = scale * want.maxScale
-            let pixels = Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
-            if admitted.count >= WidgetCompositor.maxLayers || pixels > budget {
-                continue
+        var accepted = wanted
+        for _ in 0..<4 {
+            let ignoring = Set(accepted.keys.map { String($0) })
+            var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
+            for (id, want) in accepted {
+                if let reach = reaches[id]?.first(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: $0, ignoring: ignoring) }) {
+                    next[id] = want
+                    if scriptedWanted[id] != nil {
+                        scriptedWanted[id]?.reach = reach
+                    }
+                }
             }
-            budget -= pixels
-            admitted[id] = want
+            var budget = WidgetCompositor.maxPixels
+            var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
+            for (id, want) in next.sorted(by: { $0.value.box.width * $0.value.box.height < $1.value.box.width * $1.value.box.height }) {
+                let factor = scale * want.maxScale
+                let pixels = Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
+                if admitted.count >= WidgetCompositor.maxLayers || pixels > budget {
+                    continue
+                }
+                budget -= pixels
+                admitted[id] = want
+            }
+            let stable = Set(admitted.keys) == Set(accepted.keys)
+            accepted = admitted
+            if stable {
+                break
+            }
         }
-        wanted = admitted
-        scripted = scriptedWanted.filter { admitted[$0.key] != nil }
+        if accepted.count > 1 {
+            let ignoring = Set(accepted.keys.map { String($0) })
+            accepted = accepted.filter { entry in reaches[entry.key]?.contains(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(entry.key), unobscuredIn: $0, ignoring: ignoring) }) ?? false }
+        } else if let only = accepted.first, !(reaches[only.key]?.contains(where: { document.isElement(attribute: WidgetDOM.idAttribute, value: String(only.key), unobscuredIn: $0) }) ?? false) {
+            accepted = [:]
+        }
+        wanted = accepted
+        scripted = scriptedWanted.filter { accepted[$0.key] != nil && !$0.value.reach.isNull }
+        var order: [String: NSNumber] = [:]
+        if Set(wanted.keys) != Set(promoted.keys) || wanted.count > 1 && zOrderStale {
+            order = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(wanted.keys.map { String($0) }))
+            zOrderStale = false
+        }
         for (id, item) in promoted where wanted[id] == nil {
             item.layer.removeFromSuperlayer()
             promoted[id] = nil
         }
         for (id, want) in wanted {
+            let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: scale * want.maxScale, styleKey: styleKey)
+            if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer === host {
+                if let index = order[String(id)] {
+                    existing.layer.zPosition = 1 + CGFloat(index.intValue) * 1e-6
+                }
+                continue
+            }
             var ink = CGRect.zero, border = CGRect.zero
             guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: scale * want.maxScale, inkBounds: &ink, borderBox: &border) else {
                 promoted[id]?.layer.removeFromSuperlayer()
@@ -527,7 +563,7 @@ final class WidgetCompositor {
             let anchor = CGPoint(x: border.minX + want.origin.x, y: border.minY + want.origin.y)
             layer.anchorPoint = CGPoint(x: (anchor.x - ink.minX) / ink.width, y: (anchor.y - ink.minY) / ink.height)
             layer.position = anchor
-            layer.zPosition = 1
+            layer.zPosition = 1 + CGFloat(order[String(id)]?.intValue ?? 0) * 1e-6
             if layer.superlayer !== host {
                 host.addSublayer(layer)
             }
@@ -536,7 +572,63 @@ final class WidgetCompositor {
                 promotions += 1
             }
             promoted[id] = Promoted(layer: layer, box: border, origin: want.origin, ink: ink)
+            rasterSignatures[id] = signature
         }
+        for id in rasterSignatures.keys where promoted[id] == nil {
+            rasterSignatures[id] = nil
+        }
+    }
+
+    private var rasterSignatures: [Int: Int] = [:]
+    var styleKey = 0
+    var zOrderStale = true
+
+    static func contentSignature(_ id: Int, dom: WidgetDOM, box: CGRect, scale: CGFloat, styleKey: Int) -> Int? {
+        var hasher = Hasher()
+        hasher.combine(styleKey)
+        hasher.combine(box.width)
+        hasher.combine(box.height)
+        hasher.combine(scale)
+        guard let root = dom.node(id) else {
+            return nil
+        }
+        var cacheable = true
+        func visit(_ node: WidgetNode, top: Bool) {
+            if node.tag == "canvas" {
+                cacheable = false
+            }
+            hasher.combine(node.tag)
+            hasher.combine(node.text)
+            for attribute in node.attributes {
+                hasher.combine(attribute.name)
+                hasher.combine(attribute.value)
+            }
+            for declaration in node.declarations where !(top && (declaration.name == "transform" || declaration.name == "opacity")) {
+                hasher.combine(declaration.name)
+                hasher.combine(declaration.value)
+            }
+            hasher.combine(node.children.count)
+            for child in node.children {
+                visit(child, top: false)
+            }
+        }
+        visit(root, top: true)
+        var node = root
+        while let parent = node.parent {
+            hasher.combine(parent.children.firstIndex { $0 === node } ?? -1)
+            hasher.combine(parent.children.count)
+            hasher.combine(parent.tag)
+            for attribute in parent.attributes {
+                hasher.combine(attribute.name)
+                hasher.combine(attribute.value)
+            }
+            for declaration in parent.declarations {
+                hasher.combine(declaration.name)
+                hasher.combine(declaration.value)
+            }
+            node = parent
+        }
+        return cacheable ? hasher.finalize() : nil
     }
 
     func documentPoint(for point: CGPoint) -> CGPoint? {

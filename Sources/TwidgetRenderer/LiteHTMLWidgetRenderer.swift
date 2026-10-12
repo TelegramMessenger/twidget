@@ -278,6 +278,7 @@ public final class LiteHTMLWidgetRenderer {
             styleSheetKey = key
             animator.setStyleSheets(sheets.map { CSSTheme.resolve($0, theme: theme) })
         }
+        compositor.styleKey = (key + "\u{2}" + theme + "\u{2}\(hoverId)\u{2}\(pressId)").hashValue
         layout(overrides)
         var declarations: [Int: [String: String]] = [:]
         for (key, values) in document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: WidgetAnimator.entryProperties) ?? [:] {
