@@ -83,7 +83,27 @@ struct CSSTiming {
     static let linear = CSSTiming { $0 }
     static let ease = CSSTiming.bezier(0.25, 0.1, 0.25, 1)
 
+    private static let parsedLock = NSLock()
+    private static var parsed: [String: CSSTiming?] = [:]
+
     static func parse(_ text: String) -> CSSTiming? {
+        parsedLock.lock()
+        if let cached = parsed[text] {
+            parsedLock.unlock()
+            return cached
+        }
+        parsedLock.unlock()
+        let timing = parseUncached(text)
+        parsedLock.lock()
+        if parsed.count >= 256 {
+            parsed.removeAll(keepingCapacity: true)
+        }
+        parsed[text] = .some(timing)
+        parsedLock.unlock()
+        return timing
+    }
+
+    private static func parseUncached(_ text: String) -> CSSTiming? {
         let t = text.trimmingCharacters(in: .whitespaces).lowercased()
         switch t {
         case "linear":

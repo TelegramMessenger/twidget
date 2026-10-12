@@ -276,27 +276,79 @@ public final class LiteHTMLWidgetRenderer {
                 return
             }
             _ = self.documentView.prepareTiles { [weak self] in
-                self?.prepared()
+                self?.rasterFinished()
             }
         }
     }
 
+    func rasterFinished() {
+        prepared()
+        if renderDeferred {
+            renderDeferred = false
+            render()
+        }
+    }
+
+    private var renderDeferred = false
+
+    public var asyncTileReport: (jobs: Int, installed: Int) {
+        return (documentView.asyncTileJobs, documentView.asyncTilesInstalled)
+    }
+
+    private var flushingHeld = false
+
+    public static var slowApply: ((_ ops: Int, _ milliseconds: Double, _ held: Bool, _ stages: [String: Double]) -> Void)?
+
+    private func applyMeasured(_ ops: [WidgetOp], held: Bool) {
+        guard let report = LiteHTMLWidgetRenderer.slowApply else {
+            return apply(ops)
+        }
+        let before = stageMilliseconds
+        let start = CACurrentMediaTime()
+        apply(ops)
+        let spent = (CACurrentMediaTime() - start) * 1000
+        if spent > 8 {
+            var stages: [String: Double] = [:]
+            for (key, value) in stageMilliseconds where value - (before[key] ?? 0) > 0.5 {
+                stages[key] = value - (before[key] ?? 0)
+            }
+            report(ops.count, spent, held, stages)
+        }
+    }
+
     private func prepared() {
-        let queued = held
-        held.removeAll()
-        for item in queued {
-            switch item {
-            case .json(let json):
+        guard !documentView.preparing, !destroyed else {
+            return
+        }
+        let start = CACurrentMediaTime()
+        flushingHeld = true
+        while !held.isEmpty && !documentView.preparing {
+            var ops: [WidgetOp] = []
+            while case .ops(let batch)? = held.first {
+                ops += batch
+                held.removeFirst()
+            }
+            if !ops.isEmpty {
+                applyMeasured(ops, held: true)
+            } else if case .json(let json)? = held.first {
+                held.removeFirst()
                 send(json)
-            case .ops(let ops):
-                send(ops: ops)
+            }
+            if CACurrentMediaTime() - start > 0.004 {
+                break
+            }
+        }
+        flushingHeld = false
+        if !held.isEmpty && !documentView.preparing {
+            schedule { [weak self] in
+                self?.prepared()
             }
         }
         schedulePrepare()
     }
 
     public func send(_ json: String) {
-        if documentView.preparing && !destroyed {
+        if (documentView.preparing || (!held.isEmpty && !flushingHeld)) && !destroyed {
             held.append(.json(json))
             return
         }
@@ -354,11 +406,11 @@ public final class LiteHTMLWidgetRenderer {
         guard !destroyed else {
             return
         }
-        if documentView.preparing {
+        if documentView.preparing || !held.isEmpty {
             held.append(.ops(ops))
             return
         }
-        apply(ops)
+        applyMeasured(ops, held: false)
     }
 
     private func apply(_ ops: [WidgetOp]) {
@@ -466,6 +518,10 @@ public final class LiteHTMLWidgetRenderer {
 
     private func render() {
         needsRender = false
+        if documentView.preparing && documentView.window != nil {
+            renderDeferred = true
+            return
+        }
         updateAnimationClock()
         let now = animationNow
         let sheetsStart = CACurrentMediaTime()
@@ -733,8 +789,12 @@ public final class LiteHTMLWidgetRenderer {
             compositeCheck(sampled)
         }
         if !LiteHTMLWidgetRenderer.same(rest, overrides) {
-            overrides = rest
-            layout(overrides)
+            if documentView.preparing {
+                stageMilliseconds["raster-busy", default: 0] += 1
+            } else {
+                overrides = rest
+                layout(overrides)
+            }
         } else {
             stageMilliseconds["composited-only", default: 0] += 1
         }
@@ -973,7 +1033,9 @@ public final class LiteHTMLWidgetRenderer {
             if LiteHTMLWidgetRenderer.dirtyLog, !regions.isEmpty {
                 print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) regions \(regions.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
             }
+            documentView.asyncAllowed = !exclusionsChanged && !magic.isActive
             documentView.invalidate(regions.map { $0.insetBy(dx: -1, dy: -1) })
+            documentView.asyncAllowed = false
         } else {
             let list = next.displayList(maxWidth: width, scale: documentView.scale)
             let previousList = displayList
@@ -987,7 +1049,9 @@ public final class LiteHTMLWidgetRenderer {
                     if LiteHTMLWidgetRenderer.dirtyLog {
                         print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) \(rects.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
                     }
+                    documentView.asyncAllowed = !exclusionsChanged && !magic.isActive
                     documentView.invalidate(rects.map { $0.insetBy(dx: -1, dy: -1) })
+                    documentView.asyncAllowed = false
                 }
             } else {
                 documentView.invalidate(nil)
@@ -2122,7 +2186,19 @@ final class WidgetDocumentView: NSView {
     private(set) var preparedTiles = 0
     private(set) var preparedMilliseconds = 0.0
     private var invalidations = 0
+    private var syncInvalidations = 0
     private var tileScale: CGFloat = 0
+
+    private static func surface(of layer: CALayer) -> IOSurfaceRef? {
+        guard let contents = layer.contents else {
+            return nil
+        }
+        let object = contents as CFTypeRef
+        guard CFGetTypeID(object) == IOSurfaceGetTypeID() else {
+            return nil
+        }
+        return (object as! IOSurfaceRef)
+    }
 
     var hasUnpreparedTiles: Bool {
         return tilesTrimmed || tiles.isEmpty || tiles.contains { !$0.prepared && ($0.layer.contents == nil || $0.layer.needsDisplay()) }
@@ -2146,6 +2222,7 @@ final class WidgetDocumentView: NSView {
         }
         preparing = true
         let epoch = invalidations
+        let syncEpoch = syncInvalidations
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
         WidgetDocumentView.prepareQueue.async { [weak self] in
@@ -2185,7 +2262,7 @@ final class WidgetDocumentView: NSView {
                 }
                 self.preparing = false
                 self.preparedMilliseconds += spent
-                if self.document === document && self.invalidations == epoch && !self.tilesTrimmed && self.tileScale == scale {
+                if self.document === document && self.invalidations == epoch && self.syncInvalidations == syncEpoch && !self.tilesTrimmed && self.tileScale == scale {
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
                     for item in made where item.index < self.tiles.count {
@@ -2253,6 +2330,7 @@ final class WidgetDocumentView: NSView {
     }
 
     private func unprepare(_ tile: Tile) {
+        syncInvalidations += 1
         tile.prepared = false
         tile.layer.delegate = drawer
         tile.layer.setNeedsDisplay()
@@ -2303,7 +2381,144 @@ final class WidgetDocumentView: NSView {
         ctx.restoreGState()
     }
 
+    static var asyncTiles = ProcessInfo.processInfo.environment["TW_SYNC_TILES"] == nil
+    var asyncAllowed = false
+    private var asyncDirty: [Int: CGRect] = [:]
+    private(set) var asyncTileJobs = 0
+    private(set) var asyncTilesInstalled = 0
+
+    private var canInvalidateAsync: Bool {
+        return asyncAllowed && WidgetDocumentView.asyncTiles && WidgetDocumentView.layerTiles && !WidgetDocumentView.backingStore && window != nil && !tilesTrimmed && !tiles.isEmpty && tileScale == scale
+    }
+
+    private func invalidateAsync(_ rects: [CGRect]) {
+        invalidations += 1
+        markNeedsDisplay()
+        for rect in rects {
+            for (index, tile) in tiles.enumerated() where rect.intersects(tile.rect) {
+                asyncDirty[index] = (asyncDirty[index] ?? .null).union(rect.intersection(tile.rect))
+            }
+        }
+        if !asyncDirty.isEmpty {
+            owner?.schedule { [weak self] in
+                self?.rasterDirtyTiles()
+            }
+        }
+    }
+
+    private func rasterDirtyTiles() {
+        guard !preparing, !asyncDirty.isEmpty, let document = document, window != nil, !tilesTrimmed else {
+            return
+        }
+        let scale = self.scale
+        var jobs: [(index: Int, rect: CGRect, dirty: CGRect, base: IOSurfaceRef?)] = []
+        for (index, dirty) in asyncDirty where index < tiles.count {
+            let tile = tiles[index]
+            if tile.layer.needsDisplay() {
+                continue
+            }
+            let base = tile.prepared ? WidgetDocumentView.surface(of: tile.layer) : nil
+            jobs.append((index, tile.rect, base == nil ? tile.rect : dirty, base))
+        }
+        let pending = asyncDirty
+        asyncDirty.removeAll()
+        if jobs.isEmpty {
+            return
+        }
+        preparing = true
+        asyncTileJobs += 1
+        let syncEpoch = syncInvalidations
+        let space = WidgetDocumentView.surfaceSpace
+        let margin = WidgetDocumentView.cullMargin
+        WidgetDocumentView.prepareQueue.async { [weak self] in
+            var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
+            var aborted = false
+            for job in jobs {
+                let rect = job.rect
+                let width = max(1, Int(ceil(rect.maxX * scale)) - Int(floor(rect.minX * scale)))
+                let height = max(1, Int(ceil(rect.height * scale)))
+                guard let surface = Surface(width: width, height: height, space: space) else {
+                    aborted = true
+                    break
+                }
+                let ctx = surface.context
+                IOSurfaceLock(surface.surface, [], nil)
+                var dirty = job.dirty.intersection(rect)
+                if let base = job.base, IOSurfaceGetWidth(base) == width, IOSurfaceGetHeight(base) == height {
+                    IOSurfaceLock(base, .readOnly, nil)
+                    let from = IOSurfaceGetBaseAddress(base), to = IOSurfaceGetBaseAddress(surface.surface)
+                    let fromRow = IOSurfaceGetBytesPerRow(base), toRow = IOSurfaceGetBytesPerRow(surface.surface)
+                    for y in 0..<height {
+                        memcpy(to.advanced(by: y * toRow), from.advanced(by: y * fromRow), width * 4)
+                    }
+                    IOSurfaceUnlock(base, .readOnly, nil)
+                } else {
+                    dirty = rect
+                }
+                let x0 = floor(dirty.minX * scale) / scale, y0 = floor(dirty.minY * scale) / scale
+                let x1 = ceil(dirty.maxX * scale) / scale, y1 = ceil(dirty.maxY * scale) / scale
+                let aligned = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+                ctx.saveGState()
+                ctx.translateBy(x: 0, y: CGFloat(height))
+                ctx.scaleBy(x: scale, y: -scale)
+                ctx.translateBy(x: -rect.minX, y: -rect.minY)
+                ctx.clip(to: aligned)
+                ctx.clear(aligned)
+                ctx.setAllowsFontSmoothing(false)
+                ctx.setShouldAntialias(true)
+                let drawn = document.drawIfCurrent(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -margin, dy: -margin))
+                ctx.restoreGState()
+                ctx.flush()
+                IOSurfaceUnlock(surface.surface, [], nil)
+                guard drawn else {
+                    aborted = true
+                    break
+                }
+                made.append((job.index, rect, surface.surface))
+            }
+            let finish = {
+                guard let self = self else {
+                    return
+                }
+                self.preparing = false
+                if aborted || self.syncInvalidations != syncEpoch {
+                    for (index, dirty) in pending {
+                        self.asyncDirty[index] = (self.asyncDirty[index] ?? .null).union(dirty)
+                    }
+                } else if self.window != nil && !self.tilesTrimmed && self.tileScale == scale {
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    for item in made where item.index < self.tiles.count {
+                        let tile = self.tiles[item.index]
+                        guard tile.rect == item.rect, !tile.layer.needsDisplay() else {
+                            continue
+                        }
+                        tile.layer.contents = item.surface
+                        tile.layer.delegate = self.preparedDisplay
+                        tile.prepared = true
+                        self.asyncTilesInstalled += 1
+                    }
+                    CATransaction.commit()
+                }
+                self.owner?.rasterFinished()
+                if !self.asyncDirty.isEmpty {
+                    self.rasterDirtyTiles()
+                }
+            }
+            if let schedule = self?.owner?.schedule {
+                schedule(finish)
+            } else {
+                DispatchQueue.main.async(execute: finish)
+            }
+        }
+    }
+
     func invalidate(_ rects: [CGRect]) {
+        if canInvalidateAsync {
+            invalidateAsync(rects)
+            return
+        }
+        syncInvalidations += 1
         if rects.count <= 32 || WidgetDocumentView.backingStore || tiles.isEmpty {
             for rect in rects {
                 invalidate(rect)
@@ -2341,6 +2556,11 @@ final class WidgetDocumentView: NSView {
     }
 
     func invalidate(_ rect: CGRect?) {
+        if canInvalidateAsync {
+            invalidateAsync([rect ?? CGRect(x: 0, y: 0, width: bounds.width, height: CGFloat.greatestFiniteMagnitude / 4)])
+            return
+        }
+        syncInvalidations += 1
         if WidgetDocumentView.backingStore {
             if let rect = rect {
                 setNeedsDisplay(rect)
@@ -2406,6 +2626,7 @@ final class WidgetDocumentView: NSView {
     }
 
     private func removeTiles() {
+        syncInvalidations += 1
         for tile in tiles {
             tile.layer.removeFromSuperlayer()
         }
@@ -2495,6 +2716,7 @@ final class WidgetDocumentView: NSView {
                 tile.layer.needsDisplayOnBoundsChange = true
             }
             if tile.layer.frame != rect || tile.layer.contentsScale != scale {
+                syncInvalidations += 1
                 tile.layer.frame = rect
                 tile.layer.contentsScale = scale
                 if tile.prepared {
