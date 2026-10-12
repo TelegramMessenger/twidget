@@ -2295,18 +2295,22 @@ final class WidgetDocumentView: NSView {
     static var preparedChecks = 0
     static var preparedWorstDiff = 0
 
-    private static func checkPrepared(_ surface: IOSurfaceRef, document: LHDocument, rect: CGRect, width: CGFloat, scale: CGFloat) {
-        guard let fresh = document.copyImage(maxWidth: width, rect: rect, scale: scale) else {
-            return
-        }
+    private static func checkPrepared(_ surface: IOSurfaceRef, document: LHDocument, rect: CGRect, width: CGFloat, scale: CGFloat, label: String = "prepare") {
         let w = IOSurfaceGetWidth(surface), h = IOSurfaceGetHeight(surface)
-        guard fresh.width == w, fresh.height == h, let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: surfaceSpace, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
-            preparedChecks += 1
-            preparedWorstDiff = max(preparedWorstDiff, 999)
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: surfaceSpace, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
             return
         }
-        context.setBlendMode(.copy)
-        context.draw(fresh, in: CGRect(x: 0, y: 0, width: w, height: h))
+        context.saveGState()
+        context.translateBy(x: 0, y: CGFloat(h))
+        context.scaleBy(x: scale, y: -scale)
+        context.translateBy(x: -rect.minX, y: -rect.minY)
+        context.setAllowsFontSmoothing(false)
+        context.setShouldAntialias(true)
+        document.draw(in: context, origin: .zero, clip: rect.insetBy(dx: -cullMargin, dy: -cullMargin))
+        context.restoreGState()
+        guard let fresh = context.makeImage() else {
+            return
+        }
         IOSurfaceLock(surface, .readOnly, nil)
         defer { IOSurfaceUnlock(surface, .readOnly, nil) }
         guard let a = context.data, let b = IOSurfaceGetBaseAddress(surface) as UnsafeMutableRawPointer? else {
@@ -2314,19 +2318,48 @@ final class WidgetDocumentView: NSView {
         }
         let rowA = context.bytesPerRow, rowB = IOSurfaceGetBytesPerRow(surface)
         var worst = 0
+        var box = (x0: Int.max, y0: Int.max, x1: -1, y1: -1)
         for y in 0..<h {
             let pa = a.advanced(by: y * rowA).assumingMemoryBound(to: UInt8.self)
             let pb = b.advanced(by: y * rowB).assumingMemoryBound(to: UInt8.self)
             for x in 0..<(w * 4) {
-                worst = max(worst, abs(Int(pa[x]) - Int(pb[x])))
+                let d = abs(Int(pa[x]) - Int(pb[x]))
+                worst = max(worst, d)
+                if d > 2 {
+                    box = (min(box.x0, x / 4), min(box.y0, y), max(box.x1, x / 4), max(box.y1, y))
+                }
             }
+        }
+        if worst > 40, ProcessInfo.processInfo.environment["TW_VERIFY_PREPARE_DUMP"] != nil {
+            print("PREPARE DIFF box=\(box) of \(w)x\(h)")
         }
         preparedChecks += 1
         preparedWorstDiff = max(preparedWorstDiff, worst)
+        if worst > 2 {
+            preparedMismatches += 1
+            mismatchByLabel[label + (worst > 16 ? ">16" : "<=16"), default: 0] += 1
+            if worst > 40 { bigMismatches += 1 }
+            if worst > 40, bigMismatches <= 4, let dir = ProcessInfo.processInfo.environment["TW_VERIFY_PREPARE_DUMP"] {
+                let rep = NSBitmapImageRep(cgImage: fresh)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir + "/fresh\(bigMismatches).png"))
+                if let mine = context.makeImage() {
+                    _ = mine
+                }
+                let surfaceImage = CIImage(ioSurface: surface)
+                let ci = CIContext()
+                if let cg = ci.createCGImage(surfaceImage, from: surfaceImage.extent) {
+                    try? NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir + "/surface\(bigMismatches).png"))
+                }
+                print("PREPARE MISMATCH \(bigMismatches) rect=\(rect) worst=\(worst) label=\(label)")
+            }
+        }
     }
+    static var preparedMismatches = 0
+    static var bigMismatches = 0
+    static var mismatchByLabel: [String: Int] = [:]
 
     public static var preparedReport: String {
-        return "prepared checks=\(preparedChecks) worst diff=\(preparedWorstDiff)"
+        return "prepared checks=\(preparedChecks) worst diff=\(preparedWorstDiff) mismatches=\(preparedMismatches) big=\(bigMismatches) \(mismatchByLabel)"
     }
 
     private func unprepare(_ tile: Tile) {
@@ -2381,6 +2414,7 @@ final class WidgetDocumentView: NSView {
         ctx.restoreGState()
     }
 
+    static let asyncFullTiles = ProcessInfo.processInfo.environment["TW_ASYNC_PARTIAL"] == nil
     static var asyncTiles = ProcessInfo.processInfo.environment["TW_SYNC_TILES"] == nil
     var asyncAllowed = false
     private var asyncDirty: [Int: CGRect] = [:]
@@ -2417,7 +2451,7 @@ final class WidgetDocumentView: NSView {
             if tile.layer.needsDisplay() {
                 continue
             }
-            let base = tile.prepared ? WidgetDocumentView.surface(of: tile.layer) : nil
+            let base = tile.prepared && !WidgetDocumentView.asyncFullTiles ? WidgetDocumentView.surface(of: tile.layer) : nil
             jobs.append((index, tile.rect, base == nil ? tile.rect : dirty, base))
         }
         let pending = asyncDirty
@@ -2492,6 +2526,9 @@ final class WidgetDocumentView: NSView {
                         let tile = self.tiles[item.index]
                         guard tile.rect == item.rect, !tile.layer.needsDisplay() else {
                             continue
+                        }
+                        if WidgetDocumentView.verifyPrepared, self.document === document {
+                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.bounds.width, scale: scale, label: "async")
                         }
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
