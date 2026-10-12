@@ -524,6 +524,11 @@ static std::string MasterWithCSS(NSString *css)
     return self;
 }
 
++ (NSUInteger)cachedFontCount
+{
+    return LHContainer::cached_font_count();
+}
+
 - (NSString *)html
 {
     std::lock_guard<std::mutex> guard(_lock);

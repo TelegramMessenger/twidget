@@ -43,6 +43,7 @@ using LHGPURecorder = lhx::RenderRecorder;
 class LHContainer : public litehtml::document_container
 {
   public:
+    static size_t cached_font_count();
     LHContainer();
     ~LHContainer() override;
 

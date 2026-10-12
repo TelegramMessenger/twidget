@@ -616,6 +616,7 @@ struct SharedFont
 
 std::mutex                                                   gFontCacheMutex;
 std::unordered_map<std::string, std::shared_ptr<SharedFont>> gFontCache;
+constexpr size_t                                             kFontCacheLimit = 256;
 
 }
 
@@ -751,6 +752,12 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
     return font;
 }
 
+size_t LHContainer::cached_font_count()
+{
+    std::lock_guard<std::mutex> lock(gFontCacheMutex);
+    return gFontCache.size();
+}
+
 LHContainer::LHContainer() = default;
 LHContainer::~LHContainer() = default;
 
@@ -791,6 +798,11 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
     sf->underline_thickness = std::max<CGFloat>(1.0, std::round(CTFontGetUnderlineThickness(sf->font)));
 
     std::lock_guard<std::mutex> lock(gFontCacheMutex);
+    if(gFontCache.size() >= kFontCacheLimit)
+    {
+        for(auto it = gFontCache.begin(); it != gFontCache.end();)
+            it = it->second.use_count() == 1 ? gFontCache.erase(it) : std::next(it);
+    }
     return gFontCache.emplace(key, sf).first->second;
 }
 

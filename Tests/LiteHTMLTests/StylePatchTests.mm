@@ -183,4 +183,20 @@ static LHDocument *Laid(NSString *html)
     XCTAssertGreaterThan(applied, 40);
 }
 
+- (void)testFontCacheStaysBoundedAndKeepsFontsInUse
+{
+    LHDocument *kept   = Laid(@"<p style=\"font-size:13.37px;font-family:Georgia\">kept alive</p>");
+    NSData     *before = Pixels(kept);
+    for(int i = 0; i < 600; i++)
+    {
+        @autoreleasepool
+        {
+            Laid([NSString stringWithFormat:@"<p style=\"font-size:%.3fpx\">size %d</p>", 9.0 + i * 0.013, i]);
+        }
+    }
+    Laid(@"<p style=\"font-size:77.7px\">last</p>");
+    XCTAssertLessThanOrEqual(LHDocument.cachedFontCount, (NSUInteger)260);
+    XCTAssertEqualObjects(Pixels(kept), before);
+}
+
 @end
