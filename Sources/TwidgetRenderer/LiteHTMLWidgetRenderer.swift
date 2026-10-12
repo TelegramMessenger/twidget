@@ -1379,7 +1379,7 @@ final class WidgetDocumentView: NSView {
     static let cullMargin: CGFloat = 32
     static let surfaceSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     static let screenTagged = ProcessInfo.processInfo.environment["TW_SURFACE_SCREEN"] != nil
-    static let verify = ProcessInfo.processInfo.environment["TW_VERIFY"] != nil
+    static var verify = ProcessInfo.processInfo.environment["TW_VERIFY"] != nil
     private(set) var verifiedFrames = 0
     private(set) var mismatchedFrames = 0
 
@@ -1448,7 +1448,7 @@ final class WidgetDocumentView: NSView {
     }
 
     private let drawer = TileDrawer()
-    static let layerTiles = ProcessInfo.processInfo.environment["TW_SURFACE_TILES"] == nil && ProcessInfo.processInfo.environment["TW_VERIFY"] == nil
+    static var layerTiles = ProcessInfo.processInfo.environment["TW_SURFACE_TILES"] == nil && ProcessInfo.processInfo.environment["TW_VERIFY"] == nil
 
     private final class Tile {
         let layer = CALayer()
