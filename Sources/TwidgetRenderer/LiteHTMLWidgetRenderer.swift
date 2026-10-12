@@ -227,7 +227,77 @@ public final class LiteHTMLWidgetRenderer {
 
     static let messageLog = ProcessInfo.processInfo.environment["TW_MSG_LOG"] != nil
 
+    private enum Held {
+        case json(String)
+        case ops([WidgetOp])
+    }
+
+    private var held: [Held] = []
+    private var prepareScheduled = false
+
+    public var preparesOffscreen = false {
+        didSet {
+            if preparesOffscreen != oldValue {
+                updateTileTrim()
+                schedulePrepare()
+            }
+        }
+    }
+
+    public static var preparedReport: String {
+        return WidgetDocumentView.preparedReport
+    }
+
+    public var preparedTileCount: Int {
+        return documentView.preparedTiles
+    }
+
+    public var preparedMilliseconds: Double {
+        return documentView.preparedMilliseconds
+    }
+
+    public var isPrepared: Bool {
+        return document != nil && !documentView.preparing && !documentView.hasUnpreparedTiles
+    }
+
+    private func schedulePrepare() {
+        guard preparesOffscreen, !destroyed, !prepareScheduled, document != nil, documentView.window == nil else {
+            return
+        }
+        prepareScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else {
+                return
+            }
+            self.prepareScheduled = false
+            guard self.preparesOffscreen, !self.destroyed, self.documentView.window == nil else {
+                return
+            }
+            _ = self.documentView.prepareTiles { [weak self] in
+                self?.prepared()
+            }
+        }
+    }
+
+    private func prepared() {
+        let queued = held
+        held.removeAll()
+        for item in queued {
+            switch item {
+            case .json(let json):
+                send(json)
+            case .ops(let ops):
+                send(ops: ops)
+            }
+        }
+        schedulePrepare()
+    }
+
     public func send(_ json: String) {
+        if documentView.preparing && !destroyed {
+            held.append(.json(json))
+            return
+        }
         if !destroyed, LiteHTMLWidgetRenderer.canvasFastPath, json.hasPrefix("{\"type\":\"ops\",\"ops\":[{\"op\":\"canvas\""), let list = CanvasStream.canvasOps(json: json) {
             sendCanvas(list)
             return
@@ -280,6 +350,10 @@ public final class LiteHTMLWidgetRenderer {
 
     public func send(ops: [WidgetOp]) {
         guard !destroyed else {
+            return
+        }
+        if documentView.preparing {
+            held.append(.ops(ops))
             return
         }
         apply(ops)
@@ -367,6 +441,21 @@ public final class LiteHTMLWidgetRenderer {
         return max(1, documentView.bounds.width)
     }
 
+    private static var resolvedSheets: [String: String] = [:]
+
+    private static func resolvedSheet(_ css: String, theme: String) -> String {
+        let key = theme + "\u{1}" + css
+        if let resolved = resolvedSheets[key] {
+            return resolved
+        }
+        let resolved = CSSTheme.resolve(css, theme: theme)
+        if resolvedSheets.count >= 256 {
+            resolvedSheets.removeAll()
+        }
+        resolvedSheets[key] = resolved
+        return resolved
+    }
+
     private func render() {
         needsRender = false
         updateAnimationClock()
@@ -376,7 +465,7 @@ public final class LiteHTMLWidgetRenderer {
         let key = sheets.joined(separator: "\u{1}")
         if key != styleSheetKey {
             styleSheetKey = key
-            animator.setStyleSheets(sheets.map { CSSTheme.resolve($0, theme: theme) })
+            animator.setStyleSheets(sheets.map { LiteHTMLWidgetRenderer.resolvedSheet($0, theme: theme) })
         }
         stageMilliseconds["sheets", default: 0] += (CACurrentMediaTime() - sheetsStart) * 1000
         compositor.styleKey = (key + "\u{2}" + theme + "\u{2}\(hoverId)\u{2}\(pressId)").hashValue
@@ -907,6 +996,7 @@ public final class LiteHTMLWidgetRenderer {
         reportSize()
         reportResize()
         placeSurfaces()
+        schedulePrepare()
     }
 
     private static let scriptedProperties: Set<String> = ["transform", "opacity"]
@@ -1542,7 +1632,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func updateTileTrim() {
-        if isOnScreen || destroyed || keepsTilesWhileHidden {
+        if isOnScreen || destroyed || keepsTilesWhileHidden || preparesOffscreen {
             trimWork?.cancel()
             trimWork = nil
             if !destroyed {
@@ -1558,7 +1648,7 @@ public final class LiteHTMLWidgetRenderer {
                 return
             }
             self.trimWork = nil
-            if !self.destroyed && !self.isOnScreen && !self.keepsTilesWhileHidden {
+            if !self.destroyed && !self.isOnScreen && !self.keepsTilesWhileHidden && !self.preparesOffscreen {
                 self.documentView.trimTiles()
             }
         }
@@ -1570,6 +1660,7 @@ public final class LiteHTMLWidgetRenderer {
         hostVisible = visible
         updateAnimationClock()
         updateTileTrim()
+        schedulePrepare()
         placeSurfaces()
         if !isOnScreen {
             compositor.undrive()
@@ -1996,6 +2087,160 @@ final class WidgetDocumentView: NSView {
 
     private let drawer = TileDrawer()
 
+    private final class PreparedDisplay: NSObject, CALayerDelegate {
+        weak var drawer: TileDrawer?
+
+        func display(_ layer: CALayer) {
+            layer.delegate = drawer
+        }
+
+        func action(for layer: CALayer, forKey event: String) -> CAAction? {
+            return NSNull()
+        }
+    }
+
+    private lazy var preparedDisplay: PreparedDisplay = {
+        let display = PreparedDisplay()
+        display.drawer = drawer
+        return display
+    }()
+
+    static let prepareQueue = DispatchQueue(label: "twidget.tiles.prepare", qos: .userInitiated, attributes: .concurrent)
+    private(set) var preparing = false
+    private(set) var preparedTiles = 0
+    private(set) var preparedMilliseconds = 0.0
+    private var invalidations = 0
+    private var tileScale: CGFloat = 0
+
+    var hasUnpreparedTiles: Bool {
+        return tilesTrimmed || tiles.isEmpty || tiles.contains { !$0.prepared && ($0.layer.contents == nil || $0.layer.needsDisplay()) }
+    }
+
+    func prepareTiles(completion: @escaping () -> Void) -> Bool {
+        guard WidgetDocumentView.layerTiles, !WidgetDocumentView.backingStore, !preparing, let layer = layer, let document = document else {
+            return false
+        }
+        tilesTrimmed = false
+        let scale = self.scale
+        guard syncTiles(layer: layer, document: document, scale: scale) else {
+            return false
+        }
+        var jobs: [(index: Int, rect: CGRect)] = []
+        for (index, tile) in tiles.enumerated() where !tile.prepared && (tile.layer.contents == nil || tile.layer.needsDisplay()) {
+            jobs.append((index, tile.rect))
+        }
+        if jobs.isEmpty {
+            return false
+        }
+        preparing = true
+        let epoch = invalidations
+        let space = WidgetDocumentView.surfaceSpace
+        let margin = WidgetDocumentView.cullMargin
+        WidgetDocumentView.prepareQueue.async { [weak self] in
+            let start = CACurrentMediaTime()
+            var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
+            for job in jobs {
+                let rect = job.rect
+                let width = max(1, Int(ceil(rect.maxX * scale)) - Int(floor(rect.minX * scale)))
+                let height = max(1, Int(ceil(rect.height * scale)))
+                guard let surface = Surface(width: width, height: height, space: space) else {
+                    made.removeAll()
+                    break
+                }
+                let ctx = surface.context
+                IOSurfaceLock(surface.surface, [], nil)
+                ctx.saveGState()
+                ctx.clear(CGRect(x: 0, y: 0, width: width, height: height))
+                ctx.translateBy(x: 0, y: CGFloat(height))
+                ctx.scaleBy(x: scale, y: -scale)
+                ctx.translateBy(x: -rect.minX, y: -rect.minY)
+                ctx.setAllowsFontSmoothing(false)
+                ctx.setShouldAntialias(true)
+                let drawn = document.drawIfCurrent(in: ctx, origin: .zero, clip: rect.insetBy(dx: -margin, dy: -margin))
+                ctx.restoreGState()
+                ctx.flush()
+                IOSurfaceUnlock(surface.surface, [], nil)
+                guard drawn else {
+                    made.removeAll()
+                    break
+                }
+                made.append((job.index, rect, surface.surface))
+            }
+            let spent = (CACurrentMediaTime() - start) * 1000
+            DispatchQueue.main.async {
+                guard let self = self else {
+                    return
+                }
+                self.preparing = false
+                self.preparedMilliseconds += spent
+                if self.document === document && self.invalidations == epoch && !self.tilesTrimmed && self.tileScale == scale {
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    for item in made where item.index < self.tiles.count {
+                        let tile = self.tiles[item.index]
+                        guard tile.rect == item.rect, !tile.prepared else {
+                            continue
+                        }
+                        if WidgetDocumentView.verifyPrepared {
+                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.bounds.width, scale: scale)
+                        }
+                        tile.layer.contents = item.surface
+                        tile.layer.delegate = self.preparedDisplay
+                        tile.prepared = true
+                        self.preparedTiles += 1
+                    }
+                    CATransaction.commit()
+                }
+                completion()
+            }
+        }
+        return true
+    }
+
+    static let verifyPrepared = ProcessInfo.processInfo.environment["TW_VERIFY_PREPARE"] != nil
+    static var preparedChecks = 0
+    static var preparedWorstDiff = 0
+
+    private static func checkPrepared(_ surface: IOSurfaceRef, document: LHDocument, rect: CGRect, width: CGFloat, scale: CGFloat) {
+        guard let fresh = document.copyImage(maxWidth: width, rect: rect, scale: scale) else {
+            return
+        }
+        let w = IOSurfaceGetWidth(surface), h = IOSurfaceGetHeight(surface)
+        guard fresh.width == w, fresh.height == h, let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: surfaceSpace, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            preparedChecks += 1
+            preparedWorstDiff = max(preparedWorstDiff, 999)
+            return
+        }
+        context.setBlendMode(.copy)
+        context.draw(fresh, in: CGRect(x: 0, y: 0, width: w, height: h))
+        IOSurfaceLock(surface, .readOnly, nil)
+        defer { IOSurfaceUnlock(surface, .readOnly, nil) }
+        guard let a = context.data, let b = IOSurfaceGetBaseAddress(surface) as UnsafeMutableRawPointer? else {
+            return
+        }
+        let rowA = context.bytesPerRow, rowB = IOSurfaceGetBytesPerRow(surface)
+        var worst = 0
+        for y in 0..<h {
+            let pa = a.advanced(by: y * rowA).assumingMemoryBound(to: UInt8.self)
+            let pb = b.advanced(by: y * rowB).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<(w * 4) {
+                worst = max(worst, abs(Int(pa[x]) - Int(pb[x])))
+            }
+        }
+        preparedChecks += 1
+        preparedWorstDiff = max(preparedWorstDiff, worst)
+    }
+
+    public static var preparedReport: String {
+        return "prepared checks=\(preparedChecks) worst diff=\(preparedWorstDiff)"
+    }
+
+    private func unprepare(_ tile: Tile) {
+        tile.prepared = false
+        tile.layer.delegate = drawer
+        tile.layer.setNeedsDisplay()
+    }
+
     func insertOverlay(_ overlay: CALayer) {
         layer?.insertSublayer(overlay, at: UInt32(tiles.count))
     }
@@ -2007,6 +2252,7 @@ final class WidgetDocumentView: NSView {
         var shown: Surface?
         var rect = CGRect.null
         var pending = true
+        var prepared = false
     }
 
     private var tiles: [Tile] = []
@@ -2055,8 +2301,13 @@ final class WidgetDocumentView: NSView {
                 pieces[index] = pieces[index].union(rect.intersection(tile.rect))
             }
         }
+        invalidations += 1
         for (index, tile) in tiles.enumerated() where !pieces[index].isNull {
             if WidgetDocumentView.layerTiles {
+                if tile.prepared {
+                    unprepare(tile)
+                    continue
+                }
                 tile.layer.setNeedsDisplay(pieces[index].offsetBy(dx: -tile.rect.minX, dy: -tile.rect.minY))
             } else {
                 tile.pending = true
@@ -2082,9 +2333,12 @@ final class WidgetDocumentView: NSView {
             return
         }
         let everything = CGRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude / 4, height: CGFloat.greatestFiniteMagnitude / 4)
+        invalidations += 1
         if WidgetDocumentView.layerTiles {
             for tile in tiles where rect.map({ $0.intersects(tile.rect) }) ?? true {
-                if let rect = rect {
+                if tile.prepared {
+                    unprepare(tile)
+                } else if let rect = rect {
                     tile.layer.setNeedsDisplay(rect.intersection(tile.rect).offsetBy(dx: -tile.rect.minX, dy: -tile.rect.minY))
                 } else {
                     tile.layer.setNeedsDisplay()
@@ -2110,7 +2364,9 @@ final class WidgetDocumentView: NSView {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        removeTiles()
+        if tileScale != scale {
+            removeTiles()
+        }
         needsDisplay = true
     }
 
@@ -2146,25 +2402,12 @@ final class WidgetDocumentView: NSView {
         return tiles.count
     }
 
-    override func updateLayer() {
-        guard let layer = layer, let document = document, !tilesTrimmed else {
-            return
-        }
-        let start = CACurrentMediaTime()
-        defer {
-            if !WidgetDocumentView.layerTiles {
-                drawCount += 1
-                let spent = (CACurrentMediaTime() - start) * 1000
-                drawMilliseconds += spent
-                drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
-            }
-        }
-        let scale = self.scale
+    private func syncGrid(layer: CALayer, document: LHDocument, scale: CGFloat) -> (columns: Int, tileSize: CGFloat, height: CGFloat, space: CGColorSpace)? {
         let space = WidgetDocumentView.screenTagged ? (window?.colorSpace?.cgColorSpace ?? WidgetDocumentView.surfaceSpace) : WidgetDocumentView.surfaceSpace
         let height = max(1, ceil(document.size.height))
         let pixelWidth = Int(ceil(bounds.width * scale))
         if pixelWidth <= 0 || Int(ceil(height * scale)) <= 0 || pixelWidth > 16384 || height * scale > 16384 {
-            return
+            return nil
         }
         if surfaceSpace.map({ $0 != space }) ?? true || surfaceWidth != pixelWidth {
             removeTiles()
@@ -2189,6 +2432,67 @@ final class WidgetDocumentView: NSView {
             tiles.append(tile)
         }
         document.colorSpace = space
+        tileScale = scale
+        return (columns, tileSize, height, space)
+    }
+
+    private func syncTiles(layer: CALayer, document: LHDocument, scale: CGFloat) -> Bool {
+        guard let grid = syncGrid(layer: layer, document: document, scale: scale) else {
+            return false
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.contents = nil
+        for (index, tile) in tiles.enumerated() {
+            let top = CGFloat(index / grid.columns) * grid.tileSize
+            let left = CGFloat(index % grid.columns) * grid.tileSize
+            let rect = CGRect(x: left, y: top, width: min(grid.tileSize, bounds.width - left), height: min(grid.tileSize, grid.height - top))
+            if rect != tile.rect {
+                tile.rect = rect
+                tile.surfaces.removeAll()
+                tile.shown = nil
+                tile.pending = true
+            }
+            if tile.layer.delegate == nil {
+                drawer.view = self
+                tile.layer.delegate = drawer
+                tile.layer.isGeometryFlipped = false
+                tile.layer.needsDisplayOnBoundsChange = true
+            }
+            if tile.layer.frame != rect || tile.layer.contentsScale != scale {
+                tile.layer.frame = rect
+                tile.layer.contentsScale = scale
+                if tile.prepared {
+                    unprepare(tile)
+                } else {
+                    tile.layer.setNeedsDisplay()
+                }
+            }
+            tile.pending = false
+        }
+        CATransaction.commit()
+        return true
+    }
+
+    override func updateLayer() {
+        guard let layer = layer, let document = document, !tilesTrimmed else {
+            return
+        }
+        let scale = self.scale
+        if WidgetDocumentView.layerTiles {
+            _ = syncTiles(layer: layer, document: document, scale: scale)
+            return
+        }
+        let start = CACurrentMediaTime()
+        defer {
+            drawCount += 1
+            let spent = (CACurrentMediaTime() - start) * 1000
+            drawMilliseconds += spent
+            drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
+        }
+        guard let (columns, tileSize, height, space) = syncGrid(layer: layer, document: document, scale: scale) else {
+            return
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.contents = nil
@@ -2201,21 +2505,6 @@ final class WidgetDocumentView: NSView {
                 tile.surfaces.removeAll()
                 tile.shown = nil
                 tile.pending = true
-            }
-            if WidgetDocumentView.layerTiles {
-                if tile.layer.delegate == nil {
-                    drawer.view = self
-                    tile.layer.delegate = drawer
-                    tile.layer.isGeometryFlipped = false
-                    tile.layer.needsDisplayOnBoundsChange = true
-                }
-                if tile.layer.frame != rect || tile.layer.contentsScale != scale {
-                    tile.layer.frame = rect
-                    tile.layer.contentsScale = scale
-                    tile.layer.setNeedsDisplay()
-                }
-                tile.pending = false
-                continue
             }
             if !tile.pending {
                 continue

@@ -1725,6 +1725,15 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self drawLockedInContext:ctx origin:origin clip:clip];
 }
 
+- (BOOL)drawIfCurrentInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    if(_consumed || !_doc)
+        return NO;
+    [self drawLockedInContext:ctx origin:origin clip:clip];
+    return YES;
+}
+
 - (CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale base:(CGImageRef)base dirty:(CGRect)dirty
 {
     std::lock_guard<std::mutex> guard(_lock);
