@@ -4,6 +4,7 @@
 #import "LHDocumentPainting.h"
 
 #include "LHContainer.h"
+#include "LHSimpleText.h"
 #include "render_item.h"
 #include "html_tag.h"
 #include "el_space.h"
@@ -800,6 +801,22 @@ static std::string MasterWithCSS(NSString *css)
 + (NSUInteger)rasterCacheBytes
 {
     return LHContainer::raster_cache_bytes();
+}
+
++ (BOOL)simpleTextEnabled
+{
+    return LHSimpleShaper::enabled();
+}
+
++ (void)setSimpleTextEnabled:(BOOL)enabled
+{
+    LHSimpleShaper::set_enabled(enabled);
+}
+
++ (NSDictionary<NSString*, NSNumber*>*)simpleTextStats
+{
+    const auto stats = LHSimpleShaper::stats();
+    return @{@"hits": @(stats.hits), @"misses": @(stats.misses), @"learned": @(stats.learned), @"rejected": @(stats.rejected)};
 }
 
 + (void)purgeCaches

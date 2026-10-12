@@ -3,6 +3,7 @@
 
 #include "LHContainer.h"
 #include "LHFilters.h"
+#include "LHSimpleText.h"
 #include "twidget_assets.h"
 
 #include <algorithm>
@@ -723,12 +724,14 @@ struct SharedFont
     CGFloat         ascent = 0, descent = 0, x_height = 0;
     CGFloat         underline_pos = 0, underline_thickness = 1;
     CGFloat         kern = 0;
+    bool            colorGlyphs = false;
     std::mutex                                widthsMutex;
     std::unordered_map<std::string, CGFloat> widths;
     CFDictionaryRef drawAttrs = nullptr;
     std::mutex                                  linesMutex;
     std::unordered_map<std::string, CTLineRef> lines;
     std::unordered_map<std::string, CTLineRef> oldLines;
+    std::unique_ptr<LHSimpleShaper>             simple;
 
     ~SharedFont()
     {
@@ -946,6 +949,8 @@ void LHContainer::purge_caches()
             font->lines.clear();
             font->oldLines.clear();
         }
+        if(font->simple)
+            font->simple->clear();
         std::lock_guard<std::mutex> lock(font->widthsMutex);
         font->widths.clear();
     }
@@ -1019,6 +1024,8 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
     sf->drawAttrs = CFDictionaryCreate(nullptr, drawKeys, drawVals, sf->kern != 0 ? 3 : 2, &kCFTypeDictionaryKeyCallBacks,
                                        &kCFTypeDictionaryValueCallBacks);
     CFRelease(kern);
+    sf->simple = std::make_unique<LHSimpleShaper>(sf->font, sf->drawAttrs);
+    sf->colorGlyphs = (CTFontGetSymbolicTraits(sf->font) & kCTFontTraitColorGlyphs) != 0;
 
     CGFloat ascent          = CTFontGetAscent(sf->font);
     CGFloat descent         = CTFontGetDescent(sf->font);
@@ -1146,6 +1153,28 @@ static CTLineRef CopyLine(SharedFont& sf, const char* text)
     return line;
 }
 
+static bool CheckSimpleText()
+{
+    static const bool check = getenv("TW_SIMPLE_TEXT_CHECK") != nullptr;
+    return check;
+}
+
+struct SimpleRun
+{
+    CGGlyph glyphs[LHSimpleShaper::kMaxLength];
+    CGFloat xs[LHSimpleShaper::kMaxLength];
+    CGFloat width = 0;
+    size_t  count = 0;
+};
+
+static bool ShapeSimple(SharedFont& sf, const char* text, SimpleRun& run)
+{
+    if(!sf.simple)
+        return false;
+    run.count = strlen(text);
+    return sf.simple->shape(text, run.count, run.glyphs, run.xs, &run.width);
+}
+
 lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
 {
     auto* f = reinterpret_cast<Font*>(hFont);
@@ -1158,12 +1187,28 @@ lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
         if(it != sf.widths.end())
             return static_cast<float>(it->second);
     }
+    SimpleRun simple;
+    if(ShapeSimple(sf, text, simple))
+    {
+        if(CheckSimpleText())
+        {
+            CTLineRef line = CreateLine(text, sf.drawAttrs);
+            CGFloat   w    = line ? CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr) : 0;
+            if(line)
+                CFRelease(line);
+            if(std::fabs(w - simple.width) > 1e-4)
+                fprintf(stderr, "SIMPLETEXT width mismatch \"%s\" %.6f vs %.6f\n", text, simple.width, w);
+        }
+        return static_cast<float>(simple.width);
+    }
 
     CGFloat   w    = 0;
     CTLineRef line = CreateLine(text, sf.drawAttrs);
     if(line)
     {
         w = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
+        if(sf.simple)
+            sf.simple->learn(text, strlen(text), line);
         CacheLine(sf, text, line);
         CFRelease(line);
     }
@@ -1382,9 +1427,11 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
     CGContextSaveGState(ctx);
     apply_clips(ctx, ink);
 
-    CTLineRef line = CopyLine(*f->shared, text);
+    SimpleRun simple;
+    const bool simpleRun = ShapeSimple(*f->shared, text, simple);
+    CTLineRef  line      = simpleRun ? nullptr : CopyLine(*f->shared, text);
 
-    if(line)
+    if(simpleRun || line)
     {
         SetFill(ctx, color);
         CGFloat x        = F(pos.x);
@@ -1400,12 +1447,20 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
             CGContextSetShadowWithColor(ctx, offset, f->shadow_blur * scale, shadow);
             CGColorRelease(shadow);
         }
-        CTLineDraw(line, ctx);
+        if(simpleRun)
+        {
+            CGPoint points[LHSimpleShaper::kMaxLength];
+            for(size_t i = 0; i < simple.count; i++)
+                points[i] = CGPointMake(simple.xs[i], 0);
+            CTFontDrawGlyphs(f->shared->font, simple.glyphs, points, simple.count, ctx);
+        }
+        else
+            CTLineDraw(line, ctx);
         CGContextSetShadowWithColor(ctx, CGSizeZero, 0, nullptr);
 
         if(f->underline || f->overline || f->strike)
         {
-            CGFloat       w  = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
+            CGFloat       w  = simpleRun ? simple.width : CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
             CGFloat       t  = f->deco_thickness > 0 ? f->deco_thickness : f->shared->underline_thickness;
             lh::web_color dc = f->deco_color.is_current_color ? color : f->deco_color;
             SetFill(ctx, dc);
@@ -1418,7 +1473,8 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
             if(f->overline)
                 DrawDecoration(ctx, x, std::round(baseline - f->shared->ascent + t / 2), w, t, f->deco_style);
         }
-        CFRelease(line);
+        if(line)
+            CFRelease(line);
     }
     CGContextRestoreGState(ctx);
 }
@@ -1692,6 +1748,37 @@ bool LHContainer::record_glyphs(const char* text, Font* f, const lh::web_color& 
     {
         if(!CGAffineTransformIsIdentity(c.matrix) || !InsideRoundedRect(R(c.box), c.radius, ink))
             return false;
+    }
+    SimpleRun simple;
+    if(ShapeSimple(*f->shared, text, simple))
+    {
+        if(f->shared->colorGlyphs)
+            return false;
+        flush_capture();
+        const size_t   mark     = m_gpu->ops.size();
+        const CGFloat  s        = m_gpu->scale;
+        const CGFloat  x        = F(pos.x);
+        const CGFloat  baseline = F(pos.y) + f->shared->ascent;
+        const uint8_t* rgba     = device_color(color);
+        for(size_t g = 0; g < simple.count; g++)
+        {
+            CGPoint     device = CGPointMake((x + simple.xs[g]) * s, baseline * s);
+            LHGlyphSlot slot;
+            if(!m_gpu->glyph(f->shared->font, simple.glyphs[g], device, slot))
+            {
+                m_gpu->ops.resize(mark);
+                return false;
+            }
+            if(slot.empty)
+                continue;
+            LHGPUOp op;
+            op.kind   = LHGPUOp::Mask;
+            op.device = slot.device;
+            op.key    = static_cast<uint64_t>(slot.u) | static_cast<uint64_t>(slot.v) << 16;
+            memcpy(op.color, rgba, 4);
+            m_gpu->ops.push_back(op);
+        }
+        return true;
     }
     CTLineRef line = CopyLine(*f->shared, text);
     if(!line)
