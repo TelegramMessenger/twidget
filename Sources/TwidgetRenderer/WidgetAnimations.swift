@@ -810,12 +810,34 @@ final class WidgetAnimator {
 
     static let compositedProperties: Set<String> = ["transform", "opacity", "filter", "box-shadow"]
 
+    let web = WidgetWebAnimations()
+    var underlying: ((Int, String) -> String?)?
+
     func base(_ id: Int) -> [String: String] {
         return bases[id] ?? [:]
     }
 
+    private func underlyingValue(_ id: Int, _ property: String) -> String {
+        return bases[id]?[property] ?? underlying?(id, property) ?? WidgetAnimator.initialValues[property] ?? ""
+    }
+
+    private func hasLiveCSS(_ id: Int) -> Bool {
+        return transitions[id] != nil || running[id]?.contains(where: { !$0.ended && keyframes[$0.spec.name] != nil }) == true
+    }
+
+    func webBakes(_ id: Int) -> [WidgetWebAnimations.Bake]? {
+        if web.animations(id).isEmpty {
+            return nil
+        }
+        var base = bases[id] ?? [:]
+        for property in WebAnimation.compositable where base[property] == nil {
+            base[property] = underlying?(id, property)
+        }
+        return web.bakes(id, base: base, hasOtherAnimations: hasLiveCSS(id))
+    }
+
     func animatedIDs() -> Set<Int> {
-        var ids = Set(transitions.keys)
+        var ids = Set(transitions.keys).union(web.animatedIDs())
         for (id, list) in running where list.contains(where: { !$0.ended && keyframes[$0.spec.name] != nil }) {
             ids.insert(id)
         }
@@ -823,6 +845,14 @@ final class WidgetAnimator {
     }
 
     func isCompositable(_ id: Int) -> Bool {
+        if !web.animations(id).isEmpty {
+            guard web.onlyCompositable(id) else {
+                return false
+            }
+            if !hasLiveCSS(id) {
+                return true
+            }
+        }
         if let list = transitions[id], list.keys.contains(where: { !WidgetAnimator.compositedProperties.contains($0) }) {
             return false
         }
@@ -870,6 +900,13 @@ final class WidgetAnimator {
                 }
             }
         }
+        if !web.animations(id).isEmpty {
+            var webBase = base
+            for property in WebAnimation.compositable where webBase[property] == nil {
+                webBase[property] = underlying?(id, property)
+            }
+            out.append(contentsOf: web.reachableValues(id, base: webBase))
+        }
         return out
     }
 
@@ -892,7 +929,7 @@ final class WidgetAnimator {
     }
 
     func bakeable(_ id: Int) -> Baked? {
-        guard transitions[id] == nil, let list = running[id] else {
+        guard transitions[id] == nil, web.animations(id).isEmpty, let list = running[id] else {
             return nil
         }
         let live = list.filter { keyframes[$0.spec.name] != nil }
@@ -945,7 +982,7 @@ final class WidgetAnimator {
     }
 
     func isActive(excluding driven: Set<Int>) -> Bool {
-        if transitions.keys.contains(where: { !driven.contains($0) }) {
+        if transitions.keys.contains(where: { !driven.contains($0) }) || web.needsFrames(excluding: driven) {
             return true
         }
         return running.contains { id, list in !driven.contains(id) && list.contains { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil } }
@@ -966,6 +1003,9 @@ final class WidgetAnimator {
     }
 
     func endTime(_ id: Int) -> CFTimeInterval? {
+        if !web.animations(id).isEmpty {
+            return web.endTime(id)
+        }
         guard let item = running[id]?.first(where: { !$0.ended && keyframes[$0.spec.name] != nil }), item.spec.iterations.isFinite else {
             return nil
         }
@@ -990,7 +1030,7 @@ final class WidgetAnimator {
     ]
 
     var isActive: Bool {
-        return !transitions.isEmpty || running.values.contains { list in list.contains { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil } }
+        return !transitions.isEmpty || web.needsFrames(excluding: []) || running.values.contains { list in list.contains { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil } }
     }
 
     func setStyleSheets(_ texts: [String]) {
@@ -1097,6 +1137,9 @@ final class WidgetAnimator {
             if transitions[id]?.isEmpty == true {
                 transitions[id] = nil
             }
+        }
+        if !web.isEmpty {
+            web.sample(into: &overrides, underlying: { [self] in self.underlyingValue($0, $1) })
         }
         lastOverrides = overrides
         return overrides

@@ -586,6 +586,10 @@ final class WidgetCompositor {
             return
         }
         for (id, item) in promoted {
+            if let bakes = animator.webBakes(id) {
+                driveWeb(id, item: item, bakes: bakes)
+                continue
+            }
             guard let baked = animator.bakeable(id) else {
                 if driven[id] != nil {
                     item.layer.removeAnimation(forKey: "tw.transform")
@@ -666,6 +670,62 @@ final class WidgetCompositor {
             drivenSince[id] = CACurrentMediaTime()
             bakes += 1
         }
+    }
+
+    private func driveWeb(_ id: Int, item: Promoted, bakes: [WidgetWebAnimations.Bake]) {
+        let signature = "web|" + bakes.map { $0.signature }.joined(separator: "#") + "|\(item.box)|\(item.origin)"
+        if driven[id] == signature {
+            return
+        }
+        item.layer.removeAnimation(forKey: "tw.transform")
+        item.layer.removeAnimation(forKey: "tw.opacity")
+        driven[id] = nil
+        var added: [(String, CAKeyframeAnimation)] = []
+        for bake in bakes {
+            guard let begin = bake.begin, let track = WidgetCompositor.bake(WidgetAnimator.Baked(spec: CSSAnimationSpec(), start: 0, value: bake.value), base: [:], box: item.box.size, origin: item.origin, resolve: { [self] in self.resolved($0, id: id) }) else {
+                return
+            }
+            func configure(_ animation: CAKeyframeAnimation, _ values: [Any]) {
+                animation.values = values
+                animation.keyTimes = track.times.map { NSNumber(value: $0) }
+                animation.calculationMode = .linear
+                animation.duration = max(bake.cycle, 0.0001)
+                var start = item.layer.convertTime(begin, from: nil)
+                if start == 0 {
+                    start = 1e-9
+                }
+                animation.beginTime = start
+                animation.speed = bake.speed
+                animation.repeatCount = bake.repeatCount
+                switch (bake.caBackwards, bake.caForwards) {
+                case (true, true):
+                    animation.fillMode = .both
+                case (true, false):
+                    animation.fillMode = .backwards
+                case (false, true):
+                    animation.fillMode = .forwards
+                default:
+                    animation.fillMode = .removed
+                }
+                animation.isRemovedOnCompletion = !bake.caForwards
+            }
+            if bake.properties.contains("transform") {
+                let animation = CAKeyframeAnimation(keyPath: "transform")
+                configure(animation, track.transforms.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform(WidgetCompositor.decomposable($0))) })
+                added.append(("tw.transform", animation))
+            }
+            if bake.properties.contains("opacity") {
+                let animation = CAKeyframeAnimation(keyPath: "opacity")
+                configure(animation, track.opacities.map { NSNumber(value: $0) })
+                added.append(("tw.opacity", animation))
+            }
+        }
+        for (key, animation) in added {
+            item.layer.add(animation, forKey: key)
+        }
+        driven[id] = signature
+        drivenSince[id] = CACurrentMediaTime()
+        self.bakes += 1
     }
 
     func handoffError(animator: WidgetAnimator, now: CFTimeInterval) -> (geometry: CGFloat, alpha: Float, offset: Double) {

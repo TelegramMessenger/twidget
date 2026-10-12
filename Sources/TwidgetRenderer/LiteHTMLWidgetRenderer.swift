@@ -108,6 +108,7 @@ public final class LiteHTMLWidgetRenderer {
     private var styleSheetKey = ""
     private var overrides: [Int: [(String, String)]] = [:]
     private var lastResize: [Int: CGSize] = [:]
+    private var webUnderlying: [Int: [String: String]] = [:]
 
     static let maxCanvases = 64
     static let maxCanvasPixels = 4096 * 4096
@@ -148,6 +149,9 @@ public final class LiteHTMLWidgetRenderer {
         WidgetCanvasImages.install()
         animator.onEvent = { [weak self] type, id, _, _ in
             self?.dispatchAnimationEvent(type, id)
+        }
+        animator.underlying = { [weak self] id, property in
+            self?.webUnderlying[id]?[property]
         }
     }
 
@@ -254,6 +258,11 @@ public final class LiteHTMLWidgetRenderer {
             startClock()
         case "frozen":
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
+        case "anim":
+            animator.web.apply(message)
+            if !frozen {
+                render()
+            }
         default:
             break
         }
@@ -368,6 +377,30 @@ public final class LiteHTMLWidgetRenderer {
         for (key, values) in document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow"]) ?? [:] {
             if let id = Int(key) {
                 declarations[id] = values
+            }
+        }
+        if !animator.web.isEmpty, let document = document {
+            webUnderlying.removeAll()
+            let targets = animator.web.targets
+            var names = Set(WidgetAnimator.watched)
+            var required = Set<String>()
+            for id in targets {
+                for animation in animator.web.animations(id) {
+                    required.formUnion(animation.properties)
+                }
+            }
+            required.insert("transform-origin")
+            names.formUnion(required)
+            for (key, values) in document.declarations(Array(names), byAttribute: WidgetDOM.idAttribute, requiringAny: Array(required)) {
+                guard let id = Int(key), targets.contains(id) else {
+                    continue
+                }
+                let plain = values.filter { !$0.key.hasPrefix("animation") && !$0.key.hasPrefix("transition") }
+                declarations[id] = (declarations[id] ?? [:]).merging(plain) { current, _ in current }
+                webUnderlying[id] = values
+            }
+            for id in targets where declarations[id] == nil && dom.node(id) != nil {
+                declarations[id] = [:]
             }
         }
         stageMilliseconds["declarations", default: 0] += (CACurrentMediaTime() - scanStart) * 1000
@@ -927,16 +960,23 @@ public final class LiteHTMLWidgetRenderer {
     private var drivenEndToken = 0
 
     private func scheduleDrivenEnds(now: CFTimeInterval) {
-        var ends = compositor.drivenIDs.compactMap { animator.endTime($0) }.filter { $0 > now }
-        if listened.contains("animationiteration") {
-            ends += compositor.drivenIDs.compactMap { animator.nextIteration($0, after: now) }
+        let real = CACurrentMediaTime()
+        var delays: [Double] = []
+        for id in compositor.drivenIDs {
+            let clock = animator.web.animations(id).isEmpty ? now : real
+            if let end = animator.endTime(id), end > clock {
+                delays.append(end - clock)
+            }
         }
-        guard let next = ends.min() else {
+        if listened.contains("animationiteration") {
+            delays += compositor.drivenIDs.compactMap { animator.nextIteration($0, after: now) }.map { $0 - now }
+        }
+        guard let next = delays.min() else {
             return
         }
         drivenEndToken += 1
         let token = drivenEndToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + (next - now) + 0.002) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + next + 0.002) { [weak self] in
             guard let self = self, self.drivenEndToken == token, !self.destroyed else {
                 return
             }
