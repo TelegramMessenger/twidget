@@ -1087,7 +1087,8 @@ public final class LiteHTMLWidgetRenderer {
             }
             surfaceTokens = tokens.sorted()
         }
-        let visible = isOnScreen && !frozen
+        let shown = isOnScreen
+        let active = shown && !frozen
         let scale = documentView.scale
         var rects: [String: CGRect] = [:]
         if let document = document, surfaceLayer != nil {
@@ -1120,7 +1121,7 @@ public final class LiteHTMLWidgetRenderer {
                 documentView.layer?.addSublayer(container)
             }
             container.frame = documentView.bounds
-            container.isHidden = !visible
+            container.isHidden = !shown
             for (token, rect) in rects {
                 var layer = placedSurfaces[token]
                 if layer == nil, let made = surfaceLayer?(token) {
@@ -1136,7 +1137,7 @@ public final class LiteHTMLWidgetRenderer {
                     placed.frame = rect
                 }
                 placed.contentsScale = scale
-                surfaceLayout?(token, rect.size, scale, visible)
+                surfaceLayout?(token, rect.size, scale, active)
             }
         } else {
             surfaceContainer?.removeFromSuperlayer()
@@ -1334,6 +1335,7 @@ public final class LiteHTMLWidgetRenderer {
         frameRequested = false
         pendingMoves.removeAll()
         documentView.showBadge(reason, fatal: fatal)
+        placeSurfaces()
     }
 
     func screenChanged() {
@@ -1645,9 +1647,12 @@ final class WidgetDocumentView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         let widthChanged = newSize.width != frame.width
+        let heightChanged = newSize.height != frame.height
         super.setFrameSize(newSize)
         if widthChanged {
             owner?.viewResized()
+        } else if heightChanged {
+            owner?.placeSurfaces()
         }
     }
 
@@ -2041,6 +2046,7 @@ final class WidgetDocumentView: NSView {
         badge.cornerRadius = 9
         badge.alignmentMode = .center
         badge.contentsScale = scale
+        badge.zPosition = 1000
         let width = ceil((text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width) + 14
         badge.frame = CGRect(x: bounds.maxX - width - 6, y: 6, width: width, height: 17)
         if badge.superlayer == nil {
