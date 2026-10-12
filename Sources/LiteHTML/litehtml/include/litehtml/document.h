@@ -250,7 +250,7 @@ namespace litehtml
                                      const std::vector<std::shared_ptr<element>>& retext = {});
         bool     retag_allowed(const std::shared_ptr<element>& el, std::string name, bool svg, string_map& attrs,
                                bool blocked);
-        bool     apply_retag(const std::shared_ptr<element>& el, const string_map& attrs, bool check);
+        bool     apply_retag(const std::shared_ptr<element>& el, const string_map& attrs, bool check, int* region = nullptr);
         void     forget_positions();
         bool     class_change_allowed(const html_hole& hole, const std::string& value, string_map& attrs);
         bool     retext_in_place(const std::vector<std::shared_ptr<element>>& current, const char* text,

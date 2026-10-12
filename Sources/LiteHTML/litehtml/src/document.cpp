@@ -471,6 +471,12 @@ namespace litehtml
         auto note   = [&](const std::string& name) {
             if(box.count(name))
                 return;
+            if(name == "color" || name == "text-decoration-color")
+            {
+                if(region == 1)
+                    region = 3;
+                return;
+            }
             region = svg.count(name) && region > 0 ? 2 : 0;
         };
         for(const auto& d : left)
@@ -485,6 +491,42 @@ namespace litehtml
                 note(d.first);
         }
         return region;
+    }
+
+    static int declared_region(const std::string& name)
+    {
+        static const std::unordered_set<std::string> box = {
+            "border-color", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color", "caret-color", "cursor"};
+        if(name.compare(0, 10, "background") == 0 || box.count(name))
+            return 1;
+        if(name == "color" || name == "text-decoration-color")
+            return 3;
+        return 0;
+    }
+
+    static bool push_text_owner_region(const element::ptr& owner, std::vector<element::ptr>& regions)
+    {
+        static const bool disabled = getenv("LH_NO_COLOR_REGIONS") != nullptr;
+        if(disabled || !owner || owner->children().empty() || owner->css().get_display() == display_list_item)
+            return false;
+        for(const auto& child : owner->children())
+        {
+            if(!child->is_text())
+                return false;
+        }
+        regions.push_back(owner);
+        for(const auto& child : owner->children())
+        {
+            if(typeid(*child) == typeid(el_text))
+                regions.push_back(child);
+        }
+        return true;
+    }
+
+    static bool text_regions_disabled()
+    {
+        static const bool disabled = getenv("LH_NO_TEXT_REGIONS") != nullptr;
+        return disabled;
     }
 
     static element::ptr outermost_svg(const element::ptr& el)
@@ -901,13 +943,17 @@ namespace litehtml
         m_patch_confined = !getenv("LH_NO_PATCH_REGIONS");
         for(const auto& entry : classes)
         {
-            html_hole& hole = m_holes[changes[entry.first].first];
-            if(!apply_retag(hole.owner, entry.second, true))
+            html_hole& hole   = m_holes[changes[entry.first].first];
+            int        region = 0;
+            if(!apply_retag(hole.owner, entry.second, true, &region))
             {
                 keep_tree  = false;
                 paint_only = false;
             }
-            m_patch_confined = false;
+            if(m_patch_confined && region == 1)
+                m_patch_regions.push_back(hole.owner);
+            else if(!m_patch_confined || region != 3 || outermost_svg(hole.owner) || !push_text_owner_region(hole.owner, m_patch_regions))
+                m_patch_confined = false;
             hole.value       = changes[entry.first].second;
             restyle.push_back(hole.owner);
         }
@@ -921,6 +967,8 @@ namespace litehtml
             if(m_patch_confined)
             {
                 element::ptr region;
+                bool         words_region = false;
+                bool         continue_region = false;
                 if(!hole.text && !hole.src)
                 {
                     const int kind = hole.attr.empty() ? style_change_region(hole.value, value) : 2;
@@ -928,8 +976,23 @@ namespace litehtml
                         region = hole.owner;
                     else if(kind == 2)
                         region = outermost_svg(hole.owner);
+                    else if(kind == 3 && !outermost_svg(hole.owner) && push_text_owner_region(hole.owner, m_patch_regions))
+                        continue_region = true;
+                } else if(inplace && !text_regions_disabled())
+                {
+                    region       = outermost_svg(hole.text_elements.front());
+                    words_region = !region;
                 }
-                if(region)
+                if(continue_region)
+                {
+                } else if(words_region)
+                {
+                    for(const auto& el : hole.text_elements)
+                    {
+                        if(typeid(*el) == typeid(el_text))
+                            m_patch_regions.push_back(el);
+                    }
+                } else if(region)
                     m_patch_regions.push_back(region);
                 else
                     m_patch_confined = false;
@@ -1254,8 +1317,10 @@ namespace litehtml
         return true;
     }
 
-    bool document::apply_retag(const element::ptr& el, const string_map& attrs, bool check)
+    bool document::apply_retag(const element::ptr& el, const string_map& attrs, bool check, int* region)
     {
+        if(region)
+            *region = 0;
         auto has_pseudo = [&el]() {
             for(const auto& child : el->m_children)
                 if(child->tag() == __tag_before_ || child->tag() == __tag_after_)
@@ -1308,14 +1373,20 @@ namespace litehtml
         std::vector<std::pair<const css_selector*, bool>> changed;
         std::set_symmetric_difference(rules_before.begin(), rules_before.end(), rules_after.begin(), rules_after.end(),
                                       std::back_inserter(changed));
+        int kind = 1;
         for(const auto& rule : changed)
         {
-            if(!rule.first->m_style || !rule.first->m_style->only_declares([](string_id name) {
-                   const std::string& text = _s(name);
-                   return paint_only_property(text.compare(0, 8, "-lh-raw-") == 0 ? text.substr(8) : text);
+            if(!rule.first->m_style || !rule.first->m_style->only_declares([&kind](string_id name) {
+                   const std::string& text     = _s(name);
+                   const std::string  property = text.compare(0, 8, "-lh-raw-") == 0 ? text.substr(8) : text;
+                   const int          declared = declared_region(property);
+                   kind                        = declared == 0 ? 0 : (kind == 0 ? 0 : std::max(kind, declared));
+                   return paint_only_property(property);
                }))
                 return false;
         }
+        if(region)
+            *region = kind;
         return true;
     }
 

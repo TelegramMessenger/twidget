@@ -640,15 +640,28 @@ static std::string MasterWithCSS(NSString *css)
         if(!ri)
             return nil;
         const auto el       = ri->src_el();
+        const bool text     = el->is_text();
         const bool replaced = std::dynamic_pointer_cast<lh::el_svg>(el) || std::dynamic_pointer_cast<lh::el_image>(el);
-        if(el->is_inline() && !el->is_inline_box() && !replaced)
+        if(!text && el->is_inline() && !el->is_inline_box() && !replaced)
             return nil;
         for(auto p = ri; p; p = p->parent())
         {
-            if(p->src_el()->css().is_paint_group())
+            const auto &css = p->src_el()->css();
+            if(css.is_paint_group() || (css.get_position() != lh::element_position_static && css.get_position() != lh::element_position_relative))
                 return nil;
         }
+        if(!text && (!el->css().get_box_shadows().empty() || !el->css().get_text_shadows().empty() ||
+                     (el->css().get_outline().style != lh::border_style_none && el->css().get_outline().style != lh::border_style_hidden)))
+            return nil;
         CGRect box = BorderBox(ri);
+        if(text)
+        {
+            const auto parent = el->parent();
+            if(!parent || !parent->css().get_text_shadows().empty())
+                return nil;
+            const CGFloat slack = std::max<CGFloat>(4, std::ceil(box.size.height) / 2 + 1) + 1;
+            box                 = CGRectInset(box, -slack, -slack);
+        }
         if(CGRectIsEmpty(box))
             continue;
         [rects addObject:[NSValue valueWithRect:NSRectFromCGRect(CGRectInset(box, -1, -1))]];
