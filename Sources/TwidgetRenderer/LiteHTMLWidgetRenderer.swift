@@ -82,6 +82,9 @@ public final class LiteHTMLWidgetRenderer {
     public var magicMoveCount: Int {
         return magic.transitions
     }
+    public var tileLayerCount: Int {
+        return documentView.tileCount
+    }
     public var compositedCount: Int {
         return compositor.ids.count
     }
@@ -172,6 +175,8 @@ public final class LiteHTMLWidgetRenderer {
         canvasURLs.removeAll()
         clock?.stop()
         clock = nil
+        trimWork?.cancel()
+        trimWork = nil
         documentView.owner = nil
         documentView.removeFromSuperview()
     }
@@ -1050,9 +1055,39 @@ public final class LiteHTMLWidgetRenderer {
         return hostVisible
     }
 
+    public static var hiddenTrimDelay: TimeInterval = 2
+
+    private var trimWork: DispatchWorkItem?
+
+    private func updateTileTrim() {
+        if isOnScreen || destroyed {
+            trimWork?.cancel()
+            trimWork = nil
+            if !destroyed {
+                documentView.restoreTiles()
+            }
+            return
+        }
+        guard trimWork == nil else {
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else {
+                return
+            }
+            self.trimWork = nil
+            if !self.destroyed && !self.isOnScreen {
+                self.documentView.trimTiles()
+            }
+        }
+        trimWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + LiteHTMLWidgetRenderer.hiddenTrimDelay, execute: work)
+    }
+
     public func setVisible(_ visible: Bool) {
         hostVisible = visible
         updateAnimationClock()
+        updateTileTrim()
         if !isOnScreen {
             compositor.undrive()
         } else if !compositor.ids.isEmpty && animator.isActive && !frozen {
@@ -1500,8 +1535,33 @@ final class WidgetDocumentView: NSView {
         tiles.removeAll()
     }
 
+    private(set) var tilesTrimmed = false
+
+    func trimTiles() {
+        guard !tilesTrimmed else {
+            return
+        }
+        tilesTrimmed = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        removeTiles()
+        CATransaction.commit()
+    }
+
+    func restoreTiles() {
+        guard tilesTrimmed else {
+            return
+        }
+        tilesTrimmed = false
+        needsDisplay = true
+    }
+
+    var tileCount: Int {
+        return tiles.count
+    }
+
     override func updateLayer() {
-        guard let layer = layer, let document = document else {
+        guard let layer = layer, let document = document, !tilesTrimmed else {
             return
         }
         let start = CACurrentMediaTime()
