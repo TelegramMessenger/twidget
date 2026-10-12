@@ -29,11 +29,38 @@ static CGColorRef CreateColor(const lh::web_color& c)
     return CGColorCreate(SRGB(), comps);
 }
 
+namespace {
+
+struct ColorCache
+{
+    uint32_t   keys[64]   = {};
+    CGColorRef colors[64] = {};
+
+    ~ColorCache()
+    {
+        for(CGColorRef color : colors)
+            CGColorRelease(color);
+    }
+
+    CGColorRef get(const lh::web_color& c)
+    {
+        const uint32_t key  = uint32_t(c.red) << 24 | uint32_t(c.green) << 16 | uint32_t(c.blue) << 8 | uint32_t(c.alpha);
+        const uint32_t slot = (key * 2654435761u) >> 26;
+        if(colors[slot] && keys[slot] == key)
+            return colors[slot];
+        CGColorRelease(colors[slot]);
+        colors[slot] = CreateColor(c);
+        keys[slot]   = key;
+        return colors[slot];
+    }
+};
+
+}
+
 static void SetFill(CGContextRef ctx, const lh::web_color& c)
 {
-    CGColorRef col = CreateColor(c);
-    CGContextSetFillColorWithColor(ctx, col);
-    CGColorRelease(col);
+    static thread_local ColorCache cache;
+    CGContextSetFillColorWithColor(ctx, cache.get(c));
 }
 
 static void SetStroke(CGContextRef ctx, const lh::web_color& c)
@@ -600,13 +627,19 @@ struct SharedFont
     CGFloat         kern = 0;
     std::mutex                                widthsMutex;
     std::unordered_map<std::string, CGFloat> widths;
+    CFDictionaryRef drawAttrs = nullptr;
     std::mutex                                  linesMutex;
     std::unordered_map<std::string, CTLineRef> lines;
+    std::unordered_map<std::string, CTLineRef> oldLines;
 
     ~SharedFont()
     {
         for(auto& entry : lines)
             CFRelease(entry.second);
+        for(auto& entry : oldLines)
+            CFRelease(entry.second);
+        if(drawAttrs)
+            CFRelease(drawAttrs);
         if(attrs)
             CFRelease(attrs);
         if(font)
@@ -810,6 +843,10 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
     const void* vals[] = {sf->font, kern};
     sf->attrs = CFDictionaryCreate(nullptr, keys, vals, sf->kern != 0 ? 2 : 1, &kCFTypeDictionaryKeyCallBacks,
                                    &kCFTypeDictionaryValueCallBacks);
+    const void* drawKeys[] = {kCTFontAttributeName, kCTForegroundColorFromContextAttributeName, kCTKernAttributeName};
+    const void* drawVals[] = {sf->font, kCFBooleanTrue, kern};
+    sf->drawAttrs = CFDictionaryCreate(nullptr, drawKeys, drawVals, sf->kern != 0 ? 3 : 2, &kCFTypeDictionaryKeyCallBacks,
+                                       &kCFTypeDictionaryValueCallBacks);
     CFRelease(kern);
 
     CGFloat ascent          = CTFontGetAscent(sf->font);
@@ -895,38 +932,46 @@ static CTLineRef CreateLine(const char* text, CFDictionaryRef attrs)
     return line;
 }
 
-static CTLineRef CopyColoredLine(SharedFont& sf, const char* text, const lh::web_color& color)
+static CTLineRef CopyCachedLine(SharedFont& sf, const char* text)
 {
-    std::string key(text);
-    key.append({'\0', static_cast<char>(color.red), static_cast<char>(color.green), static_cast<char>(color.blue),
-                static_cast<char>(color.alpha)});
     {
         std::lock_guard<std::mutex> lock(sf.linesMutex);
-        auto                        it = sf.lines.find(key);
+        auto                        it = sf.lines.find(text);
         if(it != sf.lines.end())
             return static_cast<CTLineRef>(CFRetain(it->second));
+        auto old = sf.oldLines.find(text);
+        if(old != sf.oldLines.end())
+        {
+            CTLineRef line = old->second;
+            sf.lines.emplace(old->first, line);
+            sf.oldLines.erase(old);
+            return static_cast<CTLineRef>(CFRetain(line));
+        }
     }
-    CGColorRef      fg     = CreateColor(color);
-    CFNumberRef     kern   = CFNumberCreate(nullptr, kCFNumberCGFloatType, &sf.kern);
-    const void*     keys[] = {kCTFontAttributeName, kCTForegroundColorAttributeName, kCTKernAttributeName};
-    const void*     vals[] = {sf.font, fg, kern};
-    CFDictionaryRef attrs  = CFDictionaryCreate(nullptr, keys, vals, sf.kern != 0 ? 3 : 2,
-                                                &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CTLineRef line = CreateLine(text, attrs);
-    CFRelease(attrs);
-    CFRelease(kern);
-    CGColorRelease(fg);
-    if(!line)
-        return nullptr;
+    return nullptr;
+}
+
+static void CacheLine(SharedFont& sf, const char* text, CTLineRef line)
+{
     std::lock_guard<std::mutex> lock(sf.linesMutex);
     if(sf.lines.size() >= 2048)
     {
-        for(auto& entry : sf.lines)
+        for(auto& entry : sf.oldLines)
             CFRelease(entry.second);
-        sf.lines.clear();
+        sf.oldLines.clear();
+        sf.oldLines.swap(sf.lines);
     }
-    if(sf.lines.emplace(std::move(key), line).second)
+    if(sf.lines.emplace(text, line).second)
         CFRetain(line);
+}
+
+static CTLineRef CopyLine(SharedFont& sf, const char* text)
+{
+    if(CTLineRef line = CopyCachedLine(sf, text))
+        return line;
+    CTLineRef line = CreateLine(text, sf.drawAttrs);
+    if(line)
+        CacheLine(sf, text, line);
     return line;
 }
 
@@ -944,10 +989,11 @@ lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
     }
 
     CGFloat   w    = 0;
-    CTLineRef line = CreateLine(text, sf.attrs);
+    CTLineRef line = CreateLine(text, sf.drawAttrs);
     if(line)
     {
         w = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
+        CacheLine(sf, text, line);
         CFRelease(line);
     }
     std::lock_guard<std::mutex> lock(sf.widthsMutex);
@@ -1157,10 +1203,11 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
     CGContextSaveGState(ctx);
     apply_clips(ctx, ink);
 
-    CTLineRef line = CopyColoredLine(*f->shared, text, color);
+    CTLineRef line = CopyLine(*f->shared, text);
 
     if(line)
     {
+        SetFill(ctx, color);
         CGFloat x        = F(pos.x);
         CGFloat baseline = F(pos.y) + f->shared->ascent;
         CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
@@ -1467,7 +1514,7 @@ bool LHContainer::record_glyphs(const char* text, Font* f, const lh::web_color& 
         if(!CGAffineTransformIsIdentity(c.matrix) || !InsideRoundedRect(R(c.box), c.radius, ink))
             return false;
     }
-    CTLineRef line = CopyColoredLine(*f->shared, text, color);
+    CTLineRef line = CopyLine(*f->shared, text);
     if(!line)
         return false;
     CFArrayRef runs  = CTLineGetGlyphRuns(line);
