@@ -975,7 +975,7 @@ final class WidgetCompositor {
     func draw(into ctx: CGContext) {
         let layers = Set(promoted.values.map { ObjectIdentifier($0.layer) })
         func paint(_ model: CALayer) {
-            let layer = model.presentation() ?? model
+            let layer = (model.animationKeys()?.isEmpty == false ? model.presentation() : nil) ?? model
             let size = layer.bounds.size
             ctx.saveGState()
             ctx.translateBy(x: layer.position.x, y: layer.position.y)
