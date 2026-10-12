@@ -15,6 +15,7 @@ namespace litehtml
 
         rendered_width _render(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                                formatting_context* fmt_ctx, bool second_pass) override;
+        void           add_children_ink(uint32_t generation, paint_ink& ink) override;
 
       public:
         explicit render_item_table(std::shared_ptr<element> src_el);

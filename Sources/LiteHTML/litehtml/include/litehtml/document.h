@@ -8,6 +8,7 @@
 #include "master_css.h"
 #include "types.h"
 
+#include <cstdint>
 #include <functional>
 #include <unordered_map>
 #include <map>
@@ -101,6 +102,8 @@ namespace litehtml
         bool                                    m_table_limited    = false;
         std::unordered_map<const void*, std::vector<std::shared_ptr<element>>> m_node_elements;
         std::string                             m_master_styles;
+        mutable uint32_t                        m_paint_generation = 1;
+        bool                                    m_cull_paint       = false;
         struct html_hole
         {
             bool                                  text  = false;
@@ -148,7 +151,10 @@ namespace litehtml
         }
         uint_ptr  get_font(const font_description& descr, font_metrics* fm);
         pixel_t   render(pixel_t max_width, render_type rt = render_all);
-        void      draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip);
+        void      draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull = false);
+        uint32_t  paint_generation() const { return m_paint_generation; }
+        void      invalidate_paint() const { m_paint_generation = m_paint_generation + 1 == 0 ? 1 : m_paint_generation + 1; }
+        bool      culls_paint() const { return m_cull_paint; }
         web_color get_def_color() const
         {
             return m_def_color;

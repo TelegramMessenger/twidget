@@ -38,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly, copy) NSString *html;
 @property (nonatomic) BOOL clipCulling;
+@property (nonatomic) BOOL subtreeCulling;
 @property (nonatomic, nullable) CGColorSpaceRef colorSpace;
 
 - (CGSize)layoutWithMaxWidth:(CGFloat)maxWidth;

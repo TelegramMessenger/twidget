@@ -1,6 +1,9 @@
 #ifndef LITEHTML_RENDER_ITEM_H
 #define LITEHTML_RENDER_ITEM_H
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <list>
 #include <tuple>
@@ -19,6 +22,56 @@ namespace litehtml
 
     class element;
 
+    struct paint_ink
+    {
+        float l         = 0;
+        float t         = 0;
+        float r         = 0;
+        float b         = 0;
+        bool  empty     = true;
+        bool  unbounded = false;
+
+        void add(float left, float top, float right, float bottom)
+        {
+            if(std::isnan(left) || std::isnan(top) || std::isnan(right) || std::isnan(bottom))
+                return;
+            if(empty)
+            {
+                l = left;
+                t = top;
+                r = right;
+                b = bottom;
+                empty = false;
+                return;
+            }
+            l = std::min(l, left);
+            t = std::min(t, top);
+            r = std::max(r, right);
+            b = std::max(b, bottom);
+        }
+        void add(const position& box, float reach)
+        {
+            add(box.x.value() - reach, box.y.value() - reach, box.x.value() + box.width.value() + reach,
+                box.y.value() + box.height.value() + reach);
+        }
+        void add(const paint_ink& other, float dx, float dy)
+        {
+            if(other.unbounded)
+                unbounded = true;
+            else if(!other.empty)
+                add(other.l + dx, other.t + dy, other.r + dx, other.b + dy);
+        }
+        bool misses(const position& clip, float dx, float dy) const
+        {
+            if(unbounded)
+                return false;
+            if(empty)
+                return true;
+            return r + dx < clip.x.value() || l + dx > clip.x.value() + clip.width.value() || b + dy < clip.y.value() ||
+                   t + dy > clip.y.value() + clip.height.value();
+        }
+    };
+
     class render_item : public std::enable_shared_from_this<render_item>
     {
       protected:
@@ -32,6 +85,11 @@ namespace litehtml
         bool                                      m_skip = false;
         std::vector<std::shared_ptr<render_item>> m_positioned;
         std::shared_ptr<scroll_view>              m_scroll_view;
+        paint_ink                                 m_ink;
+        paint_ink                                 m_drawn_ink;
+        uint32_t                                  m_ink_generation = 0;
+
+        virtual void add_children_ink(uint32_t generation, paint_ink& ink);
 
         containing_block_context calculate_containing_block_context(const containing_block_context& cb_context);
         void                     calc_cb_length(const css_length& len, pixel_t percent_base,
@@ -483,6 +541,8 @@ namespace litehtml
         virtual void set_inline_boxes(position::vector& /*boxes*/) {};
         virtual void add_inline_box(const position& /*box*/) {};
         virtual void clear_inline_boxes() {};
+        const paint_ink& ink(uint32_t generation, bool drawn);
+        void             add_self_ink(paint_ink& ink, float dx, float dy) const;
         void draw_stacking_context(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool with_positioned);
         void draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                         const std::shared_ptr<render_item>& el);

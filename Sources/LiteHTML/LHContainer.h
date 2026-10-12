@@ -59,6 +59,7 @@ class LHContainer : public litehtml::document_container
         m_gpu = recorder;
     }
     bool clip_culling() const { return m_clip_culling; }
+    bool rasterizes() const { return !m_ops && !m_runs && !m_painter; }
 
     std::function<void(const std::string& url)> on_anchor;
     std::function<void(const std::string& cursor)> on_cursor;

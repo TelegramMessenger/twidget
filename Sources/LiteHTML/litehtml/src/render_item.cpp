@@ -938,6 +938,167 @@ void litehtml::render_item::draw_stacking_context(uint_ptr hdc, pixel_t x, pixel
     }
 }
 
+static litehtml::transform_matrix group_transform(const litehtml::css_properties& el_css, const litehtml::position& border_box)
+{
+    using namespace litehtml;
+    pixel_t          ox = border_box.x + el_css.get_transform_origin_x().calc_percent(border_box.width);
+    pixel_t          oy = border_box.y + el_css.get_transform_origin_y().calc_percent(border_box.height);
+    transform_matrix m{1, 0, 0, 1, -ox.value(), -oy.value()};
+    const auto&      functions = el_css.get_transform();
+    for(auto it = functions.rbegin(); it != functions.rend(); ++it)
+    {
+        transform_matrix f;
+        switch(it->kind)
+        {
+        case transform_function::translate:
+            f.tx = it->x.calc_percent(border_box.width).value();
+            f.ty = it->y.calc_percent(border_box.height).value();
+            break;
+        case transform_function::scale:
+            f.a = it->v[0];
+            f.d = it->v[1];
+            break;
+        case transform_function::rotate:
+            f.a = std::cos(it->v[0]);
+            f.b = std::sin(it->v[0]);
+            f.c = -f.b;
+            f.d = f.a;
+            break;
+        case transform_function::skew:
+            f.b = std::tan(it->v[1]);
+            f.c = std::tan(it->v[0]);
+            break;
+        case transform_function::matrix:
+            f = {it->v[0], it->v[1], it->v[2], it->v[3], it->v[4], it->v[5]};
+            break;
+        case transform_function::rotate_x:
+            f.d = std::cos(it->v[0]);
+            break;
+        case transform_function::rotate_y:
+            f.a = std::cos(it->v[0]);
+            break;
+        }
+        m = m.then(f);
+    }
+    return m.then(transform_matrix{1, 0, 0, 1, ox.value(), oy.value()});
+}
+
+static float shadow_reach(const litehtml::box_shadow_vector& shadows)
+{
+    float reach = 0;
+    for(const auto& shadow : shadows)
+    {
+        if(!shadow.inset)
+        {
+            reach = std::max(reach, std::fabs(shadow.blur.val()) + std::fabs(shadow.spread.val()) +
+                                        std::max(std::fabs(shadow.x.val()), std::fabs(shadow.y.val())));
+        }
+    }
+    return reach;
+}
+
+void litehtml::render_item::add_self_ink(paint_ink& ink, float dx, float dy) const
+{
+    constexpr float slack = 2;
+    const auto&     el_css = src_el()->css();
+    position        box    = m_pos;
+    box.x                 += dx;
+    box.y                 += dy;
+    if(src_el()->is_text())
+    {
+        float reach = std::max(4.f, box.height.value() / 2) + slack;
+        if(auto parent_el = src_el()->parent())
+        {
+            reach += shadow_reach(parent_el->css().get_text_shadows());
+        }
+        ink.add(box, reach);
+    }
+    box         += m_padding;
+    box         += m_borders;
+    float reach  = shadow_reach(el_css.get_box_shadows());
+    float stroke = el_css.get_outline().width.val() + std::max(0.f, el_css.get_outline_offset().value());
+    if(stroke > 0)
+    {
+        reach += stroke;
+    }
+    ink.add(box, reach + slack);
+    for_inline_boxes([&](const position& inline_box, bool, bool) {
+        position shifted  = inline_box;
+        shifted.x        += dx;
+        shifted.y        += dy;
+        ink.add(shifted, slack);
+        return true;
+    });
+}
+
+void litehtml::render_item::add_children_ink(uint32_t generation, paint_ink& ink)
+{
+    const float dx = (m_pos.x - get_scroll_left()).value();
+    const float dy = (m_pos.y - get_scroll_top()).value();
+    for(const auto& el : m_children)
+    {
+        ink.add(el->ink(generation, true), dx, dy);
+        if(ink.unbounded)
+        {
+            return;
+        }
+    }
+}
+
+const litehtml::paint_ink& litehtml::render_item::ink(uint32_t generation, bool drawn)
+{
+    if(m_ink_generation != generation)
+    {
+        m_ink_generation = generation;
+        m_ink            = paint_ink();
+        add_self_ink(m_ink, 0, 0);
+        add_children_ink(generation, m_ink);
+        const auto& el_css = src_el()->css();
+        if(el_css.get_position() == element_position_fixed)
+        {
+            m_ink.unbounded = true;
+        }
+        if(!m_ink.unbounded && !m_ink.empty && el_css.get_display() == display_list_item &&
+           (el_css.get_list_style_type() != list_style_type_none || !el_css.get_list_style_image().empty()))
+        {
+            if(!el_css.get_list_style_image().empty())
+            {
+                m_ink.unbounded = true;
+            } else
+            {
+                const float font = std::max(el_css.get_font_size().value(), el_css.get_font_metrics().height.value());
+                const float pad  = std::max(font, el_css.line_height().computed_value.value()) * 2 + 4;
+                m_ink.add(-INFINITY, m_ink.t - pad, m_pos.x.value() + font + 4, m_ink.b + pad);
+            }
+        }
+        m_drawn_ink = m_ink;
+        if(!m_ink.unbounded && !m_ink.empty && !el_css.get_transform().empty())
+        {
+            position border_box  = m_pos;
+            border_box          += m_padding;
+            border_box          += m_borders;
+            const auto  m        = group_transform(el_css, border_box);
+            const float xs[2]    = {m_ink.l, m_ink.r};
+            const float ys[2]    = {m_ink.t, m_ink.b};
+            m_drawn_ink          = paint_ink();
+            for(float x : xs)
+            {
+                for(float y : ys)
+                {
+                    const float px = m.a * x + m.c * y + m.tx;
+                    const float py = m.b * x + m.d * y + m.ty;
+                    if(!std::isfinite(px) || !std::isfinite(py))
+                    {
+                        m_drawn_ink.unbounded = true;
+                    }
+                    m_drawn_ink.add(px, py, px, py);
+                }
+            }
+        }
+    }
+    return drawn ? m_drawn_ink : m_ink;
+}
+
 void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                                        const std::shared_ptr<render_item>& el)
 {
@@ -956,46 +1117,7 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
 
     if(!el_css.get_transform().empty())
     {
-        pixel_t          ox = border_box.x + el_css.get_transform_origin_x().calc_percent(border_box.width);
-        pixel_t          oy = border_box.y + el_css.get_transform_origin_y().calc_percent(border_box.height);
-        transform_matrix m{1, 0, 0, 1, -ox.value(), -oy.value()};
-        const auto&      functions = el_css.get_transform();
-        for(auto it = functions.rbegin(); it != functions.rend(); ++it)
-        {
-            transform_matrix f;
-            switch(it->kind)
-            {
-            case transform_function::translate:
-                f.tx = it->x.calc_percent(border_box.width).value();
-                f.ty = it->y.calc_percent(border_box.height).value();
-                break;
-            case transform_function::scale:
-                f.a = it->v[0];
-                f.d = it->v[1];
-                break;
-            case transform_function::rotate:
-                f.a = std::cos(it->v[0]);
-                f.b = std::sin(it->v[0]);
-                f.c = -f.b;
-                f.d = f.a;
-                break;
-            case transform_function::skew:
-                f.b = std::tan(it->v[1]);
-                f.c = std::tan(it->v[0]);
-                break;
-            case transform_function::matrix:
-                f = {it->v[0], it->v[1], it->v[2], it->v[3], it->v[4], it->v[5]};
-                break;
-            case transform_function::rotate_x:
-                f.d = std::cos(it->v[0]);
-                break;
-            case transform_function::rotate_y:
-                f.a = std::cos(it->v[0]);
-                break;
-            }
-            m = m.then(f);
-        }
-        group.matrix = m.then(transform_matrix{1, 0, 0, 1, ox.value(), oy.value()});
+        group.matrix = group_transform(el_css, border_box);
     }
 
     auto container = src_el()->get_document()->container();
@@ -1038,9 +1160,13 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
         }
     }
 
+    const bool     cull       = clip && doc->culls_paint();
+    const uint32_t generation = doc->paint_generation();
     for(const auto& el : m_children)
     {
         if(!doc->skip_paint.empty() && doc->skip_paint.count(el->src_el().get()))
+            continue;
+        if(cull && el->ink(generation, true).misses(*clip, pos.x.value(), pos.y.value()))
             continue;
         if(el->is_visible())
         {

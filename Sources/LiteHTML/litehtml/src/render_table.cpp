@@ -471,9 +471,16 @@ void litehtml::render_item_table::draw_children(uint_ptr hdc, pixel_t x, pixel_t
     position pos  = m_pos;
     pos.x        += x;
     pos.y        += y;
+    document::ptr  doc        = src_el()->get_document();
+    const bool     cull       = clip && doc->culls_paint();
+    const uint32_t generation = doc->paint_generation();
     for(auto& caption : m_grid->captions())
     {
         if(!caption->is_visible())
+        {
+            continue;
+        }
+        if(cull && caption->ink(generation, false).misses(*clip, pos.x.value(), pos.y.value()))
         {
             continue;
         }
@@ -496,12 +503,45 @@ void litehtml::render_item_table::draw_children(uint_ptr hdc, pixel_t x, pixel_t
             table_cell* cell = m_grid->cell(col, row);
             if(cell->el && row_visible && cell->el->is_visible())
             {
+                if(cull && cell->el->ink(generation, false).misses(*clip, pos.x.value(), pos.y.value()))
+                {
+                    continue;
+                }
                 if(flag == draw_block)
                 {
                     if(g_paint_trace) g_paint_trace->push_back(cell->el.get());
                     cell->el->src_el()->draw(hdc, pos.x, pos.y, clip, cell->el);
                 }
                 cell->el->draw_children(hdc, pos.x, pos.y, clip, flag, zindex);
+            }
+        }
+    }
+}
+
+void litehtml::render_item_table::add_children_ink(uint32_t generation, paint_ink& ink)
+{
+    if(!m_grid)
+    {
+        return;
+    }
+    const float dx = m_pos.x.value();
+    const float dy = m_pos.y.value();
+    for(auto& caption : m_grid->captions())
+    {
+        ink.add(caption->ink(generation, false), dx, dy);
+    }
+    for(int row = 0; row < m_grid->rows_count(); row++)
+    {
+        if(m_grid->row(row).el_row)
+        {
+            m_grid->row(row).el_row->add_self_ink(ink, dx, dy);
+        }
+        for(int col = 0; col < m_grid->cols_count(); col++)
+        {
+            table_cell* cell = m_grid->cell(col, row);
+            if(cell->el)
+            {
+                ink.add(cell->el->ink(generation, false), dx, dy);
             }
         }
     }

@@ -296,6 +296,7 @@ namespace litehtml
         }
         pixel_t                  get_letter_spacing() const { return pixel_t(m_letter_spacing.val()); }
         const box_shadow_vector& get_box_shadows() const { return m_box_shadows; }
+        const box_shadow_vector& get_text_shadows() const { return m_text_shadows; }
         const transform_vector&  get_transform() const { return m_transform; }
         const css_length&        get_transform_origin_x() const { return m_transform_origin_x; }
         const css_length&        get_transform_origin_y() const { return m_transform_origin_y; }

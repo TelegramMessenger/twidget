@@ -716,6 +716,7 @@ namespace litehtml
     // 1: patched (or nothing changed), 0: the frame does not fit the template, -1: fits but needs a rebuild.
     int document::update_from_template(const std::string& html, bool* changed)
     {
+        invalidate_paint();
         std::vector<std::pair<size_t, std::string>> changes;
         size_t                                      pos = 0;
         for(size_t i = 0; i < m_holes.size(); i++)
@@ -738,6 +739,7 @@ namespace litehtml
 
     bool document::update_styles(const std::vector<std::pair<std::shared_ptr<element>, std::string>>& styles, bool* changed)
     {
+        invalidate_paint();
         m_paint_only_patch = false;
         m_patch_confined   = false;
         m_patch_regions.clear();
@@ -799,6 +801,7 @@ namespace litehtml
 
     int document::apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed)
     {
+        invalidate_paint();
         std::vector<size_t> dirty;
         for(const auto& change : changes)
         {
@@ -960,6 +963,7 @@ namespace litehtml
     void document::restyle_after_patch(const std::vector<element::ptr>& restyle, const std::vector<element::ptr>& new_text,
                                        bool keep_tree)
     {
+        invalidate_paint();
         m_share_cache.clear();
         std::unordered_set<const element*> pending;
         for(const auto& el : restyle)
@@ -999,6 +1003,7 @@ namespace litehtml
 
     bool document::update_from_string(const std::string& html, bool* changed)
     {
+        invalidate_paint();
         m_paint_only_patch = false;
         m_patch_confined   = false;
         m_patch_regions.clear();
@@ -1037,6 +1042,7 @@ namespace litehtml
 
     bool document::update_structure(const std::string& html, bool* changed)
     {
+        invalidate_paint();
         if(!m_gumbo || !m_root || !m_finalized || m_build_limited || getenv("LH_NO_STRUCTURE"))
             return false;
         const int scope = selector_scope();
@@ -1580,6 +1586,7 @@ namespace litehtml
     void document::finalize_from_external_root(const std::shared_ptr<element>& root, const std::string& base_master_styles,
                                                const std::string& user_styles)
     {
+        invalidate_paint();
         // Finalization accumulates state that is never rolled back: the parsed stylesheets, the media
         // lists, the tabular elements, the render tree, and the used selectors of every element. A
         // second run would duplicate all of it, so a document is finalized once, exactly like a parsed
@@ -2128,6 +2135,7 @@ namespace litehtml
 
     pixel_t document::render(pixel_t max_width, render_type rt)
     {
+        invalidate_paint();
         pixel_t ret = 0_px;
         if(m_root && m_root_render)
         {
@@ -2159,12 +2167,15 @@ namespace litehtml
         return ret;
     }
 
-    void document::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip)
+    void document::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull)
     {
         if(m_root && m_root_render)
         {
+            const bool saved = m_cull_paint;
+            m_cull_paint     = cull && clip && !g_paint_trace;
             m_root->draw(hdc, x, y, clip, m_root_render);
             m_root_render->draw_stacking_context(hdc, x, y, clip, true);
+            m_cull_paint = saved;
         }
     }
 
@@ -2262,6 +2273,7 @@ namespace litehtml
     bool document::on_mouse_over(pixel_t x, pixel_t y, pixel_t client_x, pixel_t client_y,
                                  const std::function<void(const position&)>& redraw_box)
     {
+        invalidate_paint();
         if(!m_root || !m_root_render)
         {
             return false;
@@ -2308,6 +2320,7 @@ namespace litehtml
     std::vector<scroll_values> document::on_scroll(pixel_t dx, pixel_t dy, pixel_t x, pixel_t y, pixel_t client_x,
                                                    pixel_t client_y) const
     {
+        invalidate_paint();
         if(dy == 0_px && dx == 0_px)
         {
             return {};
@@ -2368,6 +2381,7 @@ namespace litehtml
 
     bool document::on_mouse_leave(const std::function<void(const position&)>& redraw_box)
     {
+        invalidate_paint();
         if(!m_root || !m_root_render)
         {
             return false;
@@ -2388,6 +2402,7 @@ namespace litehtml
     bool document::on_lbutton_down(pixel_t x, pixel_t y, pixel_t client_x, pixel_t client_y,
                                    const std::function<void(const position&)>& redraw_box)
     {
+        invalidate_paint();
         if(!m_root || !m_root_render)
         {
             return false;
@@ -2443,6 +2458,7 @@ namespace litehtml
     bool document::on_lbutton_up(pixel_t /*x*/, pixel_t /*y*/, pixel_t /*client_x*/, pixel_t /*client_y*/,
                                  const std::function<void(const position&)>& redraw_box)
     {
+        invalidate_paint();
         if(!m_root || !m_root_render)
         {
             return false;
@@ -2459,6 +2475,7 @@ namespace litehtml
 
     bool document::on_button_cancel(const std::function<void(const position&)>& redraw_box)
     {
+        invalidate_paint();
         m_active_element = nullptr;
         return on_mouse_leave(redraw_box);
     }
@@ -2475,6 +2492,7 @@ namespace litehtml
 
     bool document::media_changed()
     {
+        invalidate_paint();
         container()->get_media_features(m_media);
         if(update_media_lists(m_media))
         {
@@ -2499,6 +2517,7 @@ namespace litehtml
 
     bool document::lang_changed()
     {
+        invalidate_paint();
         if(!m_media_lists.empty())
         {
             std::string culture;
@@ -2520,6 +2539,7 @@ namespace litehtml
     // Apply media features (determine which selectors are active).
     bool document::update_media_lists(const media_features& features)
     {
+        invalidate_paint();
         bool update_styles = false;
         for(auto& media_list : m_media_lists)
         {
@@ -2541,6 +2561,7 @@ namespace litehtml
 
     void document::fix_tables_layout()
     {
+        invalidate_paint();
         const std::size_t limit = m_tabular_elements.size() * 8 + 64;
         std::size_t       processed = 0;
         for(const auto& el_ptr : m_tabular_elements)
@@ -2735,6 +2756,7 @@ namespace litehtml
 
     void document::append_children_from_string(element& parent, const char* str, bool replace_existing)
     {
+        invalidate_paint();
         // parent must belong to this document
         if(parent.get_document().get() != this)
         {

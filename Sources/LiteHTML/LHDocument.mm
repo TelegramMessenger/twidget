@@ -388,6 +388,7 @@ static bool LHPaintTraceUncached()
     BOOL                         _paintOnly;
     NSString                    *_cursor;
     CGColorSpaceRef              _colorSpace;
+    BOOL                         _noSubtreeCulling;
     std::string                  _master;
     BOOL                         _updatable;
     BOOL                         _consumed;
@@ -671,6 +672,18 @@ static std::string MasterWithCSS(NSString *css)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     _container->set_clip_culling(clipCulling);
+}
+
+- (BOOL)subtreeCulling
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return !_noSubtreeCulling;
+}
+
+- (void)setSubtreeCulling:(BOOL)subtreeCulling
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _noSubtreeCulling = !subtreeCulling;
 }
 
 - (NSString *)cursor
@@ -1184,8 +1197,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextTranslateCTM(ctx, origin.x, origin.y);
     lh::position c(static_cast<float>(clip.origin.x), static_cast<float>(clip.origin.y),
                    static_cast<float>(clip.size.width), static_cast<float>(clip.size.height));
-    PixelSnap snap(ctx);
-    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &c);
+    PixelSnap  snap(ctx);
+    static const bool disabled = getenv("LH_NO_SUBTREE_CULL") != nullptr;
+    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &c, !_noSubtreeCulling && !disabled && _container->rasterizes());
     CGContextRestoreGState(ctx);
 }
 
