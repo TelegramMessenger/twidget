@@ -76,6 +76,8 @@ public final class LiteHTMLWidgetRenderer {
     private var displayList: LHDisplayList?
     private let animator = WidgetAnimator()
     private lazy var compositor = WidgetCompositor(host: documentView.layer)
+    let scrolling = WidgetScrolling()
+    private var lastScrollExclusions: Set<Int> = []
     private lazy var magic: WidgetMagicMove = {
         let magic = WidgetMagicMove(host: documentView.layer)
         magic.onFinish = { [weak self] in
@@ -133,6 +135,9 @@ public final class LiteHTMLWidgetRenderer {
         dom.onViolation = { [weak self] detail in
             self?.post(["type": "violation", "detail": detail])
         }
+        dom.onProperty = { [weak self] node, name, value in
+            self?.setProperty(node, name, value)
+        }
         dom.onCall = { [weak self] node, method, _ in
             self?.call(node, method)
         }
@@ -168,7 +173,7 @@ public final class LiteHTMLWidgetRenderer {
         guard let image = document.copyImage(maxWidth: size.width, rect: CGRect(origin: .zero, size: size), scale: scale) else {
             return nil
         }
-        if compositor.ids.isEmpty && !magic.isActive && presenters.isEmpty {
+        if compositor.ids.isEmpty && !magic.isActive && presenters.isEmpty && scrolling.layers.isEmpty {
             return NSImage(cgImage: image, size: size)
         }
         guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
@@ -177,6 +182,7 @@ public final class LiteHTMLWidgetRenderer {
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         ctx.translateBy(x: 0, y: CGFloat(image.height))
         ctx.scaleBy(x: scale, y: -scale)
+        scrolling.draw(into: ctx, document: document, scale: scale)
         for (_, presenter) in presenters.sorted(by: { $0.key < $1.key }) {
             presenter.draw(into: ctx)
         }
@@ -347,14 +353,17 @@ public final class LiteHTMLWidgetRenderer {
         animator.update(declarations: declarations, now: now)
         let sampled = animator.sample(now: now)
         let before = compositor.ids
+        var scrollersChanged = false
         if let document = document {
             compositor.attach(documentView.layer)
             compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
+            scrolling.attach(documentView.layer)
+            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale)
         }
         compositor.drive(animator: animator, now: now, mediaOffset: hiddenTotal, enabled: canDrive)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
         _ = compositor.applyScripted(compositor.scriptedIDs, dom: dom, document: document)
-        if !LiteHTMLWidgetRenderer.same(rest, overrides) || before != compositor.ids {
+        if !LiteHTMLWidgetRenderer.same(rest, overrides) || before != compositor.ids || scrollersChanged {
             overrides = rest
             layout(overrides)
         }
@@ -725,8 +734,13 @@ public final class LiteHTMLWidgetRenderer {
         lastLayoutTheme = theme
         lastLayoutOverrides = overrides
         let excluded = compositor.ids.union(magic.excluded)
-        let exclusionsChanged = excluded != lastExclusions
+        let scrollExcluded = scrolling.promotedIDs
+        let exclusionsChanged = excluded != lastExclusions || scrollExcluded != lastScrollExclusions
         lastExclusions = excluded
+        lastScrollExclusions = scrollExcluded
+        if !scrollExcluded.isEmpty {
+            next.setScrollContentExclusions(Set(scrollExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+        }
         if !excluded.isEmpty {
             next.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
@@ -741,6 +755,9 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         _ = next.layout(maxWidth: width, preferredWidth: width)
+        for (id, offset) in scrolling.offsets {
+            _ = next.setScrollOffset(offset, attribute: WidgetDOM.idAttribute, value: String(id))
+        }
         stage("layout")
         if LiteHTMLWidgetRenderer.patchCheck && next.reusedPrevious {
             patchChecks += 1
@@ -750,6 +767,12 @@ public final class LiteHTMLWidgetRenderer {
             let size = CGSize(width: width, height: max(1, ceil(max(next.size.height, fresh.size.height))))
             if !excluded.isEmpty {
                 fresh.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+            }
+            if !scrollExcluded.isEmpty {
+                fresh.setScrollContentExclusions(Set(scrollExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+            }
+            for (id, offset) in scrolling.offsets {
+                _ = fresh.setScrollOffset(offset, attribute: WidgetDOM.idAttribute, value: String(id))
             }
             let a = next.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: 2)
             let b = fresh.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: 2)
@@ -1211,6 +1234,19 @@ public final class LiteHTMLWidgetRenderer {
             return [LiteHTMLWidgetRenderer.rectResult(rect ?? .zero)]
         case "box":
             let r = rect ?? .zero
+            if let id = (q["id"] as? NSNumber)?.intValue, let geometry = scrolling.geometries[id] {
+                let offset = scrolling.offset(id)
+                var box: [String: Double] = ["offsetWidth": Double(r.width), "offsetHeight": Double(r.height), "offsetTop": Double(r.minY), "offsetLeft": Double(r.minX), "offsetParent": 0]
+                box["clientWidth"] = Double(geometry.viewport.width)
+                box["clientHeight"] = Double(geometry.viewport.height)
+                box["clientTop"] = 0
+                box["clientLeft"] = 0
+                box["scrollWidth"] = Double(max(geometry.viewport.width, geometry.content.width))
+                box["scrollHeight"] = Double(max(geometry.viewport.height, geometry.content.height))
+                box["scrollTop"] = Double(offset.y)
+                box["scrollLeft"] = Double(offset.x)
+                return box
+            }
             return ["offsetWidth": Double(r.width), "offsetHeight": Double(r.height), "offsetTop": Double(r.minY), "offsetLeft": Double(r.minX), "offsetParent": 0, "clientWidth": Double(r.width), "clientHeight": Double(r.height), "clientTop": 0, "clientLeft": 0, "scrollWidth": Double(r.width), "scrollHeight": Double(r.height), "scrollTop": 0, "scrollLeft": 0]
         case "elementFromPoint":
             let x = (q["x"] as? NSNumber)?.doubleValue ?? 0
@@ -1539,6 +1575,54 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         post(["type": "event", "ev": payload])
+    }
+
+    func handleScroll(_ point: CGPoint, event: NSEvent) -> Bool {
+        if frozen {
+            return false
+        }
+        let outcome = scrolling.scroll(event: event, at: point, document: document, scale: documentView.scale, attribute: WidgetDOM.idAttribute)
+        switch outcome {
+        case .ignored:
+            return false
+        case .unchanged:
+            return true
+        case let .moved(id):
+            scrolled(id)
+            return true
+        }
+    }
+
+    private func scrolled(_ id: Int) {
+        if scrolling.layers[id] == nil, let geometry = scrolling.geometries[id] {
+            documentView.invalidate(geometry.viewport.insetBy(dx: -1, dy: -1))
+        }
+        if listened.contains("scroll") && !frozen {
+            pendingMoves["scroll:\(id)"] = ["type": "scroll", "targetId": id, "bubbles": false]
+            startClock()
+        }
+    }
+
+    private func setProperty(_ node: WidgetNode, _ name: String, _ value: Any) {
+        guard name == "scrollTop" || name == "scrollLeft", let number = (value as? NSNumber)?.doubleValue, number.isFinite else {
+            return
+        }
+        let id = dom.publicId(node)
+        guard scrolling.geometries[id] != nil else {
+            return
+        }
+        var offset = scrolling.offset(id)
+        if name == "scrollTop" {
+            offset.y = CGFloat(number)
+        } else {
+            offset.x = CGFloat(number)
+        }
+        if scrolling.setOffset(id, offset, document: document) {
+            if let layer = scrolling.layers[id], let document = document {
+                layer.ensureTiles(document: document, scale: documentView.scale, attribute: WidgetDOM.idAttribute)
+            }
+            scrolled(id)
+        }
     }
 
     func handleMouseDown(_ point: CGPoint, event: NSEvent) {
@@ -2163,6 +2247,12 @@ final class WidgetDocumentView: NSView {
 
     override func mouseExited(with event: NSEvent) {
         owner?.handleMouseExited(event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if owner?.handleScroll(point(event), event: event) != true {
+            super.scrollWheel(with: event)
+        }
     }
 
     override func keyDown(with event: NSEvent) {
