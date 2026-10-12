@@ -104,6 +104,53 @@ enum CSSTransform {
         }
     }
 
+    static func resolve(_ text: String?, variable: (String) -> String?) -> String? {
+        guard var text = text else {
+            return nil
+        }
+        var depth = 0
+        while let start = text.range(of: "var(") {
+            depth += 1
+            guard depth <= 16, let close = matching(text, from: start.upperBound) else {
+                return nil
+            }
+            let inner = String(text[start.upperBound..<close])
+            let parts = WidgetNode.splitTopLevel(inner, separator: ",")
+            let name = parts.first?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard name.hasPrefix("--"), let value = variable(name) ?? (parts.count > 1 ? parts.dropFirst().joined(separator: ",").trimmingCharacters(in: .whitespaces) : nil) else {
+                return nil
+            }
+            text.replaceSubrange(start.lowerBound...close, with: value)
+            if text.count > 4096 {
+                return nil
+            }
+        }
+        while let start = text.range(of: "calc(") {
+            guard let close = matching(text, from: start.upperBound), let value = Calc.evaluate(String(text[start.upperBound..<close])) else {
+                return nil
+            }
+            text.replaceSubrange(start.lowerBound...close, with: value)
+        }
+        return text
+    }
+
+    private static func matching(_ text: String, from index: String.Index) -> String.Index? {
+        var depth = 1
+        var i = index
+        while i < text.endIndex {
+            if text[i] == "(" {
+                depth += 1
+            } else if text[i] == ")" {
+                depth -= 1
+                if depth == 0 {
+                    return i
+                }
+            }
+            i = text.index(after: i)
+        }
+        return nil
+    }
+
     static func origin(_ text: String?, box: CGSize) -> CGPoint {
         var x = box.width / 2, y = box.height / 2
         guard let parts = text?.split(separator: " ").map({ String($0).lowercased() }), !parts.isEmpty else {
@@ -139,6 +186,108 @@ enum CSSTransform {
             }
         }
         return CGPoint(x: x, y: y)
+    }
+}
+
+enum Calc {
+    private struct Value {
+        var number: Double
+        var unit: String
+    }
+
+    static func evaluate(_ text: String) -> String? {
+        var tokens: [String] = []
+        var current = ""
+        for ch in text {
+            if "+-*/() ".contains(ch) {
+                if !current.isEmpty {
+                    tokens.append(current)
+                    current = ""
+                }
+                if ch != " " {
+                    if (ch == "-" || ch == "+"), tokens.last.map({ "*/(+-".contains($0) }) ?? true {
+                        current.append(ch)
+                    } else {
+                        tokens.append(String(ch))
+                    }
+                }
+            } else {
+                current.append(ch)
+            }
+        }
+        if !current.isEmpty {
+            tokens.append(current)
+        }
+        guard tokens.count <= 256 else {
+            return nil
+        }
+        var index = 0
+        func atom() -> Value? {
+            guard index < tokens.count else {
+                return nil
+            }
+            let token = tokens[index]
+            index += 1
+            if token == "(" {
+                guard let value = sum(), index < tokens.count, tokens[index] == ")" else {
+                    return nil
+                }
+                index += 1
+                return value
+            }
+            let numeric = token.prefix { "0123456789.-+eE".contains($0) }
+            guard let number = Double(numeric), number.isFinite else {
+                return nil
+            }
+            let unit = String(token.dropFirst(numeric.count)).lowercased()
+            guard ["", "px", "deg", "rad", "turn", "grad", "%"].contains(unit) else {
+                return nil
+            }
+            return Value(number: number, unit: unit)
+        }
+        func product() -> Value? {
+            guard var left = atom() else {
+                return nil
+            }
+            while index < tokens.count, tokens[index] == "*" || tokens[index] == "/" {
+                let op = tokens[index]
+                index += 1
+                guard let right = atom() else {
+                    return nil
+                }
+                if op == "*" {
+                    guard left.unit.isEmpty || right.unit.isEmpty else {
+                        return nil
+                    }
+                    left = Value(number: left.number * right.number, unit: left.unit.isEmpty ? right.unit : left.unit)
+                } else {
+                    guard right.unit.isEmpty, right.number != 0 else {
+                        return nil
+                    }
+                    left = Value(number: left.number / right.number, unit: left.unit)
+                }
+            }
+            return left
+        }
+        func sum() -> Value? {
+            guard var left = product() else {
+                return nil
+            }
+            while index < tokens.count, tokens[index] == "+" || tokens[index] == "-" {
+                let op = tokens[index]
+                index += 1
+                guard let right = product(), left.unit == right.unit || left.number == 0 || right.number == 0 else {
+                    return nil
+                }
+                let unit = left.unit.isEmpty ? right.unit : left.unit
+                left = Value(number: op == "+" ? left.number + right.number : left.number - right.number, unit: unit)
+            }
+            return left
+        }
+        guard let value = sum(), index == tokens.count, value.number.isFinite else {
+            return nil
+        }
+        return String(format: "%.6f", value.number) + value.unit
     }
 }
 
@@ -184,7 +333,7 @@ final class WidgetCompositor {
                 return false
             }
             let style = WidgetCompositor.style(node)
-            guard let transform = CSSTransform.parse(style["transform"], box: item.box.size) else {
+            guard let transform = parse(style["transform"], box: item.box.size, id: id) else {
                 return false
             }
             let opacity: Float
@@ -274,7 +423,7 @@ final class WidgetCompositor {
             item.layer.removeAnimation(forKey: "tw.opacity")
             driven[id] = nil
             let base = animator.base(id)
-            guard let track = WidgetCompositor.bake(baked, base: base, box: item.box.size, origin: item.origin) else {
+            guard let track = WidgetCompositor.bake(baked, base: base, box: item.box.size, origin: item.origin, resolve: { [self] in self.resolved($0, id: id) }) else {
                 continue
             }
             let localNow = item.layer.convertTime(CACurrentMediaTime(), from: nil)
@@ -335,7 +484,7 @@ final class WidgetCompositor {
                 guard let value = animator.peek(id, at: now + offset) else {
                     continue
                 }
-                let transform = CSSTransform.parse(value.transform, box: item.box.size) ?? .identity
+                let transform = parse(value.transform, box: item.box.size, id: id) ?? .identity
                 let opacity = Float(max(0, min(1, Double(value.opacity ?? "1") ?? 1)))
                 var error: CGFloat = 0
                 for corner in [CGPoint(x: -item.origin.x, y: -item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: item.box.height - item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: -item.origin.y)] {
@@ -366,10 +515,12 @@ final class WidgetCompositor {
     static let bakeTolerance: CGFloat = 0.05
     static let maxBakeDepth = 9
 
-    static func bake(_ baked: WidgetAnimator.Baked, base: [String: String], box: CGSize, origin: CGPoint) -> Track? {
+    static func bake(_ baked: WidgetAnimator.Baked, base: [String: String], box: CGSize, origin: CGPoint, resolve: (String?) -> String? = { $0 }) -> Track? {
         func eval(_ p: Double) -> (CGAffineTransform, Float)? {
             let value = baked.value(p)
-            guard let transform = CSSTransform.parse(value.transform ?? base["transform"], box: box) else {
+            let raw = value.transform ?? base["transform"]
+            let text = resolve(raw)
+            guard raw == nil || text != nil, let transform = CSSTransform.parse(text, box: box) else {
                 return nil
             }
             let opacityText = value.opacity ?? base["opacity"] ?? "1"
@@ -437,6 +588,7 @@ final class WidgetCompositor {
             reset()
             return
         }
+        currentDOM = dom
         let animated = animator.animatedIDs()
         let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
         var wanted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
@@ -445,15 +597,12 @@ final class WidgetCompositor {
             guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                 continue
             }
-            if animated.contains(where: { $0 != id && WidgetCompositor.isAncestor(id, of: $0, dom: dom) }) || animated.contains(where: { $0 != id && WidgetCompositor.isAncestor($0, of: id, dom: dom) }) {
-                continue
-            }
             let origin = CSSTransform.origin(declarations[id]?["transform-origin"], box: box.size)
             var reach = box
             var maxScale: CGFloat = 1
             var ok = true
             for value in animator.reachableValues(id) {
-                guard let transform = CSSTransform.parse(value.transform, box: box.size) else {
+                guard let transform = parse(value.transform, box: box.size, id: id) else {
                     ok = false
                     break
                 }
@@ -481,7 +630,7 @@ final class WidgetCompositor {
                 continue
             }
             let style = WidgetCompositor.style(node)
-            guard let transform = CSSTransform.parse(style["transform"], box: box.size), style["opacity"].map({ Double($0.trimmingCharacters(in: .whitespaces)) != nil }) ?? true else {
+            guard let transform = parse(style["transform"], box: box.size, id: id), style["opacity"].map({ Double($0.trimmingCharacters(in: .whitespaces)) != nil }) ?? true else {
                 continue
             }
             let origin = CSSTransform.origin(style["transform-origin"], box: box.size)
@@ -491,6 +640,18 @@ final class WidgetCompositor {
             wanted[id] = (box, origin, scale)
             reaches[id] = [max(48, max(box.width, box.height) / 2), 16, 2].map { box.union(current).insetBy(dx: -$0, dy: -$0) }
             scriptedWanted[id] = (.null, scale)
+        }
+        for id in wanted.keys {
+            var dx: CGFloat = 0, dy: CGFloat = 0
+            for other in wanted.keys where other != id && WidgetCompositor.isAncestor(other, of: id, dom: dom) {
+                if let box = wanted[other]?.box, let reach = reaches[other]?.first {
+                    dx += max(box.minX - reach.minX, reach.maxX - box.maxX, 0)
+                    dy += max(box.minY - reach.minY, reach.maxY - box.maxY, 0)
+                }
+            }
+            if dx > 0 || dy > 0 {
+                reaches[id] = reaches[id]?.map { $0.insetBy(dx: -dx, dy: -dy) }
+            }
         }
         var accepted = wanted
         for _ in 0..<4 {
@@ -540,7 +701,7 @@ final class WidgetCompositor {
         }
         for (id, want) in wanted {
             let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: scale * want.maxScale, styleKey: styleKey)
-            if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer === host {
+            if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer != nil {
                 if let index = order[String(id)] {
                     existing.layer.zPosition = 1 + CGFloat(index.intValue) * 1e-6
                 }
@@ -564,9 +725,6 @@ final class WidgetCompositor {
             layer.anchorPoint = CGPoint(x: (anchor.x - ink.minX) / ink.width, y: (anchor.y - ink.minY) / ink.height)
             layer.position = anchor
             layer.zPosition = 1 + CGFloat(order[String(id)]?.intValue ?? 0) * 1e-6
-            if layer.superlayer !== host {
-                host.addSublayer(layer)
-            }
             CATransaction.commit()
             if promoted[id] == nil {
                 promotions += 1
@@ -577,6 +735,58 @@ final class WidgetCompositor {
         for id in rasterSignatures.keys where promoted[id] == nil {
             rasterSignatures[id] = nil
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (id, item) in promoted.sorted(by: { WidgetDOM.depth(of: dom.node($0.key) ?? dom.body) < WidgetDOM.depth(of: dom.node($1.key) ?? dom.body) }) {
+            let anchor = CGPoint(x: item.box.minX + item.origin.x, y: item.box.minY + item.origin.y)
+            var parent: Promoted?
+            var walk = dom.node(id)?.parent
+            while let node = walk, parent == nil {
+                parent = promoted[dom.publicId(node)]
+                walk = node.parent
+            }
+            if let parent = parent {
+                if item.layer.superlayer !== parent.layer {
+                    parent.layer.addSublayer(item.layer)
+                }
+                item.layer.position = CGPoint(x: anchor.x - parent.ink.minX, y: anchor.y - parent.ink.minY)
+            } else {
+                if item.layer.superlayer !== host {
+                    host.addSublayer(item.layer)
+                }
+                item.layer.position = anchor
+            }
+        }
+        CATransaction.commit()
+    }
+
+    private weak var currentDOM: WidgetDOM?
+
+    func resolved(_ text: String?, id: Int) -> String? {
+        guard let text = text, text.contains("var(") || text.contains("calc(") else {
+            return text
+        }
+        let node = currentDOM?.node(id)
+        return CSSTransform.resolve(text) { name in
+            var walk = node
+            while let current = walk {
+                if let value = current.declarations.last(where: { $0.name == name })?.value {
+                    return value
+                }
+                walk = current.parent
+            }
+            return nil
+        }
+    }
+
+    func parse(_ text: String?, box: CGSize, id: Int) -> CGAffineTransform? {
+        guard let text = text else {
+            return CSSTransform.parse(nil, box: box)
+        }
+        guard let resolved = resolved(text, id: id) else {
+            return nil
+        }
+        return CSSTransform.parse(resolved, box: box)
     }
 
     private var rasterSignatures: [Int: Int] = [:]
@@ -637,7 +847,7 @@ final class WidgetCompositor {
             if shown.opacity <= 0 {
                 continue
             }
-            let local = shown.convert(point, from: shown.superlayer)
+            let local = shown.convert(point, from: host?.presentation() ?? host)
             if item.layer.bounds.contains(local) {
                 let mapped = CGPoint(x: item.ink.minX + local.x, y: item.ink.minY + local.y)
                 if item.box.contains(mapped) {
@@ -649,22 +859,31 @@ final class WidgetCompositor {
     }
 
     func draw(into ctx: CGContext) {
-        for item in promoted.values.sorted(by: { $0.layer.zPosition < $1.layer.zPosition }) {
-            guard let contents = item.layer.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID else {
-                continue
-            }
-            let image = contents as! CGImage
-            let layer = item.layer.presentation() ?? item.layer
+        let layers = Set(promoted.values.map { ObjectIdentifier($0.layer) })
+        func paint(_ model: CALayer) {
+            let layer = model.presentation() ?? model
             let size = layer.bounds.size
             ctx.saveGState()
             ctx.translateBy(x: layer.position.x, y: layer.position.y)
-            ctx.concatenate(layer.affineTransform())
+            ctx.concatenate(CATransform3DGetAffineTransform(layer.transform))
             ctx.translateBy(x: -layer.anchorPoint.x * size.width, y: -layer.anchorPoint.y * size.height)
             ctx.setAlpha(CGFloat(layer.opacity))
-            ctx.translateBy(x: 0, y: size.height)
-            ctx.scaleBy(x: 1, y: -1)
-            ctx.draw(image, in: CGRect(origin: .zero, size: size))
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            if let contents = model.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+                ctx.saveGState()
+                ctx.translateBy(x: 0, y: size.height)
+                ctx.scaleBy(x: 1, y: -1)
+                ctx.draw(contents as! CGImage, in: CGRect(origin: .zero, size: size))
+                ctx.restoreGState()
+            }
+            for child in (model.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { $0.zPosition < $1.zPosition }) {
+                paint(child)
+            }
+            ctx.endTransparencyLayer()
             ctx.restoreGState()
+        }
+        for item in promoted.values.filter({ $0.layer.superlayer === host }).sorted(by: { $0.layer.zPosition < $1.layer.zPosition }) {
+            paint(item.layer)
         }
     }
 
@@ -684,7 +903,7 @@ final class WidgetCompositor {
             let base = bases(id)
             let transformText = values.last { $0.0 == "transform" }?.1 ?? base["transform"]
             let opacityText = values.last { $0.0 == "opacity" }?.1 ?? base["opacity"]
-            let transform = CSSTransform.parse(transformText, box: item.box.size) ?? .identity
+            let transform = parse(transformText, box: item.box.size, id: id) ?? .identity
             item.layer.setAffineTransform(transform)
             item.layer.opacity = Float(opacityText.flatMap { Double($0) } ?? 1)
         }

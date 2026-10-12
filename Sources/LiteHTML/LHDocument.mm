@@ -723,7 +723,7 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
-    if(!ri || ri->src_el()->is_inline())
+    if(!ri || (ri->src_el()->is_inline() && !ri->src_el()->is_inline_box()))
         return NO;
     std::unordered_set<const lh::render_item *> ancestors;
     for(auto p = ri->parent(); p; p = p->parent())
@@ -794,7 +794,7 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
-    if(!ri || ri->src_el()->is_inline() || CGRectIsNull(rect) || CGRectIsEmpty(rect))
+    if(!ri || (ri->src_el()->is_inline() && !ri->src_el()->is_inline_box()) || CGRectIsNull(rect) || CGRectIsEmpty(rect))
         return NO;
     for(auto p = ri->parent(); p; p = p->parent())
     {
