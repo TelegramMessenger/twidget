@@ -1151,12 +1151,21 @@ final class WidgetDocumentView: NSView {
         }
     }
 
-    private var surfaces: [Surface] = []
-    private var shown: Surface?
+    private final class Tile {
+        let layer = CALayer()
+        var surfaces: [Surface] = []
+        var shown: Surface?
+        var rect = CGRect.null
+        var pending = true
+    }
+
+    private var tiles: [Tile] = []
     private var surfaceSpace: CGColorSpace?
+    private var surfaceWidth = 0
     private var badgeLayer: CATextLayer?
 
     static let backingStore = ProcessInfo.processInfo.environment["TW_BACKING"] != nil
+    static let tileHeight: CGFloat = ProcessInfo.processInfo.environment["TW_TILE"].flatMap { Double($0) }.map { CGFloat($0) } ?? 128
 
     override var wantsUpdateLayer: Bool {
         return !WidgetDocumentView.backingStore
@@ -1189,8 +1198,14 @@ final class WidgetDocumentView: NSView {
             }
             return
         }
-        for surface in surfaces {
-            surface.stale = rect.map { surface.stale.union($0) } ?? CGRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude / 4, height: CGFloat.greatestFiniteMagnitude / 4)
+        let everything = CGRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude / 4, height: CGFloat.greatestFiniteMagnitude / 4)
+        for tile in tiles {
+            if rect.map({ $0.intersects(tile.rect) }) ?? true {
+                tile.pending = true
+            }
+            for surface in tile.surfaces {
+                surface.stale = rect.map { surface.stale.union($0) } ?? everything
+            }
         }
         needsDisplay = true
     }
@@ -1201,9 +1216,15 @@ final class WidgetDocumentView: NSView {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        surfaces.removeAll()
-        shown = nil
+        removeTiles()
         needsDisplay = true
+    }
+
+    private func removeTiles() {
+        for tile in tiles {
+            tile.layer.removeFromSuperlayer()
+        }
+        tiles.removeAll()
     }
 
     override func updateLayer() {
@@ -1220,59 +1241,88 @@ final class WidgetDocumentView: NSView {
         let scale = self.scale
         let space = WidgetDocumentView.screenTagged ? (window?.colorSpace?.cgColorSpace ?? WidgetDocumentView.surfaceSpace) : WidgetDocumentView.surfaceSpace
         let height = max(1, ceil(document.size.height))
-        let pixelWidth = Int(ceil(bounds.width * scale)), pixelHeight = Int(ceil(height * scale))
-        if pixelWidth <= 0 || pixelHeight <= 0 || pixelWidth > 16384 || pixelHeight > 16384 {
+        let pixelWidth = Int(ceil(bounds.width * scale))
+        if pixelWidth <= 0 || Int(ceil(height * scale)) <= 0 || pixelWidth > 16384 || height * scale > 16384 {
             return
         }
-        if surfaceSpace.map({ $0 != space }) ?? true || surfaces.first.map({ $0.width != pixelWidth || $0.height != pixelHeight }) ?? false {
-            surfaces.removeAll()
-            shown = nil
+        if surfaceSpace.map({ $0 != space }) ?? true || surfaceWidth != pixelWidth {
+            removeTiles()
             surfaceSpace = space
+            surfaceWidth = pixelWidth
         }
-        var target = surfaces.first { $0 !== shown && !IOSurfaceIsInUse($0.surface) }
-        if target == nil && surfaces.count < 3, let made = Surface(width: pixelWidth, height: pixelHeight, space: space) {
-            made.stale = CGRect(x: 0, y: 0, width: bounds.width, height: height)
-            surfaces.append(made)
-            target = made
+        let tileHeight = WidgetDocumentView.tileHeight
+        let count = Int(ceil(height / tileHeight))
+        while tiles.count > count {
+            tiles.removeLast().layer.removeFromSuperlayer()
         }
-        guard let surface = target ?? surfaces.first(where: { $0 !== shown }) ?? shown else {
-            return
+        while tiles.count < count {
+            let tile = Tile()
+            tile.layer.contentsGravity = .topLeft
+            tile.layer.anchorPoint = .zero
+            tile.layer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull()]
+            layer.insertSublayer(tile.layer, at: UInt32(tiles.count))
+            tiles.append(tile)
         }
         document.colorSpace = space
-        let full = CGRect(x: 0, y: 0, width: bounds.width, height: height)
-        let dirty = surface.stale.intersection(full)
-        if !dirty.isNull && !dirty.isEmpty {
-            let x0 = floor(dirty.minX * scale) / scale, y0 = floor(dirty.minY * scale) / scale
-            let x1 = ceil(dirty.maxX * scale) / scale, y1 = ceil(dirty.maxY * scale) / scale
-            let aligned = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
-            let ctx = surface.context
-            IOSurfaceLock(surface.surface, [], nil)
-            ctx.saveGState()
-            ctx.translateBy(x: 0, y: CGFloat(surface.height))
-            ctx.scaleBy(x: scale, y: -scale)
-            ctx.setAllowsFontSmoothing(false)
-            ctx.setShouldAntialias(true)
-            ctx.clip(to: aligned)
-            ctx.clear(aligned)
-            document.draw(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
-            ctx.restoreGState()
-            ctx.flush()
-            IOSurfaceUnlock(surface.surface, [], nil)
-        }
-        if WidgetDocumentView.verify {
-            verifyFrame(surface, document: document, rect: full, scale: scale, space: space)
-        }
-        surface.stale = .null
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.contentsGravity = .topLeft
-        layer.contentsScale = scale
-        if layer.contents as AnyObject? === surface.surface as AnyObject {
-            layer.contents = nil
+        layer.contents = nil
+        for (index, tile) in tiles.enumerated() {
+            let top = CGFloat(index) * tileHeight
+            let rect = CGRect(x: 0, y: top, width: bounds.width, height: min(tileHeight, height - top))
+            if rect != tile.rect {
+                tile.rect = rect
+                tile.surfaces.removeAll()
+                tile.shown = nil
+                tile.pending = true
+            }
+            if !tile.pending {
+                continue
+            }
+            let pixelHeight = Int(ceil(rect.height * scale))
+            var target = tile.surfaces.first { $0 !== tile.shown && !IOSurfaceIsInUse($0.surface) }
+            if target == nil && tile.surfaces.count < 3, let made = Surface(width: pixelWidth, height: pixelHeight, space: space) {
+                made.stale = rect
+                tile.surfaces.append(made)
+                target = made
+            }
+            guard let surface = target ?? tile.surfaces.first(where: { $0 !== tile.shown }) ?? tile.shown else {
+                continue
+            }
+            let dirty = surface.stale.intersection(rect)
+            if !dirty.isNull && !dirty.isEmpty {
+                let x0 = floor(dirty.minX * scale) / scale, y0 = floor(dirty.minY * scale) / scale
+                let x1 = ceil(dirty.maxX * scale) / scale, y1 = ceil(dirty.maxY * scale) / scale
+                let aligned = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+                let ctx = surface.context
+                IOSurfaceLock(surface.surface, [], nil)
+                ctx.saveGState()
+                ctx.translateBy(x: 0, y: CGFloat(surface.height))
+                ctx.scaleBy(x: scale, y: -scale)
+                ctx.translateBy(x: 0, y: -top)
+                ctx.setAllowsFontSmoothing(false)
+                ctx.setShouldAntialias(true)
+                ctx.clip(to: aligned)
+                ctx.clear(aligned)
+                document.draw(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+                ctx.restoreGState()
+                ctx.flush()
+                IOSurfaceUnlock(surface.surface, [], nil)
+            }
+            if WidgetDocumentView.verify {
+                verifyFrame(surface, document: document, rect: rect, scale: scale, space: space)
+            }
+            surface.stale = .null
+            tile.layer.frame = rect
+            tile.layer.contentsScale = scale
+            if tile.layer.contents as AnyObject? === surface.surface as AnyObject {
+                tile.layer.contents = nil
+            }
+            tile.layer.contents = surface.surface
+            tile.shown = surface
+            tile.pending = false
         }
-        layer.contents = surface.surface
         CATransaction.commit()
-        shown = surface
     }
 
     func showBadge(_ text: String, fatal: Bool) {
