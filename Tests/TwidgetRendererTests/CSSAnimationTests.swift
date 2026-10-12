@@ -132,3 +132,18 @@ final class CSSOvershootTests: XCTestCase {
         XCTAssertEqual(CSSInterpolate.mix("none", "skewX(20deg) translate(10px, 5px)", 0.5), "skewX(10deg) translate(5px, 2.5px)")
     }
 }
+
+final class MixedUnitTranslationTests: XCTestCase {
+    func testMixedUnitTranslationsInterpolateAdditively() {
+        XCTAssertEqual(CSSInterpolate.mix("translateX(30px)", "translateX(-20%)", 0.25), "translateX(22.5px) translateX(-5%)")
+        XCTAssertEqual(CSSInterpolate.mix("translate(10px, 0)", "translate(50%, 4px)", 0.5), "translate(5px, 0) translate(25%, 2px)")
+        XCTAssertEqual(CSSInterpolate.mix("translateX(30px)", "translateX(-20%)", 0), "translateX(30px)")
+        XCTAssertEqual(CSSInterpolate.mix("translateX(30px)", "translateX(-20%)", 1), "translateX(-20%)")
+    }
+
+    func testOtherMismatchesStillFlipAtHalfway() {
+        XCTAssertEqual(CSSInterpolate.mix("translateX(30px) rotate(10deg)", "translateX(-20%) rotate(20deg)", 0.25), "translateX(30px) rotate(10deg)")
+        XCTAssertEqual(CSSInterpolate.mix("scale(1)", "translateX(2%)", 0.75), "translateX(2%)")
+        XCTAssertEqual(CSSInterpolate.mix("10px", "20%", 0.25), "10px")
+    }
+}

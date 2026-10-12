@@ -415,10 +415,29 @@ enum CSSInterpolate {
             case let (.text(p), .text(q)) where p == q:
                 out += p
             default:
-                return t < 0.5 ? a : b
+                return translations(a, b, t) ?? (t < 0.5 ? a : b)
             }
         }
         return out
+    }
+
+    private static let translationList = try! NSRegularExpression(pattern: "^\\s*(translate[xy]?\\([^()]*\\)\\s*)+$", options: [.caseInsensitive])
+
+    private static func translations(_ a: String, _ b: String, _ t: Double) -> String? {
+        for text in [a, b] where translationList.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) == nil {
+            return nil
+        }
+        func scaled(_ text: String, _ factor: Double) -> String {
+            return tokenize(text).map { token -> String in
+                switch token {
+                case let .number(value, unit):
+                    return format(value * factor) + unit
+                case let .text(text):
+                    return text
+                }
+            }.joined()
+        }
+        return scaled(a.trimmingCharacters(in: .whitespaces), 1 - t) + " " + scaled(b.trimmingCharacters(in: .whitespaces), t)
     }
 
     private enum Token {
