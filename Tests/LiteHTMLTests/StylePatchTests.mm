@@ -199,4 +199,42 @@ static LHDocument *Laid(NSString *html)
     XCTAssertEqualObjects(Pixels(kept), before);
 }
 
+- (void)testSVGDisplayTogglePatchesInPlace
+{
+    NSString *(^page)(NSString *) = ^NSString *(NSString *display) {
+        return [NSString stringWithFormat:@"<!DOCTYPE html><p>route</p><svg data-lh-id=\"1\" width=\"60\" height=\"20\" viewBox=\"0 0 60 20\">"
+                                           "<circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"#007aff\" display=\"%@\"/><circle cx=\"40\" cy=\"10\" r=\"6\" fill=\"#34c759\"/></svg><p>after</p>", display];
+    };
+    XCTAssertNotEqualObjects(Pixels(Laid(page(@"none"))), Pixels(Laid(page(@""))));
+    LHDocument *previous = Laid(page(@""));
+    for(NSString *display in @[@"none", @"", @"inline", @"none"])
+    {
+        LHDocument *next = [[LHDocument alloc] initWithHTML:page(display) css:nil previous:previous];
+        XCTAssertTrue(next.reusedPrevious, @"%@", display);
+        XCTAssertTrue(next.reusedLayout, @"%@", display);
+        NSArray<NSValue *> *rects = next.patchDirtyRects;
+        CGRect svg = [[next boundsByAttribute:Attribute][@"1"] rectValue];
+        XCTAssertTrue(rects.count == 0 || (rects.count == 1 && CGRectContainsRect(rects[0].rectValue, svg)), @"%@ %@", display, rects);
+        XCTAssertEqualObjects(Pixels(next), Pixels(Laid(page(display))), @"%@", display);
+        previous = next;
+    }
+}
+
+- (void)testSVGHonoursDisplayAndVisibilityAttributes
+{
+    NSString *(^svg)(NSString *) = ^NSString *(NSString *body) {
+        return [NSString stringWithFormat:@"<svg width=\"60\" height=\"20\" viewBox=\"0 0 60 20\">%@</svg>", body];
+    };
+    NSData *empty = Pixels(Laid(svg(@"")));
+    NSData *one   = Pixels(Laid(svg(@"<circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\"/>")));
+    XCTAssertNotEqualObjects(one, empty);
+    XCTAssertEqualObjects(Pixels(Laid(svg(@"<circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\" display=\" None \"/>"))), empty);
+    XCTAssertEqualObjects(Pixels(Laid(svg(@"<circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\" visibility=\"hidden\"/>"))), empty);
+    XCTAssertEqualObjects(Pixels(Laid(svg(@"<circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\" style=\"visibility:hidden\"/>"))), empty);
+    XCTAssertEqualObjects(Pixels(Laid(svg(@"<g display=\"none\"><circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\"/></g>"))), empty);
+    XCTAssertEqualObjects(Pixels(Laid(svg(@"<g visibility=\"hidden\"><circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\"/></g>"))), empty);
+    XCTAssertEqualObjects(Pixels(Laid(svg(@"<g visibility=\"hidden\"><circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\" visibility=\"visible\"/></g>"))), one);
+    XCTAssertEqualObjects(Pixels(Laid(svg(@"<circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"red\" display=\"inline\" visibility=\"visible\"/>"))), one);
+}
+
 @end

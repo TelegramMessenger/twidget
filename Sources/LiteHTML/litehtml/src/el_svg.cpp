@@ -815,15 +815,45 @@ namespace litehtml
                 std::copy(view, view + 4, m_view);
             }
 
-            void draw_children(const element::ptr& el)
+            static int attribute_visibility(const element::ptr& el)
+            {
+                const char* value = el->get_attr("visibility");
+                if(!value)
+                {
+                    return -1;
+                }
+                std::string v = lowcase(value);
+                trim(v);
+                return v == "hidden" || v == "collapse" ? 1 : v == "visible" ? 0 : -1;
+            }
+
+            static bool attribute_hides(const element::ptr& el)
+            {
+                const char* value = el->get_attr("display");
+                if(!value)
+                {
+                    return false;
+                }
+                std::string v = lowcase(value);
+                trim(v);
+                return v == "none";
+            }
+
+            void draw_children(const element::ptr& el, int inherited = -1)
             {
                 float diag = std::sqrt((m_view[2] * m_view[2] + m_view[3] * m_view[3]) / 2);
                 for(const auto& child : el->children())
                 {
-                    if(child->is_text() || child->css().get_display() == display_none)
+                    if(child->is_text() || child->css().get_display() == display_none || attribute_hides(child))
                     {
                         continue;
                     }
+                    int visibility = attribute_visibility(child);
+                    if(visibility < 0)
+                    {
+                        visibility = inherited;
+                    }
+                    const bool hidden = visibility >= 0 ? visibility == 1 : child->css().get_visibility() != visibility_visible;
                     std::string name = lowcase(child->get_tagName() ? child->get_tagName() : "");
                     if(is_one_of(name, "defs", "style", "title", "desc", "lineargradient", "radialgradient",
                                  "clippath", "mask", "pattern", "symbol", "marker", "filter", "script", "metadata"))
@@ -848,7 +878,9 @@ namespace litehtml
                     path_builder builder(path);
                     if(name == "g" || name == "a" || name == "svg" || name == "switch")
                     {
-                        draw_children(child);
+                        draw_children(child, visibility);
+                    } else if(hidden)
+                    {
                     } else if(name == "circle")
                     {
                         float r = attr_length(child, "r", diag, 0);

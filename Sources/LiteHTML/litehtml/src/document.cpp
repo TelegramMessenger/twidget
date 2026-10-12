@@ -233,7 +233,7 @@ namespace litehtml
         static const std::unordered_set<std::string> names = {
             "points", "d", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "dx", "dy", "transform",
             "fill", "stroke", "stroke-width", "stroke-dasharray", "stroke-dashoffset", "opacity", "fill-opacity",
-            "stroke-opacity", "offset", "stop-color", "stop-opacity", "text-anchor", "width", "height",
+            "stroke-opacity", "offset", "stop-color", "stop-opacity", "text-anchor", "width", "height", "display", "visibility",
         };
         return names.count(name) != 0;
     }
