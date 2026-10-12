@@ -89,4 +89,34 @@ namespace
     XCTAssertEqual(end.at(20, 10)[3], 0);
 }
 
+- (void)testWordsKeepFractionalPositionsLikeOneShapedRun
+{
+    Pixels p = Render(@"<div style=\"font:15px -apple-system;line-height:20px;white-space:nowrap\">l l l l l l l l l l l l</div>", 400);
+    std::vector<double> centroids;
+    double              sum = 0, weighted = 0;
+    for(size_t x = 0; x < p.width; x++)
+    {
+        double column = 0;
+        for(size_t y = 0; y < p.height; y++)
+            column += p.at(x, y)[3];
+        if(column > 0)
+        {
+            sum += column;
+            weighted += column * x;
+        } else if(sum > 0)
+        {
+            centroids.push_back(weighted / sum);
+            sum = weighted = 0;
+        }
+    }
+    XCTAssertEqual(centroids.size(), 12u);
+    bool fractional = false;
+    for(size_t i = 1; i < centroids.size(); i++)
+    {
+        double step = centroids[i] - centroids[i - 1];
+        fractional  = fractional || std::fabs(step - std::round(step)) > 0.3;
+    }
+    XCTAssertTrue(fractional);
+}
+
 @end
