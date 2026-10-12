@@ -12,6 +12,7 @@ This repository is the Apple renderer. Validated operations come in, events and 
 |---|---|
 | `TwidgetRenderer` | The twidget renderer: mirror DOM, litehtml layout and drawing, events, layout queries, CSS animations and transitions, canvas 2D on CoreGraphics |
 | `LiteHTML` | The renderer core: parsing, sanitizing, layout, CoreGraphics and Metal drawing, hit testing, text selection |
+| `TwidgetAssets` | The widget icon set (a Phosphor Icons subset) and the portable C++ resolver for `icon:` URLs |
 | `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it. Runs on QuickJS by default (hard heap cap, same engine as twidget's sandbox); JavaScriptCore is available as `JSCScriptRuntime` |
 | `HTML3D` | `<script src="app:three">` for `HTMLScript`: three.js r160 with its WebGL renderer replaced by a Metal one, on QuickJS or JavaScriptCore |
 | `HTMLSandbox` | The CPU quota policy and the large-stack script thread |
@@ -112,7 +113,7 @@ Every document is validated before layout. The validator is an allowlist, not a 
 
 - **Tags.** HTML and SVG tags are allowlisted. Scripts, iframes, frames, objects, embeds, audio and video, `<base>`, `<meta>`, `<link>` and `<template>` are dropped. Unknown tags render as `<span>`, with the original name kept in `data-lh-tag`, so their text survives and their behavior does not.
 - **Attributes.** Attributes are allowlisted, every `on*` handler is dropped, and attributes with the reserved `data-lh-` prefix cannot be forged.
-- **URLs.** Links may use `http`, `https`, `mailto` and `#fragment`. Images may only use `data:image/…` with an allowlisted MIME type. A host adds its own schemes with `LHSanitizer.setLinkSchemes(_:imageSchemes:)`. URLs with those schemes reach the host's link handler or image provider. The renderer never fetches anything.
+- **URLs.** Links may use `http`, `https`, `mailto` and `#fragment`. Images may only use `data:image/…` with an allowlisted MIME type and `icon:` names from the built-in icon set. SVG images go through the same validator as inline SVG and load nothing external. A host adds its own schemes with `LHSanitizer.setLinkSchemes(_:imageSchemes:)`. URLs with those schemes reach the host's link handler or image provider. The renderer never fetches anything.
 - **CSS.** At-rules are allowlisted, so `@import`, `@font-face` and `@namespace` are removed. Every `url()` and image function is checked against the image rules, and `behavior` and `-moz-binding` are blocked.
 - **Structure limits.** The parser stops at 256 levels of nesting, 20,000 elements and 200,000 table cells, so a hostile document cannot make layout explode. Patched-in subtrees count against the same limits.
 - **Canvas sources.** Only `<canvas>` may show a canvas bitmap, through the renderer's own `twcanvas:` source; `<img>`, SVG `<image>` and CSS `url()` can't reference one.
@@ -208,7 +209,9 @@ There are two levels to plug into.
 
 ### Images
 
-`LHImages.setProvider { url in … }` supplies images for the host's own schemes (the scheme must also be allowed with `LHSanitizer`). `LHImages.registerImage(_:name:)` registers `app:name` images. `sf:symbol.name?size=20&color=%23ff0000` renders SF Symbols on macOS 11+.
+Widgets are single self-contained documents: pictures are `data:` URLs or inline SVG, and icons are `icon:heart-fill?size=24&color=ff2d55` URLs resolved from a bundled, MIT-licensed icon set (`TwidgetAssets`, portable C++). [docs/WIDGET_ASSETS.md](docs/WIDGET_ASSETS.md) is the specification every client implements.
+
+`LHImages.setProvider { url in … }` supplies images for the host's own schemes (the scheme must also be allowed with `LHSanitizer`). For older Apple-only content, `LHImages.registerImage(_:name:)` registers `app:name` images and `sf:symbol.name?size=20&color=%23ff0000` renders SF Symbols on macOS 11+, falling back to the icon set's alias table; `LHImages.portableSymbols` resolves every `sf:` through the aliases.
 
 ## three.js and Metal
 
@@ -267,4 +270,4 @@ swift build -c release
 
 ## License
 
-BSD 3-Clause, see `LICENSE`. Bundled third-party code (litehtml, Gumbo, QuickJS-ng and three.js) keeps its own license, listed in `THIRD_PARTY_NOTICES.md`.
+BSD 3-Clause, see `LICENSE`. Bundled third-party code (litehtml, Gumbo, QuickJS-ng, three.js and Phosphor Icons) keeps its own license, listed in `THIRD_PARTY_NOTICES.md`.
