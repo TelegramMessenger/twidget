@@ -309,6 +309,54 @@ namespace litehtml
         return true;
     }
 
+    // The edit only repaints inside the element's own border box (svg = false), or inside the outermost <svg>
+    // around it (svg = true); nothing it changes is inherited or paints outside those boxes.
+    static int style_change_region(const std::string& before, const std::string& after)
+    {
+        static const std::unordered_set<std::string> box = {
+            "background", "background-color", "background-image", "background-position", "background-repeat",
+            "border-color", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+            "caret-color", "cursor", "-lh-anim"};
+        static const std::unordered_set<std::string> svg = {
+            "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-dasharray", "stroke-dashoffset",
+            "stop-color", "stop-opacity"};
+        auto a = split_style_declarations(before), b = split_style_declarations(after);
+        std::map<std::string, std::string> left, right;
+        for(const auto& d : a)
+            left[d.first] = d.second;
+        for(const auto& d : b)
+            right[d.first] = d.second;
+        int  region = 1;
+        auto note   = [&](const std::string& name) {
+            if(box.count(name))
+                return;
+            region = svg.count(name) && region > 0 ? 2 : 0;
+        };
+        for(const auto& d : left)
+        {
+            auto it = right.find(d.first);
+            if(it == right.end() || it->second != d.second)
+                note(d.first);
+        }
+        for(const auto& d : right)
+        {
+            if(!left.count(d.first))
+                note(d.first);
+        }
+        return region;
+    }
+
+    static element::ptr outermost_svg(const element::ptr& el)
+    {
+        element::ptr found;
+        for(auto p = el; p; p = p->parent())
+        {
+            if(std::dynamic_pointer_cast<el_svg>(p))
+                found = p;
+        }
+        return found;
+    }
+
     static bool style_change_is_local(const std::string& before, const std::string& after)
     {
         if(before.find("counter") != std::string::npos || after.find("counter") != std::string::npos)
@@ -340,6 +388,7 @@ namespace litehtml
         m_template_ok = false;
         m_literals.clear();
         m_holes.clear();
+        m_style_holes.clear();
         if(!m_gumbo)
             return;
         const char* base = m_text.data();
@@ -519,8 +568,8 @@ namespace litehtml
     // 1: patched (or nothing changed), 0: the frame does not fit the template, -1: fits but needs a rebuild.
     int document::update_from_template(const std::string& html, bool* changed)
     {
-        std::vector<std::string> values(m_holes.size());
-        size_t                   pos = 0;
+        std::vector<std::pair<size_t, std::string>> changes;
+        size_t                                      pos = 0;
         for(size_t i = 0; i < m_holes.size(); i++)
         {
             const std::string& literal = m_literals[i];
@@ -530,18 +579,85 @@ namespace litehtml
             size_t end = html.find(m_holes[i].text ? '<' : m_holes[i].close, pos);
             if(end == std::string::npos)
                 return 0;
-            values[i].assign(html, pos, end - pos);
+            if(html.compare(pos, end - pos, m_holes[i].value) != 0)
+                changes.emplace_back(i, html.substr(pos, end - pos));
             pos = end;
         }
         if(html.size() - pos != m_literals.back().size() || html.compare(pos, std::string::npos, m_literals.back()) != 0)
             return 0;
+        return apply_template_values(changes, changed);
+    }
 
-        std::vector<size_t> dirty;
+    bool document::update_styles(const std::vector<std::pair<std::shared_ptr<element>, std::string>>& styles, bool* changed)
+    {
+        m_paint_only_patch = false;
+        m_patch_confined   = false;
+        m_patch_regions.clear();
+        if(changed)
+            *changed = false;
+        if(!m_root || !m_finalized || !m_template_ok || getenv("LH_NO_TEMPLATE"))
+            return false;
+        if(m_style_holes.empty())
+        {
+            for(size_t i = 0; i < m_holes.size(); i++)
+            {
+                const html_hole& hole = m_holes[i];
+                if(!hole.text && !hole.src && hole.attr.empty() && hole.owner)
+                    m_style_holes.emplace(hole.owner.get(), i);
+            }
+        }
+        std::vector<std::pair<size_t, std::string>> changes;
+        changes.reserve(styles.size());
+        for(const auto& entry : styles)
+        {
+            auto it = entry.first ? m_style_holes.find(entry.first.get()) : m_style_holes.end();
+            if(it == m_style_holes.end())
+                return false;
+            const html_hole& hole = m_holes[it->second];
+            if(entry.second.find(hole.close) != std::string::npos || entry.second.find('<') != std::string::npos)
+                return false;
+            if(entry.second == hole.value)
+                continue;
+            for(const auto& change : changes)
+            {
+                if(change.first == it->second)
+                    return false;
+            }
+            changes.emplace_back(it->second, entry.second);
+        }
+        std::sort(changes.begin(), changes.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        return apply_template_values(changes, changed) == 1;
+    }
+
+    bool document::template_html(std::string& out) const
+    {
+        if(!m_template_ok || m_literals.size() != m_holes.size() + 1)
+            return false;
+        size_t size = 0;
+        for(const auto& literal : m_literals)
+            size += literal.size();
+        for(const auto& hole : m_holes)
+            size += hole.value.size();
+        out.clear();
+        out.reserve(size);
         for(size_t i = 0; i < m_holes.size(); i++)
         {
-            if(values[i] == m_holes[i].value)
+            out += m_literals[i];
+            out += m_holes[i].value;
+        }
+        out += m_literals.back();
+        return true;
+    }
+
+    int document::apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed)
+    {
+        std::vector<size_t> dirty;
+        for(const auto& change : changes)
+        {
+            const size_t       i = change.first;
+            const std::string& v = change.second;
+            if(i >= m_holes.size() || v == m_holes[i].value)
                 continue;
-            const std::string& v = values[i];
             if(v.find_first_of("&\r") != std::string::npos || v.find('\0') != std::string::npos)
                 return -1;
             if(m_holes[i].text)
@@ -554,11 +670,13 @@ namespace litehtml
             }
             if(m_holes[i].text && !m_holes[i].text_elements.front()->parent())
                 return -1;
-            dirty.push_back(i);
+            dirty.push_back(&change - changes.data());
         }
         if(dirty.empty())
         {
             m_paint_only_patch = true;
+            m_patch_confined   = true;
+            m_patch_regions.clear();
             return 1;
         }
         if(changed)
@@ -568,9 +686,28 @@ namespace litehtml
         std::vector<element::ptr> new_text;
         bool                      keep_tree  = !getenv("LH_NO_KEEP_TREE");
         bool                      paint_only = !getenv("LH_NO_PAINT_ONLY");
-        for(size_t i : dirty)
+        m_patch_regions.clear();
+        m_patch_confined = !getenv("LH_NO_PATCH_REGIONS");
+        for(size_t k : dirty)
         {
-            html_hole& hole = m_holes[i];
+            const std::string& value = changes[k].second;
+            html_hole&         hole  = m_holes[changes[k].first];
+            if(m_patch_confined)
+            {
+                element::ptr region;
+                if(!hole.text && !hole.src)
+                {
+                    const int kind = hole.attr.empty() ? style_change_region(hole.value, value) : 2;
+                    if(kind == 1)
+                        region = hole.owner;
+                    else if(kind == 2)
+                        region = outermost_svg(hole.owner);
+                }
+                if(region)
+                    m_patch_regions.push_back(region);
+                else
+                    m_patch_confined = false;
+            }
             if(paint_only)
             {
                 if(hole.text || hole.src)
@@ -590,12 +727,12 @@ namespace litehtml
                     paint_only = inside_svg;
                 } else
                 {
-                    paint_only = style_change_is_paint_only(hole.value, values[i]);
+                    paint_only = style_change_is_paint_only(hole.value, value);
                 }
             }
-            if(keep_tree && (hole.text || hole.src || (hole.attr.empty() && !tree_neutral_change(hole.value, values[i]))))
+            if(keep_tree && (hole.text || hole.src || (hole.attr.empty() && !tree_neutral_change(hole.value, value))))
                 keep_tree = false;
-            hole.value      = values[i];
+            hole.value      = value;
             if(hole.src)
             {
                 string_map  attrs = {{"src", hole.value}};
@@ -649,6 +786,11 @@ namespace litehtml
             }
         }
         m_paint_only_patch = paint_only && keep_tree;
+        if(!m_paint_only_patch)
+        {
+            m_patch_confined = false;
+            m_patch_regions.clear();
+        }
         return 1;
     }
 
@@ -693,6 +835,8 @@ namespace litehtml
     bool document::update_from_string(const std::string& html, bool* changed)
     {
         m_paint_only_patch = false;
+        m_patch_confined   = false;
+        m_patch_regions.clear();
         if(changed)
             *changed = false;
         if(!m_gumbo || !m_root || !m_finalized)

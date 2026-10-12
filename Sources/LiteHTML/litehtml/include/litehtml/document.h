@@ -56,6 +56,8 @@ namespace litehtml
         bool take_table_cells(int count);
         std::unordered_set<const element*> skip_paint;
         bool m_paint_only_patch = false;
+        bool m_patch_confined   = false;
+        std::vector<std::shared_ptr<element>> m_patch_regions;
         using ptr      = std::shared_ptr<document>;
         using weak_ptr = std::weak_ptr<document>;
 
@@ -107,6 +109,7 @@ namespace litehtml
         std::vector<std::string>                m_literals;
         std::vector<html_hole>                  m_holes;
         bool                                    m_template_ok = false;
+        std::unordered_map<const element*, size_t> m_style_holes;
         bool                                    m_gumbo_stale = false;
 
       public:
@@ -192,7 +195,22 @@ namespace litehtml
         // the render tree. Returns false and leaves the document unchanged otherwise; the caller then builds
         // a new document. *changed tells whether anything differed.
         bool last_patch_paint_only() const { return m_paint_only_patch; }
+        // After a paint-only patch: the elements whose border boxes hold every pixel the patch can change, or
+        // false when some change may paint elsewhere.
+        bool last_patch_regions(std::vector<std::shared_ptr<element>>& out) const
+        {
+            if(!m_paint_only_patch || !m_patch_confined)
+                return false;
+            out = m_patch_regions;
+            return true;
+        }
         bool update_from_string(const std::string& html, bool* changed);
+        // Patches the inline `style` values of the given elements without an HTML string, through the same
+        // checks and restyle as update_from_string. Fails, leaving the document unchanged, when an element has
+        // no style attribute in the source or a value could not have come from serialized HTML.
+        bool update_styles(const std::vector<std::pair<std::shared_ptr<element>, std::string>>& styles, bool* changed);
+        // The HTML the document currently stands for: the parsed source with every patch applied.
+        bool template_html(std::string& out) const;
 
         // The mode must be set before any element is created, because it is used in html_tag::set_attr.
         void set_document_mode(document_mode mode);
@@ -208,6 +226,7 @@ namespace litehtml
         uint_ptr add_font(const font_description& descr, font_metrics* fm);
         void     build_template();
         int      update_from_template(const std::string& html, bool* changed);
+        int      apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed);
         void     restyle_after_patch(const std::vector<std::shared_ptr<element>>& restyle,
                                      const std::vector<std::shared_ptr<element>>& new_text, bool keep_tree = false);
 

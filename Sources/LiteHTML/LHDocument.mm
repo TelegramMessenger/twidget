@@ -6,6 +6,8 @@
 #include "render_item.h"
 #include "html_tag.h"
 #include "el_space.h"
+#include "el_svg.h"
+#include "el_image.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -357,6 +359,8 @@ static CGFloat ChangedBottom(const std::vector<LHDrawOp> &ops, const std::unorde
 {
     std::mutex                   _lock;
     std::unique_ptr<LHContainer> _container;
+    std::string                  _htmlSource;
+    NSString                    *_html;
     lh::document::ptr            _doc;
     CGFloat                      _lastMaxWidth;
     CGFloat                      _preferredWidth;
@@ -468,6 +472,66 @@ static std::string MasterWithCSS(NSString *css)
     return self;
 }
 
+- (nullable instancetype)initWithPrevious:(LHDocument *)previous styles:(NSDictionary<NSString *, NSString *> *)styles attribute:(NSString *)attribute css:(NSString *)css
+{
+    if(!(self = [super init]))
+        return nil;
+    _lastMaxWidth = -1;
+    _cursor       = @"auto";
+    _updatable    = YES;
+    _master       = MasterWithCSS(css);
+    double t0     = NowMs();
+    std::lock_guard<std::mutex> guard(previous->_lock);
+    if(!previous->_doc || !previous->_updatable || previous->_master != _master || !previous->_doc->root() || styles.count == 0)
+        return nil;
+    std::unordered_map<std::string, std::string> wanted;
+    for(NSString *key in styles)
+        wanted.emplace(key.UTF8String ?: "", styles[key].UTF8String ?: "");
+    std::vector<std::pair<lh::element::ptr, std::string>> patches;
+    const char *name = attribute.UTF8String;
+    std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
+        if(patches.size() == wanted.size())
+            return;
+        if(const char *v = el->get_attr(name))
+        {
+            auto it = wanted.find(v);
+            if(it != wanted.end())
+                patches.emplace_back(el, it->second);
+        }
+        for(const auto &child : el->children())
+            visit(child);
+    };
+    visit(previous->_doc->root());
+    std::string html;
+    if(patches.size() != wanted.size() || !previous->_doc->update_styles(patches, nullptr) || !previous->_doc->template_html(html))
+        return nil;
+    _htmlSource                 = std::move(html);
+    _doc                        = std::move(previous->_doc);
+    _container                  = std::move(previous->_container);
+    _cursor                     = previous->_cursor;
+    previous->_consumed         = YES;
+    previous->_consumedMaxWidth = previous->_lastMaxWidth;
+    previous->_consumedCulling  = _container->clip_culling();
+    _reusedPrevious             = YES;
+    if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0)
+    {
+        _lastMaxWidth = previous->_lastMaxWidth;
+        _size         = previous->_size;
+        _paintOnly    = YES;
+    }
+    [self bindContainerLocked];
+    _parseMilliseconds = NowMs() - t0;
+    return self;
+}
+
+- (NSString *)html
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    if(!_html)
+        _html = [[NSString alloc] initWithBytes:_htmlSource.data() length:_htmlSource.size() encoding:NSUTF8StringEncoding] ?: @"";
+    return _html;
+}
+
 - (BOOL)reusedPrevious
 {
     return _reusedPrevious;
@@ -478,6 +542,53 @@ static std::string MasterWithCSS(NSString *css)
     return _paintOnly;
 }
 
+- (NSArray<NSValue *> *)patchDirtyRects
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    std::vector<lh::element::ptr> regions;
+    if(!_paintOnly || !_doc || !_doc->root_render() || !_doc->last_patch_regions(regions))
+        return nil;
+    if(regions.empty())
+        return @[];
+    std::unordered_map<const lh::element *, std::shared_ptr<lh::render_item>> found;
+    for(const auto &region : regions)
+        found.emplace(region.get(), nullptr);
+    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
+        auto it = found.find(ri->src_el().get());
+        if(it != found.end())
+        {
+            if(it->second)
+                it->second = std::shared_ptr<lh::render_item>();
+            else
+                it->second = ri;
+        }
+        for(const auto &child : ri->children())
+            visit(child);
+    };
+    visit(_doc->root_render());
+    NSMutableArray<NSValue *> *rects = [NSMutableArray arrayWithCapacity:found.size()];
+    for(const auto &entry : found)
+    {
+        const auto &ri = entry.second;
+        if(!ri)
+            return nil;
+        const auto el       = ri->src_el();
+        const bool replaced = std::dynamic_pointer_cast<lh::el_svg>(el) || std::dynamic_pointer_cast<lh::el_image>(el);
+        if(el->is_inline() && !el->is_inline_box() && !replaced)
+            return nil;
+        for(auto p = ri; p; p = p->parent())
+        {
+            if(p->src_el()->css().is_paint_group())
+                return nil;
+        }
+        CGRect box = BorderBox(ri);
+        if(CGRectIsEmpty(box))
+            continue;
+        [rects addObject:[NSValue valueWithRect:NSRectFromCGRect(CGRectInset(box, -1, -1))]];
+    }
+    return rects;
+}
+
 - (void)restoreLocked
 {
     if(!_consumed || _doc)
@@ -486,7 +597,7 @@ static std::string MasterWithCSS(NSString *css)
     _container = std::make_unique<LHContainer>();
     _container->set_clip_culling(_consumedCulling);
     [self bindContainerLocked];
-    _doc          = lh::document::createUpdatableFromString(_html.UTF8String ?: "", _container.get(), _master);
+    _doc          = lh::document::createUpdatableFromString(_html ? std::string(_html.UTF8String ?: "") : _htmlSource, _container.get(), _master);
     _lastMaxWidth = -1;
     if(_consumedMaxWidth > 0)
         [self layoutLockedWithMaxWidth:_consumedMaxWidth];
@@ -1120,6 +1231,8 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         gates.emplace_back(name.UTF8String);
     const char *key = attribute.UTF8String;
     std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
+        if(el->css().get_display() == lh::display_none)
+            return;
         if(auto tag = std::dynamic_pointer_cast<lh::html_tag>(el))
         {
             const char *value = tag->get_attr(key);

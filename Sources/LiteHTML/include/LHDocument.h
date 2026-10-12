@@ -22,9 +22,16 @@ NS_ASSUME_NONNULL_BEGIN
 /// document's tree is patched in place and handed over (much cheaper than parsing); `previous` then
 /// rebuilds itself from its own HTML if it is used again. Otherwise this parses `html` from scratch.
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous NS_DESIGNATED_INITIALIZER;
+/// Patches `previous` in place with new inline style values, keyed by the value of `attribute`, without parsing HTML.
+/// Each value must be the exact `style` attribute text the full HTML would carry, and every element must already have a
+/// style attribute. Runs the same checks as an HTML patch and returns nil, leaving `previous` usable, when it can't apply.
+- (nullable instancetype)initWithPrevious:(LHDocument *)previous styles:(NSDictionary<NSString *, NSString *> *)styles attribute:(NSString *)attribute css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
 /// Whether this document was made by patching the previous one.
 @property (readonly) BOOL reusedPrevious;
 @property (readonly) BOOL reusedLayout;
+/// After a paint-only patch, the document rects that hold every pixel it can have changed; nil when the change may
+/// paint anywhere else, so the caller has to diff display lists.
+@property (readonly, nullable) NSArray<NSValue *> *patchDirtyRects;
 - (instancetype)init NS_UNAVAILABLE;
 
 @property (nonatomic, readonly, copy) NSString *html;
@@ -56,6 +63,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name NS_SWIFT_NAME(bounds(byAttribute:));
 - (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name NS_SWIFT_NAME(parents(byAttribute:));
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(computedStyle(attribute:value:));
+/// Skips elements that are not rendered (display: none on them or an ancestor): CSS animations and transitions do not
+/// run there, and restart when the element is displayed again.
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute NS_SWIFT_NAME(declarations(_:byAttribute:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required NS_SWIFT_NAME(declarations(_:byAttribute:requiringAny:));
 
