@@ -171,7 +171,8 @@ final class MagicMoveTests: XCTestCase {
         XCTAssertEqual(MagicMoveGeometry.maskSlice(corners: MagicMoveCorners(topLeft: 12, topRight: 12, bottomRight: 12, bottomLeft: 12), size: CGSize(width: 130, height: 54), scale: 2, stretches: (true, true)), CGSize(width: 12, height: 12))
         XCTAssertNil(MagicMoveGeometry.maskSlice(corners: MagicMoveCorners(topLeft: 12.5, topRight: 12.5, bottomRight: 12.5, bottomLeft: 12.5), size: CGSize(width: 56, height: 25), scale: 2, stretches: (true, true)))
         XCTAssertEqual(MagicMoveGeometry.maskSlice(corners: MagicMoveCorners(topLeft: 12.5, topRight: 12.5, bottomRight: 12.5, bottomLeft: 12.5), size: CGSize(width: 56, height: 25), scale: 2, stretches: (true, false)), CGSize(width: 12.5, height: 12))
-        XCTAssertNil(MagicMoveGeometry.maskSlice(corners: .zero, size: CGSize(width: 56, height: 25), scale: 2, stretches: (true, true)))
+        XCTAssertEqual(MagicMoveGeometry.maskSlice(corners: .zero, size: CGSize(width: 56, height: 25), scale: 2, stretches: (true, true)), CGSize(width: 0.5, height: 0.5))
+        XCTAssertNil(MagicMoveGeometry.maskSlice(corners: .zero, size: CGSize(width: 1, height: 25), scale: 2, stretches: (true, true)))
     }
 
     func testCornersAndFillSampling() {
@@ -240,5 +241,26 @@ final class MagicMoveTests: XCTestCase {
         XCTAssertLessThanOrEqual(MagicMoveTests.worst(end, MagicMoveTests.render(canvas, scale: scale) { MagicMoveTests.plain(new, $0) }), 1)
         stage.cancel()
         XCTAssertNil(host.sublayers?.first)
+    }
+
+    func testSquareCardGrowsSolidAndExact() {
+        let scale: CGFloat = 2
+        let red = CGColor(colorSpace: MagicMoveTests.space, components: [1, 0.23, 0.19, 1])!
+        let white = CGColor(colorSpace: MagicMoveTests.space, components: [1, 1, 1, 1])!
+        let old = MagicMoveTests.snapshot(CGRect(x: 10, y: 20, width: 130, height: 54), scale: scale, color: red, radius: 0, mark: white)
+        let new = MagicMoveTests.snapshot(CGRect(x: 10, y: 20, width: 256, height: 88), scale: scale, color: red, radius: 0)
+        let (stage, host) = stage(at: 100)
+        stage.reducesMotion = { false }
+        stage.play([.move(key: "a", from: old.border, to: new, previous: old)], scale: scale)
+        XCTAssertNotNil(host.sublayers?.first?.mask)
+        let canvas = CGSize(width: 320, height: 200)
+        XCTAssertLessThanOrEqual(MagicMoveTests.worst(MagicMoveTests.render(canvas, scale: scale) { stage.draw(into: $0, at: 100) }, MagicMoveTests.render(canvas, scale: scale) { MagicMoveTests.plain(old, $0) }), 1)
+        XCTAssertLessThanOrEqual(MagicMoveTests.worst(MagicMoveTests.render(canvas, scale: scale) { stage.draw(into: $0, at: 101) }, MagicMoveTests.render(canvas, scale: scale) { MagicMoveTests.plain(new, $0) }), 1)
+        let frame = stage.presentedFramesAt(100.1)["a"]!
+        XCTAssertGreaterThan(frame.width, 150)
+        let middle = MagicMoveTests.render(canvas, scale: scale) { stage.draw(into: $0, at: 100.1) }
+        let x = Int((frame.maxX - 6) * scale), y = Int((frame.maxY - 6) * scale)
+        XCTAssertEqual(middle[(y * Int(canvas.width * scale) + x) * 4 + 3], 255)
+        stage.cancel()
     }
 }

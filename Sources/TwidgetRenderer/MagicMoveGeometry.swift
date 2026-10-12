@@ -238,10 +238,10 @@ public enum MagicMoveGeometry {
 
     public static func maskSlice(corners: MagicMoveCorners, size: CGSize, scale: CGFloat, stretches: (width: Bool, height: Bool)) -> CGSize? {
         let radius = corners.all.max() ?? 0
-        guard radius > 0, scale > 0 else {
+        guard scale > 0 else {
             return nil
         }
-        let wanted = ceil(radius * scale) / scale
+        let wanted = max(1, ceil(radius * scale)) / scale
         func axis(_ length: CGFloat, _ stretched: Bool) -> CGFloat? {
             if length >= wanted * 2 + 1 / scale {
                 return wanted
