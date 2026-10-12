@@ -1746,7 +1746,34 @@ enum WidgetKeys {
 }
 
 enum CSSFont {
+    private static let lock = NSLock()
+    private static var cache: [String: CTFont] = [:]
+    static let cacheLimit = 64
+
     static func make(_ css: String) -> CTFont {
+        lock.lock()
+        if let font = cache[css] {
+            lock.unlock()
+            return font
+        }
+        lock.unlock()
+        let font = resolve(css)
+        lock.lock()
+        if cache.count >= cacheLimit {
+            cache.removeAll(keepingCapacity: true)
+        }
+        cache[css] = font
+        lock.unlock()
+        return font
+    }
+
+    static var cachedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache.count
+    }
+
+    private static func resolve(_ css: String) -> CTFont {
         var size: CGFloat = 10
         var weight: CGFloat = 400
         var italic = false
