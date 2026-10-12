@@ -23,6 +23,7 @@ void LHRegisterAppImage(NSString* name, NSImage* image);
 void LHSetImageProvider(NSImage* (^provider)(NSString* url));
 NSImage* (^LHImageProvider(void))(NSString* url);
 void LHForgetImage(NSString* url);
+CGImageRef LHCopyImageForURL(NSString* url) CF_RETURNS_RETAINED;
 void LHSetPortableSymbols(bool portable);
 bool LHPortableSymbols(void);
 #endif

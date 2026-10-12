@@ -225,6 +225,16 @@ public final class LiteHTMLWidgetRenderer {
         trimWork = nil
         documentView.owner = nil
         documentView.removeFromSuperview()
+        var retired: [AnyObject] = documentView.retire()
+        if let document = document {
+            retired.append(document)
+        }
+        if let displayList = displayList {
+            retired.append(displayList)
+        }
+        document = nil
+        displayList = nil
+        WidgetTeardown.release(retired)
     }
 
     static let messageLog = ProcessInfo.processInfo.environment["TW_MSG_LOG"] != nil
@@ -849,16 +859,10 @@ public final class LiteHTMLWidgetRenderer {
         if let canvas = canvases[id] {
             return canvas.image
         }
-        guard let node = dom.node(id), node.tag == "img", let src = node.attribute("src"), src.hasPrefix("data:"), let comma = src.firstIndex(of: ",") else {
+        guard let node = dom.node(id), node.tag == "img", let src = node.attribute("src"), src.hasPrefix("data:") else {
             return nil
         }
-        let header = src[..<comma]
-        let payload = String(src[src.index(after: comma)...])
-        let data = header.contains(";base64") ? Data(base64Encoded: payload, options: .ignoreUnknownCharacters) : payload.removingPercentEncoding?.data(using: .utf8)
-        guard let bytes = data, let source = CGImageSourceCreateWithData(bytes as CFData, nil) else {
-            return nil
-        }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        return LHImages.copyImage(forURL: src)
     }
 
     private func syncCanvases() {
@@ -2077,8 +2081,7 @@ final class WidgetDocumentView: NSView {
         var stale = CGRect.null
 
         init?(width: Int, height: Int, space: CGColorSpace) {
-            let properties: [CFString: Any] = [kIOSurfaceWidth: width, kIOSurfaceHeight: height, kIOSurfaceBytesPerElement: 4, kIOSurfacePixelFormat: 0x42475241]
-            guard let surface = IOSurfaceCreate(properties as CFDictionary) else {
+            guard let surface = WidgetSurfacePool.shared.take(width: width, height: height) ?? WidgetSurfacePool.make(width: width, height: height) else {
                 return nil
             }
             if let plist = space.copyPropertyList() {
@@ -2701,6 +2704,20 @@ final class WidgetDocumentView: NSView {
             removeTiles()
         }
         markNeedsDisplay()
+    }
+
+    func retire() -> [AnyObject] {
+        var retired: [AnyObject] = []
+        if let document = document {
+            retired.append(document)
+        }
+        document = nil
+        for tile in tiles {
+            retired.append(contentsOf: tile.surfaces as [AnyObject])
+            tile.surfaces.removeAll()
+            tile.shown = nil
+        }
+        return retired
     }
 
     private func removeTiles() {

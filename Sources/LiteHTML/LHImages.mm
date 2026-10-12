@@ -178,6 +178,26 @@ static void RegisterDemoImages(void)
     return LHImageProvider();
 }
 
++ (nullable CGImageRef)copyImageForURL:(NSString *)url
+{
+    return LHCopyImageForURL(url);
+}
+
++ (void)prefetchURLs:(NSArray<NSString *> *)urls completion:(nullable void (^)(void))completion
+{
+    NSArray<NSString *> *copied = [urls copy];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        for(NSString *url in copied)
+        {
+            CGImageRef image = LHCopyImageForURL(url);
+            if(image)
+                CGImageRelease(image);
+        }
+        if(completion)
+            dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
 + (void)forgetImageWithURL:(NSString *)url
 {
     LHForgetImage(url);

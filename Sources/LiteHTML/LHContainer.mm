@@ -501,6 +501,14 @@ void LHRegisterAppImage(NSString* name, NSImage* image)
     store.images[key] = img;
 }
 
+CGImageRef LHCopyImageForURL(NSString* url)
+{
+    if(url.length == 0 || (![url hasPrefix:@"data:"] && ![url.lowercaseString hasPrefix:@"icon:"]))
+        return nullptr;
+    ImageHandle img = LookupImage(url.UTF8String ?: "");
+    return img.image ? CGImageRetain(img.image) : nullptr;
+}
+
 NSImage* (^LHImageProvider(void))(NSString* url)
 {
     std::lock_guard<std::mutex> guard(g_providerLock);
