@@ -460,7 +460,7 @@ final class WidgetCompositor {
             }
             if track.transforms.contains(where: { $0 != track.transforms[0] }) {
                 let animation = CAKeyframeAnimation(keyPath: "transform")
-                configure(animation, track.transforms.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform($0)) })
+                configure(animation, track.transforms.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform(WidgetCompositor.decomposable($0))) })
                 item.layer.add(animation, forKey: "tw.transform")
             }
             if track.opacities.contains(where: { $0 != track.opacities[0] }) {
@@ -511,6 +511,13 @@ final class WidgetCompositor {
             alpha = max(alpha, best.1)
         }
         return (geometry, alpha, offsetAtWorst)
+    }
+
+    static func decomposable(_ t: CGAffineTransform) -> CGAffineTransform {
+        if abs(t.a * t.d - t.b * t.c) >= 1e-8 {
+            return t
+        }
+        return CGAffineTransform(a: t.a >= 0 ? 1e-4 : -1e-4, b: 0, c: 0, d: t.d >= 0 ? 1e-4 : -1e-4, tx: t.tx, ty: t.ty)
     }
 
     struct Track {
