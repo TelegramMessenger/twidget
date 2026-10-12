@@ -1,3 +1,4 @@
+#include <unordered_map>
 #include <algorithm>
 #include <cstdint>
 
@@ -193,12 +194,34 @@ namespace litehtml
         thread_local int         g_apply_depth       = 0;
         thread_local int64_t     g_selector_steps    = 0;
 
+        thread_local uint64_t    g_apply_pass        = 0;
+
+        bool prune_enabled()
+        {
+            static const bool enabled = getenv("LH_NO_DESCENDANT_PRUNE") == nullptr;
+            return enabled;
+        }
+
+        struct sibling_index
+        {
+            uint64_t                                         pass  = 0;
+            size_t                                           count = 0;
+            std::vector<element*>                            kids;
+            std::unordered_map<const element*, size_t>       index;
+        };
+
+        thread_local std::unordered_map<const element*, sibling_index> g_sibling_indexes;
+
         struct apply_scope
         {
             apply_scope()
             {
                 if(g_apply_depth++ == 0)
+                {
                     g_selector_steps = 0;
+                    g_apply_pass++;
+                    g_sibling_indexes.clear();
+                }
             }
             ~apply_scope() { g_apply_depth--; }
         };
@@ -872,6 +895,11 @@ namespace litehtml
                 }
             }
             return el_parent;
+        }
+        if(prune_enabled() && selector.m_left && selector.m_combinator == combinator_descendant &&
+           el_parent->select(selector.m_right, apply_pseudo) != select_no_match)
+        {
+            return nullptr;
         }
         return el_parent->find_ancestor(selector, apply_pseudo, is_pseudo);
     }
@@ -1550,6 +1578,36 @@ namespace litehtml
                                                                      bool                apply_pseudo /*= true*/,
                                                                      bool*               is_pseudo /*= 0*/)
     {
+        static const bool indexed = getenv("LH_NO_SIBLING_INDEX") == nullptr;
+        if(indexed && g_apply_depth > 0 && m_children.size() > 16)
+        {
+            auto& entry = g_sibling_indexes[this];
+            if(entry.pass != g_apply_pass || entry.count != m_children.size())
+            {
+                entry.pass  = g_apply_pass;
+                entry.count = m_children.size();
+                entry.kids.clear();
+                entry.index.clear();
+                for(auto& e : m_children)
+                {
+                    if(e->css().get_display() != display_inline_text)
+                    {
+                        entry.index[e.get()] = entry.kids.size();
+                        entry.kids.push_back(e.get());
+                    }
+                }
+            }
+            auto it = entry.index.find(el.get());
+            if(it == entry.index.end() || it->second == 0)
+                return nullptr;
+            element::ptr prev = entry.kids[it->second - 1]->shared_from_this();
+            int          res  = prev->select(selector, apply_pseudo);
+            if(res == select_no_match)
+                return nullptr;
+            if(is_pseudo)
+                *is_pseudo = (res & select_match_pseudo_class) != 0;
+            return prev;
+        }
         element::ptr ret;
         for(auto& e : m_children)
         {
@@ -1598,6 +1656,12 @@ namespace litehtml
                 if(!ret)
                 {
                     int res = e->select(selector, apply_pseudo);
+                    if(res == select_no_match && selector.m_left &&
+                       (selector.m_combinator == combinator_descendant || selector.m_combinator == combinator_child) &&
+                       prune_enabled() && e->select(selector.m_right, apply_pseudo) != select_no_match)
+                    {
+                        return nullptr;
+                    }
                     if(res != select_no_match)
                     {
                         if(is_pseudo)
