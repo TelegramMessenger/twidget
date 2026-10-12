@@ -2405,6 +2405,34 @@ void LHContainer::draw_list_marker(lh::uint_ptr hdc, const lh::list_marker& mark
     CGContextRestoreGState(ctx);
 }
 
+static lh::web_color ShadeBorder(lh::web_color color, bool topLeft, bool inset)
+{
+    auto distance = [](const lh::web_color& c, int v) {
+        return (c.red - v) * (c.red - v) + (c.green - v) * (c.green - v) + (c.blue - v) * (c.blue - v);
+    };
+    const float scale = std::nextafter(256.0f, 0.0f);
+    const float r = color.red / 255.0f, g = color.green / 255.0f, b = color.blue / 255.0f;
+    const float v = std::max({r, g, b});
+    auto        scaled = [&](float m) {
+        return lh::web_color(static_cast<lh::byte>(std::clamp(static_cast<int>(m * r * scale), 0, 255)),
+                             static_cast<lh::byte>(std::clamp(static_cast<int>(m * g * scale), 0, 255)),
+                             static_cast<lh::byte>(std::clamp(static_cast<int>(m * b * scale), 0, 255)), color.alpha);
+    };
+    if(topLeft == inset)
+    {
+        if(distance(color, 0) <= 3 * 0x20 * 0x20)
+            return color;
+        if(color.red == 255 && color.green == 255 && color.blue == 255)
+            return lh::web_color(0xAB, 0xAB, 0xAB, color.alpha);
+        return scaled(std::max(0.0f, (v - 0.33f) / v));
+    }
+    if(distance(color, 255) <= 3 * 0x14 * 0x14)
+        return color;
+    if(v == 0)
+        return lh::web_color(0x54, 0x54, 0x54, color.alpha);
+    return scaled(std::min(1.0f, v + 0.33f) / v);
+}
+
 void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, const lh::position& draw_pos, bool root)
 {
     if(m_painter)
@@ -2515,66 +2543,94 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
     {
         CGContextAddPath(ctx, ring);
         CGContextEOClip(ctx);
-        CGFloat ox0 = CGRectGetMinX(outer), oy0 = CGRectGetMinY(outer);
-        CGFloat ox1 = CGRectGetMaxX(outer), oy1 = CGRectGetMaxY(outer);
-        CGFloat ix0 = ox0 + L, iy0 = oy0 + T, ix1 = ox1 - Rr, iy1 = oy1 - B;
-        struct Side
-        {
-            const lh::border* b;
-            CGFloat           w;
-            CGPoint           poly[4];
-            CGPoint           a, z;
-            bool              lightSide;
-        } list[4] = {
-            {&borders.top, T, {{ox0, oy0}, {ox1, oy0}, {ix1, iy0}, {ix0, iy0}}, {ox0, oy0 + T / 2}, {ox1, oy0 + T / 2}, true},
-            {&borders.right, Rr, {{ox1, oy0}, {ox1, oy1}, {ix1, iy1}, {ix1, iy0}}, {ox1 - Rr / 2, oy0}, {ox1 - Rr / 2, oy1}, false},
-            {&borders.bottom, B, {{ox1, oy1}, {ox0, oy1}, {ix0, iy1}, {ix1, iy1}}, {ox0, oy1 - B / 2}, {ox1, oy1 - B / 2}, false},
-            {&borders.left, L, {{ox0, oy1}, {ox0, oy0}, {ix0, iy0}, {ix0, iy1}}, {ox0 + L / 2, oy0}, {ox0 + L / 2, oy1}, true},
+        auto drawSides = [&](CGRect o, CGRect i, int pass) {
+            CGFloat ox0 = CGRectGetMinX(o), oy0 = CGRectGetMinY(o), ox1 = CGRectGetMaxX(o), oy1 = CGRectGetMaxY(o);
+            CGFloat ix0 = CGRectGetMinX(i), iy0 = CGRectGetMinY(i), ix1 = CGRectGetMaxX(i), iy1 = CGRectGetMaxY(i);
+            struct Side
+            {
+                const lh::border* b;
+                CGFloat           w;
+                CGPoint           poly[4];
+                CGPoint           a, z;
+                bool              topLeft;
+            } list[4] = {
+                {&borders.top, iy0 - oy0, {{ox0, oy0}, {ox1, oy0}, {ix1, iy0}, {ix0, iy0}}, {ox0, (oy0 + iy0) / 2}, {ox1, (oy0 + iy0) / 2}, true},
+                {&borders.right, ox1 - ix1, {{ox1, oy0}, {ox1, oy1}, {ix1, iy1}, {ix1, iy0}}, {(ox1 + ix1) / 2, oy0}, {(ox1 + ix1) / 2, oy1}, false},
+                {&borders.bottom, oy1 - iy1, {{ox1, oy1}, {ox0, oy1}, {ix0, iy1}, {ix1, iy1}}, {ox0, (oy1 + iy1) / 2}, {ox1, (oy1 + iy1) / 2}, false},
+                {&borders.left, ix0 - ox0, {{ox0, oy1}, {ox0, oy0}, {ix0, iy0}, {ix0, iy1}}, {(ox0 + ix0) / 2, oy0}, {(ox0 + ix0) / 2, oy1}, true},
+            };
+            for(auto& s : list)
+            {
+                if(s.w <= 0)
+                    continue;
+                lh::web_color c = s.b->color;
+                switch(s.b->style)
+                {
+                case lh::border_style_inset:
+                case lh::border_style_outset:
+                    if(pass == 0)
+                        c = ShadeBorder(c, s.topLeft, s.b->style == lh::border_style_inset);
+                    break;
+                case lh::border_style_groove:
+                case lh::border_style_ridge:
+                    c = ShadeBorder(c, s.topLeft, (s.b->style == lh::border_style_groove) == (pass != 2));
+                    break;
+                default:
+                    if(pass == 2)
+                        continue;
+                    break;
+                }
+                if(pass == 2 && s.b->style != lh::border_style_groove && s.b->style != lh::border_style_ridge)
+                    continue;
+                CGContextSaveGState(ctx);
+                CGContextBeginPath(ctx);
+                CGContextAddLines(ctx, s.poly, 4);
+                CGContextClosePath(ctx);
+                if(s.b->style == lh::border_style_dotted || s.b->style == lh::border_style_dashed)
+                {
+                    CGContextClip(ctx);
+                    CGFloat dots[]   = {0, s.w * 2};
+                    CGFloat dashes[] = {s.w * 2.5, s.w * 1.5};
+                    bool    dotted   = s.b->style == lh::border_style_dotted;
+                    SetStroke(ctx, c);
+                    CGContextSetLineWidth(ctx, s.w);
+                    CGContextSetLineCap(ctx, dotted ? kCGLineCapRound : kCGLineCapButt);
+                    CGContextSetLineDash(ctx, 0, dotted ? dots : dashes, 2);
+                    CGContextMoveToPoint(ctx, s.a.x, s.a.y);
+                    CGContextAddLineToPoint(ctx, s.z.x, s.z.y);
+                    CGContextStrokePath(ctx);
+                }
+                else
+                {
+                    SetFill(ctx, c);
+                    CGContextFillPath(ctx);
+                }
+                CGContextRestoreGState(ctx);
+            }
         };
-        for(auto& s : list)
+        drawSides(outer, inner, 0);
+        bool grooved = false;
+        for(const auto* side : sides)
+            grooved = grooved || side->style == lh::border_style_groove || side->style == lh::border_style_ridge;
+        if(grooved)
         {
-            if(s.w <= 0)
-                continue;
-            lh::web_color c = s.b->color;
-            switch(s.b->style)
-            {
-            case lh::border_style_inset:
-            case lh::border_style_groove:
-                if(s.lightSide)
-                    c = c.darken(0.35);
-                break;
-            case lh::border_style_outset:
-            case lh::border_style_ridge:
-                if(!s.lightSide)
-                    c = c.darken(0.35);
-                break;
-            default:
-                break;
-            }
-            CGContextSaveGState(ctx);
-            CGContextBeginPath(ctx);
-            CGContextAddLines(ctx, s.poly, 4);
-            CGContextClosePath(ctx);
-            if(s.b->style == lh::border_style_dotted || s.b->style == lh::border_style_dashed)
-            {
-                CGContextClip(ctx);
-                CGFloat dots[]   = {0, s.w * 2};
-                CGFloat dashes[] = {s.w * 2.5, s.w * 1.5};
-                bool    dotted   = s.b->style == lh::border_style_dotted;
-                SetStroke(ctx, c);
-                CGContextSetLineWidth(ctx, s.w);
-                CGContextSetLineCap(ctx, dotted ? kCGLineCapRound : kCGLineCapButt);
-                CGContextSetLineDash(ctx, 0, dotted ? dots : dashes, 2);
-                CGContextMoveToPoint(ctx, s.a.x, s.a.y);
-                CGContextAddLineToPoint(ctx, s.z.x, s.z.y);
-                CGContextStrokePath(ctx);
-            }
-            else
-            {
-                SetFill(ctx, c);
-                CGContextFillPath(ctx);
-            }
-            CGContextRestoreGState(ctx);
+            CGRect mid = CGRectMake(outer.origin.x + L / 2, outer.origin.y + T / 2, outer.size.width - (L + Rr) / 2,
+                                    outer.size.height - (T + B) / 2);
+            lh::border_radiuses mrad = orad;
+            mrad.top_left_x     = std::max(0.0f, orad.top_left_x.value() - (float)L / 2);
+            mrad.top_left_y     = std::max(0.0f, orad.top_left_y.value() - (float)T / 2);
+            mrad.top_right_x    = std::max(0.0f, orad.top_right_x.value() - (float)Rr / 2);
+            mrad.top_right_y    = std::max(0.0f, orad.top_right_y.value() - (float)T / 2);
+            mrad.bottom_right_x = std::max(0.0f, orad.bottom_right_x.value() - (float)Rr / 2);
+            mrad.bottom_right_y = std::max(0.0f, orad.bottom_right_y.value() - (float)B / 2);
+            mrad.bottom_left_x  = std::max(0.0f, orad.bottom_left_x.value() - (float)L / 2);
+            mrad.bottom_left_y  = std::max(0.0f, orad.bottom_left_y.value() - (float)B / 2);
+            CGMutablePathRef midPath = CGPathCreateMutable();
+            AddRoundedRect(midPath, mid, mrad);
+            CGContextAddPath(ctx, midPath);
+            CGContextClip(ctx);
+            CGPathRelease(midPath);
+            drawSides(mid, inner, 2);
         }
     }
     CGContextRestoreGState(ctx);

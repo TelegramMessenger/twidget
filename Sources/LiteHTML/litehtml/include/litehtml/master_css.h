@@ -164,7 +164,9 @@ hr {
 	margin-left: auto;
 	margin-right: auto;
 	border-style: inset;
-	border-width: 1px
+	border-width: 1px;
+	color: gray;
+	overflow: hidden;
 }
 
 
@@ -174,15 +176,13 @@ table {
 	display: table;
 	border-collapse: separate;
 	border-spacing: 2px;
-	border-top-color:gray;
-	border-left-color:gray;
-	border-bottom-color:black;
-	border-right-color:black;
+	border-color: gray;
 }
 
 tbody, tfoot, thead {
 	display:table-row-group;
 	vertical-align:middle;
+	border-color: inherit;
 }
 
 tr {
@@ -204,7 +204,7 @@ th {
 }
 
 table[border] {
-	border-style:solid;
+	border-style:outset;
 }
 
 table[border^="0"] {
@@ -212,11 +212,8 @@ table[border^="0"] {
 }
 
 table[border] td, table[border] th {
-	border-style:solid;
-	border-top-color:black;
-	border-left-color:black;
-	border-bottom-color:gray;
-	border-right-color:gray;
+	border-style:inset;
+	border-color: inherit;
 }
 
 table[border^="0"] td, table[border^="0"] th {
@@ -347,6 +344,31 @@ input[type="hidden"] {
 article, aside, footer, header, hgroup, nav, section
 {
 	display: block;
+}
+
+small {
+	font-size: smaller;
+}
+
+big {
+	font-size: larger;
+}
+
+mark {
+	background-color: yellow;
+	color: black;
+}
+
+address, var, dfn {
+	font-style: italic;
+}
+
+address {
+	display: block;
+}
+
+abbr[title], acronym[title] {
+	text-decoration: underline dotted;
 }
 
 sub {

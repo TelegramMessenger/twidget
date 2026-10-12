@@ -119,4 +119,23 @@ namespace
     XCTAssertTrue(fractional);
 }
 
+- (void)testInsetOutsetGrooveBordersShadeLikeWebKit
+{
+    Pixels inset = Render(@"<div style=\"width:20px;height:20px;border:4px inset #808080\"></div>", 100);
+    XCTAssertEqualWithAccuracy(inset.at(28, 2)[0], 44, 2);
+    XCTAssertEqualWithAccuracy(inset.at(28, 54)[0], 213, 2);
+    Pixels outset = Render(@"<div style=\"width:20px;height:20px;border:4px outset #808080\"></div>", 100);
+    XCTAssertEqualWithAccuracy(outset.at(28, 2)[0], 213, 2);
+    XCTAssertEqualWithAccuracy(outset.at(2, 28)[0], 213, 2);
+    XCTAssertEqualWithAccuracy(outset.at(54, 28)[0], 44, 2);
+    Pixels groove = Render(@"<div style=\"width:20px;height:20px;border:8px groove #808080\"></div>", 100);
+    XCTAssertEqualWithAccuracy(groove.at(36, 2)[0], 44, 2);
+    XCTAssertEqualWithAccuracy(groove.at(36, 13)[0], 213, 2);
+    Pixels small = Render(@"<div style=\"font-size:20px\"><small style=\"display:inline-block;width:1em;height:1em;background:#000\"></small></div>", 100);
+    size_t width = 0;
+    for(size_t x = 0; x < small.width; x++)
+        width += small.at(x, small.height - 6)[3] > 128;
+    XCTAssertEqualWithAccuracy(double(width), 2 * 20 / 1.2, 2);
+}
+
 @end
