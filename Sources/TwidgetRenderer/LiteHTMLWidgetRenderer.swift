@@ -291,7 +291,7 @@ public final class LiteHTMLWidgetRenderer {
         let before = compositor.ids
         if let document = document {
             compositor.attach(documentView.layer)
-            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
         }
         compositor.drive(animator: animator, now: now, enabled: canDrive)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })

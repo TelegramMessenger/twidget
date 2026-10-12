@@ -588,7 +588,7 @@ final class WidgetCompositor {
         return Track(times: times, transforms: samples.map { $0.0 }, opacities: samples.map { $0.1 })
     }
 
-    func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace) {
+    func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
         guard let host = host else {
             reset()
             return
@@ -732,8 +732,10 @@ final class WidgetCompositor {
             item.layer.removeFromSuperlayer()
             promoted[id] = nil
         }
+        document.setPaintExclusions(Set(wanted.keys.map { String($0) }).union(extraExclusions.map { String($0) }), attribute: WidgetDOM.idAttribute)
         for (id, want) in wanted {
-            let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: scale * want.maxScale, styleKey: styleKey)
+            let inner = wanted.keys.filter { $0 != id && WidgetCompositor.isAncestor(id, of: $0, dom: dom) }.sorted()
+            let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: scale * want.maxScale, styleKey: styleKey ^ inner.hashValue)
             if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer != nil {
                 if let index = order[String(id)] {
                     existing.layer.zPosition = 1 + CGFloat(index.intValue) * 1e-6
