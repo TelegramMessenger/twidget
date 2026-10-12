@@ -37,7 +37,7 @@ final class WidgetCanvasPresenter {
         for surface in surfaces where surface !== shown && !IOSurfaceIsInUse(surface) {
             return surface
         }
-        guard surfaces.count < WidgetCanvasPresenter.maxSurfaces, canvas.width > 0, canvas.height > 0 else {
+        guard surfaces.count < (canvas.pixelCount > 1 << 20 ? 2 : WidgetCanvasPresenter.maxSurfaces), canvas.width > 0, canvas.height > 0 else {
             return nil
         }
         let properties: [CFString: Any] = [kIOSurfaceWidth: canvas.width, kIOSurfaceHeight: canvas.height, kIOSurfaceBytesPerElement: 4, kIOSurfacePixelFormat: 0x42475241]

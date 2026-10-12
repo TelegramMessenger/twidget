@@ -1,6 +1,6 @@
 import Foundation
 
-enum CanvasArg {
+enum CanvasArg: Equatable {
     case number(Double)
     case string(String)
     case gradient(Int)
@@ -180,7 +180,7 @@ struct CanvasStream {
 struct CanvasJSONScanner {
     private let p: UnsafeBufferPointer<UInt8>
     private var i = 0
-    private static let pow10: [Double] = (0...22).map { pow(10, Double($0)) }
+    private static let pow10: [Double] = (0...308).map { Double("1e\($0)")! }
 
     init(_ bytes: UnsafeBufferPointer<UInt8>) {
         p = bytes
@@ -320,23 +320,15 @@ struct CanvasJSONScanner {
         if mantissa != 0 {
             if scale > 308 {
                 value = .infinity
-            } else if scale < -340 {
+            } else if scale < -360 {
                 value = 0
-            } else {
-                var remaining = scale
-                while remaining > 22 {
-                    value *= 1e22
-                    remaining -= 22
-                }
-                while remaining < -22 {
-                    value /= 1e22
-                    remaining += 22
-                }
-                if remaining > 0 {
-                    value *= CanvasJSONScanner.pow10[remaining]
-                } else if remaining < 0 {
-                    value /= CanvasJSONScanner.pow10[-remaining]
-                }
+            } else if scale > 0 {
+                value *= CanvasJSONScanner.pow10[scale]
+            } else if scale < -308 {
+                value /= CanvasJSONScanner.pow10[308]
+                value /= CanvasJSONScanner.pow10[-scale - 308]
+            } else if scale < 0 {
+                value /= CanvasJSONScanner.pow10[-scale]
             }
         }
         return negative ? -value : value

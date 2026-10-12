@@ -130,6 +130,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
     private(set) var gpuMilliseconds = 0.0
     private(set) var gpuFrames = 0
     private(set) var acceleratedBatches = 0
+    private(set) var committedBuffers = 0
     private(set) var fallbackBatches = 0
     private var gpuLock = NSLock()
 
@@ -232,9 +233,9 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         default:
             return false
         }
-        func n(_ i: Int) -> Float {
+        func n(_ i: Int) -> Double {
             if i < a.count, case let .number(v) = a[a.startIndex + i], v.isFinite {
-                return Float(max(-1e7, min(1e7, v)))
+                return v
             }
             return 0
         }
@@ -247,12 +248,22 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
             y += h
             h = -h
         }
-        guard w > 0, h > 0 else {
+        guard w > 0, h > 0, w.isFinite, h.isFinite else {
             return true
         }
         let t = canvas.currentTransform
-        let sx = Float((t.a * t.a + t.b * t.b).squareRoot()), sy = Float((t.c * t.c + t.d * t.d).squareRoot())
-        guard sx.isFinite, sy.isFinite, sx > 1e-6, sy > 1e-6, abs(t.a * t.d - t.b * t.c) > 1e-12 else {
+        let det = Double(t.a * t.d - t.b * t.c)
+        guard det.isFinite, abs(det) > 1e-12, t.tx.isFinite, t.ty.isFinite else {
+            return true
+        }
+        let canvasBounds = CGRect(x: 0, y: 0, width: canvas.width, height: canvas.height)
+        let visible = canvasBounds.insetBy(dx: -2, dy: -2).applying(t.inverted())
+        let local = CGRect(x: x, y: y, width: w, height: h).intersection(visible)
+        guard !local.isNull, local.width > 0, local.height > 0 else {
+            return true
+        }
+        let sx = Float(abs(det) / Double((t.c * t.c + t.d * t.d).squareRoot())), sy = Float(abs(det) / Double((t.a * t.a + t.b * t.b).squareRoot()))
+        guard sx.isFinite, sy.isFinite, sx > 1e-6, sy > 1e-6 else {
             return true
         }
         let blend: Blend
@@ -278,7 +289,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
                 blend = .sourceOver
             }
         }
-        let bounds = CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(w), height: CGFloat(h)).applying(t).intersection(CGRect(x: 0, y: 0, width: canvas.width, height: canvas.height)).insetBy(dx: -1, dy: -1)
+        let bounds = local.applying(t).intersection(canvasBounds).insetBy(dx: -1, dy: -1)
         guard !bounds.isNull, !bounds.isEmpty else {
             return true
         }
@@ -287,7 +298,9 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
             flushChunk(canvas)
         }
         area += cost
-        instances.append(Instance(rect: SIMD4(x, y, w, h), matrix: SIMD4(Float(t.a), Float(t.b), Float(t.c), Float(t.d)), offset: SIMD4(Float(t.tx), Float(t.ty), sx, sy), color: color))
+        let center = CGPoint(x: local.midX, y: local.midY).applying(t)
+        let hw = Float(local.width / 2), hh = Float(local.height / 2)
+        instances.append(Instance(rect: SIMD4(-hw, -hh, hw * 2, hh * 2), matrix: SIMD4(Float(t.a), Float(t.b), Float(t.c), Float(t.d)), offset: SIMD4(Float(center.x), Float(center.y), sx, sy), color: color))
         if let lastRun = runs.last, lastRun.blend == blend {
             runs[runs.count - 1].count += 1
         } else {
@@ -346,7 +359,9 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
     }
 
     private func makeCommands() -> MTLCommandBuffer? {
-        inFlight.wait()
+        if inFlight.wait(timeout: .now() + 2) == .timedOut {
+            return nil
+        }
         guard let commands = shared.queue.makeCommandBuffer() else {
             inFlight.signal()
             return nil
@@ -379,6 +394,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         }
         encodeChunk(canvas, into: commands)
         commands.commit()
+        committedBuffers += 1
         last = commands
     }
 
@@ -393,6 +409,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         }
         encodeChunk(canvas, into: commands)
         commands.commit()
+        committedBuffers += 1
         last = commands
     }
 

@@ -344,6 +344,7 @@ public final class LiteHTMLWidgetRenderer {
 
     static let canvasFastPath = ProcessInfo.processInfo.environment["TW_CANVAS_FAST"] != "0"
     static let canvasGPUAfter = ProcessInfo.processInfo.environment["TW_CANVAS_GPU_AFTER"].flatMap { Int($0) }.map { max(1, $0) } ?? 3
+    static let maxPresentedPixels = 2048 * 2048 * 2
     private var presenters: [Int: WidgetCanvasPresenter] = [:]
     private var canvasDraws: [Int: Int] = [:]
     private var presentationEpoch = 0
@@ -377,8 +378,10 @@ public final class LiteHTMLWidgetRenderer {
             guard let node = dom.canvasNode(id) else {
                 continue
             }
-            canvas(for: node).execute(stream)
-            if presenters[id] == nil {
+            let target = canvas(for: node)
+            let size = (target.width, target.height)
+            target.execute(stream)
+            if presenters[id] == nil || size != (target.width, target.height) {
                 direct = false
             }
         }
@@ -462,9 +465,14 @@ public final class LiteHTMLWidgetRenderer {
         let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
         var changed = false
         var added: [WidgetCanvasPresenter] = []
-        for (id, canvas) in canvases {
+        var budget = LiteHTMLWidgetRenderer.maxPresentedPixels
+        for (id, canvas) in canvases.sorted(by: { $0.key < $1.key }) {
             let wanted = presenters[id] != nil || (canvasDraws[id] ?? 0) >= LiteHTMLWidgetRenderer.canvasGPUAfter
-            let frame = wanted ? canvasPresentable(id, canvas, document: document, boxes: boxes) : nil
+            let affordable = canvas.pixelCount <= budget
+            let frame = wanted && affordable ? canvasPresentable(id, canvas, document: document, boxes: boxes) : nil
+            if frame != nil {
+                budget -= canvas.pixelCount
+            }
             if let frame = frame {
                 let presenter: WidgetCanvasPresenter
                 if let existing = presenters[id] {
@@ -497,7 +505,7 @@ public final class LiteHTMLWidgetRenderer {
         CATransaction.setDisableActions(true)
         for presenter in added {
             presenter.presentNow()
-            documentView.layer?.addSublayer(presenter.layer)
+            documentView.insertOverlay(presenter.layer)
         }
         layout(overrides)
         presentationChecked = document
@@ -611,7 +619,7 @@ public final class LiteHTMLWidgetRenderer {
     private func canvasSource(_ node: WidgetNode) -> String? {
         let canvas = self.canvas(for: node)
         let id = dom.publicId(node)
-        let url = "twcanvas:" + uid + "-" + String(id) + "-" + (presenters[id] != nil ? "p" + String(presentationEpoch) : String(canvas.version))
+        let url = "twcanvas:" + uid + "-" + String(id) + "-" + (presenters[id] != nil ? "p" + String(presentationEpoch) + "_" + String(canvas.width) + "_" + String(canvas.height) : String(canvas.version))
         if let previous = canvasURLs[id], previous != url {
             retiredURLs.append(previous)
         }
@@ -1637,6 +1645,10 @@ final class WidgetDocumentView: NSView {
     }
 
     private let drawer = TileDrawer()
+
+    func insertOverlay(_ overlay: CALayer) {
+        layer?.insertSublayer(overlay, at: UInt32(tiles.count))
+    }
     static var layerTiles = ProcessInfo.processInfo.environment["TW_SURFACE_TILES"] == nil && ProcessInfo.processInfo.environment["TW_VERIFY"] == nil
 
     private final class Tile {
