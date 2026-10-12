@@ -526,7 +526,7 @@ void AppendNumber(std::string& key, double v)
 // relative to the current clip, so drawing them straight into a partially redrawn tile gives
 // slightly different pixels than a full redraw; a pixel-aligned copy does not. Returns false when the
 // transform is not axis-aligned or r is not on device pixels, and the caller draws directly.
-static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const std::function<void(CGContextRef)>& paint)
+static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const std::function<void(CGContextRef)>& paint, bool store = true)
 {
     static const bool disabled = getenv("LH_NO_RASTER_CACHE") != nullptr;
     if(disabled)
@@ -550,7 +550,7 @@ static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const st
     if(!space || CGColorSpaceGetModel(space) != kCGColorSpaceModelRGB)
         space = SRGB();
     AppendInteger(key, (uintptr_t)space);
-    CGImageRef image = SharedRasterCache().copy(key);
+    CGImageRef image = store ? SharedRasterCache().copy(key) : nullptr;
     if(!image)
     {
         CGContextRef bitmap = CGBitmapContextCreate(nullptr, pw, ph, 8, 0, space, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
@@ -571,7 +571,8 @@ static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const st
         CGContextRelease(bitmap);
         if(!image)
             return false;
-        SharedRasterCache().put(key, image, pw * ph * 4);
+        if(store)
+            SharedRasterCache().put(key, image, pw * ph * 4);
     }
     CGContextSaveGState(ctx);
     CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
@@ -2223,8 +2224,11 @@ void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const
         paint(hdc);
         return;
     }
+    CGRect integral = CGContextConvertRectToUserSpace(ctx, CGRectIntegral(CGContextConvertRectToDeviceSpace(ctx, R(box))));
+    if(DrawRasterized(ctx, integral, std::string(), [&](CGContextRef c) { paint(reinterpret_cast<lh::uint_ptr>(c)); }, false))
+        return;
     CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGContextConvertRectToUserSpace(ctx, CGRectIntegral(CGContextConvertRectToDeviceSpace(ctx, R(box)))));
+    CGContextClipToRect(ctx, integral);
     CGContextBeginTransparencyLayer(ctx, nullptr);
     paint(hdc);
     CGContextEndTransparencyLayer(ctx);
