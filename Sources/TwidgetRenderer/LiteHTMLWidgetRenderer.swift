@@ -416,6 +416,7 @@ public final class LiteHTMLWidgetRenderer {
 
     private var retiredURLs: [String] = []
     private var listDebt: [CGRect] = []
+    static let slowLayoutMilliseconds = ProcessInfo.processInfo.environment["TW_SLOW_MS"].flatMap { Double($0) }
     static let patchRegions = ProcessInfo.processInfo.environment["TW_NO_PATCH_REGIONS"] == nil
     private var lastLayoutRevision: UInt64 = .max
     private var lastLayoutTheme = ""
@@ -446,17 +447,22 @@ public final class LiteHTMLWidgetRenderer {
 
     private func layout(_ overrides: [Int: [(String, String)]]) {
         let start = CACurrentMediaTime()
+        var stages: [(String, Double)] = []
         defer {
             layoutCount += 1
             let spent = (CACurrentMediaTime() - start) * 1000
             layoutMilliseconds += spent
             layoutMaxMilliseconds = max(layoutMaxMilliseconds, spent)
+            if let slow = LiteHTMLWidgetRenderer.slowLayoutMilliseconds, spent >= slow {
+                print(String(format: "SLOW layout %.2f ms t=%.3f ", spent, CACurrentMediaTime() - timeOrigin) + stages.map { String(format: "%@ %.2f", $0.0, $0.1) }.joined(separator: "  "))
+            }
         }
         syncCanvases()
         var mark = CACurrentMediaTime()
         func stage(_ name: String) {
             let now = CACurrentMediaTime()
             stageMilliseconds[name, default: 0] += (now - mark) * 1000
+            stages.append((name, (now - mark) * 1000))
             mark = now
         }
         let fast = styleOnlyDocument(overrides)
