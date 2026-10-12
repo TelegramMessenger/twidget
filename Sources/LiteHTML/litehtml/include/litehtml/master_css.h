@@ -200,6 +200,7 @@ td, th {
 
 th {
 	font-weight: bold;
+	text-align: -internal-th-center;
 }
 
 table[border] {

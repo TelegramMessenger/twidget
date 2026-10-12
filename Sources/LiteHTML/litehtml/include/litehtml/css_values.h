@@ -387,14 +387,18 @@ namespace litehtml
     // ==========================================================
     // CSS Property: align
     // ==========================================================
-    inline constexpr auto text_align_strings = split_css_values<4>("left;right;center;justify");
+    inline constexpr auto text_align_strings =
+        split_css_values<7>("left;right;center;justify;start;end;-internal-th-center");
 
     enum text_align
     {
         text_align_left,
         text_align_right,
         text_align_center,
-        text_align_justify
+        text_align_justify,
+        text_align_start,
+        text_align_end,
+        text_align_th_center
     };
 
     // ==========================================================

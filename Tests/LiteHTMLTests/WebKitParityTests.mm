@@ -25,7 +25,7 @@ namespace
 
     Pixels Render(NSString* html, CGFloat width, CGFloat* heightOut = nullptr)
     {
-        LHDocument* doc  = [[LHDocument alloc] initWithHTML:html css:nil];
+        LHDocument* doc  = [[LHDocument alloc] initWithHTML:[@"<style>body{margin:0}</style>" stringByAppendingString:html] css:nil];
         CGSize      size = [doc layoutWithMaxWidth:width];
         if(heightOut)
             *heightOut = size.height;
@@ -72,6 +72,21 @@ namespace
     XCTAssertEqual(p.at(280, 60)[3], 0);
     XCTAssertEqual(p.at(480, 60)[0], 255);
     XCTAssertEqual(p.at(480, 60)[3], 255);
+}
+
+- (void)testTableHeadersCenterUnlessTheRowAlignsAndTextAlignEndAlignsRight
+{
+    NSString* box = @"<span style=\"display:inline-block;width:20px;height:10px;background:#f00;vertical-align:top\"></span>";
+    NSString* table = @"<table style=\"width:200px;border-spacing:0;%@\"><tr><th style=\"padding:0;line-height:10px\">%@</th></tr></table>";
+    Pixels centered = Render([NSString stringWithFormat:table, @"", box], 200);
+    XCTAssertEqual(centered.at(200, 10)[3], 255);
+    XCTAssertEqual(centered.at(20, 10)[3], 0);
+    Pixels left = Render([NSString stringWithFormat:table, @"text-align:left", box], 200);
+    XCTAssertEqual(left.at(20, 10)[3], 255);
+    XCTAssertEqual(left.at(200, 10)[3], 0);
+    Pixels end = Render([NSString stringWithFormat:@"<div style=\"width:200px;text-align:end;line-height:10px\">%@</div>", box], 200);
+    XCTAssertEqual(end.at(380, 10)[3], 255);
+    XCTAssertEqual(end.at(20, 10)[3], 0);
 }
 
 @end

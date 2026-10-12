@@ -27,7 +27,12 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
         el->get_property<int>(_box_sizing_, false, box_sizing_content_box, offset(m_box_sizing)));
     m_overflow = static_cast<overflow>(el->get_property<int>(_overflow_, false, overflow_visible, offset(m_overflow)));
     m_text_align =
-        static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_left, offset(m_text_align)));
+        static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_start, offset(m_text_align)));
+    if(m_text_align == text_align_th_center)
+    {
+        const text_align inherited = el->parent() ? el->parent()->css().get_text_align() : text_align_start;
+        m_text_align               = inherited == text_align_start ? text_align_center : inherited;
+    }
     m_vertical_align = static_cast<vertical_align>(
         el->get_property<int>(_vertical_align_, false, va_baseline, offset(m_vertical_align)));
     m_text_transform = static_cast<text_transform>(
