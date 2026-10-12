@@ -991,6 +991,12 @@ namespace litehtml
     void litehtml::html_tag::draw_background(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                                              const std::shared_ptr<render_item>& ri)
     {
+        const css_border& outline_style = m_css.get_outline();
+        if(!get_background() && !m_css.get_borders().is_visible() && m_css.get_box_shadows().empty() &&
+           !(outline_style.width.val() > 0 && outline_style.style != border_style_none))
+        {
+            return;
+        }
         auto inline_processed = ri->for_inline_boxes([&](const position& box_, bool first, bool last) {
             const background* bg = get_background();
 
