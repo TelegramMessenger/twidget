@@ -1169,7 +1169,10 @@ final class WidgetDocumentView: NSView {
             let dirty = clip.offsetBy(dx: origin.x, dy: origin.y)
             document.draw(in: ctx, origin: .zero, clip: dirty.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
             ctx.restoreGState()
-            view.layerDrawMilliseconds += (CACurrentMediaTime() - start) * 1000
+            let spent = (CACurrentMediaTime() - start) * 1000
+            view.drawMilliseconds += spent
+            view.drawCount += 1
+            view.drawMaxMilliseconds = max(view.drawMaxMilliseconds, spent)
         }
 
         func action(for layer: CALayer, forKey event: String) -> CAAction? {
@@ -1178,8 +1181,7 @@ final class WidgetDocumentView: NSView {
     }
 
     private let drawer = TileDrawer()
-    var layerDrawMilliseconds = 0.0
-    static let layerTiles = ProcessInfo.processInfo.environment["TW_LAYER_TILES"] != nil
+    static let layerTiles = ProcessInfo.processInfo.environment["TW_SURFACE_TILES"] == nil && ProcessInfo.processInfo.environment["TW_VERIFY"] == nil
 
     private final class Tile {
         let layer = CALayer()
@@ -1274,10 +1276,12 @@ final class WidgetDocumentView: NSView {
         }
         let start = CACurrentMediaTime()
         defer {
-            drawCount += 1
-            let spent = (CACurrentMediaTime() - start) * 1000
-            drawMilliseconds += spent
-            drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
+            if !WidgetDocumentView.layerTiles {
+                drawCount += 1
+                let spent = (CACurrentMediaTime() - start) * 1000
+                drawMilliseconds += spent
+                drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
+            }
         }
         let scale = self.scale
         let space = WidgetDocumentView.screenTagged ? (window?.colorSpace?.cgColorSpace ?? WidgetDocumentView.surfaceSpace) : WidgetDocumentView.surfaceSpace
