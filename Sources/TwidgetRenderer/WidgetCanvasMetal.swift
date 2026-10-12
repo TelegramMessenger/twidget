@@ -61,8 +61,8 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
 
         private func compile() {
             var made: [MTLRenderPipelineState] = []
-            if let library = try? device.makeLibrary(source: WidgetCanvasMetal.shaderSource, options: nil), let vertex = library.makeFunction(name: "twc_rect_vertex"), let fragment = library.makeFunction(name: "twc_rect_fragment") {
-                for blend in [Blend.sourceOver, .lighter, .erase] {
+            if let library = try? device.makeLibrary(source: WidgetCanvasMetal.shaderSource, options: nil), let vertex = library.makeFunction(name: "twc_rect_vertex"), let rectFragment = library.makeFunction(name: "twc_rect_fragment"), let circleFragment = library.makeFunction(name: "twc_circle_fragment") {
+                for (fragment, blend) in [rectFragment, circleFragment].flatMap({ f in [Blend.sourceOver, .lighter, .erase].map { (f, $0) } }) {
                     let descriptor = MTLRenderPipelineDescriptor()
                     descriptor.vertexFunction = vertex
                     descriptor.fragmentFunction = fragment
@@ -96,7 +96,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
                 }
             }
             lock.lock()
-            pipelines = made.count == 3 ? made : []
+            pipelines = made.count == 6 ? made : []
             lock.unlock()
         }
     }
@@ -119,7 +119,8 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
     private var texture: MTLTexture?
     private var textureSurface: IOSurfaceRef?
     private var instances: [Instance] = []
-    private var runs: [(blend: Blend, start: Int, count: Int)] = []
+    private var runs: [(pipeline: Int, start: Int, count: Int)] = []
+    private var shape = PathShape.other
     private var area: Double = 0
     private var transform = CGAffineTransform.identity
     private var transformValid = false
@@ -174,17 +175,89 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
     private static let gpuSets: Set<CanvasName> = [.fillStyle, .strokeStyle, .lineWidth, .lineCap, .lineJoin, .miterLimit, .lineDashOffset, .font, .textAlign, .textBaseline, .globalAlpha, .globalCompositeOperation, .imageSmoothingEnabled]
     private static let gpuComposites: Set<String> = ["source-over", "lighter", "destination-out"]
 
+    enum PathShape {
+        case empty
+        case circle(center: CGPoint, radius: CGFloat, transform: CGAffineTransform)
+        case other
+    }
+
+    static func fullCircle(_ a: ArraySlice<CanvasArg>) -> (center: CGPoint, radius: CGFloat)? {
+        func n(_ i: Int) -> Double? {
+            if i < a.count, case let .number(v) = a[a.startIndex + i], v.isFinite {
+                return v
+            }
+            return nil
+        }
+        guard a.count >= 5, let x = n(0), let y = n(1), let r = n(2), let start = n(3), let end = n(4), r > 0, r < 1e6, abs(x) < 1e7, abs(y) < 1e7 else {
+            return nil
+        }
+        var anticlockwise = false
+        if a.count > 5 {
+            switch a[a.startIndex + 5] {
+            case let .number(v):
+                anticlockwise = v != 0
+            case let .string(text):
+                anticlockwise = !text.isEmpty && text != "false"
+            default:
+                break
+            }
+        }
+        let sweep = anticlockwise ? start - end : end - start
+        guard sweep >= 2 * Double.pi, sweep < 1e6 else {
+            return nil
+        }
+        return (CGPoint(x: x, y: y), CGFloat(r))
+    }
+
+    static func shape(after name: CanvasName, _ a: ArraySlice<CanvasArg>, from shape: PathShape, transform: CGAffineTransform) -> PathShape {
+        switch name {
+        case .beginPath:
+            return .empty
+        case .arc:
+            if case .empty = shape, let circle = fullCircle(a) {
+                return .circle(center: circle.center, radius: circle.radius, transform: transform)
+            }
+            return .other
+        case .closePath:
+            return shape
+        case .moveTo, .lineTo, .bezierCurveTo, .quadraticCurveTo, .arcTo, .ellipse, .rect, .roundRect:
+            return .other
+        default:
+            return shape
+        }
+    }
+
+    static func plainFill(_ a: ArraySlice<CanvasArg>) -> Bool {
+        guard let first = a.first else {
+            return true
+        }
+        if case let .string(rule) = first, a.count == 1 {
+            return rule == "nonzero" || rule == "evenodd"
+        }
+        return false
+    }
+
     static func eligible(_ stream: CanvasStream) -> Bool {
         var draws = 0
+        var shape = PathShape.other
         for op in stream.ops {
             switch op.kind {
             case .call:
+                let args = stream.arguments(op)
+                if op.name == .fill {
+                    guard case .circle = shape, plainFill(args) else {
+                        return false
+                    }
+                    draws += 1
+                    continue
+                }
                 guard gpuCalls.contains(op.name) else {
                     return false
                 }
                 if op.name == .fillRect || op.name == .clearRect {
                     draws += 1
                 }
+                shape = WidgetCanvasMetal.shape(after: op.name, args, from: shape, transform: .identity)
             case .set:
                 guard gpuSets.contains(op.name) else {
                     return false
@@ -220,6 +293,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         instances.removeAll(keepingCapacity: true)
         runs.removeAll(keepingCapacity: true)
         area = 0
+        shape = .other
         return true
     }
 
@@ -230,7 +304,14 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
             erase = false
         case .clearRect:
             erase = true
+        case .fill:
+            if case let .circle(center, radius, transform) = shape {
+                fillCircle(center, radius, transform, canvas: canvas)
+                return true
+            }
+            return false
         default:
+            shape = WidgetCanvasMetal.shape(after: name, a, from: shape, transform: canvas.currentTransform)
             return false
         }
         func n(_ i: Int) -> Double {
@@ -266,28 +347,8 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         guard sx.isFinite, sy.isFinite, sx > 1e-6, sy > 1e-6 else {
             return true
         }
-        let blend: Blend
-        var color: SIMD4<Float>
-        if erase {
-            blend = .erase
-            color = SIMD4(0, 0, 0, 1)
-        } else {
-            guard let rgba = canvas.fillRGBA else {
-                return true
-            }
-            let alpha = rgba.w * canvas.globalAlpha
-            guard alpha > 0 else {
-                return true
-            }
-            color = SIMD4(rgba.x * alpha, rgba.y * alpha, rgba.z * alpha, alpha)
-            switch canvas.composite {
-            case "lighter":
-                blend = .lighter
-            case "destination-out":
-                blend = .erase
-            default:
-                blend = .sourceOver
-            }
+        guard let (blend, color) = paint(erase: erase, canvas: canvas) else {
+            return true
         }
         let bounds = local.applying(t).intersection(canvasBounds).insetBy(dx: -1, dy: -1)
         guard !bounds.isNull, !bounds.isEmpty else {
@@ -301,12 +362,64 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         let center = CGPoint(x: local.midX, y: local.midY).applying(t)
         let hw = Float(local.width / 2), hh = Float(local.height / 2)
         instances.append(Instance(rect: SIMD4(-hw, -hh, hw * 2, hh * 2), matrix: SIMD4(Float(t.a), Float(t.b), Float(t.c), Float(t.d)), offset: SIMD4(Float(center.x), Float(center.y), sx, sy), color: color))
-        if let lastRun = runs.last, lastRun.blend == blend {
+        append(pipeline: blend.rawValue)
+        return true
+    }
+
+    private func append(pipeline: Int) {
+        if let lastRun = runs.last, lastRun.pipeline == pipeline {
             runs[runs.count - 1].count += 1
         } else {
-            runs.append((blend, instances.count - 1, 1))
+            runs.append((pipeline, instances.count - 1, 1))
         }
-        return true
+    }
+
+    private func paint(erase: Bool, canvas: WidgetCanvas) -> (Blend, SIMD4<Float>)? {
+        if erase {
+            return (.erase, SIMD4(0, 0, 0, 1))
+        }
+        guard let rgba = canvas.fillRGBA else {
+            return nil
+        }
+        let alpha = rgba.w * canvas.globalAlpha
+        guard alpha > 0 else {
+            return nil
+        }
+        let color = SIMD4(rgba.x * alpha, rgba.y * alpha, rgba.z * alpha, alpha)
+        switch canvas.composite {
+        case "lighter":
+            return (.lighter, color)
+        case "destination-out":
+            return (.erase, color)
+        default:
+            return (.sourceOver, color)
+        }
+    }
+
+    private func fillCircle(_ center: CGPoint, _ radius: CGFloat, _ t: CGAffineTransform, canvas: WidgetCanvas) {
+        let det = Double(t.a * t.d - t.b * t.c)
+        guard det.isFinite, abs(det) > 1e-12, t.tx.isFinite, t.ty.isFinite, let (blend, color) = paint(erase: false, canvas: canvas) else {
+            return
+        }
+        let canvasBounds = CGRect(x: 0, y: 0, width: canvas.width, height: canvas.height)
+        let box = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        let bounds = box.applying(t).intersection(canvasBounds).insetBy(dx: -1, dy: -1)
+        guard !bounds.isNull, !bounds.isEmpty else {
+            return
+        }
+        let sx = Float(abs(det) / Double((t.c * t.c + t.d * t.d).squareRoot())), sy = Float(abs(det) / Double((t.a * t.a + t.b * t.b).squareRoot()))
+        guard sx.isFinite, sy.isFinite, sx > 1e-6, sy > 1e-6 else {
+            return
+        }
+        let cost = Double(bounds.width * bounds.height)
+        if !instances.isEmpty && (area + cost > WidgetCanvasMetal.maxAreaPerBuffer || instances.count >= WidgetCanvasMetal.maxInstancesPerBuffer) {
+            flushChunk(canvas)
+        }
+        area += cost
+        let device = center.applying(t)
+        let r = Float(radius)
+        instances.append(Instance(rect: SIMD4(-r, -r, r * 2, r * 2), matrix: SIMD4(Float(t.a), Float(t.b), Float(t.c), Float(t.d)), offset: SIMD4(Float(device.x), Float(device.y), sx, sy), color: color))
+        append(pipeline: 3 + blend.rawValue)
     }
 
     private func buffer(bytes: Int) -> MTLBuffer? {
@@ -328,7 +441,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
     }
 
     private func encodeChunk(_ canvas: WidgetCanvas, into commands: MTLCommandBuffer) {
-        guard !instances.isEmpty, let pipelines = shared.ready, pipelines.count == 3, let texture = target(canvas) else {
+        guard !instances.isEmpty, let pipelines = shared.ready, pipelines.count == 6, let texture = target(canvas) else {
             return
         }
         let bytes = instances.count * MemoryLayout<Instance>.stride
@@ -349,7 +462,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         encoder.setVertexBuffer(buffer, offset: 0, index: 0)
         encoder.setVertexBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         for run in runs {
-            encoder.setRenderPipelineState(pipelines[run.blend.rawValue])
+            encoder.setRenderPipelineState(pipelines[run.pipeline])
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: run.count, baseInstance: run.start)
         }
         encoder.endEncoding()
@@ -466,6 +579,7 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         float4 rect [[flat]];
         float2 scale [[flat]];
         float4 color [[flat]];
+        float4 matrix [[flat]];
     };
 
     vertex TWCVarying twc_rect_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], const device TWCInstance* items [[buffer(0)]], constant float2& viewport [[buffer(1)]]) {
@@ -480,7 +594,24 @@ final class WidgetCanvasMetal: WidgetCanvasBackend {
         out.rect = item.rect;
         out.scale = item.offset.zw;
         out.color = item.color;
+        out.matrix = item.matrix;
         return out;
+    }
+
+    fragment float4 twc_circle_fragment(TWCVarying in [[stage_in]]) {
+        float r = in.rect.z * 0.5;
+        float2 l = in.local;
+        float len = length(l);
+        float2 n = len > 1e-6 ? l / len : float2(1.0, 0.0);
+        float4 m = in.matrix;
+        float det = m.x * m.w - m.y * m.z;
+        float2 g = float2(m.w * n.x - m.y * n.y, m.x * n.y - m.z * n.x) / det;
+        float unit = max(length(g), 1e-6);
+        float edge = (len - r) / unit;
+        float radius = r / unit;
+        float coverage = clamp(0.5 - edge, 0.0, 1.0);
+        coverage = min(coverage, 3.14159265 * radius * radius);
+        return in.color * coverage;
     }
 
     fragment float4 twc_rect_fragment(TWCVarying in [[stage_in]]) {

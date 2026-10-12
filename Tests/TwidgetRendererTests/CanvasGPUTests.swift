@@ -145,6 +145,53 @@ final class CanvasGPUTests: XCTestCase {
         XCTAssertLessThanOrEqual(d.worst, 2)
     }
 
+    func testCircleFillsMatchCoreGraphics() throws {
+        let (gpu, metal) = try gpuCanvas(240, 180)
+        let cpu = WidgetCanvas(width: 240, height: 180, allowance: { WidgetCanvas.maxPixels })
+        var random = Random(seed: 3)
+        var frame: [Any] = [["s", "fillStyle", "#101418"], ["c", "fillRect", 0, 0, 240, 180]]
+        for row in 0..<6 {
+            for column in 0..<8 {
+                let i = row * 8 + column
+                frame.append(["c", "save"])
+                frame.append(["c", "translate", 15 + Double(column) * 30 + random.next(), 15 + Double(row) * 30 + random.next()])
+                if i % 5 == 0 {
+                    frame.append(["c", "scale", 0.7 + random.next() * 0.3, 0.7 + random.next() * 0.3])
+                }
+                frame.append(["s", "globalAlpha", 0.5 + random.next() * 0.5])
+                frame.append(["s", "fillStyle", "hsl(\(Int(random.next() * 360)),90%,60%)"])
+                frame.append(["c", "beginPath"])
+                frame.append(["c", "arc", 0, 0, i % 7 == 0 ? random.next() * 0.9 + 0.2 : random.next() * 11 + 1, 0, Double.pi * 2])
+                frame.append(["c", "fill"])
+                frame.append(["c", "restore"])
+            }
+        }
+        gpu.run(frame)
+        cpu.run(frame)
+        XCTAssertEqual(metal.acceleratedBatches, 1)
+        let d = compare(gpu, cpu)
+        XCTAssertLessThanOrEqual(d.worst, 32)
+        XCTAssertLessThan(Double(d.over2) / Double(d.total), 0.06)
+    }
+
+    func testPathsThatAreNotSingleCirclesStayOnCoreGraphics() throws {
+        let (gpu, metal) = try gpuCanvas(100, 100)
+        let cpu = WidgetCanvas(width: 100, height: 100, allowance: { WidgetCanvas.maxPixels })
+        let frames: [[Any]] = [
+            [["c", "beginPath"], ["c", "arc", 30, 30, 10, 0, 6.3], ["c", "arc", 60, 60, 10, 0, 6.3], ["c", "fill"]],
+            [["c", "beginPath"], ["c", "arc", 50, 50, 20, 0, 3.0], ["c", "fill"]],
+            [["c", "moveTo", 10, 10], ["c", "arc", 50, 50, 5, 0, 6.3], ["c", "fill"]],
+            [["c", "beginPath"], ["c", "arc", 50, 50, 20, 6.3, 0, true], ["s", "fillStyle", "#f0f"], ["c", "fill"], ["c", "fillRect", 1, 1, 5, 5]],
+        ]
+        for frame in frames {
+            gpu.run(frame)
+            cpu.run(frame)
+        }
+        XCTAssertEqual(metal.acceleratedBatches, 1)
+        let d = compare(gpu, cpu)
+        XCTAssertLessThanOrEqual(d.worst, 32)
+    }
+
     func testReadbackAfterGPUWorkSeesEveryFrame() throws {
         let (gpu, metal) = try gpuCanvas(64, 64)
         for i in 0..<20 {
