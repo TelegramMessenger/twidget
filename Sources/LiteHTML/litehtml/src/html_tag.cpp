@@ -393,14 +393,14 @@ namespace litehtml
         bool        shared   = false;
         std::string shareKey;
 
-        if(doc->style_sharing_enabled() && !m_anonymous_style && m_id == empty_id && m_pseudo_classes.empty() &&
-           get_attr("style") == nullptr && !m_style.has_var_property())
+        if(doc->style_sharing_enabled() && !m_anonymous_style && m_pseudo_classes.empty() && get_attr("style") == nullptr &&
+           !m_style.has_var_property() && (m_id == empty_id || !doc->ids_selectable()))
         {
             eligible = true;
             for(const auto& attr : m_attrs)
             {
                 const std::string& name = attr.first;
-                if(name != "class" && name.rfind("data-", 0) != 0)
+                if(name != "class" && name.rfind("data-", 0) != 0 && (name != "id" || doc->ids_selectable()))
                 {
                     eligible = false;
                     break;
