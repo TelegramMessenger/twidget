@@ -187,8 +187,26 @@ namespace litehtml
         return nullptr;
     }
 
+    namespace
+    {
+        constexpr int64_t        kSelectorStepBudget = 4000000;
+        thread_local int         g_apply_depth       = 0;
+        thread_local int64_t     g_selector_steps    = 0;
+
+        struct apply_scope
+        {
+            apply_scope()
+            {
+                if(g_apply_depth++ == 0)
+                    g_selector_steps = 0;
+            }
+            ~apply_scope() { g_apply_depth--; }
+        };
+    }
+
     void litehtml::html_tag::apply_stylesheet(const litehtml::css& stylesheet)
     {
+        apply_scope scope;
         for(const auto& sel : stylesheet.selectors())
         {
             // optimization
@@ -486,6 +504,10 @@ namespace litehtml
 
     int litehtml::html_tag::select(const css_selector& selector, bool apply_pseudo)
     {
+        if(g_apply_depth > 0 && ++g_selector_steps > kSelectorStepBudget)
+        {
+            return select_no_match;
+        }
         int right_res = select(selector.m_right, apply_pseudo);
         if(right_res == select_no_match)
         {

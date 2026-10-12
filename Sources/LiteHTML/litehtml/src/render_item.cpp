@@ -1152,7 +1152,7 @@ static float shadow_reach(const litehtml::box_shadow_vector& shadows)
     {
         if(!shadow.inset)
         {
-            reach = std::max(reach, std::fabs(shadow.blur.val()) + std::fabs(shadow.spread.val()) +
+            reach = std::max(reach, std::fabs(shadow.blur.val()) * 2 + std::fabs(shadow.spread.val()) +
                                         std::max(std::fabs(shadow.x.val()), std::fabs(shadow.y.val())));
         }
     }
@@ -1188,7 +1188,7 @@ void litehtml::render_item::add_self_ink(paint_ink& ink, float dx, float dy) con
         position shifted  = inline_box;
         shifted.x        += dx;
         shifted.y        += dy;
-        ink.add(shifted, slack);
+        ink.add(shifted, reach + slack);
         return true;
     });
 }
