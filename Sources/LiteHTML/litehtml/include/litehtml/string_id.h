@@ -97,7 +97,7 @@ namespace litehtml
         _gap_, _row_gap_, _column_gap_, _grid_gap_, _grid_row_gap_, _grid_column_gap_,
         _grid_template_columns_, _grid_template_rows_, _grid_auto_rows_, _grid_column_, _grid_row_,
         _grid_column_start_, _grid_column_end_, _grid_row_start_, _grid_row_end_,
-        _justify_items_, _justify_self_, _place_items_, _place_self_,
+        _justify_items_, _justify_self_, _place_items_, _place_self_, _place_content_,
         _letter_spacing_, _opacity_, _box_shadow_, _transform_, _transform_origin_, _backface_visibility_,
         _accent_color_, _color_scheme_, _outline_, _outline_width_, _outline_style_, _outline_color_, _outline_offset_, _inset_,
         _fill_, _fill_opacity_, _fill_rule_, _stroke_, _stroke_width_, _stroke_opacity_, _stroke_linecap_,

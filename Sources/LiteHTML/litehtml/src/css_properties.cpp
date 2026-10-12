@@ -629,6 +629,8 @@ void litehtml::css_properties::compute_flex(const html_tag* el, const document::
             _justify_content_, false, flex_justify_content_flex_start, offset(m_flex_justify_content)));
         m_flex_align_items = static_cast<flex_align_items>(
             el->get_property<int>(_align_items_, false, flex_align_items_normal, offset(m_flex_align_items)));
+        m_flex_align_content = static_cast<flex_align_content>(
+            el->get_property<int>(_align_content_, false, flex_align_content_stretch, offset(m_flex_align_content)));
     }
     if(m_display == display_flex || m_display == display_inline_flex)
     {

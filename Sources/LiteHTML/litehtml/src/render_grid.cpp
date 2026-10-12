@@ -792,15 +792,67 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
         }
     }
 
+    pixel_t row_start   = 0_px;
+    pixel_t row_between = 0_px;
+    if(definite_height && row_count > 0)
+    {
+        pixel_t used = row_gap * pixel_t(row_count - 1);
+        for(const auto& row : rows)
+        {
+            used += row.base;
+        }
+        pixel_t            free  = container_height - used;
+        flex_align_content align = css().get_flex_align_content();
+        if(free > 0_px && align == flex_align_content_stretch)
+        {
+            int stretchy = 0;
+            for(const auto& row : rows)
+            {
+                if(row.size.max_type == grid_track_size::automatic)
+                {
+                    stretchy++;
+                }
+            }
+            for(auto& row : rows)
+            {
+                if(stretchy > 0 && row.size.max_type == grid_track_size::automatic)
+                {
+                    row.base += free / pixel_t(stretchy);
+                }
+            }
+        } else if(free > 0_px)
+        {
+            switch(align)
+            {
+            case flex_align_content_center:
+                row_start = free / 2_px;
+                break;
+            case flex_align_content_end:
+            case flex_align_content_flex_end:
+                row_start = free;
+                break;
+            case flex_align_content_space_between:
+                row_between = row_count > 1 ? free / pixel_t(row_count - 1) : 0_px;
+                break;
+            case flex_align_content_space_around:
+                row_between = free / pixel_t(row_count);
+                row_start   = row_between / 2_px;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
     std::vector<pixel_t> row_y(rows.size() + 1, 0_px);
     {
-        pixel_t pos = 0_px;
+        pixel_t pos = row_start;
         for(size_t r = 0; r < rows.size(); r++)
         {
             row_y[r]  = pos;
-            pos      += rows[r].base + row_gap;
+            pos      += rows[r].base + row_gap + row_between;
         }
-        row_y[rows.size()] = rows.empty() ? 0_px : pos - row_gap;
+        row_y[rows.size()] = rows.empty() ? 0_px : pos - row_gap - row_between;
     }
 
     flex_align_items align_items = css().get_flex_align_items();

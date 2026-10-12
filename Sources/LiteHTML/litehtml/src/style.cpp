@@ -786,6 +786,25 @@ namespace litehtml
             }
             break;
 
+        case _place_content_:
+            if(value.size() == 1 || value.size() == 2)
+            {
+                std::string align   = value[0].ident();
+                std::string justify = value.back().ident();
+                if(align == "normal")
+                    align = "stretch";
+                if(justify == "normal" || justify == "stretch")
+                    justify = "flex-start";
+                auto a = m_valid_values.at(_align_content_).value_index(align);
+                auto j = m_valid_values.at(_justify_content_).value_index(justify);
+                if(a.has_value() && j.has_value())
+                {
+                    add_parsed_property(_align_content_, property_value(*a, important));
+                    add_parsed_property(_justify_content_, property_value(*j, important));
+                }
+            }
+            break;
+
         case _aspect_ratio_:
             {
                 css_token_vector numbers;
