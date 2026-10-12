@@ -28,6 +28,13 @@ struct EffectColor: Equatable {
 }
 
 enum CSSEffectLength {
+    static let maxBlur = 256.0
+    static let maxOffset = 1024.0
+
+    static func clampOffset(_ value: Double) -> Double {
+        return max(-maxOffset, min(maxOffset, value))
+    }
+
     static func parse(_ text: Substring) -> Double? {
         let token = text.trimmingCharacters(in: .whitespaces).lowercased()
         if token.hasSuffix("px"), let value = Double(token.dropLast(2)), value.isFinite {
@@ -131,7 +138,7 @@ struct CSSFilterStep: Equatable {
             guard let radius = argument.isEmpty ? 0 : CSSEffectLength.parse(Substring(argument)), radius >= 0 else {
                 return nil
             }
-            step.radius = radius
+            step.radius = min(radius, CSSEffectLength.maxBlur)
         case .hueRotate:
             guard let degrees = argument.isEmpty ? 0 : angle(argument) else {
                 return nil
@@ -153,9 +160,9 @@ struct CSSFilterStep: Equatable {
             guard lengths.count >= 2, (lengths.count < 3 || lengths[2] >= 0), let resolved = color else {
                 return nil
             }
-            step.x = lengths[0]
-            step.y = lengths[1]
-            step.radius = lengths.count > 2 ? lengths[2] : 0
+            step.x = CSSEffectLength.clampOffset(lengths[0])
+            step.y = CSSEffectLength.clampOffset(lengths[1])
+            step.radius = min(lengths.count > 2 ? lengths[2] : 0, CSSEffectLength.maxBlur)
             step.color = resolved
         default:
             var value = 1.0
@@ -295,7 +302,7 @@ struct CSSBoxShadow: Equatable {
             guard lengths.count >= 2, (lengths.count < 3 || lengths[2] >= 0), let resolved = color else {
                 return nil
             }
-            shadows.append(CSSBoxShadow(x: lengths[0], y: lengths[1], blur: lengths.count > 2 ? lengths[2] : 0, spread: lengths.count > 3 ? lengths[3] : 0, color: resolved, inset: inset))
+            shadows.append(CSSBoxShadow(x: CSSEffectLength.clampOffset(lengths[0]), y: CSSEffectLength.clampOffset(lengths[1]), blur: min(lengths.count > 2 ? lengths[2] : 0, CSSEffectLength.maxBlur * 2), spread: CSSEffectLength.clampOffset(lengths.count > 3 ? lengths[3] : 0), color: resolved, inset: inset))
             if shadows.count > 8 {
                 return nil
             }
@@ -333,10 +340,10 @@ struct WidgetEffects: Equatable {
     }
 
     static func parse(filter: String?, shadow: String?) -> WidgetEffects? {
-        guard let steps = CSSFilterStep.parseList(filter), let shadows = CSSBoxShadow.parseList(shadow), !shadows.contains(where: { $0.inset }) else {
+        guard let steps = CSSFilterStep.parseList(filter), let shadows = CSSBoxShadow.parseList(shadow) else {
             return nil
         }
-        return WidgetEffects(filter: steps, shadows: shadows)
+        return WidgetEffects(filter: steps, shadows: shadows.filter { !$0.inset })
     }
 
     static func compatible(_ a: WidgetEffects, _ b: WidgetEffects) -> Bool {
@@ -443,8 +450,11 @@ final class WidgetEffectLayers {
         apply(effects, to: layer)
     }
 
+    static let shadowName = "tw.shadow"
+
     private func makeShadowLayer(bounds: CGRect) -> CALayer {
         let shadow = CALayer()
+        shadow.name = WidgetEffectLayers.shadowName
         shadow.frame = bounds
         shadow.shadowOpacity = 1
         let mask = CAShapeLayer()
@@ -562,6 +572,127 @@ final class WidgetEffectLayers {
         for channel in channels(of: layer) {
             channel.layer.setValue(channel.value(effects), forKeyPath: channel.keyPath)
         }
+    }
+
+    private static let snapshotContext = CIContext(options: [.cacheIntermediates: false])
+
+    static func deviceScale(_ ctx: CGContext) -> CGFloat {
+        let m = ctx.ctm
+        return max(1, sqrt(abs(m.a * m.d - m.b * m.c)))
+    }
+
+    static func paintShadow(_ shadow: CALayer, in ctx: CGContext) {
+        guard shadow.shadowOpacity > 0, let path = shadow.shadowPath, let color = shadow.shadowColor, color.alpha > 0 else {
+            return
+        }
+        let scale = deviceScale(ctx)
+        ctx.saveGState()
+        if let mask = (shadow.mask as? CAShapeLayer)?.path {
+            ctx.addPath(mask)
+            ctx.clip(using: .evenOdd)
+        }
+        let far = path.boundingBox.width + 10_000
+        let offset = CGSize(width: shadow.shadowOffset.width - far, height: shadow.shadowOffset.height)
+        let device = offset.applying(ctx.ctm)
+        ctx.setShadow(offset: CGSize(width: device.width, height: device.height), blur: shadow.shadowRadius * 2 * scale, color: color.copy(alpha: color.alpha * CGFloat(shadow.shadowOpacity)))
+        ctx.translateBy(x: far, y: 0)
+        ctx.addPath(path)
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fillPath()
+        ctx.restoreGState()
+    }
+
+    static func applyLayerShadow(_ layer: CALayer, in ctx: CGContext) {
+        guard layer.shadowOpacity > 0, let color = layer.shadowColor, color.alpha > 0 else {
+            return
+        }
+        let device = layer.shadowOffset.applying(ctx.ctm)
+        ctx.setShadow(offset: CGSize(width: device.width, height: device.height), blur: layer.shadowRadius * 2 * deviceScale(ctx), color: color.copy(alpha: color.alpha * CGFloat(layer.shadowOpacity)))
+    }
+
+    private static func radius(_ filter: CIFilter) -> CGFloat {
+        guard filter.inputKeys.contains(kCIInputRadiusKey), let value = filter.value(forKey: kCIInputRadiusKey) as? NSNumber else {
+            return 0
+        }
+        return CGFloat(value.doubleValue)
+    }
+
+    private static func scaled(_ filters: [CIFilter], _ scale: CGFloat) -> [CIFilter] {
+        return filters.map { filter in
+            let copy = (filter.copy() as? CIFilter) ?? filter
+            let value = radius(copy)
+            if value > 0 {
+                copy.setValue(Double(value * scale), forKey: kCIInputRadiusKey)
+            }
+            return copy
+        }
+    }
+
+    private static func run(_ filters: [CIFilter], on image: CIImage) -> CIImage {
+        var output = image
+        for filter in filters {
+            guard let copy = filter.copy() as? CIFilter else {
+                continue
+            }
+            copy.setValue(output, forKey: kCIInputImageKey)
+            output = copy.outputImage ?? output
+        }
+        return output
+    }
+
+    static func paintFiltered(_ filters: [CIFilter], bounds: CGRect, in ctx: CGContext, body: (CGContext) -> Void) {
+        let scale = deviceScale(ctx)
+        let margin = 3 * filters.reduce(0) { $0 + radius($1) }
+        let area = bounds.insetBy(dx: -ceil(margin), dy: -ceil(margin))
+        let pw = Int(ceil(area.width * scale)), ph = Int(ceil(area.height * scale))
+        guard pw > 0, ph > 0, pw * ph < 64 << 20, let offscreen = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            body(ctx)
+            return
+        }
+        offscreen.translateBy(x: 0, y: CGFloat(ph))
+        offscreen.scaleBy(x: scale, y: -scale)
+        offscreen.translateBy(x: -area.minX, y: -area.minY)
+        body(offscreen)
+        guard let source = offscreen.makeImage() else {
+            return
+        }
+        let input = CIImage(cgImage: source)
+        let output = run(scaled(filters, scale), on: input).cropped(to: input.extent)
+        guard let image = snapshotContext.createCGImage(output, from: input.extent) else {
+            return
+        }
+        ctx.saveGState()
+        ctx.translateBy(x: area.minX, y: area.maxY)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(image, in: CGRect(origin: .zero, size: area.size))
+        ctx.restoreGState()
+    }
+
+    static func paintBackdrop(_ backdrop: CALayer, in ctx: CGContext) {
+        guard let filters = backdrop.backgroundFilters as? [CIFilter], !filters.isEmpty, let snapshot = ctx.makeImage() else {
+            return
+        }
+        let frame = backdrop.frame
+        let device = frame.applying(ctx.ctm).integral
+        let flipped = CGRect(x: device.minX, y: CGFloat(snapshot.height) - device.maxY, width: device.width, height: device.height)
+        guard let region = snapshot.cropping(to: flipped.intersection(CGRect(x: 0, y: 0, width: snapshot.width, height: snapshot.height))) else {
+            return
+        }
+        let input = CIImage(cgImage: region)
+        let output = run(scaled(filters, deviceScale(ctx)), on: input.clampedToExtent()).cropped(to: input.extent)
+        guard let image = snapshotContext.createCGImage(output, from: input.extent) else {
+            return
+        }
+        ctx.saveGState()
+        let path = (backdrop.mask as? CAShapeLayer)?.path ?? CGPath(rect: backdrop.bounds, transform: nil)
+        ctx.translateBy(x: frame.minX, y: frame.minY)
+        ctx.addPath(path)
+        ctx.clip()
+        ctx.translateBy(x: 0, y: frame.height)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.setBlendMode(.copy)
+        ctx.draw(image, in: CGRect(origin: .zero, size: frame.size))
+        ctx.restoreGState()
     }
 
     func removeAnimations() {

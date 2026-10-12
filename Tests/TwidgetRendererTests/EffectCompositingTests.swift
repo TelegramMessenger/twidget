@@ -43,7 +43,8 @@ final class EffectCompositingTests: XCTestCase {
         XCTAssertEqual(shadows[0].blur, 40)
         XCTAssertEqual(shadows[1].spread, 4)
         XCTAssertEqual(shadows[1].color.r, 1, accuracy: 1e-6)
-        XCTAssertNil(WidgetEffects.parse(filter: nil, shadow: "inset 0 0 4px black"))
+        XCTAssertEqual(WidgetEffects.parse(filter: nil, shadow: "inset 0 0 4px black, 0 1px 2px red")?.shadows.count, 1)
+        XCTAssertEqual(CSSFilterStep.parseList("blur(100000px)")?.first?.radius, CSSEffectLength.maxBlur)
         XCTAssertNil(CSSBoxShadow.parseList("0 0 4em black"))
     }
 

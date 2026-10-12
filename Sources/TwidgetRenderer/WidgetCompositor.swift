@@ -919,6 +919,11 @@ final class WidgetCompositor {
             var effectReach = 0.0
             if WidgetCompositor.effectsEnabled {
                 var parsed: [WidgetEffects] = []
+                let shadowTexts = Set(values.map { resolved($0.shadow, id: id) ?? "" })
+                if shadowTexts.count > 1 && values.contains(where: { CSSBoxShadow.parseList(resolved($0.shadow, id: id))?.contains { $0.inset } != false }) {
+                    if log { print("COMPOSITE \(id) inset shadow animates") }
+                    continue
+                }
                 for value in values {
                     guard let effects = WidgetEffects.parse(filter: resolved(value.filter, id: id), shadow: resolved(value.shadow, id: id)) else {
                         ok = false
@@ -1565,30 +1570,48 @@ final class WidgetCompositor {
 
     func draw(into ctx: CGContext) {
         let layers = Set(promoted.values.map { ObjectIdentifier($0.layer) })
-        func paint(_ model: CALayer) {
-            let layer = (model.animationKeys()?.isEmpty == false ? model.presentation() : nil) ?? model
+        let backdrops = Dictionary(promoted.values.compactMap { item in item.effects?.backdropLayer.map { (ObjectIdentifier(item.layer), $0) } }, uniquingKeysWith: { a, _ in a })
+        func body(_ model: CALayer, _ layer: CALayer, _ target: CGContext) {
             let size = layer.bounds.size
-            ctx.saveGState()
-            ctx.translateBy(x: layer.position.x, y: layer.position.y)
-            ctx.concatenate(CATransform3DGetAffineTransform(layer.transform))
-            ctx.translateBy(x: -layer.anchorPoint.x * size.width, y: -layer.anchorPoint.y * size.height)
-            ctx.setAlpha(CGFloat(layer.opacity))
-            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            for shadow in (model.sublayers ?? []) where shadow.name == WidgetEffectLayers.shadowName {
+                WidgetEffectLayers.paintShadow(shadow.presentation() ?? shadow, in: target)
+            }
             if let contents = model.contents ?? model.sublayers?.first(where: { $0.name == "tw.content" })?.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
-                ctx.saveGState()
-                ctx.translateBy(x: 0, y: size.height)
-                ctx.scaleBy(x: 1, y: -1)
-                ctx.draw(contents as! CGImage, in: CGRect(origin: .zero, size: size))
-                ctx.restoreGState()
+                target.saveGState()
+                target.translateBy(x: 0, y: size.height)
+                target.scaleBy(x: 1, y: -1)
+                target.draw(contents as! CGImage, in: CGRect(origin: .zero, size: size))
+                target.restoreGState()
             }
             for child in (model.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
-                paint(child)
+                paint(child, into: target)
             }
-            ctx.endTransparencyLayer()
-            ctx.restoreGState()
+        }
+        func paint(_ model: CALayer, into target: CGContext) {
+            let layer = (model.animationKeys()?.isEmpty == false || model.sublayers?.contains { $0.animationKeys()?.isEmpty == false } == true ? model.presentation() : nil) ?? model
+            let size = layer.bounds.size
+            if let backdrop = backdrops[ObjectIdentifier(model)], backdrop.superlayer != nil {
+                WidgetEffectLayers.paintBackdrop(backdrop.presentation() ?? backdrop, in: target)
+            }
+            target.saveGState()
+            target.translateBy(x: layer.position.x, y: layer.position.y)
+            target.concatenate(CATransform3DGetAffineTransform(layer.transform))
+            target.translateBy(x: -layer.anchorPoint.x * size.width, y: -layer.anchorPoint.y * size.height)
+            target.setAlpha(CGFloat(layer.opacity))
+            WidgetEffectLayers.applyLayerShadow(layer, in: target)
+            target.beginTransparencyLayer(auxiliaryInfo: nil)
+            if let filters = layer.filters as? [CIFilter], !filters.isEmpty {
+                WidgetEffectLayers.paintFiltered(filters, bounds: layer.bounds, in: target) { offscreen in
+                    body(model, layer, offscreen)
+                }
+            } else {
+                body(model, layer, target)
+            }
+            target.endTransparencyLayer()
+            target.restoreGState()
         }
         for item in promoted.values.filter({ $0.layer.superlayer === host }).sorted(by: { WidgetCompositor.order($0.layer) < WidgetCompositor.order($1.layer) }) {
-            paint(item.layer)
+            paint(item.layer, into: ctx)
         }
         for container in containers.values.sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
             ctx.saveGState()
@@ -1597,7 +1620,7 @@ final class WidgetCompositor {
             ctx.addPath(WidgetCompositor.roundedPath(CGRect(origin: .zero, size: container.bounds.size), clip?.radii ?? [CGFloat](repeating: 0, count: 8)))
             ctx.clip()
             for child in (container.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
-                paint(child)
+                paint(child, into: ctx)
             }
             ctx.restoreGState()
         }

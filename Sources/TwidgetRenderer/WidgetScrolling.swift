@@ -41,7 +41,7 @@ final class WidgetScrollLayer {
     private var signature = 0
     private var generation = 0
     static let tileSize = CGSize(width: 512, height: 256)
-    static let queue = DispatchQueue(label: "twidget.scroll.raster", qos: .userInteractive, attributes: .concurrent)
+    static let queue = DispatchQueue(label: "twidget.scroll.raster", qos: .userInitiated)
     private(set) var rasterCount = 0
 
     init(id: Int, geometry: WidgetScrollGeometry) {

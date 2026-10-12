@@ -138,8 +138,8 @@ public final class LiteHTMLWidgetRenderer {
         dom.onProperty = { [weak self] node, name, value in
             self?.setProperty(node, name, value)
         }
-        dom.onCall = { [weak self] node, method, _ in
-            self?.call(node, method)
+        dom.onCall = { [weak self] node, method, args in
+            self?.call(node, method, args)
         }
         dom.onCanvas = { [weak self] node, commands in
             self?.canvas(for: node).run(commands)
@@ -1193,9 +1193,29 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
-    private func call(_ node: WidgetNode, _ method: String) {
+    private func call(_ node: WidgetNode, _ method: String, _ args: [Any] = []) {
         let id = dom.publicId(node)
         switch method {
+        case "scrollTo", "scrollBy":
+            guard scrolling.geometries[id] != nil, args.count >= 2, let left = (args[0] as? NSNumber)?.doubleValue, let top = (args[1] as? NSNumber)?.doubleValue, left.isFinite, top.isFinite else {
+                return
+            }
+            let base = method == "scrollBy" ? scrolling.offset(id) : .zero
+            scrollProgrammatically(id, CGPoint(x: base.x + CGFloat(left), y: base.y + CGFloat(top)))
+        case "scrollIntoView":
+            guard let box = elementBounds()[id] else {
+                return
+            }
+            var walk = node.parent
+            while let parent = walk {
+                let scroller = dom.publicId(parent)
+                if let geometry = scrolling.geometries[scroller] {
+                    let offset = scrolling.offset(scroller)
+                    scrollProgrammatically(scroller, CGPoint(x: offset.x, y: offset.y + box.minY - geometry.viewport.minY))
+                    return
+                }
+                walk = parent.parent
+            }
         case "observeResize":
             observedResize.insert(id)
             lastResize[id] = nil
@@ -1594,6 +1614,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func scrolled(_ id: Int) {
+        boundsValid = false
         if scrolling.layers[id] == nil, let geometry = scrolling.geometries[id] {
             documentView.invalidate(geometry.viewport.insetBy(dx: -1, dy: -1))
         }
@@ -1617,6 +1638,10 @@ public final class LiteHTMLWidgetRenderer {
         } else {
             offset.x = CGFloat(number)
         }
+        scrollProgrammatically(id, offset)
+    }
+
+    private func scrollProgrammatically(_ id: Int, _ offset: CGPoint) {
         if scrolling.setOffset(id, offset, document: document) {
             if let layer = scrolling.layers[id], let document = document {
                 layer.ensureTiles(document: document, scale: documentView.scale, attribute: WidgetDOM.idAttribute)
