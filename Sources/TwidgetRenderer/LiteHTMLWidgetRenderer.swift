@@ -14,6 +14,16 @@ public final class LiteHTMLWidgetRenderer {
     public var onDiag: ((String, String) -> Void)?
     public var schedule: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     public var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }
+    public var isOnExecutor: () -> Bool = { Thread.isMainThread }
+    public var executorIsMain: () -> Bool = { true }
+
+    func onExecutor(_ block: @escaping () -> Void) {
+        if isOnExecutor() {
+            block()
+        } else {
+            schedule(block)
+        }
+    }
     public var onSerialized: ((String, Bool) -> Void)?
     public private(set) var layoutCount = 0
     public private(set) var layoutMilliseconds = 0.0
@@ -78,11 +88,11 @@ public final class LiteHTMLWidgetRenderer {
     private var observedResize: Set<Int> = []
     private var displayList: LHDisplayList?
     private let animator = WidgetAnimator()
-    private lazy var compositor = WidgetCompositor(host: documentView.layer)
+    private lazy var compositor = WidgetCompositor(host: documentView.contentLayer)
     let scrolling = WidgetScrolling()
     private var lastScrollExclusions: Set<Int> = []
     private lazy var magic: WidgetMagicMove = {
-        let magic = WidgetMagicMove(host: documentView.layer)
+        let magic = WidgetMagicMove(host: documentView.contentLayer)
         magic.onFinish = { [weak self] in
             self?.finishMagicMove()
         }
@@ -178,8 +188,8 @@ public final class LiteHTMLWidgetRenderer {
         guard let document = document else {
             return nil
         }
-        let size = documentView.bounds.size
-        let scale = documentView.window?.backingScaleFactor ?? 2
+        let size = documentView.size
+        let scale = documentView.scale
         guard let image = document.copyImage(maxWidth: size.width, rect: CGRect(origin: .zero, size: size), scale: scale) else {
             return nil
         }
@@ -224,7 +234,14 @@ public final class LiteHTMLWidgetRenderer {
         trimWork?.cancel()
         trimWork = nil
         documentView.owner = nil
-        documentView.removeFromSuperview()
+        let detachedView = documentView
+        if Thread.isMainThread {
+            detachedView.removeFromSuperview()
+        } else {
+            DispatchQueue.main.async {
+                detachedView.removeFromSuperview()
+            }
+        }
         var retired: [AnyObject] = documentView.retire()
         if let document = document {
             retired.append(document)
@@ -247,9 +264,18 @@ public final class LiteHTMLWidgetRenderer {
     private var held: [Held] = []
     private var prepareScheduled = false
 
-    public var preparesOffscreen = false {
-        didSet {
-            if preparesOffscreen != oldValue {
+    private var preparesOffscreenValue = false
+
+    public var preparesOffscreen: Bool {
+        get {
+            return preparesOffscreenValue
+        }
+        set {
+            guard isOnExecutor() else {
+                return schedule { [weak self] in self?.preparesOffscreen = newValue }
+            }
+            if preparesOffscreenValue != newValue {
+                preparesOffscreenValue = newValue
                 updateTileTrim()
                 schedulePrepare()
             }
@@ -273,7 +299,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func schedulePrepare() {
-        guard preparesOffscreen, !destroyed, !prepareScheduled, document != nil, documentView.window == nil else {
+        guard preparesOffscreen, !destroyed, !prepareScheduled, document != nil, !documentView.windowState.inWindow else {
             return
         }
         prepareScheduled = true
@@ -282,7 +308,7 @@ public final class LiteHTMLWidgetRenderer {
                 return
             }
             self.prepareScheduled = false
-            guard self.preparesOffscreen, !self.destroyed, self.documentView.window == nil else {
+            guard self.preparesOffscreen, !self.destroyed, !self.documentView.windowState.inWindow else {
                 return
             }
             _ = self.documentView.prepareTiles { [weak self] in
@@ -502,7 +528,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private var width: CGFloat {
-        return max(1, documentView.bounds.width)
+        return max(1, documentView.size.width)
     }
 
     private static let resolvedSheetsLock = NSLock()
@@ -528,7 +554,7 @@ public final class LiteHTMLWidgetRenderer {
 
     private func render() {
         needsRender = false
-        if documentView.preparing && documentView.window != nil {
+        if documentView.preparing && documentView.windowState.inWindow {
             renderDeferred = true
             return
         }
@@ -581,10 +607,11 @@ public final class LiteHTMLWidgetRenderer {
         let before = compositor.ids
         var scrollersChanged = false
         if let document = document {
-            compositor.attach(documentView.layer)
-            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
-            scrolling.attach(documentView.layer)
+            compositor.attach(documentView.contentLayer)
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
+            scrolling.attach(documentView.contentLayer)
             scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale)
+            documentView.publishScrollRegions(scrolling.geometries.values.map { $0.viewport })
         }
         compositor.drive(animator: animator, now: now, mediaOffset: hiddenTotal, enabled: canDrive)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
@@ -1191,7 +1218,7 @@ public final class LiteHTMLWidgetRenderer {
         reference.controlsActive = controlsActive
         _ = reference.layout(maxWidth: width, preferredWidth: width)
         let size = CGSize(width: width, height: max(1, ceil(document.size.height)))
-        let scale = documentView.window?.backingScaleFactor ?? 2
+        let scale = documentView.scale
         let pw = Int(ceil(size.width * scale)), ph = Int(ceil(size.height * scale))
         func render(_ body: (CGContext) -> Void) -> CGImage? {
             guard let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
@@ -1203,7 +1230,7 @@ public final class LiteHTMLWidgetRenderer {
             body(ctx)
             return ctx.makeImage()
         }
-        guard let expected = render({ reference.draw(in: $0, origin: .zero, clip: CGRect(origin: .zero, size: size)) }), let root = documentView.layer, let actual = render({ root.render(in: $0) }) else {
+        guard let expected = render({ reference.draw(in: $0, origin: .zero, clip: CGRect(origin: .zero, size: size)) }), let root = documentView.contentLayer, let actual = render({ root.render(in: $0) }) else {
             return
         }
         let w = expected.width, h = expected.height
@@ -1301,8 +1328,8 @@ public final class LiteHTMLWidgetRenderer {
             "width": Double(width),
             "height": Double(ceil(document.size.height)),
             "innerWidth": Double(width),
-            "innerHeight": Double(documentView.bounds.height),
-            "dpr": Double(documentView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2),
+            "innerHeight": Double(documentView.size.height),
+            "dpr": Double(documentView.scale),
         ]
         let key = "\(message["height"]!)|\(message["width"]!)|\(message["innerHeight"]!)|\(message["dpr"]!)"
         if key != lastSize {
@@ -1312,6 +1339,10 @@ public final class LiteHTMLWidgetRenderer {
             lastSize = key
             post(message)
         }
+    }
+
+    func documentViewScaleChanged() {
+        documentView.scaleChanged()
     }
 
     func viewResized() {
@@ -1386,10 +1417,10 @@ public final class LiteHTMLWidgetRenderer {
                 container.actions = ["bounds": NSNull(), "position": NSNull(), "frame": NSNull(), "hidden": NSNull(), "sublayers": NSNull()]
                 surfaceContainer = container
             }
-            if container.superlayer !== documentView.layer {
-                documentView.layer?.addSublayer(container)
+            if container.superlayer !== documentView.contentLayer {
+                documentView.contentLayer?.addSublayer(container)
             }
-            container.frame = documentView.bounds
+            container.frame = CGRect(origin: .zero, size: documentView.size)
             container.isHidden = !shown
             for (token, rect) in rects {
                 var layer = placedSurfaces[token]
@@ -1474,7 +1505,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func viewport() -> [String: Any] {
-        return ["innerWidth": Double(width), "innerHeight": Double(documentView.bounds.height), "dpr": Double(documentView.window?.backingScaleFactor ?? 2)]
+        return ["innerWidth": Double(width), "innerHeight": Double(documentView.size.height), "dpr": Double(documentView.scale)]
     }
 
     private func query(_ q: [String: Any]) -> Any {
@@ -1661,7 +1692,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func keyChanged() {
-        let active = documentView.window?.isKeyWindow ?? false
+        let active = documentView.windowState.key
         guard active != controlsActive else {
             return
         }
@@ -1672,10 +1703,10 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func screenChanged() {
-        guard let number = documentView.window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+        guard let number = documentView.windowState.display else {
             return
         }
-        display = CGDirectDisplayID(number.uint32Value)
+        display = number
         if let display = display {
             clock?.setDisplay(display)
         }
@@ -1707,9 +1738,18 @@ public final class LiteHTMLWidgetRenderer {
 
     private var trimWork: DispatchWorkItem?
 
-    public var keepsTilesWhileHidden = false {
-        didSet {
-            if keepsTilesWhileHidden != oldValue {
+    private var keepsTilesValue = false
+
+    public var keepsTilesWhileHidden: Bool {
+        get {
+            return keepsTilesValue
+        }
+        set {
+            guard isOnExecutor() else {
+                return schedule { [weak self] in self?.keepsTilesWhileHidden = newValue }
+            }
+            if keepsTilesValue != newValue {
+                keepsTilesValue = newValue
                 updateTileTrim()
             }
         }
@@ -1745,6 +1785,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public func setVisible(_ visible: Bool) {
+        guard isOnExecutor() else {
+            return schedule { [weak self] in self?.setVisible(visible) }
+        }
         hostVisible = visible
         updateAnimationClock()
         updateTileTrim()
@@ -1760,6 +1803,9 @@ public final class LiteHTMLWidgetRenderer {
                 renderAnimationFrame()
             }
             startClock()
+        }
+        if isOnScreen && documentView.detached {
+            documentView.scheduleFlush()
         }
     }
 
@@ -2053,6 +2099,19 @@ final class WidgetDocumentView: NSView {
         wantsLayer = true
         layerUsesCoreImageFilters = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        lockedWindowState.size = frame.size
+        drawer.view = self
+        content.anchorPoint = .zero
+        content.frame = CGRect(origin: .zero, size: frame.size)
+        content.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        content.actions = ["bounds": NSNull(), "position": NSNull(), "contents": NSNull(), "sublayers": NSNull()]
+        layer?.addSublayer(content)
+    }
+
+    private let content = CALayer()
+
+    var contentLayer: CALayer? {
+        return content
     }
 
     required init?(coder: NSCoder) {
@@ -2063,10 +2122,15 @@ final class WidgetDocumentView: NSView {
         let widthChanged = newSize.width != frame.width
         let heightChanged = newSize.height != frame.height
         super.setFrameSize(newSize)
+        captureSize(newSize)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        content.frame = CGRect(origin: .zero, size: newSize)
+        CATransaction.commit()
         if widthChanged {
-            owner?.viewResized()
+            toOwner { $0.viewResized() }
         } else if heightChanged {
-            owner?.placeSurfaces()
+            toOwner { $0.placeSurfaces() }
         }
     }
 
@@ -2179,6 +2243,9 @@ final class WidgetDocumentView: NSView {
         weak var drawer: TileDrawer?
 
         func display(_ layer: CALayer) {
+            if drawer?.view?.detached ?? false {
+                return
+            }
             layer.delegate = drawer
         }
 
@@ -2217,20 +2284,26 @@ final class WidgetDocumentView: NSView {
     }
 
     func prepareTiles(completion: @escaping () -> Void) -> Bool {
-        guard WidgetDocumentView.layerTiles, !WidgetDocumentView.backingStore, !preparing, let layer = layer, let document = document else {
+        guard WidgetDocumentView.layerTiles, !WidgetDocumentView.backingStore, !preparing, let layer = rootLayer, let document = document else {
             return false
         }
         tilesTrimmed = false
         let scale = self.scale
+        let detached = self.detached
         guard syncTiles(layer: layer, document: document, scale: scale) else {
             return false
         }
         var jobs: [(index: Int, rect: CGRect)] = []
-        for (index, tile) in tiles.enumerated() where !tile.prepared && (tile.layer.contents == nil || tile.layer.needsDisplay()) {
+        for (index, tile) in tiles.enumerated() where !tile.prepared && (detached || tile.layer.contents == nil || tile.layer.needsDisplay()) {
             jobs.append((index, tile.rect))
         }
         if jobs.isEmpty {
             return false
+        }
+        if detached {
+            for job in jobs {
+                asyncDirty[job.index] = nil
+            }
         }
         preparing = true
         let epoch = invalidations
@@ -2275,7 +2348,7 @@ final class WidgetDocumentView: NSView {
                 }
                 self.preparing = false
                 self.preparedMilliseconds += spent
-                if self.document === document && self.invalidations == epoch && self.syncInvalidations == syncEpoch && !self.tilesTrimmed && self.tileScale == scale {
+                if self.document === document && ((detached && self.detached) || (self.invalidations == epoch && self.syncInvalidations == syncEpoch)) && !self.tilesTrimmed && self.tileScale == scale {
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
                     for item in made where item.index < self.tiles.count {
@@ -2298,6 +2371,9 @@ final class WidgetDocumentView: NSView {
                     CATransaction.commit()
                 }
                 completion()
+                if detached && self.detached {
+                    self.scheduleFlush()
+                }
             }
             if let schedule = schedule {
                 schedule(finish)
@@ -2382,12 +2458,60 @@ final class WidgetDocumentView: NSView {
     private func unprepare(_ tile: Tile) {
         syncInvalidations += 1
         tile.prepared = false
+        if detached {
+            return
+        }
         tile.layer.delegate = drawer
         tile.layer.setNeedsDisplay()
     }
 
+    private var rootLayer: CALayer? {
+        return contentLayer
+    }
+    private var flushScheduled = false
+
+    func scheduleFlush() {
+        guard !flushScheduled, let owner = owner else {
+            return
+        }
+        flushScheduled = true
+        owner.schedule { [weak self] in
+            guard let self = self else {
+                return
+            }
+            self.flushScheduled = false
+            self.flushDetached()
+        }
+    }
+
+    private func flushDetached() {
+        guard detached, !preparing, document != nil, !tilesTrimmed, windowState.inWindow || owner?.preparesOffscreen == true else {
+            return
+        }
+        let started = prepareTiles { [weak self] in
+            self?.owner?.rasterFinished()
+        }
+        if !started && !asyncDirty.isEmpty {
+            rasterDirtyTiles()
+        }
+    }
+
+    private func invalidateDetached(_ rects: [CGRect]?) {
+        invalidations += 1
+        for (index, tile) in tiles.enumerated() where tile.prepared {
+            if let rects = rects {
+                for rect in rects where rect.intersects(tile.rect) {
+                    asyncDirty[index] = (asyncDirty[index] ?? .null).union(rect.intersection(tile.rect))
+                }
+            } else {
+                asyncDirty[index] = tile.rect
+            }
+        }
+        scheduleFlush()
+    }
+
     func insertOverlay(_ overlay: CALayer) {
-        layer?.insertSublayer(overlay, at: UInt32(tiles.count))
+        rootLayer?.insertSublayer(overlay, at: UInt32(tiles.count))
     }
     static var layerTiles = ProcessInfo.processInfo.environment["TW_SURFACE_TILES"] == nil && ProcessInfo.processInfo.environment["TW_VERIFY"] == nil
 
@@ -2439,7 +2563,7 @@ final class WidgetDocumentView: NSView {
     private(set) var asyncTilesInstalled = 0
 
     private var canInvalidateAsync: Bool {
-        return asyncAllowed && WidgetDocumentView.asyncTiles && WidgetDocumentView.layerTiles && !WidgetDocumentView.backingStore && window != nil && !tilesTrimmed && !tiles.isEmpty && tileScale == scale
+        return asyncAllowed && WidgetDocumentView.asyncTiles && WidgetDocumentView.layerTiles && !WidgetDocumentView.backingStore && windowState.inWindow && !tilesTrimmed && !tiles.isEmpty && tileScale == scale
     }
 
     private func invalidateAsync(_ rects: [CGRect]) {
@@ -2465,7 +2589,7 @@ final class WidgetDocumentView: NSView {
         var jobs: [(index: Int, rect: CGRect, dirty: CGRect, base: IOSurfaceRef?)] = []
         for (index, dirty) in asyncDirty where index < tiles.count {
             let tile = tiles[index]
-            if tile.layer.needsDisplay() {
+            if detached ? !tile.prepared : tile.layer.needsDisplay() {
                 continue
             }
             let base = tile.prepared && !WidgetDocumentView.asyncFullTiles ? WidgetDocumentView.surface(of: tile.layer) : nil
@@ -2551,12 +2675,12 @@ final class WidgetDocumentView: NSView {
                     for (index, dirty) in pending {
                         self.asyncDirty[index] = (self.asyncDirty[index] ?? .null).union(dirty)
                     }
-                } else if self.window != nil && !self.tilesTrimmed && self.tileScale == scale {
+                } else if self.windowState.inWindow && !self.tilesTrimmed && self.tileScale == scale {
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
                     for item in made where item.index < self.tiles.count {
                         let tile = self.tiles[item.index]
-                        guard tile.rect == item.rect, !tile.layer.needsDisplay() else {
+                        guard tile.rect == item.rect, self.detached ? tile.prepared : !tile.layer.needsDisplay() else {
                             continue
                         }
                         if WidgetDocumentView.verifyPrepared, self.document === document {
@@ -2587,6 +2711,10 @@ final class WidgetDocumentView: NSView {
     }
 
     func invalidate(_ rects: [CGRect]) {
+        if detached {
+            invalidateDetached(rects)
+            return
+        }
         if canInvalidateAsync {
             invalidateAsync(rects)
             return
@@ -2629,6 +2757,10 @@ final class WidgetDocumentView: NSView {
     }
 
     func invalidate(_ rect: CGRect?) {
+        if detached {
+            invalidateDetached(rect.map { [$0] })
+            return
+        }
         if canInvalidateAsync {
             invalidateAsync([rect ?? CGRect(x: 0, y: 0, width: bounds.width, height: CGFloat.greatestFiniteMagnitude / 4)])
             return
@@ -2715,6 +2847,10 @@ final class WidgetDocumentView: NSView {
     private var displayPending = false
 
     private func markNeedsDisplay() {
+        if detached {
+            scheduleFlush()
+            return
+        }
         if Thread.isMainThread {
             needsDisplay = true
         } else {
@@ -2725,6 +2861,13 @@ final class WidgetDocumentView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         refreshWindowScale()
+        captureWindowState()
+        if detached {
+            toOwner { owner in
+                owner.documentViewScaleChanged()
+            }
+            return
+        }
         if tileScale != scale {
             removeTiles()
         }
@@ -2831,9 +2974,9 @@ final class WidgetDocumentView: NSView {
             }
             if tile.layer.delegate == nil {
                 drawer.view = self
-                tile.layer.delegate = drawer
+                tile.layer.delegate = detached ? preparedDisplay : drawer
                 tile.layer.isGeometryFlipped = false
-                tile.layer.needsDisplayOnBoundsChange = true
+                tile.layer.needsDisplayOnBoundsChange = !detached
             }
             if tile.layer.frame != rect || tile.layer.contentsScale != scale {
                 syncInvalidations += 1
@@ -2841,7 +2984,7 @@ final class WidgetDocumentView: NSView {
                 tile.layer.contentsScale = scale
                 if tile.prepared {
                     unprepare(tile)
-                } else {
+                } else if !detached {
                     tile.layer.setNeedsDisplay()
                 }
             }
@@ -2851,8 +2994,18 @@ final class WidgetDocumentView: NSView {
         return true
     }
 
+    func scaleChanged() {
+        if tileScale != scale {
+            removeTiles()
+        }
+        markNeedsDisplay()
+    }
+
     override func updateLayer() {
-        guard let layer = layer, let document = document, !tilesTrimmed else {
+        if detached {
+            return
+        }
+        guard let layer = contentLayer, let document = document, !tilesTrimmed else {
             return
         }
         let scale = self.scale
@@ -2934,7 +3087,7 @@ final class WidgetDocumentView: NSView {
     }
 
     func showBadge(_ text: String, fatal: Bool) {
-        guard let layer = layer else {
+        guard let layer = contentLayer else {
             return
         }
         if fatal {
@@ -2964,6 +3117,11 @@ final class WidgetDocumentView: NSView {
         var occlusionVisible = false
         var windowVisible = false
         var occlusionTrusted = false
+        var key = false
+        var display: CGDirectDisplayID?
+        var colorSpace: CGColorSpace?
+        var size = CGSize.zero
+        var scrollRegions: [CGRect] = []
     }
 
     private let windowStateLock = NSLock()
@@ -2984,14 +3142,52 @@ final class WidgetDocumentView: NSView {
             state.hidden = isHiddenOrHasHiddenAncestor
             state.occlusionVisible = window.occlusionState.contains(.visible)
             state.windowVisible = window.isVisible
+            state.key = window.isKeyWindow
+            state.display = (window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
+            state.colorSpace = window.colorSpace?.cgColorSpace
             if state.occlusionVisible {
                 occlusionTrusted = true
             }
         }
         state.occlusionTrusted = occlusionTrusted
         windowStateLock.lock()
+        state.size = lockedWindowState.size
+        state.scrollRegions = lockedWindowState.scrollRegions
         lockedWindowState = state
         windowStateLock.unlock()
+    }
+
+    var size: CGSize {
+        windowStateLock.lock()
+        defer { windowStateLock.unlock() }
+        return lockedWindowState.size
+    }
+
+    private func captureSize(_ size: CGSize) {
+        windowStateLock.lock()
+        lockedWindowState.size = size
+        windowStateLock.unlock()
+    }
+
+    func publishScrollRegions(_ regions: [CGRect]) {
+        windowStateLock.lock()
+        lockedWindowState.scrollRegions = regions
+        windowStateLock.unlock()
+    }
+
+    var detached: Bool {
+        return !(owner?.executorIsMain() ?? true)
+    }
+
+    private func toOwner(_ block: @escaping (LiteHTMLWidgetRenderer) -> Void) {
+        guard let owner = owner else {
+            return
+        }
+        owner.onExecutor { [weak owner] in
+            if let owner = owner {
+                block(owner)
+            }
+        }
     }
 
     override func viewDidHide() {
@@ -3002,6 +3198,9 @@ final class WidgetDocumentView: NSView {
     override func viewDidUnhide() {
         super.viewDidUnhide()
         captureWindowState()
+        if detached {
+            toOwner { $0.setVisible($0.isHostVisible) }
+        }
     }
 
     override func viewDidMoveToWindow() {
@@ -3026,24 +3225,25 @@ final class WidgetDocumentView: NSView {
         if let window = window {
             for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
                 keyObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                    self?.owner?.keyChanged()
+                    self?.captureWindowState()
+                    self?.toOwner { $0.keyChanged() }
                 })
             }
             screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) { [weak self] _ in
-                self?.owner?.screenChanged()
+                self?.captureWindowState()
+                self?.toOwner { $0.screenChanged() }
             }
             occlusionObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
                 self?.occlusionTrusted = true
                 self?.captureWindowState()
-                guard let owner = self?.owner else {
-                    return
-                }
-                owner.setVisible(owner.isHostVisible)
+                self?.toOwner { $0.setVisible($0.isHostVisible) }
             }
         }
-        owner?.screenChanged()
-        owner?.keyChanged()
-        owner?.setVisible(owner?.isHostVisible ?? true)
+        toOwner { owner in
+            owner.screenChanged()
+            owner.keyChanged()
+            owner.setVisible(owner.isHostVisible)
+        }
     }
 
     deinit {
@@ -3072,23 +3272,27 @@ final class WidgetDocumentView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        owner?.handleMouseDown(point(event), event: event)
+        let at = point(event)
+        toOwner { $0.handleMouseDown(at, event: event) }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        owner?.handleMouseDragged(point(event), event: event)
+        let at = point(event)
+        toOwner { $0.handleMouseDragged(at, event: event) }
     }
 
     override func mouseUp(with event: NSEvent) {
-        owner?.handleMouseUp(point(event), event: event)
+        let at = point(event)
+        toOwner { $0.handleMouseUp(at, event: event) }
     }
 
     override func mouseMoved(with event: NSEvent) {
-        owner?.handleMouseMoved(point(event), event: event)
+        let at = point(event)
+        toOwner { $0.handleMouseMoved(at, event: event) }
     }
 
     override func mouseExited(with event: NSEvent) {
-        owner?.handleMouseExited(event)
+        toOwner { $0.handleMouseExited(event) }
     }
 
     override static var isCompatibleWithResponsiveScrolling: Bool {
@@ -3096,17 +3300,29 @@ final class WidgetDocumentView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        if owner?.handleScroll(point(event), event: event) != true {
+        let at = point(event)
+        if detached {
+            windowStateLock.lock()
+            let hit = lockedWindowState.scrollRegions.contains { $0.contains(at) }
+            windowStateLock.unlock()
+            if hit {
+                toOwner { _ = $0.handleScroll(at, event: event) }
+            } else {
+                super.scrollWheel(with: event)
+            }
+            return
+        }
+        if owner?.handleScroll(at, event: event) != true {
             super.scrollWheel(with: event)
         }
     }
 
     override func keyDown(with event: NSEvent) {
-        owner?.handleKey("keydown", event: event)
+        toOwner { $0.handleKey("keydown", event: event) }
     }
 
     override func keyUp(with event: NSEvent) {
-        owner?.handleKey("keyup", event: event)
+        toOwner { $0.handleKey("keyup", event: event) }
     }
 }
 

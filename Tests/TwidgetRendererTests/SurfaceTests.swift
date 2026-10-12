@@ -73,7 +73,7 @@ final class SurfaceTests: XCTestCase {
         renderer.send("{\"type\":\"frozen\",\"reason\":\"Widget stopped\",\"fatal\":true}")
         XCTAssertEqual(provider.layouts.last?.active, false)
         let container = provider.layers["1"]?.superlayer
-        let badge = renderer.view.layer?.sublayers?.first { $0 is CATextLayer }
+        let badge = renderer.view.layer?.sublayers?.flatMap { [$0] + ($0.sublayers ?? []) }.first { $0 is CATextLayer }
         XCTAssertNotNil(badge)
         XCTAssertGreaterThan(badge?.zPosition ?? 0, container?.zPosition ?? 0)
     }
