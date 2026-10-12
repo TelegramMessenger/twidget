@@ -437,6 +437,11 @@ public final class LiteHTMLWidgetRenderer {
             stageMilliseconds["reused", default: 0] += 1
         }
         onSerialized?(html, next.reusedPrevious)
+        defer {
+            if LiteHTMLWidgetRenderer.patchCheck {
+                lastSerialized = html
+            }
+        }
         _ = next.layout(maxWidth: width, preferredWidth: width)
         stage("layout")
         if LiteHTMLWidgetRenderer.patchCheck && next.reusedPrevious {
@@ -451,6 +456,13 @@ public final class LiteHTMLWidgetRenderer {
             let b = fresh.copyImage(maxWidth: width, rect: CGRect(origin: .zero, size: size), scale: 2)
             if abs(next.size.height - fresh.size.height) > 0.01 || !LiteHTMLWidgetRenderer.sameImage(a, b) {
                 patchMismatches += 1
+                if let dir = ProcessInfo.processInfo.environment["TW_PATCHCHECK_DUMP"], patchMismatches <= 3 {
+                    print("PATCHDBG reusedLayout=\(next.reusedLayout) sizes=\(next.size) \(fresh.size)")
+                    try? html.write(toFile: dir + "/mismatch\(patchMismatches).html", atomically: true, encoding: .utf8)
+                    if let previousHTML = lastSerialized {
+                        try? previousHTML.write(toFile: dir + "/before\(patchMismatches).html", atomically: true, encoding: .utf8)
+                    }
+                }
             }
         }
         defer { stage("report") }
@@ -650,6 +662,7 @@ public final class LiteHTMLWidgetRenderer {
     static let dirtyLog = ProcessInfo.processInfo.environment["TW_DIRTY_LOG"] != nil
     public private(set) var patchChecks = 0
     public private(set) var patchMismatches = 0
+    private var lastSerialized: String?
 
     private static func sameImage(_ a: CGImage?, _ b: CGImage?) -> Bool {
         guard let a = a, let b = b, a.width == b.width, a.height == b.height, let da = a.dataProvider?.data, let db = b.dataProvider?.data, CFDataGetLength(da) == CFDataGetLength(db) else {

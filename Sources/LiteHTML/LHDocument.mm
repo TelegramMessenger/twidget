@@ -473,6 +473,11 @@ static std::string MasterWithCSS(NSString *css)
     return _reusedPrevious;
 }
 
+- (BOOL)reusedLayout
+{
+    return _paintOnly;
+}
+
 - (void)restoreLocked
 {
     if(!_consumed || _doc)

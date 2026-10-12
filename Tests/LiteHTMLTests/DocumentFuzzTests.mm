@@ -148,4 +148,40 @@ static NSArray<NSString *> *Seeds(void)
     CGImageRelease(expected);
 }
 
+- (void)testPaintOnlyPatchesMatchFreshDocuments
+{
+    NSArray<NSArray<NSString *> *> *cases = @[
+        @[@"color: #ff0000", @"color: #0000ff"],
+        @[@"background-color: #ff0000", @"background-color: #00ff00"],
+        @[@"opacity: 0.5", @"opacity: 0.8"],
+        @[@"transform: translateX(4px)", @"transform: translateX(20px)"],
+        @[@"visibility: visible", @"visibility: hidden"],
+        @[@"box-shadow: 0 0 4px #000", @"box-shadow: 0 4px 10px #f00"],
+        @[@"border-color: #f00", @"border-color: #0f0"],
+        @[@"background-image: linear-gradient(#f00, #00f)", @"background-image: linear-gradient(#0f0, #00f)"],
+        @[@"text-shadow: 1px 1px #f00", @"text-shadow: 2px 2px #00f"],
+        @[@"outline-color: #f00", @"outline-color: #00f"],
+    ];
+    for(NSArray<NSString *> *pair in cases)
+    {
+        NSString *(^page)(NSString *) = ^NSString *(NSString *style) {
+            return [NSString stringWithFormat:@"<!doctype html><body style=\"margin:0\"><div data-lh-id=\"1\" style=\"padding:8px; border: 2px solid; outline: 2px solid; %@\">Hello <b>there</b> friend, this wraps over lines</div><p data-lh-id=\"2\">after</p></body>", style];
+        };
+        LHDocument *first = [[LHDocument alloc] initWithHTML:page(pair[0]) css:nil];
+        [first layoutWithMaxWidth:160 preferredWidth:160];
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:page(pair[1]) css:nil previous:first];
+        CGSize a = [patched layoutWithMaxWidth:160 preferredWidth:160];
+        LHDocument *fresh = [[LHDocument alloc] initWithHTML:page(pair[1]) css:nil];
+        CGSize b = [fresh layoutWithMaxWidth:160 preferredWidth:160];
+        XCTAssertEqual(a.height, b.height, @"%@", pair[1]);
+        CGImageRef x = [patched copyImageWithMaxWidth:160 rect:CGRectMake(0, 0, 160, b.height) scale:1];
+        CGImageRef y = [fresh copyImageWithMaxWidth:160 rect:CGRectMake(0, 0, 160, b.height) scale:1];
+        NSData *dx = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(x));
+        NSData *dy = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(y));
+        XCTAssertEqualObjects(dx, dy, @"%@ -> %@ (reused %d)", pair[0], pair[1], patched.reusedPrevious);
+        CGImageRelease(x);
+        CGImageRelease(y);
+    }
+}
+
 @end

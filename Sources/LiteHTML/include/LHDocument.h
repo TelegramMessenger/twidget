@@ -24,6 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous NS_DESIGNATED_INITIALIZER;
 /// Whether this document was made by patching the previous one.
 @property (readonly) BOOL reusedPrevious;
+@property (readonly) BOOL reusedLayout;
 - (instancetype)init NS_UNAVAILABLE;
 
 @property (nonatomic, readonly, copy) NSString *html;
