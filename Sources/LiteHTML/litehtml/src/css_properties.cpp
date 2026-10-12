@@ -32,6 +32,8 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
         el->get_property<int>(_vertical_align_, false, va_baseline, offset(m_vertical_align)));
     m_text_transform = static_cast<text_transform>(
         el->get_property<int>(_text_transform_, true, text_transform_none, offset(m_text_transform)));
+    m_font_smoothing = static_cast<font_smoothing>(
+        el->get_property<int>(__webkit_font_smoothing_, true, font_smoothing_auto, offset(m_font_smoothing)));
     m_white_space =
         static_cast<white_space>(el->get_property<int>(_white_space_, true, white_space_normal, offset(m_white_space)));
     m_caption_side = static_cast<caption_side>(
@@ -550,6 +552,7 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
 
     font_description descr;
     descr.letter_spacing       = m_letter_spacing.val();
+    descr.smoothing            = m_font_smoothing;
     if(!m_text_shadows.empty() && !m_text_shadows.front().inset)
     {
         const auto& shadow = m_text_shadows.front();

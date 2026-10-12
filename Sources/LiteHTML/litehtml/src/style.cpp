@@ -41,6 +41,7 @@ namespace litehtml
         {_text_align_,             text_align_strings                  },
         {_vertical_align_,         vertical_align_strings              },
         {_text_transform_,         text_transform_strings              },
+        {__webkit_font_smoothing_, font_smoothing_strings              },
         {_white_space_,            white_space_strings                 },
 
         {_font_style_,             font_style_strings                  },
@@ -399,6 +400,7 @@ namespace litehtml
         case _text_align_:
         case _vertical_align_:
         case _text_transform_:
+        case __webkit_font_smoothing_:
         case _white_space_:
 
         case _font_style_:

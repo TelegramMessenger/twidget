@@ -20,6 +20,7 @@ struct TextStyle
     float                 shadowX = 0;
     float                 shadowY = 0;
     float                 shadowBlur = 0;
+    int                   smoothing = 0;
 };
 
 class Painter

@@ -24,6 +24,7 @@ namespace litehtml
         web_color   emphasis_color    = web_color::current_color;    // Text emphasis color
         int         emphasis_position = text_emphasis_position_over; // Text emphasis position
         float       letter_spacing    = 0;
+        int         smoothing         = 0;
         float       shadow_x          = 0;
         float       shadow_y          = 0;
         float       shadow_blur       = 0;
@@ -46,6 +47,10 @@ namespace litehtml
             if(letter_spacing != 0)
             {
                 out += ":ls=" + std::to_string(letter_spacing);
+            }
+            if(smoothing != 0)
+            {
+                out += ":fs=" + std::to_string(smoothing);
             }
             if(shadow_color.alpha != 0)
             {

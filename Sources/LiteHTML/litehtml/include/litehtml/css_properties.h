@@ -79,6 +79,7 @@ namespace litehtml
         font_metrics          m_font_metrics;
         int                   m_shared_id = 0;
         text_transform        m_text_transform = text_transform_none;
+        font_smoothing        m_font_smoothing = font_smoothing_auto;
         web_color             m_color;
         std::string           m_cursor;
         std::string           m_content;

@@ -410,6 +410,16 @@ namespace litehtml
         text_transform_lowercase
     };
 
+    inline constexpr auto font_smoothing_strings = split_css_values<4>("auto;none;antialiased;subpixel-antialiased");
+
+    enum font_smoothing
+    {
+        font_smoothing_auto,
+        font_smoothing_none,
+        font_smoothing_antialiased,
+        font_smoothing_subpixel_antialiased
+    };
+
     // ==========================================================
     // CSS Property: white-space
     // ==========================================================

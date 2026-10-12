@@ -764,6 +764,7 @@ struct LHContainer::Font
     lh::web_color   deco_color = lh::web_color::current_color;
     int             deco_style = lh::text_decoration_style_solid;
     CGFloat         deco_thickness = 0;
+    int             smoothing = lh::font_smoothing_auto;
 };
 
 static NSFontWeight NSWeightFromCSS(int w)
@@ -1064,6 +1065,7 @@ lh::uint_ptr LHContainer::create_font(const lh::font_description& descr, const l
     f->shadow_y     = descr.shadow_y;
     f->shadow_blur  = descr.shadow_blur;
     f->shadow_color = descr.shadow_color;
+    f->smoothing    = descr.smoothing;
 
     CGFloat height = f->shared->ascent + f->shared->descent;
 
@@ -1405,6 +1407,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
         style.shadowX             = float(font->shadow_x);
         style.shadowY             = float(font->shadow_y);
         style.shadowBlur          = float(font->shadow_blur);
+        style.smoothing           = font->smoothing;
         m_painter->text(text, style, color, pos);
         return;
     }
@@ -1437,6 +1440,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
         hash.number(f->shadow_x);
         hash.number(f->shadow_y);
         hash.number(f->shadow_blur);
+        hash.integer(f->smoothing);
         hash.color(color);
         hash.box(pos);
         record_op(hash, ink, !record_glyphs(text, f, color, pos, ink));
@@ -1455,6 +1459,11 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
     if(simpleRun || line)
     {
         SetFill(ctx, color);
+        CGContextSetAllowsFontSmoothing(ctx, true);
+        CGContextSetShouldSmoothFonts(ctx, f->smoothing == lh::font_smoothing_auto ||
+                                               f->smoothing == lh::font_smoothing_subpixel_antialiased);
+        if(f->smoothing == lh::font_smoothing_none)
+            CGContextSetShouldAntialias(ctx, false);
         CGFloat x        = F(pos.x);
         CGFloat baseline = F(pos.y) + f->shared->ascent;
         CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
