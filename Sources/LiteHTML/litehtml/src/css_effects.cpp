@@ -1,3 +1,5 @@
+#include <cstring>
+#include <cmath>
 #include "html.h"
 #include "css_effects.h"
 #include "style.h"
@@ -111,6 +113,123 @@ namespace litehtml
         return true;
     }
 
+    struct calc_value
+    {
+        double      number = 0;
+        std::string unit;
+    };
+
+    static bool calc_sum(const css_token_vector& tokens, size_t& index, calc_value& out, int depth);
+
+    static bool calc_atom(const css_token_vector& tokens, size_t& index, calc_value& out, int depth)
+    {
+        while(index < tokens.size() && tokens[index].type == WHITESPACE)
+            index++;
+        if(index >= tokens.size() || depth > 16)
+            return false;
+        const css_token& tok = tokens[index++];
+        if(tok.type == NUMBER)
+        {
+            out = {tok.n.number, ""};
+            return true;
+        }
+        if(tok.type == PERCENTAGE)
+        {
+            out = {tok.n.number, "%"};
+            return true;
+        }
+        if(tok.type == DIMENSION)
+        {
+            out = {tok.n.number, lowcase(tok.unit())};
+            return true;
+        }
+        if(tok.type == ROUND_BLOCK || (tok.type == CV_FUNCTION && lowcase(tok.name()) == "calc"))
+        {
+            size_t inner = 0;
+            if(!calc_sum(tok.value, inner, out, depth + 1))
+                return false;
+            while(inner < tok.value.size() && tok.value[inner].type == WHITESPACE)
+                inner++;
+            return inner == tok.value.size();
+        }
+        return false;
+    }
+
+    static int calc_operator(const css_token_vector& tokens, size_t& index, const char* allowed)
+    {
+        size_t probe = index;
+        while(probe < tokens.size() && tokens[probe].type == WHITESPACE)
+            probe++;
+        if(probe < tokens.size() && tokens[probe].ch > 0 && tokens[probe].ch < 128 && strchr(allowed, tokens[probe].ch))
+        {
+            index = probe + 1;
+            return tokens[probe].ch;
+        }
+        return 0;
+    }
+
+    static bool calc_product(const css_token_vector& tokens, size_t& index, calc_value& out, int depth)
+    {
+        if(!calc_atom(tokens, index, out, depth))
+            return false;
+        while(int op = calc_operator(tokens, index, "*/"))
+        {
+            calc_value right;
+            if(!calc_atom(tokens, index, right, depth))
+                return false;
+            if(op == '*')
+            {
+                if(!out.unit.empty() && !right.unit.empty())
+                    return false;
+                out = {out.number * right.number, out.unit.empty() ? right.unit : out.unit};
+            } else
+            {
+                if(!right.unit.empty() || right.number == 0)
+                    return false;
+                out.number /= right.number;
+            }
+        }
+        return std::isfinite(out.number);
+    }
+
+    static bool calc_sum(const css_token_vector& tokens, size_t& index, calc_value& out, int depth)
+    {
+        if(!calc_product(tokens, index, out, depth))
+            return false;
+        while(int op = calc_operator(tokens, index, "+-"))
+        {
+            calc_value right;
+            if(!calc_product(tokens, index, right, depth))
+                return false;
+            if(out.unit != right.unit && out.number != 0 && right.number != 0)
+                return false;
+            std::string unit = out.unit.empty() ? right.unit : out.unit;
+            out = {op == '+' ? out.number + right.number : out.number - right.number, unit};
+        }
+        return std::isfinite(out.number);
+    }
+
+    static bool fold_calc(css_token& tok)
+    {
+        if(tok.type != CV_FUNCTION || lowcase(tok.name()) != "calc")
+            return true;
+        calc_value value;
+        size_t     index = 0;
+        if(!calc_sum(tok.value, index, value, 0))
+            return false;
+        while(index < tok.value.size() && tok.value[index].type == WHITESPACE)
+            index++;
+        if(index != tok.value.size())
+            return false;
+        if(value.unit.empty())
+            tok = css_token(NUMBER, float(value.number), css_number_number);
+        else if(value.unit == "%")
+            tok = css_token(PERCENTAGE, float(value.number), css_number_number);
+        else
+            tok = css_token(DIMENSION, float(value.number), css_number_number, value.unit);
+        return true;
+    }
+
     bool parse_transform(const css_token_vector& tokens, transform_vector& functions)
     {
         functions.clear();
@@ -125,6 +244,14 @@ namespace litehtml
             {
                 functions.clear();
                 return false;
+            }
+            for(auto& arg : args)
+            {
+                if(!fold_calc(arg))
+                {
+                    functions.clear();
+                    return false;
+                }
             }
             std::string        name = lowcase(tok.name());
             transform_function fn;
