@@ -511,6 +511,7 @@ final class WidgetCompositor {
         var opacities: [Float]
     }
 
+    static let log = ProcessInfo.processInfo.environment["TW_COMPOSITE_LOG"] != nil
     static var handoffEnabled = ProcessInfo.processInfo.environment["TW_NO_HANDOFF"] == nil
     static let bakeTolerance: CGFloat = 0.05
     static let maxBakeDepth = 9
@@ -593,8 +594,14 @@ final class WidgetCompositor {
         let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
         var wanted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
         var reaches: [Int: [CGRect]] = [:]
-        for id in animated where animator.isCompositable(id) {
+        let log = WidgetCompositor.log
+        for id in animated {
+            guard animator.isCompositable(id) else {
+                if log { print("COMPOSITE \(id) not compositable") }
+                continue
+            }
             guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
+                if log { print("COMPOSITE \(id) no box") }
                 continue
             }
             let origin = CSSTransform.origin(declarations[id]?["transform-origin"], box: box.size)
@@ -603,6 +610,7 @@ final class WidgetCompositor {
             var ok = true
             for value in animator.reachableValues(id) {
                 guard let transform = parse(value.transform, box: box.size, id: id) else {
+                    if log { print("COMPOSITE \(id) unparsed \(value.transform ?? "nil") resolved \(resolved(value.transform, id: id) ?? "nil")") }
                     ok = false
                     break
                 }
@@ -676,6 +684,7 @@ final class WidgetCompositor {
                 budget -= pixels
                 admitted[id] = want
             }
+            if log { print("COMPOSITE round wanted=\(wanted.count) unobscured=\(next.count) admitted=\(admitted.count)") }
             let stable = Set(admitted.keys) == Set(accepted.keys)
             accepted = admitted
             if stable {
