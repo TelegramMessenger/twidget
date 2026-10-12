@@ -12,6 +12,8 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
     public var onDiag: ((String, String) -> Void)?
+    public var schedule: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
+    public var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }
     public var onSerialized: ((String, Bool) -> Void)?
     public private(set) var layoutCount = 0
     public private(set) var layoutMilliseconds = 0.0
@@ -265,7 +267,7 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         prepareScheduled = true
-        DispatchQueue.main.async { [weak self] in
+        schedule { [weak self] in
             guard let self = self else {
                 return
             }
@@ -429,7 +431,7 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         needsRender = true
-        DispatchQueue.main.async { [weak self] in
+        schedule { [weak self] in
             guard let self = self, self.needsRender else {
                 return
             }
@@ -441,18 +443,24 @@ public final class LiteHTMLWidgetRenderer {
         return max(1, documentView.bounds.width)
     }
 
+    private static let resolvedSheetsLock = NSLock()
     private static var resolvedSheets: [String: String] = [:]
 
     private static func resolvedSheet(_ css: String, theme: String) -> String {
         let key = theme + "\u{1}" + css
+        resolvedSheetsLock.lock()
         if let resolved = resolvedSheets[key] {
+            resolvedSheetsLock.unlock()
             return resolved
         }
+        resolvedSheetsLock.unlock()
         let resolved = CSSTheme.resolve(css, theme: theme)
+        resolvedSheetsLock.lock()
         if resolvedSheets.count >= 256 {
             resolvedSheets.removeAll()
         }
         resolvedSheets[key] = resolved
+        resolvedSheetsLock.unlock()
         return resolved
     }
 
@@ -1075,7 +1083,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         drivenEndToken += 1
         let token = drivenEndToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + next + 0.002) { [weak self] in
+        scheduleAfter(next + 0.002) { [weak self] in
             guard let self = self, self.drivenEndToken == token, !self.destroyed else {
                 return
             }
@@ -1209,7 +1217,7 @@ public final class LiteHTMLWidgetRenderer {
         if frozen || !listened.contains(type) {
             return
         }
-        DispatchQueue.main.async { [weak self] in
+        schedule { [weak self] in
             self?.post(["type": "event", "ev": ["type": type, "targetId": id]])
         }
     }
@@ -1380,7 +1388,7 @@ public final class LiteHTMLWidgetRenderer {
         case "observeResize":
             observedResize.insert(id)
             lastResize[id] = nil
-            DispatchQueue.main.async { [weak self] in
+            schedule { [weak self] in
                 self?.reportResize()
             }
         case "unobserveResize":
@@ -1653,7 +1661,11 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         trimWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + LiteHTMLWidgetRenderer.hiddenTrimDelay, execute: work)
+        scheduleAfter(LiteHTMLWidgetRenderer.hiddenTrimDelay) {
+            if !work.isCancelled {
+                work.perform()
+            }
+        }
     }
 
     public func setVisible(_ visible: Bool) {
@@ -2167,7 +2179,7 @@ final class WidgetDocumentView: NSView {
                 made.append((job.index, rect, surface.surface))
             }
             let spent = (CACurrentMediaTime() - start) * 1000
-            DispatchQueue.main.async {
+            let finish = {
                 guard let self = self else {
                     return
                 }
@@ -2192,6 +2204,11 @@ final class WidgetDocumentView: NSView {
                     CATransaction.commit()
                 }
                 completion()
+            }
+            if let schedule = self?.owner?.schedule {
+                schedule(finish)
+            } else {
+                DispatchQueue.main.async(execute: finish)
             }
         }
         return true
@@ -2320,7 +2337,7 @@ final class WidgetDocumentView: NSView {
                 }
             }
         }
-        needsDisplay = true
+        markNeedsDisplay()
     }
 
     func invalidate(_ rect: CGRect?) {
@@ -2328,7 +2345,7 @@ final class WidgetDocumentView: NSView {
             if let rect = rect {
                 setNeedsDisplay(rect)
             } else {
-                needsDisplay = true
+                markNeedsDisplay()
             }
             return
         }
@@ -2344,7 +2361,7 @@ final class WidgetDocumentView: NSView {
                     tile.layer.setNeedsDisplay()
                 }
             }
-            needsDisplay = true
+            markNeedsDisplay()
             return
         }
         for tile in tiles {
@@ -2355,11 +2372,29 @@ final class WidgetDocumentView: NSView {
                 surface.stale = rect.map { surface.stale.union($0) } ?? everything
             }
         }
-        needsDisplay = true
+        markNeedsDisplay()
     }
 
+    private static var screenScale: CGFloat = 2
+
     var scale: CGFloat {
-        return window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        if let window = window {
+            return window.backingScaleFactor
+        }
+        if Thread.isMainThread, let main = NSScreen.main {
+            WidgetDocumentView.screenScale = main.backingScaleFactor
+        }
+        return WidgetDocumentView.screenScale
+    }
+
+    private var displayPending = false
+
+    private func markNeedsDisplay() {
+        if Thread.isMainThread {
+            needsDisplay = true
+        } else {
+            displayPending = true
+        }
     }
 
     override func viewDidChangeBackingProperties() {
@@ -2367,7 +2402,7 @@ final class WidgetDocumentView: NSView {
         if tileScale != scale {
             removeTiles()
         }
-        needsDisplay = true
+        markNeedsDisplay()
     }
 
     private func removeTiles() {
@@ -2395,7 +2430,7 @@ final class WidgetDocumentView: NSView {
             return
         }
         tilesTrimmed = false
-        needsDisplay = true
+        markNeedsDisplay()
     }
 
     var tileCount: Int {
@@ -2585,6 +2620,10 @@ final class WidgetDocumentView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if displayPending {
+            displayPending = false
+            needsDisplay = true
+        }
         if let screenObserver = screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
