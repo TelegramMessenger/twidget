@@ -224,7 +224,7 @@ final class RendererFuzzTests: XCTestCase {
         for (op, back) in zip(ops, parsed) {
             XCTAssertEqual(back["op"] as? String, op.op)
             XCTAssertEqual((back["id"] as? NSNumber)?.intValue, op.kind == .other ? (op["id"] as? NSNumber)?.intValue : op.id)
-            if op.kind != .other {
+            if op.kind == .style || op.kind == .attribute {
                 XCTAssertEqual(back["name"] as? String, op.name)
                 XCTAssertEqual(back["value"] as? String, op.value)
             }

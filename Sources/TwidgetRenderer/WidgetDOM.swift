@@ -446,7 +446,8 @@ final class WidgetDOM {
 
     func apply(_ op: WidgetOp) {
         WidgetDOM.revision &+= 1
-        if op.kind == .style {
+        switch op.kind {
+        case .style:
             guard let node = nodes[op.id] else {
                 return
             }
@@ -454,8 +455,170 @@ final class WidgetDOM {
                 noteAttribute(node, "style")
             }
             node.setProperty(op.name, op.value, important: op.important)
+        case .element:
+            if patchLog.valid, op.adopt != nil || nodes[op.id].map(isAttached) == true {
+                patchLog.valid = false
+            }
+            if sheets != nil, op.adopt != nil {
+                sheets = nil
+            }
+            createElement(op.id, tag: op.name, svg: op.important, adopt: op.adopt, attributes: op.attributes)
+        case .text:
+            createText(op.id, op.value)
+        case .data:
+            guard let node = nodes[op.id] else {
+                return
+            }
+            noteMove(node, data: true, parentId: 0)
+            node.text = WidgetDOM.clip(op.value)
+        case .insert:
+            guard let node = nodes[op.id] else {
+                return
+            }
+            noteMove(node, data: false, parentId: op.parent)
+            insert(node, parentId: op.parent, before: op.before.flatMap { nodes[$0] })
+        case .remove:
+            guard let node = nodes[op.id] else {
+                return
+            }
+            noteMove(node, data: false, parentId: 0)
+            remove(node)
+        case .removeAttribute:
+            guard let node = nodes[op.id] else {
+                return
+            }
+            if patchLog.valid, isAttached(node) {
+                patchLog.valid = false
+            }
+            node.removeAttribute(op.name)
+        case .css:
+            sheets = nil
+            guard let node = nodes[op.id] else {
+                return
+            }
+            if patchLog.valid, isAttached(node) {
+                patchLog.valid = false
+            }
+            setCSS(node, op.value)
+        case .attribute, .canvas, .other:
+            applyGeneric(op)
+        }
+    }
+
+    private func noteMove(_ node: WidgetNode, data: Bool, parentId: Int) {
+        if patchLog.valid {
+            if data {
+                if node.isText {
+                    noteChildren(of: node.parent, moving: node)
+                } else if isAttached(node) {
+                    patchLog.valid = false
+                }
+            } else if !isRoot(node) {
+                noteChildren(of: node.parent, moving: node)
+                if parentId != 0 {
+                    noteChildren(of: nodes[parentId], moving: node)
+                }
+            }
+        }
+        if sheets != nil {
+            if !node.isText || node.parent?.tag == "style" {
+                sheets = nil
+            } else if !data, parentId != 0, nodes[parentId]?.tag == "style" {
+                sheets = nil
+            }
+        }
+    }
+
+    private func createElement(_ id: Int, tag: String, svg: Bool, adopt: String?, attributes: [(name: String, value: String)]) {
+        if !WidgetNames.isTag(tag) || id <= 0 {
+            violation("element name")
             return
         }
+        if nodes[id] == nil && nodes.count >= WidgetDOM.maxNodes {
+            violation("too many nodes")
+            return
+        }
+        if WidgetDOM.blockedElements.contains(tag.lowercased()) {
+            violation("element <\(tag)>")
+            return
+        }
+        let node: WidgetNode
+        switch adopt {
+        case "html":
+            node = html
+        case "head":
+            node = head
+        case "body":
+            node = body
+        default:
+            node = WidgetNode(id: id, tag: svg ? tag : tag.lowercased(), svg: svg)
+        }
+        register(id, node)
+        for pair in attributes {
+            setAttribute(node, pair.name, pair.value)
+        }
+    }
+
+    private func createText(_ id: Int, _ data: String) {
+        if id <= 0 || (nodes[id] == nil && nodes.count >= WidgetDOM.maxNodes) {
+            violation("too many nodes")
+            return
+        }
+        register(id, WidgetNode(id: id, text: WidgetDOM.clip(data)))
+    }
+
+    private func insert(_ node: WidgetNode, parentId: Int, before: WidgetNode?) {
+        if isRoot(node) {
+            return
+        }
+        if parentId == 0 {
+            detach(node)
+            return
+        }
+        guard let parent = nodes[parentId], !parent.isText else {
+            return
+        }
+        var ancestor: WidgetNode? = parent
+        while let current = ancestor {
+            if current === node {
+                return
+            }
+            ancestor = current.parent
+        }
+        if WidgetDOM.depth(of: parent) + WidgetDOM.height(of: node) >= WidgetDOM.maxDepth {
+            violation("tree too deep")
+            return
+        }
+        detach(node)
+        node.parent = parent
+        if let before = before, before.parent === parent, let index = parent.children.firstIndex(where: { $0 === before }) {
+            parent.children.insert(node, at: index)
+        } else {
+            parent.children.append(node)
+        }
+    }
+
+    private func remove(_ node: WidgetNode) {
+        if isRoot(node) {
+            return
+        }
+        detach(node)
+        unregister(node)
+    }
+
+    private func setCSS(_ node: WidgetNode, _ css: String) {
+        if node.tag == "style" {
+            for child in node.children {
+                child.parent = nil
+            }
+            let text = WidgetNode(id: -4, text: WidgetDOM.clip(css))
+            text.synthetic = true
+            text.parent = node
+            node.children = [text]
+        }
+    }
+
+    private func applyGeneric(_ op: WidgetOp) {
         guard let kind = op.op else {
             return
         }
@@ -464,44 +627,16 @@ final class WidgetDOM {
         noteSheets(kind, id, op)
         switch kind {
         case "el":
-            let tag = (op["tag"] as? String) ?? "span"
-            if !WidgetNames.isTag(tag) || id <= 0 {
-                violation("element name")
-                return
-            }
-            if nodes[id] == nil && nodes.count >= WidgetDOM.maxNodes {
-                violation("too many nodes")
-                return
-            }
-            if WidgetDOM.blockedElements.contains(tag.lowercased()) {
-                violation("element <\(tag)>")
-                return
-            }
-            let node: WidgetNode
-            switch op["adopt"] as? String {
-            case "html":
-                node = html
-            case "head":
-                node = head
-            case "body":
-                node = body
-            default:
-                let svg = (op["ns"] as? String) == "svg"
-                node = WidgetNode(id: id, tag: svg ? tag : tag.lowercased(), svg: svg)
-            }
-            register(id, node)
+            var attributes: [(name: String, value: String)] = []
             for pair in (op["attrs"] as? [[Any]]) ?? [] where pair.count == 2 {
                 if let name = pair[0] as? String, let value = pair[1] as? String {
-                    setAttribute(node, name, value)
+                    attributes.append((name, value))
                 }
             }
+            createElement(id, tag: (op["tag"] as? String) ?? "span", svg: (op["ns"] as? String) == "svg", adopt: op["adopt"] as? String, attributes: attributes)
             return
         case "text":
-            if id <= 0 || (nodes[id] == nil && nodes.count >= WidgetDOM.maxNodes) {
-                violation("too many nodes")
-                return
-            }
-            register(id, WidgetNode(id: id, text: WidgetDOM.clip((op["data"] as? String) ?? "")))
+            createText(id, (op["data"] as? String) ?? "")
             return
         case "comment":
             return
@@ -523,56 +658,15 @@ final class WidgetDOM {
         case "data":
             node.text = WidgetDOM.clip((op["data"] as? String) ?? "")
         case "ins":
-            if isRoot(node) {
-                return
-            }
-            let parentId = (op["parent"] as? NSNumber)?.intValue ?? 0
-            if parentId == 0 {
-                detach(node)
-                return
-            }
-            guard let parent = nodes[parentId], !parent.isText else {
-                return
-            }
-            var ancestor: WidgetNode? = parent
-            while let current = ancestor {
-                if current === node {
-                    return
-                }
-                ancestor = current.parent
-            }
-            if WidgetDOM.depth(of: parent) + WidgetDOM.height(of: node) >= WidgetDOM.maxDepth {
-                violation("tree too deep")
-                return
-            }
-            let before = (op["before"] as? NSNumber).flatMap { nodes[$0.intValue] }
-            detach(node)
-            node.parent = parent
-            if let before = before, before.parent === parent, let index = parent.children.firstIndex(where: { $0 === before }) {
-                parent.children.insert(node, at: index)
-            } else {
-                parent.children.append(node)
-            }
+            insert(node, parentId: (op["parent"] as? NSNumber)?.intValue ?? 0, before: (op["before"] as? NSNumber).flatMap { nodes[$0.intValue] })
         case "rm":
-            if isRoot(node) {
-                return
-            }
-            detach(node)
-            unregister(node)
+            remove(node)
         case "style":
             if let name = op["name"] as? String {
                 node.setProperty(name, (op["value"] as? String) ?? "", important: (op["important"] as? Bool) ?? false)
             }
         case "css":
-            if node.tag == "style" {
-                for child in node.children {
-                    child.parent = nil
-                }
-                let text = WidgetNode(id: -4, text: WidgetDOM.clip((op["text"] as? String) ?? ""))
-                text.synthetic = true
-                text.parent = node
-                node.children = [text]
-            }
+            setCSS(node, (op["text"] as? String) ?? "")
         case "prop":
             if let name = op["name"] as? String {
                 onProperty?(node, name, op["value"] ?? NSNull())
