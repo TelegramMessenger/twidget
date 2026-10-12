@@ -727,6 +727,7 @@ struct SharedFont
     bool            colorGlyphs = false;
     std::mutex                                widthsMutex;
     std::unordered_map<std::string, CGFloat> widths;
+    std::unordered_map<std::string, CGFloat> oldWidths;
     CFDictionaryRef drawAttrs = nullptr;
     std::mutex                                  linesMutex;
     std::unordered_map<std::string, CTLineRef> lines;
@@ -953,6 +954,7 @@ void LHContainer::purge_caches()
             font->simple->clear();
         std::lock_guard<std::mutex> lock(font->widthsMutex);
         font->widths.clear();
+        font->oldWidths.clear();
     }
 }
 
@@ -1194,6 +1196,14 @@ lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
         auto                        it = sf.widths.find(text);
         if(it != sf.widths.end())
             return static_cast<float>(it->second);
+        auto old = sf.oldWidths.find(text);
+        if(old != sf.oldWidths.end())
+        {
+            const CGFloat w = old->second;
+            sf.widths.emplace(old->first, w);
+            sf.oldWidths.erase(old);
+            return static_cast<float>(w);
+        }
     }
     SimpleRun simple;
     if(ShapeSimple(sf, text, simple))
@@ -1221,8 +1231,11 @@ lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
         CFRelease(line);
     }
     std::lock_guard<std::mutex> lock(sf.widthsMutex);
-    if(sf.widths.size() > 8192)
-        sf.widths.clear();
+    if(sf.widths.size() >= 4096)
+    {
+        sf.oldWidths.clear();
+        sf.oldWidths.swap(sf.widths);
+    }
     sf.widths.emplace(text, w);
     return static_cast<float>(w);
 }
