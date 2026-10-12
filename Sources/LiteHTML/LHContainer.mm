@@ -865,7 +865,7 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
             font = WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
         else if([@[@"ui-monospace", @"sf mono"] containsObject:lower])
             font = WithCSSWeight(MonospacedFont(size, NSFontWeightRegular), cssWeight);
-        else if([@[@"ui-serif", @"new york"] containsObject:lower])
+        else if([lower isEqualToString:@"ui-serif"])
             font = WithCSSWeight(SystemFontWithDesign(size, NSFontWeightRegular, true), cssWeight);
         else if([@[@"ui-rounded", @"sf pro rounded"] containsObject:lower])
             font = WithCSSWeight(SystemFontWithDesign(size, NSFontWeightRegular, false), cssWeight);
@@ -891,7 +891,12 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
             break;
     }
     if(!font)
-        font = WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
+    {
+        NSFontManager*  fm     = NSFontManager.sharedFontManager;
+        NSFontTraitMask traits = (italic ? NSItalicFontMask : 0) | (cssWeight >= 600 ? NSBoldFontMask : 0);
+        font = [fm fontWithFamily:@"Times" traits:traits weight:ManagerWeightFromCSS(cssWeight) size:size]
+                   ?: WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
+    }
 
     if(italic && !(font.fontDescriptor.symbolicTraits & NSFontDescriptorTraitItalic))
     {
@@ -1033,6 +1038,13 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
     CGFloat ascent          = CTFontGetAscent(sf->font);
     CGFloat descent         = CTFontGetDescent(sf->font);
     CGFloat leading         = CTFontGetLeading(sf->font);
+    {
+        NSString* familyName = CFBridgingRelease(CTFontCopyFamilyName(sf->font));
+        if([familyName caseInsensitiveCompare:@"Times"] == NSOrderedSame ||
+           [familyName caseInsensitiveCompare:@"Helvetica"] == NSOrderedSame ||
+           [familyName caseInsensitiveCompare:@"Courier"] == NSOrderedSame)
+            ascent += std::floor((ascent + descent) * 0.15 + 0.5);
+    }
     sf->ascent              = std::round(ascent);
     sf->descent             = std::round(descent) + std::round(leading);
     sf->x_height            = CTFontGetXHeight(sf->font);
@@ -1521,7 +1533,7 @@ lh::pixel_t LHContainer::get_default_font_size() const
 
 const char* LHContainer::get_default_font_name() const
 {
-    return "-apple-system";
+    return "Times";
 }
 
 void LHContainer::transform_text(std::string& text, lh::text_transform tt)

@@ -85,7 +85,7 @@ static CGRect Box(LHDocument *document, NSString *value)
 
 static NSString *Cards(int changed, int value, NSString *contain)
 {
-    NSMutableString *html = [NSMutableString stringWithFormat:@"<!DOCTYPE html><style>.card{%@;height:22px;padding:2px 6px;border-bottom:1px solid #ddd}"
+    NSMutableString *html = [NSMutableString stringWithFormat:@"<!DOCTYPE html><style>.card{%@;font-family:-apple-system;height:22px;padding:2px 6px;border-bottom:1px solid #ddd}"
                                                                 ".v{float:right}.hot{color:#c00}</style><div data-lh-id=\"1\">",
                                                                 contain];
     for(int i = 0; i < 120; i++)
