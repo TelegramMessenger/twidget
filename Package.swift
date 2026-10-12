@@ -7,6 +7,7 @@ let package = Package(
     platforms: [.macOS(.v10_13)],
     products: [
         .library(name: "LiteHTML", targets: ["LiteHTML"]),
+        .library(name: "TwidgetAssets", targets: ["TwidgetAssets"]),
         .library(name: "HTMLScript", targets: ["HTMLScript"]),
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
         .library(name: "HTML3D", targets: ["HTML3D"]),
@@ -14,6 +15,12 @@ let package = Package(
         .library(name: "CQuickJSNG", targets: ["CQuickJSNG"]),
     ],
     targets: [
+        .target(
+            name: "TwidgetAssets",
+            path: "Sources/TwidgetAssets",
+            exclude: ["icons", "icons.json", "twa_icon_data.inc"],
+            sources: ["twa_icons.cpp"],
+            publicHeadersPath: "include"),
         .target(
             name: "LiteHTML",
             dependencies: [],
