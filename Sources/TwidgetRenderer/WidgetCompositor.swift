@@ -664,6 +664,7 @@ final class WidgetCompositor {
             reaches[id] = [reach]
         }
         var scriptedWanted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
+        var scriptedBases: [Int: CGRect] = [:]
         scriptedCandidates = scriptedCandidates.filter { dom.node($0) != nil }
         for id in scriptedCandidates where wanted[id] == nil && !animated.contains(id) && animator.base(id).isEmpty {
             guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
@@ -682,6 +683,7 @@ final class WidgetCompositor {
             let scale: CGFloat = min(3, max(rotated ? 2 : 1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
             wanted[id] = (box, origin, scale)
             reaches[id] = [max(48, max(box.width, box.height) / 2), 16, 2].map { box.union(current).insetBy(dx: -$0, dy: -$0) }
+            scriptedBases[id] = current
             scriptedWanted[id] = (.null, scale)
         }
         for id in wanted.keys {
@@ -702,6 +704,15 @@ final class WidgetCompositor {
             var radii = [CGFloat](repeating: 0, count: 8)
             if document.clipOfElement(attribute: WidgetDOM.idAttribute, value: String(id), rect: &rect, radii: &radii) {
                 clips[id] = Clip(rect: rect, radii: radii)
+            }
+        }
+        if WidgetCompositor.inertClips {
+            for (id, base) in scriptedBases {
+                guard let clip = clips[id], let list = reaches[id] else {
+                    continue
+                }
+                let bands = WidgetCompositor.cornerFreeBands(clip, containing: base)
+                reaches[id] = list.compactMap { reach in bands.map { reach.intersection($0) }.max { $0.width * $0.height < $1.width * $1.height } } + list
             }
         }
         for id in wanted.keys {
@@ -750,6 +761,7 @@ final class WidgetCompositor {
             }
         }
         var accepted = wanted
+        var chosenReach: [Int: CGRect] = [:]
         for _ in 0..<4 {
             let ignoring = Set(accepted.keys.map { String($0) })
             var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
@@ -762,6 +774,7 @@ final class WidgetCompositor {
                 }
                 if let reach = reaches[id]?.first(where: { unobscured(id, $0, ignoring) }) {
                     next[id] = want
+                    chosenReach[id] = reach
                     if scriptedWanted[id] != nil {
                         scriptedWanted[id]?.reach = reach
                     }
@@ -863,7 +876,7 @@ final class WidgetCompositor {
                     parent.layer.addSublayer(item.layer)
                 }
                 item.layer.position = CGPoint(x: anchor.x - parent.ink.minX, y: anchor.y - parent.ink.minY)
-            } else if let clip = clips[id] {
+            } else if let clip = clips[id], !WidgetCompositor.clipIsInert(clip, reach: chosenReach[id], box: item.box, ink: item.ink, scale: wanted[id]?.maxScale ?? 1) {
                 let container = clipContainer(clip, host: host)
                 usedContainers.insert(ObjectIdentifier(container))
                 if item.layer.superlayer !== container {
@@ -882,7 +895,7 @@ final class WidgetCompositor {
             container.removeFromSuperlayer()
             containers[key] = nil
         }
-        clipOf = clips.filter { promoted[$0.key] != nil }
+        clipOf = clips.filter { entry in promoted[entry.key].map { $0.layer.superlayer !== host } ?? false }
         CATransaction.commit()
     }
 
@@ -892,6 +905,41 @@ final class WidgetCompositor {
     }
 
     private var containers: [String: CALayer] = [:]
+
+    static func clipIsInert(_ clip: Clip, reach: CGRect?, box: CGRect, ink: CGRect, scale: CGFloat) -> Bool {
+        guard WidgetCompositor.inertClips, let reach = reach, !reach.isNull, !ink.isNull, clip.radii.count == 8 else {
+            return false
+        }
+        let outset = max(0, box.minX - ink.minX, box.minY - ink.minY, ink.maxX - box.maxX, ink.maxY - box.maxY)
+        let pad = outset * max(1, scale) * 1.5 + 0.5
+        let covered = reach.insetBy(dx: -pad, dy: -pad)
+        guard clip.rect.contains(covered) else {
+            return false
+        }
+        let r = clip.radii
+        let corners = [
+            CGRect(x: clip.rect.minX, y: clip.rect.minY, width: r[0], height: r[1]),
+            CGRect(x: clip.rect.maxX - r[2], y: clip.rect.minY, width: r[2], height: r[3]),
+            CGRect(x: clip.rect.maxX - r[4], y: clip.rect.maxY - r[5], width: r[4], height: r[5]),
+            CGRect(x: clip.rect.minX, y: clip.rect.maxY - r[7], width: r[6], height: r[7]),
+        ]
+        return !corners.contains { $0.width > 0 && $0.height > 0 && $0.intersects(covered) }
+    }
+
+    static func cornerFreeBands(_ clip: Clip, containing base: CGRect) -> [CGRect] {
+        guard clip.radii.count == 8 else {
+            return []
+        }
+        let r = clip.radii.map { max(0, $0) }
+        let top = max(r[1], r[3]), bottom = max(r[5], r[7]), left = max(r[0], r[6]), right = max(r[2], r[4])
+        let bands = [
+            CGRect(x: clip.rect.minX, y: clip.rect.minY + top, width: clip.rect.width, height: clip.rect.height - top - bottom),
+            CGRect(x: clip.rect.minX + left, y: clip.rect.minY, width: clip.rect.width - left - right, height: clip.rect.height),
+        ].map { $0.insetBy(dx: 0.5, dy: 0.5) }
+        return bands.filter { $0.width > 0 && $0.height > 0 && $0.contains(base) }
+    }
+
+    static let inertClips = ProcessInfo.processInfo.environment["TW_KEEP_CLIPS"] == nil
     private var clipOf: [Int: Clip] = [:]
 
     private func clipContainer(_ clip: Clip, host: CALayer) -> CALayer {

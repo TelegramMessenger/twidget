@@ -691,6 +691,65 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     return CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
 }
 
+static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
+{
+    static const bool disabled = getenv("LH_NO_TIGHT_INK") != nullptr;
+    if(disabled)
+        return ink;
+    CGFloat step = 0;
+    for(CGFloat k : {1.0, 2.0, 4.0, 8.0})
+    {
+        if(std::fabs(k * scale - std::round(k * scale)) < 1e-6)
+        {
+            step = k;
+            break;
+        }
+    }
+    const uint8_t* data = static_cast<const uint8_t*>(CGBitmapContextGetData(ctx));
+    const size_t   pw = CGBitmapContextGetWidth(ctx), ph = CGBitmapContextGetHeight(ctx), row = CGBitmapContextGetBytesPerRow(ctx);
+    if(step == 0 || !data || CGBitmapContextGetBitsPerPixel(ctx) != 32 || (CGBitmapContextGetBitmapInfo(ctx) & kCGBitmapAlphaInfoMask) != kCGImageAlphaPremultipliedFirst || (CGBitmapContextGetBitmapInfo(ctx) & kCGBitmapByteOrderMask) != kCGBitmapByteOrder32Little)
+        return ink;
+    size_t minX = pw, minY = ph, maxX = 0, maxY = 0;
+    for(size_t py = 0; py < ph; py++)
+    {
+        const uint32_t* line = reinterpret_cast<const uint32_t*>(data + py * row);
+        size_t first = pw;
+        for(size_t px = 0; px < pw; px++)
+        {
+            if(line[px] >> 24)
+            {
+                first = px;
+                break;
+            }
+        }
+        if(first == pw)
+            continue;
+        size_t last = first;
+        for(size_t px = pw; px-- > first;)
+        {
+            if(line[px] >> 24)
+            {
+                last = px;
+                break;
+            }
+        }
+        const size_t top = py;
+        minX = std::min(minX, first);
+        maxX = std::max(maxX, last + 1);
+        minY = std::min(minY, top);
+        maxY = std::max(maxY, top + 1);
+    }
+    CGRect painted = minX < maxX ? CGRectMake(ink.origin.x + minX / scale, ink.origin.y + minY / scale, (maxX - minX) / scale, (maxY - minY) / scale) : CGRectNull;
+    CGRect wanted = CGRectIntersection(CGRectUnion(painted, box), ink);
+    if(CGRectIsNull(wanted) || CGRectIsEmpty(wanted))
+        return ink;
+    CGFloat x0 = ink.origin.x + std::floor((CGRectGetMinX(wanted) - ink.origin.x) / step) * step;
+    CGFloat y0 = ink.origin.y + std::floor((CGRectGetMinY(wanted) - ink.origin.y) / step) * step;
+    CGFloat x1 = std::min(CGRectGetMaxX(ink), ink.origin.x + std::ceil((CGRectGetMaxX(wanted) - ink.origin.x) / step) * step);
+    CGFloat y1 = std::min(CGRectGetMaxY(ink), ink.origin.y + std::ceil((CGRectGetMaxY(wanted) - ink.origin.y) / step) * step);
+    return CGRectMake(x0, y0, x1 - x0, y1 - y0);
+}
+
 - (CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkOut borderBox:(CGRect *)boxOut
 {
     std::lock_guard<std::mutex> guard(_lock);
@@ -721,8 +780,21 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     _doc->skip_paint.erase(ri->src_el().get());
     ri->src_el()->draw(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, ri);
     ri->draw_stacking_context(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, true);
+    CGRect tight = TightInk(ctx, ink, box, scale);
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
+    if(image && !CGRectEqualToRect(tight, ink))
+    {
+        CGRect pixels = CGRectMake(std::round((tight.origin.x - ink.origin.x) * scale), std::round((tight.origin.y - ink.origin.y) * scale), std::round(tight.size.width * scale), std::round(tight.size.height * scale));
+        pixels = CGRectIntersection(pixels, CGRectMake(0, 0, pw, ph));
+        CGImageRef cropped = CGRectIsEmpty(pixels) ? nullptr : CGImageCreateWithImageInRect(image, pixels);
+        if(cropped)
+        {
+            CGImageRelease(image);
+            image = cropped;
+            ink   = tight;
+        }
+    }
     if(inkOut)
         *inkOut = ink;
     if(boxOut)
