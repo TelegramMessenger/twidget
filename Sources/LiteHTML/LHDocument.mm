@@ -868,6 +868,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkOut borderBox:(CGRect *)boxOut
 {
+    return [self copyImageOfElementWithAttribute:attribute value:value scale:scale inkBounds:inkOut borderBox:boxOut radii:nullptr];
+}
+
+- (CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkOut borderBox:(CGRect *)boxOut radii:(CGFloat *)radiiOut
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
@@ -915,6 +920,14 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         *inkOut = ink;
     if(boxOut)
         *boxOut = box;
+    if(radiiOut)
+    {
+        auto r = ri->src_el()->css().get_borders().radius.calc_percents(lh::pixel_t(static_cast<float>(box.size.width)), lh::pixel_t(static_cast<float>(box.size.height)));
+        r.fix_values(lh::pixel_t(static_cast<float>(box.size.width)), lh::pixel_t(static_cast<float>(box.size.height)));
+        const CGFloat values[8] = {r.top_left_x.value(), r.top_left_y.value(), r.top_right_x.value(), r.top_right_y.value(), r.bottom_right_x.value(), r.bottom_right_y.value(), r.bottom_left_x.value(), r.bottom_left_y.value()};
+        for(int i = 0; i < 8; i++)
+            radiiOut[i] = std::max<CGFloat>(0, values[i]);
+    }
     return image;
 }
 

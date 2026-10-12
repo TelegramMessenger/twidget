@@ -54,6 +54,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (CGRect)boundsOfElementsMatching:(NSString *)selector NS_SWIFT_NAME(bounds(matching:));
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setPaintExclusions(_:attribute:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:));
+- (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox radii:(nullable CGFloat *)radii CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:radii:));
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value isolatedInRect:(CGRect)rect NS_SWIFT_NAME(isElement(attribute:value:isolatedIn:));
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect NS_SWIFT_NAME(isElement(attribute:value:unobscuredIn:));
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring NS_SWIFT_NAME(isElement(attribute:value:unobscuredIn:ignoring:));
