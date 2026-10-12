@@ -955,7 +955,15 @@ final class WidgetCompositor {
         }
         currentDOM = dom
         let animated = animator.animatedIDs()
-        let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
+        var measured: [String: NSValue]?
+        var boxes: [String: NSValue] {
+            if let known = measured {
+                return known
+            }
+            let made = document.bounds(byAttribute: WidgetDOM.idAttribute)
+            measured = made
+            return made
+        }
         var wanted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
         var effectOwners: [Int: Double] = [:]
         var effectTemplates: [Int: WidgetEffects] = [:]
