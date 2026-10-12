@@ -1960,8 +1960,9 @@ void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer
     AppendInteger(key, (uintptr_t)img.image);
     AppendInteger(key, CGImageGetWidth(img.image));
     AppendInteger(key, CGImageGetHeight(img.image));
+    const bool changesEveryFrame = url.compare(0, 9, "twcanvas:") == 0;
     for_each_tile(layer, origin.size, [&](CGRect tile) {
-        if(!DrawRasterized(ctx, tile, key, [&](CGContextRef c) { DrawCGImage(c, img.image, tile); }))
+        if(changesEveryFrame || !DrawRasterized(ctx, tile, key, [&](CGContextRef c) { DrawCGImage(c, img.image, tile); }))
             DrawCGImage(ctx, img.image, tile);
     });
     CGContextRestoreGState(ctx);
