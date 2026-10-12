@@ -403,15 +403,7 @@ enum CSSInterpolate {
         if t == 1 {
             return b
         }
-        var from = normalizeColors(a)
-        var to = normalizeColors(b)
-        if from.lowercased() == "none", to.contains("(") {
-            from = identity(of: to)
-        } else if to.lowercased() == "none", from.contains("(") {
-            to = identity(of: from)
-        }
-        let left = tokenize(from), right = tokenize(to)
-        guard left.count == right.count else {
+        guard let (left, right) = pair(a, b) else {
             return t < 0.5 ? a : b
         }
         var out = ""
@@ -432,6 +424,37 @@ enum CSSInterpolate {
     private enum Token {
         case number(Double, String)
         case text(String)
+    }
+
+    private static let pairLock = NSLock()
+    private static var pairs: [String: ([Token], [Token])?] = [:]
+
+    private static func pair(_ a: String, _ b: String) -> ([Token], [Token])? {
+        let key = a + "\u{1}" + b
+        pairLock.lock()
+        if let cached = pairs[key] {
+            pairLock.unlock()
+            return cached
+        }
+        pairLock.unlock()
+        var from = normalizeColors(a)
+        var to = normalizeColors(b)
+        if from.lowercased() == "none", to.contains("(") {
+            from = identity(of: to)
+        } else if to.lowercased() == "none", from.contains("(") {
+            to = identity(of: from)
+        }
+        let left = tokenize(from), right = tokenize(to)
+        let result: ([Token], [Token])? = left.count == right.count ? (left, right) : nil
+        pairLock.lock()
+        if pairs.count >= 2048 {
+            pairs.removeAll(keepingCapacity: true)
+        }
+        if key.utf8.count <= 4096 {
+            pairs.updateValue(result, forKey: key)
+        }
+        pairLock.unlock()
+        return result
     }
 
     private static func tokenize(_ text: String) -> [Token] {
