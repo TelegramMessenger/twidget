@@ -43,4 +43,22 @@ final class QuickJSEngineTests: XCTestCase {
         XCTAssertLessThan(intTime, max(strTime, 0.01) * 4, "integer keys \(intTime)s vs string keys \(strTime)s")
         XCTAssertLessThan(objs.0, max(strTime, 0.01) * 4, "object keys \(objs.0)s vs string keys \(strTime)s")
     }
+
+    func testJSONStringifyOutputIsUnchanged() throws {
+        let js = context()
+        let script = #"""
+[
+  JSON.stringify([0, -0, 1.5, 0.1, 1e21, 1e-7, 2 ** 53, 5e-324, NaN, -Infinity, 525.7130405604839, -123, 2147483647, -2147483648]),
+  JSON.stringify({ op: 'style', id: 13, name: 'transform', value: 'translate(250.5px,91.3px)', important: undefined }),
+  JSON.stringify(['a"b\\c\n\t\r\b\f\u0000\u001f\u007f', 'é€😀', '\ud800x\udc00', 'ÿ' + 'abc'.repeat(3)]),
+  JSON.stringify({ 'k"ey': 1, 'é': [undefined, () => 1, Symbol('s')], 3: { toJSON(k) { return 'key ' + k; } } }),
+  JSON.stringify([{ toJSON(k) { return 'idx ' + k; } }, new Number(2.5), new String('s'), new Boolean(false), [,1]]),
+  JSON.stringify([1, [2.25, 'x'], { a: 1 }], (k, v) => typeof v === 'number' ? v * 2 : v),
+  JSON.stringify({ a: [1, { b: 2 }], c: 'd' }, null, 2),
+  JSON.stringify({ a: 1, b: 2, c: 3 }, ['c', 'a']),
+].join('\n')
+"""#
+        let expected = String(decoding: Data(base64Encoded: "WzAsMCwxLjUsMC4xLDFlKzIxLDFlLTcsOTAwNzE5OTI1NDc0MDk5Miw1ZS0zMjQsbnVsbCxudWxsLDUyNS43MTMwNDA1NjA0ODM5LC0xMjMsMjE0NzQ4MzY0NywtMjE0NzQ4MzY0OF0KeyJvcCI6InN0eWxlIiwiaWQiOjEzLCJuYW1lIjoidHJhbnNmb3JtIiwidmFsdWUiOiJ0cmFuc2xhdGUoMjUwLjVweCw5MS4zcHgpIn0KWyJhXCJiXFxjXG5cdFxyXGJcZlx1MDAwMFx1MDAxZn8iLCLDqeKCrPCfmIAiLCJcdWQ4MDB4XHVkYzAwIiwiw79hYmNhYmNhYmMiXQp7IjMiOiJrZXkgMyIsImtcImV5IjoxLCLDqSI6W251bGwsbnVsbCxudWxsXX0KWyJpZHggMCIsMi41LCJzIixmYWxzZSxbbnVsbCwxXV0KWzIsWzQuNSwieCJdLHsiYSI6Mn1dCnsKICAiYSI6IFsKICAgIDEsCiAgICB7CiAgICAgICJiIjogMgogICAgfQogIF0sCiAgImMiOiAiZCIKfQp7ImMiOjMsImEiOjF9")!, as: UTF8.self)
+        XCTAssertEqual(try js.evaluate(script, filename: "t.js").string, expected)
+    }
 }
