@@ -380,10 +380,20 @@ final class WidgetCompositor {
     }
 
     func attach(_ host: CALayer?) {
+        let previous = self.host
+        if previous === host {
+            return
+        }
         self.host = host
-        for item in promoted.values where item.layer.superlayer !== host {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for container in containers.values {
+            host?.addSublayer(container)
+        }
+        for item in promoted.values where item.layer.superlayer == nil || item.layer.superlayer === previous {
             host?.addSublayer(item.layer)
         }
+        CATransaction.commit()
     }
 
     func reset() {
