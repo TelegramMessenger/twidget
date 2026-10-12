@@ -1,5 +1,8 @@
 #import <XCTest/XCTest.h>
 #import "LHDocument.h"
+#import "LHGPURenderer.h"
+#import "LHRenderList.h"
+#import <Metal/Metal.h>
 
 #include <random>
 #include <set>
@@ -179,6 +182,69 @@ static NSData *Render(NSString *html, NSString **signature, CGFloat *height)
     NSString *slowSignature = nil;
     NSData   *slow          = Render(probe, &slowSignature, &height);
     XCTAssertEqualObjects(signature, slowSignature);
+    XCTAssertEqualObjects(fast, slow);
+}
+
+static NSData *RenderGPU(LHGPURenderer *renderer, NSString *html, BOOL *supported)
+{
+    LHDocument    *document = [[LHDocument alloc] initWithHTML:html css:@"body{margin:3px;background:#fff}p{margin:2px 0}"];
+    CGSize         size     = [document layoutWithMaxWidth:300 preferredWidth:300];
+    LHDisplayList *list     = [document displayListWithMaxWidth:300 gpu:renderer scale:2];
+    *supported              = list.gpuSupported;
+    NSUInteger height       = (NSUInteger)ceil(size.height);
+    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:600 height:height * 2 mipmapped:NO];
+    descriptor.usage       = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    descriptor.storageMode = MTLStorageModeShared;
+    id<MTLTexture>       texture = [renderer.device newTextureWithDescriptor:descriptor];
+    id<MTLCommandBuffer> buffer  = [renderer.queue commandBuffer];
+    [renderer encodeDisplayList:list tiles:@[[NSValue valueWithRect:NSMakeRect(0, 0, 300, height)]] scale:2 targets:@[texture] commandBuffer:buffer];
+    [buffer commit];
+    [buffer waitUntilCompleted];
+    [renderer endFrame];
+    NSMutableData *data = [NSMutableData dataWithLength:600 * 4 * height * 2];
+    [texture getBytes:data.mutableBytes bytesPerRow:600 * 4 fromRegion:MTLRegionMake2D(0, 0, 600, height * 2) mipmapLevel:0];
+    return data;
+}
+
+- (void)testGlyphAtlasRunsMatchCoreTextRuns
+{
+    LHGPURenderer *renderer = [[LHGPURenderer alloc] initWithDevice:nil];
+    if(!renderer)
+        return;
+    std::mt19937             random(11);
+    std::vector<std::string> words = Words(random, 300);
+    NSMutableString         *training = [NSMutableString string];
+    NSMutableString         *probe    = [NSMutableString string];
+    for(NSString *style in @[@"font:13px -apple-system", @"font:600 16px Helvetica", @"font:12px Georgia"])
+    {
+        [training appendFormat:@"<p style=\"%@\">", style];
+        [probe appendFormat:@"<p style=\"%@\">", style];
+        for(size_t i = 0; i < words.size(); i++)
+        {
+            NSString *word = [[@(words[i].c_str()) stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"] stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+            [training appendFormat:@"%@ ", word];
+            if(words[i].size() > 2)
+                [probe appendFormat:@"%@ ", [word substringToIndex:word.length - 1]];
+        }
+        [training appendString:@"</p>"];
+        [probe appendString:@"</p>"];
+    }
+    [LHDocument purgeCaches];
+    BOOL supported = NO;
+    RenderGPU(renderer, training, &supported);
+    NSDictionary *before = LHDocument.simpleTextStats;
+    NSData       *fast   = RenderGPU(renderer, probe, &supported);
+    XCTAssertTrue(supported);
+    XCTAssertGreaterThan([LHDocument.simpleTextStats[@"hits"] longValue] - [before[@"hits"] longValue], 200);
+    LHDocument.simpleTextEnabled = NO;
+    [LHDocument purgeCaches];
+    LHGPURenderer *fresh = [[LHGPURenderer alloc] initWithDevice:nil];
+    NSData        *slow  = RenderGPU(fresh, probe, &supported);
+    const uint8_t *bytes = (const uint8_t *)fast.bytes;
+    size_t         inked = 0;
+    for(size_t i = 0; i < fast.length; i += 4)
+        inked += bytes[i] < 128;
+    XCTAssertGreaterThan(inked, 1000u);
     XCTAssertEqualObjects(fast, slow);
 }
 
