@@ -55,6 +55,24 @@ enum CanvasName: UInt8 {
     static func lookup(_ text: String) -> CanvasName {
         return byText[text] ?? .none
     }
+
+    private static let byLength: [[([UInt8], CanvasName)]] = {
+        var table = [[([UInt8], CanvasName)]](repeating: [], count: 33)
+        for (text, name) in byText where text.utf8.count < 33 {
+            table[text.utf8.count].append((Array(text.utf8), name))
+        }
+        return table
+    }()
+
+    static func lookup(_ bytes: UnsafeBufferPointer<UInt8>) -> CanvasName {
+        guard bytes.count < byLength.count, let base = bytes.baseAddress else {
+            return .none
+        }
+        for (candidate, name) in byLength[bytes.count] where candidate[0] == base[0] && candidate.withUnsafeBufferPointer({ memcmp($0.baseAddress!, base, bytes.count) == 0 }) {
+            return name
+        }
+        return .none
+    }
 }
 
 struct CanvasOp {
@@ -424,53 +442,47 @@ struct CanvasJSONScanner {
         }
         let start = stream.args.count
         var values = 0
-        var head: CanvasArg = .other
-        var second: CanvasArg = .other
+        var ident = 0.0
+        var name = CanvasName.none
+        var named = false
+        let wantsName = kind == .call || kind == .set
         while eat(0x2C) {
+            values += 1
+            if (values == 1 && wantsName) || (values == 2 && kind == .pathCall) {
+                if peek() == 0x22 {
+                    guard let raw = rawString() else {
+                        return false
+                    }
+                    name = CanvasName.lookup(raw)
+                    named = true
+                } else if value() == nil {
+                    return false
+                }
+                continue
+            }
+            if values == 1 {
+                guard let v = value() else {
+                    return false
+                }
+                if case let .number(number) = v {
+                    ident = number
+                }
+                continue
+            }
             guard let v = value() else {
                 return false
             }
-            values += 1
-            if values == 1 {
-                head = v
-            } else if values == 2 && kind == .pathCall {
-                second = v
-            } else {
-                guard stream.args.count < CanvasStream.maxArgs else {
-                    return false
-                }
-                stream.args.append(v)
+            guard stream.args.count < CanvasStream.maxArgs else {
+                return false
             }
+            stream.args.append(v)
         }
         guard eat(0x5D) else {
             return false
         }
-        guard let kind = kind, values >= 1, stream.ops.count < CanvasStream.maxOps else {
+        guard let kind = kind, values >= 1, stream.ops.count < CanvasStream.maxOps, (kind != .call && kind != .set && kind != .pathCall) || named else {
             stream.args.removeSubrange(start...)
             return true
-        }
-        var name = CanvasName.none
-        var ident = 0.0
-        switch kind {
-        case .call, .set:
-            guard case let .string(text) = head else {
-                stream.args.removeSubrange(start...)
-                return true
-            }
-            name = CanvasName.lookup(text)
-        case .pathCall:
-            guard values >= 2, case let .string(text) = second else {
-                stream.args.removeSubrange(start...)
-                return true
-            }
-            name = CanvasName.lookup(text)
-            if case let .number(v) = head {
-                ident = v
-            }
-        default:
-            if case let .number(v) = head {
-                ident = v
-            }
         }
         stream.ops.append(CanvasOp(kind: kind, name: name, ident: ident, start: Int32(start), count: Int32(stream.args.count - start)))
         return true
