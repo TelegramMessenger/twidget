@@ -27,6 +27,9 @@ static NSString *RebuildPage(int frame)
 
 - (void)testRebuiltRenderTreesAreReleased
 {
+#if __has_feature(address_sanitizer)
+    XCTSkip(@"the sanitizer quarantine holds freed memory");
+#endif
     LHDocument *document = [[LHDocument alloc] initWithHTML:RebuildPage(0) css:nil previous:nil];
     [document layoutWithMaxWidth:300 preferredWidth:300];
     for(int frame = 1; frame <= 20; frame++)
