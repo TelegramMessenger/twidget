@@ -532,13 +532,16 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private var canDrive: Bool {
-        return !frozen && isOnScreen && !listened.contains("animationiteration") && !listened.contains("animationend") && WidgetCompositor.handoffEnabled
+        return !frozen && isOnScreen && WidgetCompositor.handoffEnabled
     }
 
     private var drivenEndToken = 0
 
     private func scheduleDrivenEnds(now: CFTimeInterval) {
-        let ends = compositor.drivenIDs.compactMap { animator.endTime($0) }.filter { $0 > now }
+        var ends = compositor.drivenIDs.compactMap { animator.endTime($0) }.filter { $0 > now }
+        if listened.contains("animationiteration") {
+            ends += compositor.drivenIDs.compactMap { animator.nextIteration($0, after: now) }
+        }
         guard let next = ends.min() else {
             return
         }

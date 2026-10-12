@@ -723,6 +723,20 @@ final class WidgetAnimator {
         return running.contains { id, list in !driven.contains(id) && list.contains { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil } }
     }
 
+    func nextIteration(_ id: Int, after now: CFTimeInterval) -> CFTimeInterval? {
+        guard let item = running[id]?.first(where: { !$0.ended && keyframes[$0.spec.name] != nil }) else {
+            return nil
+        }
+        let duration = max(item.spec.duration, 0.0001)
+        let begin = item.start + item.spec.delay
+        let k = max(1, floor((now - begin) / duration) + 1)
+        let next = begin + k * duration
+        if item.spec.iterations.isFinite && next >= begin + item.spec.iterations * duration {
+            return nil
+        }
+        return next
+    }
+
     func endTime(_ id: Int) -> CFTimeInterval? {
         guard let item = running[id]?.first(where: { !$0.ended && keyframes[$0.spec.name] != nil }), item.spec.iterations.isFinite else {
             return nil
