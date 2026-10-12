@@ -830,6 +830,9 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
                     {
                         doc->cvt_units(*len, m_font_metrics, 0_px);
                     }
+                    fn.radius = css_length(std::min(fn.radius.val(), 256.f), css_units_px);
+                    fn.x      = css_length(std::clamp(fn.x.val(), -1024.f, 1024.f), css_units_px);
+                    fn.y      = css_length(std::clamp(fn.y.val(), -1024.f, 1024.f), css_units_px);
                     if(fn.color.is_current_color)
                     {
                         fn.color = m_color;
