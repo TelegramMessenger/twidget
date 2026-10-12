@@ -367,6 +367,16 @@ void litehtml::render_item_inline_context::apply_vertical_align()
     }
 }
 
+litehtml::pixel_t litehtml::render_item_inline_context::control_baseline_inset() const
+{
+    if(src_el()->tag() != _input_)
+    {
+        return 0_px;
+    }
+    const char* type = src_el()->get_attr("type");
+    return type && (!t_strcasecmp(type, "checkbox") || !t_strcasecmp(type, "radio")) ? 2_px : 0_px;
+}
+
 litehtml::pixel_t litehtml::render_item_inline_context::get_first_baseline()
 {
     pixel_t bl;
@@ -376,7 +386,7 @@ litehtml::pixel_t litehtml::render_item_inline_context::get_first_baseline()
         bl               = line->bottom() - line->baseline() + content_offset_top();
     } else
     {
-        bl = height() - margin_bottom();
+        bl = height() - margin_bottom() - control_baseline_inset();
     }
     return bl;
 }
@@ -390,7 +400,7 @@ litehtml::pixel_t litehtml::render_item_inline_context::get_last_baseline()
         bl               = line->bottom() - line->baseline() + content_offset_top();
     } else
     {
-        bl = height();
+        bl = src_el()->tag() == _input_ ? height() - margin_bottom() - control_baseline_inset() : height();
     }
     return bl;
 }

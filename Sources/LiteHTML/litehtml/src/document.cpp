@@ -301,6 +301,12 @@ namespace litehtml
                             names.ids.insert(attr.name);
                         else if(attr.type == select_attr)
                             names.attrs.insert(attr.name);
+                        else if(attr.type == select_pseudo_class && attr.name == _checked_)
+                        {
+                            names.attrs.insert(_id("checked"));
+                            names.attrs.insert(_id("selected"));
+                        } else if(attr.type == select_pseudo_class && (attr.name == _disabled_ || attr.name == _enabled_))
+                            names.attrs.insert(_id("disabled"));
                     }
                     for(const auto& inner : attr.selector_list)
                     {
@@ -2475,6 +2481,15 @@ namespace litehtml
             } else if(!strcmp(tag_name, "button"))
             {
                 newTag = std::make_shared<el_button>(this_doc);
+            } else if(!strcmp(tag_name, "textarea"))
+            {
+                newTag = std::make_shared<el_textarea>(this_doc);
+            } else if(!strcmp(tag_name, "fieldset"))
+            {
+                newTag = std::make_shared<el_fieldset>(this_doc);
+            } else if(!strcmp(tag_name, "progress") || !strcmp(tag_name, "meter"))
+            {
+                newTag = std::make_shared<el_meter>(this_doc);
             } else
             {
                 newTag = std::make_shared<html_tag>(this_doc);
