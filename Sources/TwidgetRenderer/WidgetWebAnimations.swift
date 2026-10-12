@@ -627,6 +627,7 @@ final class WidgetWebAnimations {
     private(set) var byAid: [Int: WebAnimation] = [:]
     private(set) var byTarget: [Int: [WebAnimation]] = [:]
     var clock: () -> CFTimeInterval = { CACurrentMediaTime() }
+    var isAlive: (Int) -> Bool = { _ in true }
 
     var isEmpty: Bool {
         return byAid.isEmpty
@@ -693,7 +694,7 @@ final class WidgetWebAnimations {
 
     func sample(into overrides: inout [Int: [(String, String)]], underlying: (Int, String) -> String) {
         let now = clock()
-        for (id, list) in byTarget {
+        for (id, list) in byTarget where isAlive(id) {
             for animation in list {
                 guard let values = animation.values(at: now, underlying: { property in
                     overrides[id]?.last { $0.0 == property }?.1 ?? underlying(id, property)
@@ -725,7 +726,7 @@ final class WidgetWebAnimations {
     func animatedIDs() -> Set<Int> {
         let now = clock()
         var ids = Set<Int>()
-        for (id, list) in byTarget where list.contains(where: { $0.inEffect(now) || $0.isRunning && WidgetWebAnimations.pendingEffect($0, now) }) {
+        for (id, list) in byTarget where isAlive(id) && list.contains(where: { $0.inEffect(now) || $0.isRunning && WidgetWebAnimations.pendingEffect($0, now) }) {
             ids.insert(id)
         }
         return ids
@@ -740,7 +741,7 @@ final class WidgetWebAnimations {
 
     func needsFrames(excluding driven: Set<Int>) -> Bool {
         let now = clock()
-        for (id, list) in byTarget where !driven.contains(id) {
+        for (id, list) in byTarget where !driven.contains(id) && isAlive(id) {
             for animation in list where animation.isRunning {
                 guard let state = animation.computed(now) else {
                     continue

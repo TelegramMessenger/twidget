@@ -153,6 +153,9 @@ public final class LiteHTMLWidgetRenderer {
         animator.underlying = { [weak self] id, property in
             self?.webUnderlying[id]?[property]
         }
+        animator.web.isAlive = { [weak self] id in
+            self?.dom.node(id) != nil
+        }
     }
 
     public func load() {
