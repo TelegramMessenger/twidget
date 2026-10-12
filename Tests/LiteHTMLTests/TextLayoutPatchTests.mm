@@ -201,6 +201,32 @@ static NSString *Page(NSString *css, const std::string &body)
     }
 }
 
+- (void)testSameSizeTextReusesTheLayout
+{
+    NSArray<NSString *> *values = @[@"10.25", @"10.75", @"38.00", @"38.00 x", @"5.5", @"5.5", @"41.09", @"1041.09", @"77.31"];
+    auto body = [](NSString *value, bool up) {
+        return std::string("<table data-lh-id=\"5\"><tr data-lh-id=\"6\"><td data-lh-id=\"7\" class=\"") + (up ? "up" : "down") +
+               "\" style=\"font-family:Menlo\">" + value.UTF8String + "</td><td data-lh-id=\"8\">fixed</td></tr></table><p data-lh-id=\"9\">tail <b data-lh-id=\"10\" style=\"font-family:Menlo\">" +
+               value.UTF8String + "</b></p>";
+    };
+    LHDocument *document = [[LHDocument alloc] initWithHTML:Page(PaintSheet, body(values[0], true)) css:nil previous:nil];
+    [document layoutWithMaxWidth:200 preferredWidth:200];
+    NSUInteger reused = 0;
+    for(NSUInteger i = 1; i < values.count; i++)
+    {
+        NSString   *html  = Page(PaintSheet, body(values[i], i % 2));
+        LHDocument *patch = [[LHDocument alloc] initWithHTML:html css:nil previous:document];
+        LHDocument *fresh = [[LHDocument alloc] initWithHTML:html css:nil];
+        XCTAssertTrue(patch.reusedPrevious, @"%@", values[i]);
+        reused += patch.reusedLayout;
+        if([values[i] isEqualToString:@"38.00 x"] || [values[i] isEqualToString:@"1041.09"] || [values[i] isEqualToString:@"5.5"])
+            XCTAssertFalse(patch.reusedLayout && ![values[i - 1] isEqualToString:values[i]], @"%@", values[i]);
+        [self expect:patch like:fresh width:200 label:values[i]];
+        document = patch;
+    }
+    XCTAssertEqual(reused, 3u);
+}
+
 - (void)testRandomTextAndClassEditsMatchAFreshLayout
 {
     const char  *budget   = getenv("TWIDGET_FUZZ_SECONDS");

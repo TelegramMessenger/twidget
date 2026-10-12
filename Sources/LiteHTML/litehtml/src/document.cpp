@@ -911,10 +911,13 @@ namespace litehtml
             hole.value       = changes[entry.first].second;
             restyle.push_back(hole.owner);
         }
+        static const bool                               resize_only = getenv("LH_NO_SAME_SIZE_TEXT") != nullptr;
+        std::vector<std::pair<element::ptr, size>>      measured;
         for(size_t k : dirty)
         {
-            const std::string& value = changes[k].second;
-            html_hole&         hole  = m_holes[changes[k].first];
+            const std::string& value   = changes[k].second;
+            html_hole&         hole    = m_holes[changes[k].first];
+            const bool         inplace = hole.text && retext_in_place(hole.text_elements, value.c_str(), words);
             if(m_patch_confined)
             {
                 element::ptr region;
@@ -933,10 +936,10 @@ namespace litehtml
             }
             if(paint_only)
             {
-                if(hole.text || hole.src)
+                if(hole.src || (hole.text && (!inplace || resize_only)))
                 {
                     paint_only = false;
-                } else if(!hole.attr.empty())
+                } else if(!hole.text && !hole.attr.empty())
                 {
                     bool inside_svg = false;
                     for(auto p = hole.owner->parent(); p; p = p->parent())
@@ -948,16 +951,19 @@ namespace litehtml
                         }
                     }
                     paint_only = inside_svg;
-                } else
+                } else if(!hole.text)
                 {
                     paint_only = style_change_is_paint_only(hole.value, value);
                 }
             }
-            if(hole.text && retext_in_place(hole.text_elements, value.c_str(), words))
+            if(inplace)
             {
                 hole.value = value;
                 for(size_t w = 0; w < words.size(); w++)
                 {
+                    size before;
+                    hole.text_elements[w]->get_content_size(before, 0_px);
+                    measured.emplace_back(hole.text_elements[w], before);
                     std::static_pointer_cast<el_text>(hole.text_elements[w])->set_text(words[w]);
                     retext.push_back(hole.text_elements[w]);
                 }
@@ -1011,6 +1017,13 @@ namespace litehtml
                 groups.push_back(el->css().is_paint_group());
         }
         restyle_after_patch(restyle, new_text, keep_tree, retext);
+        for(size_t k = 0; k < measured.size() && paint_only; k++)
+        {
+            size after;
+            measured[k].first->get_content_size(after, 0_px);
+            if(after.width != measured[k].second.width || after.height != measured[k].second.height)
+                paint_only = false;
+        }
         if(paint_only)
         {
             for(size_t k = 0; k < restyle.size() && paint_only; k++)
