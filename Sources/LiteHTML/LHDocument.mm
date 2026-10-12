@@ -826,15 +826,21 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
 
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring clipped:(BOOL)clipped
 {
+    NSArray<NSString *> *obscuring = [self elementsObscuringAttribute:attribute value:value inRect:rect ignoring:ignoring clipped:clipped];
+    return obscuring != nil && obscuring.count == 0;
+}
+
+- (nullable NSArray<NSString *> *)elementsObscuringAttribute:(NSString *)attribute value:(NSString *)value inRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring clipped:(BOOL)clipped
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
     if(!ri || (ri->src_el()->is_inline() && !ri->src_el()->is_inline_box()) || CGRectIsNull(rect) || CGRectIsEmpty(rect))
-        return NO;
+        return nil;
     for(auto p = ri->parent(); p; p = p->parent())
     {
         if(p->src_el()->css().is_paint_group())
-            return NO;
+            return nil;
         if(p->src_el()->css().get_overflow() > lh::overflow_visible && !clipped)
         {
             CGRect border = BorderBox(p);
@@ -845,14 +851,14 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
                                        radius.bottom_left_x.value(), radius.bottom_left_y.value(), radius.bottom_right_x.value(), radius.bottom_right_y.value()});
             CGRect safe = CGRectInset(inner, corner, corner);
             if(!CGRectContainsRect(safe, rect))
-                return NO;
+                return nil;
         }
     }
     std::vector<const lh::render_item *> trace;
     trace.reserve(256);
     CGContextRef ctx = [self createContextWithWidth:1 height:1];
     if(!ctx)
-        return NO;
+        return nil;
     [self resolveExclusionsLocked];
     auto saved        = _doc->skip_paint;
     lh::g_paint_trace = &trace;
@@ -862,9 +868,11 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     lh::g_paint_trace = nullptr;
     _doc->skip_paint  = saved;
     CGContextRelease(ctx);
+    const char *key = attribute.UTF8String;
+    NSMutableOrderedSet<NSString *> *found = [NSMutableOrderedSet orderedSet];
     auto self_it = std::find(trace.begin(), trace.end(), ri.get());
     if(self_it == trace.end())
-        return NO;
+        return nil;
     for(auto it = std::next(self_it); it != trace.end(); ++it)
     {
         const lh::render_item *item = *it;
@@ -894,9 +902,35 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
         }
         CGRect box = BorderBox(std::const_pointer_cast<lh::render_item>(item->shared_from_this()));
         if(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect))
-            return NO;
+        {
+            NSString *owner = nil;
+            for(const lh::render_item *walk = item; walk; walk = walk->parent().get())
+            {
+                bool ancestorOfSelf = false;
+                for(auto p = ri->parent(); p; p = p->parent())
+                {
+                    if(p.get() == walk)
+                    {
+                        ancestorOfSelf = true;
+                        break;
+                    }
+                }
+                if(ancestorOfSelf)
+                    break;
+                if(const char *v = walk->src_el()->get_attr(key))
+                {
+                    owner = @(v);
+                    break;
+                }
+            }
+            if(!owner)
+                return nil;
+            [found addObject:owner];
+            if(found.count > 8)
+                return nil;
+        }
     }
-    return YES;
+    return found.array;
 }
 
 - (void)drawLockedInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip

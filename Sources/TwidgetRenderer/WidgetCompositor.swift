@@ -531,6 +531,7 @@ final class WidgetCompositor {
     }
 
     static let log = ProcessInfo.processInfo.environment["TW_COMPOSITE_LOG"] != nil
+    static let overlapPromotion = ProcessInfo.processInfo.environment["TW_NO_OVERLAP"] == nil
     static var handoffEnabled = ProcessInfo.processInfo.environment["TW_NO_HANDOFF"] == nil
     static let bakeTolerance: CGFloat = 0.05
     static let maxBakeDepth = 9
@@ -699,6 +700,39 @@ final class WidgetCompositor {
                 return !clipped.isNull && document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: clipped, ignoring: ignoring, clipped: true)
             }
             return document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach, ignoring: ignoring)
+        }
+        var overlapAdded: Set<Int> = []
+        if WidgetCompositor.overlapPromotion {
+            let ignoringAll = Set(wanted.keys.map { String($0) })
+            for (id, _) in wanted where !overlapAdded.contains(id) {
+                guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll) else {
+                    continue
+                }
+                let clipped = clips[id].map { reach.intersection($0.rect) } ?? reach
+                guard !clipped.isNull, let obscuring = document.elementsObscuring(attribute: WidgetDOM.idAttribute, value: String(id), in: clipped, ignoring: ignoringAll, clipped: clips[id] != nil), !obscuring.isEmpty, obscuring.count <= 3 else {
+                    continue
+                }
+                let others = obscuring.compactMap { Int($0) }
+                guard others.count == obscuring.count, others.allSatisfy({ other in
+                    wanted[other] == nil && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !WidgetCompositor.isAncestor(other, of: id, dom: dom) && !WidgetCompositor.isAncestor(id, of: other, dom: dom) && boxes[String(other)] != nil
+                }) else {
+                    continue
+                }
+                for other in others {
+                    let box = boxes[String(other)]!.rectValue
+                    guard box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
+                        continue
+                    }
+                    wanted[other] = (box, CGPoint(x: box.width / 2, y: box.height / 2), 1)
+                    reaches[other] = [box]
+                    var rect = CGRect.zero
+                    var radii = [CGFloat](repeating: 0, count: 8)
+                    if document.clipOfElement(attribute: WidgetDOM.idAttribute, value: String(other), rect: &rect, radii: &radii) {
+                        clips[other] = Clip(rect: rect, radii: radii)
+                    }
+                    overlapAdded.insert(other)
+                }
+            }
         }
         var accepted = wanted
         for _ in 0..<4 {
