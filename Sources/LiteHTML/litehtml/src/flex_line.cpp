@@ -8,7 +8,7 @@ void litehtml::flex_line::distribute_free_space(pixel_t container_main_size)
     // If the sum is less than the flex container’s inner main size, use the flex grow factor for the
     // rest of this algorithm; otherwise, use the flex shrink factor.
 
-    if(main_size < container_main_size)
+    if(main_size - gaps() < container_main_size)
     {
         distribute_free_space_grow(container_main_size);
     } else
