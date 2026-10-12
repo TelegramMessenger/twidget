@@ -461,6 +461,9 @@ public final class LiteHTMLWidgetRenderer {
         if let previous = previousList, documentView.document != nil {
             let rects = list.changedRects(since: previous).map { $0.rectValue }
             if !rects.isEmpty {
+                if LiteHTMLWidgetRenderer.dirtyLog {
+                    print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) \(rects.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
+                }
                 for rect in rects {
                     documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
                 }
@@ -644,6 +647,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     static let patchCheck = ProcessInfo.processInfo.environment["TW_PATCHCHECK"] != nil
+    static let dirtyLog = ProcessInfo.processInfo.environment["TW_DIRTY_LOG"] != nil
     public private(set) var patchChecks = 0
     public private(set) var patchMismatches = 0
 
