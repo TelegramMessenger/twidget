@@ -525,7 +525,11 @@ final class WidgetDOM {
             }
             out.append(contentsOf: open)
         }
-        if canvas != nil || !node.svg && WidgetDOM.voidElements.contains(node.tag) {
+        if canvas != nil {
+            out.append(contentsOf: Array("</canvas>".utf8))
+            return
+        }
+        if !node.svg && WidgetDOM.voidElements.contains(node.tag) {
             return
         }
         for child in node.children {
@@ -541,7 +545,7 @@ final class WidgetDOM {
             out.append(contentsOf: Array(text.utf8))
         }
         put("<")
-        put(canvas != nil ? "img" : node.tag)
+        put(node.tag)
         put(" data-lh-id=\"")
         put(String(id))
         put("\"")

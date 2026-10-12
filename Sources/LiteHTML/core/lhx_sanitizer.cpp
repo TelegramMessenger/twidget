@@ -231,6 +231,8 @@ bool Sanitizer::element(std::string& tag, bool svg, litehtml::string_map& attrs,
                 keep = IsFragment(Trimmed(it->second));
             else if(key == "src" && (name == "img" || name == "input"))
                 keep = imageAllowed(it->second);
+            else if(key == "src" && name == "canvas" && !svg)
+                keep = Scheme(Trimmed(it->second)) == "twcanvas";
             if(!keep)
             {
                 report("url-blocked", name + "[" + key + "]=" + it->second);

@@ -22,7 +22,6 @@ public enum WidgetCanvasImages {
             return
         }
         installed = true
-        LHSanitizer.addImageScheme("twcanvas")
         let previous = LHImages.provider
         LHImages.setProvider { url in
             if url.hasPrefix("twcanvas:") {

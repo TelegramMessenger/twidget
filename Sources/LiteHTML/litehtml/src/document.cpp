@@ -429,7 +429,7 @@ namespace litehtml
                 for(unsigned int i = 0; i < e.attributes.length; i++)
                 {
                     auto*      attr = static_cast<const GumboAttribute*>(e.attributes.data[i]);
-                    const bool src  = e.tag == GUMBO_TAG_IMG && strcmp(attr->name, "src") == 0;
+                    const bool src  = (e.tag == GUMBO_TAG_IMG || e.tag == GUMBO_TAG_CANVAS) && strcmp(attr->name, "src") == 0;
                     const bool geometry = !src && e.tag_namespace == GUMBO_NAMESPACE_SVG && e.tag != GUMBO_TAG_SVG &&
                                           svg_geometry_attribute(attr->name) && !selected.count(attr->name);
                     if(!src && !geometry && strcmp(attr->name, "style") != 0)
@@ -736,7 +736,7 @@ namespace litehtml
             if(hole.src)
             {
                 string_map  attrs = {{"src", hole.value}};
-                std::string tag   = "img";
+                std::string tag   = hole.owner->get_tagName() ? hole.owner->get_tagName() : "img";
                 const bool  keep  = m_container->sanitize_element(tag, false, attrs) && attrs.count("src");
                 hole.owner->set_attr("src", keep ? attrs["src"].c_str() : "");
                 if(auto image = std::dynamic_pointer_cast<el_image>(hole.owner))
@@ -1378,7 +1378,7 @@ namespace litehtml
             } else if(!strcmp(tag_name, "p"))
             {
                 newTag = std::make_shared<el_para>(this_doc);
-            } else if(!strcmp(tag_name, "img"))
+            } else if(!strcmp(tag_name, "img") || !strcmp(tag_name, "canvas"))
             {
                 newTag = std::make_shared<el_image>(this_doc);
             } else if(!strcmp(tag_name, "table"))

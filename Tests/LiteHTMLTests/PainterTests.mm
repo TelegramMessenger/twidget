@@ -124,6 +124,17 @@ struct RecordingPainter : lhx::Painter
     XCTAssertEqual(counts[@"url-blocked"].intValue, 2);
 }
 
+- (void)testCanvasSourcesAreRendererOnly
+{
+    [LHSanitizer setLinkSchemes:@[@"http", @"https", @"mailto"] imageSchemes:@[]];
+    LHDocument *document = [[LHDocument alloc] initWithHTML:@"<canvas src=\"twcanvas:a-1-2\"></canvas><canvas src=\"https://evil/p.gif\"></canvas><canvas src=\"data:image/png;base64,AAAA\"></canvas>"
+                                                             "<img src=\"twcanvas:a-1-2\"><div style=\"background-image:url(twcanvas:a-1-2)\">x</div><svg><image href=\"twcanvas:a-1-2\"/></svg>" css:nil];
+    [document layoutWithMaxWidth:300];
+    XCTAssertEqual(document.sanitizerCounts[@"url-blocked"].intValue, 5, @"%@", document.sanitizerDetails);
+    for(NSString *detail in document.sanitizerDetails)
+        XCTAssertFalse([detail hasPrefix:@"canvas[src]=twcanvas:"], @"%@", detail);
+}
+
 - (void)testHostSchemesAreConfigurable
 {
     [LHSanitizer setLinkSchemes:@[@"https", @"myapp"] imageSchemes:@[@"asset"]];
