@@ -85,7 +85,7 @@ struct CanvasOp {
 
 struct CanvasStream {
     static let maxOps = 500_000
-    static let maxArgs = 4_000_000
+    static let maxArgs = 1_000_000
 
     var ops: [CanvasOp] = []
     var args: [CanvasArg] = []
