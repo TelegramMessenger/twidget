@@ -104,6 +104,19 @@ public final class LiteHTMLWidgetRenderer {
 
     static let maxCanvases = 64
     static let maxCanvasPixels = 4096 * 4096
+    static let maxSurfaces = 8
+    static let surfaceAttribute = "data-tw3d"
+
+    public var surfaceLayer: ((String) -> CALayer?)? {
+        didSet {
+            placeSurfaces()
+        }
+    }
+    public var surfaceLayout: ((String, CGSize, CGFloat, Bool) -> Void)?
+    private var surfaceContainer: CALayer?
+    private var placedSurfaces: [String: CALayer] = [:]
+    private var surfaceTokens: [String] = []
+    private var surfaceRevision: UInt64 = .max
 
     private static let alwaysSent: Set<String> = ["click", "input", "change", "submit", "reset", "load", "error", "toggle"]
     private static let coalesced: Set<String> = ["pointermove", "mousemove", "touchmove", "wheel", "scroll"]
@@ -180,6 +193,12 @@ public final class LiteHTMLWidgetRenderer {
             presenter.remove()
         }
         presenters.removeAll()
+        for token in placedSurfaces.keys {
+            surfaceLayout?(token, .zero, 1, false)
+        }
+        placedSurfaces.removeAll()
+        surfaceContainer?.removeFromSuperlayer()
+        surfaceContainer = nil
         clock?.stop()
         clock = nil
         trimWork?.cancel()
@@ -795,6 +814,7 @@ public final class LiteHTMLWidgetRenderer {
         documentView.document = next
         reportSize()
         reportResize()
+        placeSurfaces()
     }
 
     private static let scriptedProperties: Set<String> = ["transform", "opacity"]
@@ -1050,6 +1070,80 @@ public final class LiteHTMLWidgetRenderer {
         return result
     }
 
+    func placeSurfaces() {
+        guard !destroyed, surfaceLayer != nil || !placedSurfaces.isEmpty else {
+            return
+        }
+        if surfaceRevision != WidgetDOM.revision {
+            surfaceRevision = WidgetDOM.revision
+            var tokens: [String] = []
+            for node in dom.nodes.values where !node.isText {
+                if let token = node.attribute(LiteHTMLWidgetRenderer.surfaceAttribute), !token.isEmpty, token.count <= 12, token.allSatisfy({ $0.isASCII && $0.isNumber }), !tokens.contains(token) {
+                    tokens.append(token)
+                    if tokens.count == LiteHTMLWidgetRenderer.maxSurfaces {
+                        break
+                    }
+                }
+            }
+            surfaceTokens = tokens.sorted()
+        }
+        let visible = isOnScreen && !frozen
+        let scale = documentView.scale
+        var rects: [String: CGRect] = [:]
+        if let document = document, surfaceLayer != nil {
+            for token in surfaceTokens {
+                let rect = document.bounds(matching: "[\(LiteHTMLWidgetRenderer.surfaceAttribute)=\"\(token)\"]")
+                if !rect.isNull, rect.width >= 1, rect.height >= 1 {
+                    rects[token] = rect
+                }
+            }
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (token, layer) in placedSurfaces where rects[token] == nil {
+            layer.removeFromSuperlayer()
+            placedSurfaces[token] = nil
+            surfaceLayout?(token, .zero, scale, false)
+        }
+        if !rects.isEmpty {
+            let container: CALayer
+            if let existing = surfaceContainer {
+                container = existing
+            } else {
+                container = CALayer()
+                container.masksToBounds = true
+                container.zPosition = 0.5
+                container.actions = ["bounds": NSNull(), "position": NSNull(), "frame": NSNull(), "hidden": NSNull(), "sublayers": NSNull()]
+                surfaceContainer = container
+            }
+            if container.superlayer !== documentView.layer {
+                documentView.layer?.addSublayer(container)
+            }
+            container.frame = documentView.bounds
+            container.isHidden = !visible
+            for (token, rect) in rects {
+                var layer = placedSurfaces[token]
+                if layer == nil, let made = surfaceLayer?(token) {
+                    made.zPosition = 0
+                    container.addSublayer(made)
+                    placedSurfaces[token] = made
+                    layer = made
+                }
+                guard let placed = layer else {
+                    continue
+                }
+                if placed.frame != rect {
+                    placed.frame = rect
+                }
+                placed.contentsScale = scale
+                surfaceLayout?(token, rect.size, scale, visible)
+            }
+        } else {
+            surfaceContainer?.removeFromSuperlayer()
+        }
+        CATransaction.commit()
+    }
+
     private func reportResize() {
         guard !observedResize.isEmpty else {
             return
@@ -1251,6 +1345,7 @@ public final class LiteHTMLWidgetRenderer {
             clock?.setDisplay(display)
         }
         reportSize()
+        placeSurfaces()
     }
 
     private var display: CGDirectDisplayID?
@@ -1302,6 +1397,7 @@ public final class LiteHTMLWidgetRenderer {
         hostVisible = visible
         updateAnimationClock()
         updateTileTrim()
+        placeSurfaces()
         if !isOnScreen {
             compositor.undrive()
         } else if !compositor.ids.isEmpty && animator.isActive && !frozen {
