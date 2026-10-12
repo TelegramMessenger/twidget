@@ -10,6 +10,8 @@
 #include <array>
 #include <functional>
 #include <map>
+#include <mutex>
+#include <unordered_set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -194,6 +196,9 @@ class LHContainer : public litehtml::document_container
     };
     std::vector<Effect>      m_effects;
     int                      m_hidden_depth = 0;
+    std::mutex                       m_backdrop_lock;
+    std::unordered_set<const void*>  m_backdrop_owners;
+    bool                             backdrop_allowed(const void* owner);
 
     CGAffineTransform group_matrix() const { return m_groups.empty() ? CGAffineTransformIdentity : m_groups.back().matrix; }
     std::vector<LHTextRun>*  m_runs = nullptr;

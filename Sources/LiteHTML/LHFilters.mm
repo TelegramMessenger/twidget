@@ -103,6 +103,17 @@ static CIImage* Blur(CIImage* image, CGFloat sigma)
 {
     if(sigma <= 0.01)
         return image;
+    const CGFloat limit = 24;
+    if(sigma > limit && !CGRectIsInfinite(image.extent))
+    {
+        const CGFloat k = limit / sigma;
+        CIFilter* down = [CIFilter filterWithName:@"CILanczosScaleTransform"];
+        [down setValue:image forKey:kCIInputImageKey];
+        [down setValue:@(k) forKey:kCIInputScaleKey];
+        [down setValue:@1 forKey:kCIInputAspectRatioKey];
+        CIImage* small = Blur(down.outputImage, limit);
+        return [[small imageBySamplingLinear] imageByApplyingTransform:CGAffineTransformMakeScale(1 / k, 1 / k)];
+    }
     CIFilter* blur = [CIFilter filterWithName:@"CIGaussianBlur"];
     [blur setValue:image forKey:kCIInputImageKey];
     [blur setValue:@(sigma) forKey:kCIInputRadiusKey];
@@ -116,8 +127,9 @@ static CIImage* ApplySteps(CIImage* image, const lh::filter_vector& steps, CGFlo
     {
         if(fn.kind == lh::filter_function::blur)
         {
-            image = clamped ? [Blur(image.imageByClampingToExtent, fn.radius.val() * scale) imageByCroppingToRect:extent]
-                            : Blur(image, fn.radius.val() * scale);
+            const CGFloat sigma = fn.radius.val() * scale;
+            image = clamped ? [Blur([image.imageByClampingToExtent imageByCroppingToRect:CGRectInset(extent, -3 * sigma, -3 * sigma)], sigma) imageByCroppingToRect:extent]
+                            : Blur(image, sigma);
         } else if(fn.kind == lh::filter_function::drop_shadow)
         {
             const lh::web_color& c = fn.color;

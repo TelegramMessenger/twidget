@@ -660,6 +660,10 @@ void AppendNumber(std::string& key, double v)
 // relative to the current clip, so drawing them straight into a partially redrawn tile gives
 // slightly different pixels than a full redraw; a pixel-aligned copy does not. Returns false when the
 // transform is not axis-aligned or r is not on device pixels, and the caller draws directly.
+static const CGFloat kMaxTextShadowBlur = 24;
+static const CGFloat kMaxTextShadowOffset = 200;
+static const size_t kMaxBackdrops = 8;
+
 static bool DrawDownsampled(CGContextRef ctx, CGRect r, std::string key, CGFloat blur, const std::function<void(CGContextRef)>& paint)
 {
     CGAffineTransform m = CGContextGetCTM(ctx);
@@ -1196,9 +1200,9 @@ lh::uint_ptr LHContainer::create_font(const lh::font_description& descr, const l
     f->strike     = (descr.decoration_line & lh::text_decoration_line_line_through) != 0;
     f->deco_color = descr.decoration_color;
     f->deco_style = descr.decoration_style;
-    f->shadow_x     = descr.shadow_x;
-    f->shadow_y     = descr.shadow_y;
-    f->shadow_blur  = descr.shadow_blur;
+    f->shadow_x     = std::clamp<CGFloat>(descr.shadow_x, -kMaxTextShadowOffset, kMaxTextShadowOffset);
+    f->shadow_y     = std::clamp<CGFloat>(descr.shadow_y, -kMaxTextShadowOffset, kMaxTextShadowOffset);
+    f->shadow_blur  = std::clamp<CGFloat>(descr.shadow_blur, 0, kMaxTextShadowBlur);
     f->shadow_color = descr.shadow_color;
     f->smoothing    = descr.smoothing;
 
@@ -3312,9 +3316,20 @@ void LHContainer::draw_filtered(lh::uint_ptr hdc, const lh::filter_paint& filter
     }
 }
 
+bool LHContainer::backdrop_allowed(const void* owner)
+{
+    std::lock_guard<std::mutex> guard(m_backdrop_lock);
+    if(m_backdrop_owners.count(owner))
+        return true;
+    if(m_backdrop_owners.size() >= kMaxBackdrops)
+        return false;
+    m_backdrop_owners.insert(owner);
+    return true;
+}
+
 void LHContainer::draw_backdrop(lh::uint_ptr hdc, const lh::filter_paint& filter)
 {
-    if(m_painter || m_runs || !filter.steps || filter.steps->empty())
+    if(m_painter || m_runs || !filter.steps || filter.steps->empty() || !backdrop_allowed(filter.owner))
         return;
     CGRect box = R(filter.box);
     if(m_ops)
