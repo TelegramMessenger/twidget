@@ -158,6 +158,59 @@ final class WidgetCompositor {
     private(set) var promotions = 0
     private var driven: [Int: String] = [:]
     private(set) var bakes = 0
+    var scriptedCandidates: Set<Int> = []
+    private var scripted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
+
+    var scriptedIDs: Set<Int> {
+        return Set(scripted.keys)
+    }
+
+    static func style(_ node: WidgetNode) -> [String: String] {
+        var style: [String: String] = [:]
+        for declaration in node.declarations {
+            style[declaration.name] = declaration.value
+        }
+        return style
+    }
+
+    private static func anchored(_ transform: CGAffineTransform, box: CGRect, origin: CGPoint) -> CGAffineTransform {
+        return CGAffineTransform(translationX: -origin.x, y: -origin.y).concatenating(transform).concatenating(CGAffineTransform(translationX: origin.x + box.minX, y: origin.y + box.minY))
+    }
+
+    func applyScripted(_ ids: Set<Int>, dom: WidgetDOM) -> Bool {
+        var updates: [(CALayer, CGAffineTransform, Float)] = []
+        for id in ids {
+            guard let item = promoted[id], let limits = scripted[id], let node = dom.node(id) else {
+                return false
+            }
+            let style = WidgetCompositor.style(node)
+            guard let transform = CSSTransform.parse(style["transform"], box: item.box.size) else {
+                return false
+            }
+            let opacity: Float
+            if let text = style["opacity"] {
+                guard let value = Double(text.trimmingCharacters(in: .whitespaces)), value.isFinite else {
+                    return false
+                }
+                opacity = Float(max(0, min(1, value)))
+            } else {
+                opacity = 1
+            }
+            let moved = CGRect(origin: .zero, size: item.box.size).applying(WidgetCompositor.anchored(transform, box: item.box, origin: item.origin))
+            if !limits.reach.contains(moved) || sqrt(abs(transform.a * transform.d - transform.b * transform.c)) > limits.scale + 0.001 {
+                return false
+            }
+            updates.append((item.layer, transform, opacity))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (layer, transform, opacity) in updates {
+            layer.setAffineTransform(transform)
+            layer.opacity = opacity
+        }
+        CATransaction.commit()
+        return true
+    }
 
     var drivenIDs: Set<Int> {
         return Set(driven.keys)
@@ -416,6 +469,30 @@ final class WidgetCompositor {
             }
             wanted[id] = (box, origin, min(maxScale, 3))
         }
+        var scriptedWanted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
+        scriptedCandidates = scriptedCandidates.filter { dom.node($0) != nil }
+        for id in scriptedCandidates where wanted[id] == nil && !animated.contains(id) && animator.base(id).isEmpty {
+            guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
+                continue
+            }
+            if wanted.keys.contains(where: { WidgetCompositor.isAncestor(id, of: $0, dom: dom) || WidgetCompositor.isAncestor($0, of: id, dom: dom) }) || scriptedCandidates.contains(where: { $0 != id && (WidgetCompositor.isAncestor(id, of: $0, dom: dom) || WidgetCompositor.isAncestor($0, of: id, dom: dom)) }) {
+                continue
+            }
+            let style = WidgetCompositor.style(node)
+            guard let transform = CSSTransform.parse(style["transform"], box: box.size), style["opacity"].map({ Double($0.trimmingCharacters(in: .whitespaces)) != nil }) ?? true else {
+                continue
+            }
+            let origin = CSSTransform.origin(style["transform-origin"], box: box.size)
+            let current = CGRect(origin: .zero, size: box.size).applying(WidgetCompositor.anchored(transform, box: box, origin: origin))
+            let margin = max(48, max(box.width, box.height) / 2)
+            let reach = box.union(current).insetBy(dx: -margin, dy: -margin)
+            let scale: CGFloat = min(3, max(1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
+            guard document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), isolatedIn: reach) else {
+                continue
+            }
+            wanted[id] = (box, origin, scale)
+            scriptedWanted[id] = (reach, scale)
+        }
         var budget = WidgetCompositor.maxPixels
         var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
         for (id, want) in wanted.sorted(by: { $0.value.box.width * $0.value.box.height < $1.value.box.width * $1.value.box.height }) {
@@ -428,6 +505,7 @@ final class WidgetCompositor {
             admitted[id] = want
         }
         wanted = admitted
+        scripted = scriptedWanted.filter { admitted[$0.key] != nil }
         for (id, item) in promoted where wanted[id] == nil {
             item.layer.removeFromSuperlayer()
             promoted[id] = nil
@@ -506,8 +584,11 @@ final class WidgetCompositor {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (id, item) in promoted {
-            let values = driven[id] != nil ? [] : overrides[id] ?? []
             rest[id] = nil
+            if scripted[id] != nil {
+                continue
+            }
+            let values = driven[id] != nil ? [] : overrides[id] ?? []
             let base = bases(id)
             let transformText = values.last { $0.0 == "transform" }?.1 ?? base["transform"]
             let opacityText = values.last { $0.0 == "opacity" }?.1 ?? base["opacity"]

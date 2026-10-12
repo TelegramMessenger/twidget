@@ -179,6 +179,18 @@ public final class LiteHTMLWidgetRenderer {
         switch type {
         case "ops":
             let ops = ((message["ops"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
+            if !frozen, let touched = scriptedOnly(ops) {
+                for op in ops {
+                    dom.apply(op)
+                }
+                stageMilliseconds["scripted-fast", default: 0] += 1
+                if compositor.applyScripted(touched, dom: dom) {
+                    return
+                }
+                render()
+                return
+            }
+            noteScriptedTransforms(ops)
             var capture: WidgetMagicMove.Capture?
             if dom.usesTransitions, let document = document, !frozen, isOnScreen, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, WidgetMagicMove.isStructural(ops, dom: dom) {
                 capture = magic.capture(dom: dom, document: document)
@@ -282,6 +294,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         compositor.drive(animator: animator, now: now, enabled: canDrive)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        _ = compositor.applyScripted(compositor.scriptedIDs, dom: dom)
         if !LiteHTMLWidgetRenderer.same(rest, overrides) || before != compositor.ids {
             overrides = rest
             layout(overrides)
@@ -445,6 +458,50 @@ public final class LiteHTMLWidgetRenderer {
         documentView.document = next
         reportSize()
         reportResize()
+    }
+
+    private static let scriptedProperties: Set<String> = ["transform", "opacity"]
+    static let scriptedPromotion = ProcessInfo.processInfo.environment["TW_NO_SCRIPTED"] == nil
+    private var scriptedHits: [Int: (count: Int, batch: Int)] = [:]
+    private var opsBatch = 0
+
+    private func scriptedOnly(_ ops: [[String: Any]]) -> Set<Int>? {
+        let promoted = compositor.scriptedIDs
+        if promoted.isEmpty || ops.isEmpty {
+            return nil
+        }
+        var touched: Set<Int> = []
+        for op in ops {
+            guard (op["op"] as? String) == "style", let name = (op["name"] as? String)?.lowercased(), LiteHTMLWidgetRenderer.scriptedProperties.contains(name), let id = (op["id"] as? NSNumber)?.intValue, promoted.contains(id) else {
+                return nil
+            }
+            touched.insert(id)
+        }
+        return touched
+    }
+
+    private func noteScriptedTransforms(_ ops: [[String: Any]]) {
+        opsBatch += 1
+        var promote = false
+        for op in ops {
+            guard (op["op"] as? String) == "style", let name = (op["name"] as? String)?.lowercased(), LiteHTMLWidgetRenderer.scriptedProperties.contains(name), let id = (op["id"] as? NSNumber)?.intValue else {
+                continue
+            }
+            let hit = scriptedHits[id] ?? (0, 0)
+            if hit.batch == opsBatch {
+                continue
+            }
+            let count = hit.batch == opsBatch - 1 ? hit.count + 1 : 1
+            scriptedHits[id] = (count, opsBatch)
+            if count >= 3 && LiteHTMLWidgetRenderer.scriptedPromotion && !compositor.scriptedCandidates.contains(id) && compositor.scriptedCandidates.count < WidgetCompositor.maxLayers {
+                compositor.scriptedCandidates.insert(id)
+                promote = true
+            }
+        }
+        if scriptedHits.count > 4096 {
+            scriptedHits = scriptedHits.filter { opsBatch - $0.value.batch < 8 }
+        }
+        _ = promote
     }
 
     private var needsFrames: Bool {
