@@ -158,7 +158,7 @@ function top() {
     <div class="row" style="margin-top: 8px">
       <div class="end"><div class="city">BER</div><div class="cityname">Berlin Brandenburg</div></div>
       <div class="route"><div class="line"></div><div class="trail" style="width: ${x}%"></div>
-        <img class="plane" src="sf:airplane?size=18&color=ffffff" style="left: ${x}%; margin-left: -9px"><div class="dur">3h 35m · nonstop</div></div>
+        <img class="plane" src="icon:airplane?size=22&color=ffffff" style="left: ${x}%; margin-left: -9px"><div class="dur">3h 35m · nonstop</div></div>
       <div class="end right"><div class="city">LIS</div><div class="cityname">Lisbon Humberto Delgado</div></div>
     </div>
     <div class="tabs">${tab('pass', 'Boarding pass')}${tab('details', 'Details')}</div>
@@ -169,7 +169,7 @@ function alertBox() {
   if (!oldGate || fx.alert < 0.01) return '';
   const h = Math.round(46 * Math.min(1, fx.alert));
   return `<div class="alert" style="height: ${h}px; background-color: rgba(255,149,0,${(0.14 + 0.26 * fx.flash).toFixed(3)})">
-    <div class="row" style="padding: 7px 10px"><img src="sf:exclamationmark.triangle.fill?size=16&color=ff9500" style="margin-right: 9px">
+    <div class="row" style="padding: 7px 10px"><img src="icon:warning-fill?size=19&color=ff9500" style="margin-right: 9px">
       <div class="grow"><b class="small">Gate changed: ${oldGate} → ${gate}</b><div class="tiny muted">About 6 min walk · follow the signs to Pier B</div></div>
       <span class="ok t-orange" data-action="ack">OK</span></div></div>`;
 }
@@ -181,7 +181,7 @@ function passView() {
     ? `<span class="small">Boarding in <b class="mono">${mmss(left)}</b></span><span class="tiny muted">gate closes 09:45</span>`
     : `<b class="small t-green">Boarding now · group 3</b><span class="tiny muted">gate closes 09:45</span>`;
   const foot = wallet === 'added'
-    ? `<div class="wal row"><img src="sf:checkmark.circle.fill?size=20&color=34c759" style="margin-right: 9px">
+    ? `<div class="wal row"><img src="icon:check-circle-fill?size=24&color=34c759" style="margin-right: 9px">
         <div class="grow"><b class="small">Added to Apple Wallet</b><div class="tiny muted">It will show on your lock screen at BER</div></div>
         <span class="lnk small" data-action="unwallet">Remove</span></div>`
     : `<div class="foot"><span class="grow tiny muted">${extra ? `Extra legroom · €${extra} paid` : 'Tap the seat to change it'}</span>
@@ -286,7 +286,7 @@ Window seat for you, middle for me, aisle for Ana 😅 I want a rematch on the w
   .it .what { font-weight: 600; }
   .it .det { font-size: 12px; }
   .it .more { display: flex; margin: 4px 0 4px 0; }
-  .it .map { position: relative; width: 120px; height: 92px; flex-shrink: 0; border-radius: 10px; overflow: hidden; background-image: url(app:map); background-size: cover; background-position: center; margin-right: 10px; }
+  .it .map { position: relative; width: 120px; height: 92px; flex-shrink: 0; border-radius: 10px; overflow: hidden; background-image: url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27360%27%20height=%27150%27%20viewBox=%270%200%20360%20150%27%3E%3Crect%20width=%27360%27%20height=%27150%27%20fill=%27%23f2efe9%27/%3E%3Crect%20x=%2730%27%20y=%2720%27%20width=%2790%27%20height=%2760%27%20rx=%2718%27%20fill=%27%23c8e6c9%27/%3E%3Cpath%20d=%27M0%20120C120%2080%20240%20150%20360%20100%27%20fill=%27none%27%20stroke=%27%23aad3df%27%20stroke-width=%2714%27/%3E%3Cpath%20d=%27M0%2060L360%2050M200%200L230%20150M90%200L140%20150M0%20140L360%2030%27%20fill=%27none%27%20stroke=%27%23ffffff%27%20stroke-width=%276%27/%3E%3Ccircle%20cx=%27207%27%20cy=%2751%27%20r=%2711%27%20fill=%27%23ff3b30%27/%3E%3Cpath%20d=%27M199%2056L207%2072L215%2056Z%27%20fill=%27%23ff3b30%27/%3E%3Ccircle%20cx=%27207%27%20cy=%2751%27%20r=%274%27%20fill=%27%23ffffff%27/%3E%3C/svg%3E); background-size: cover; background-position: center; margin-right: 10px; }
   .it .pin { position: absolute; font-size: 20px; line-height: 22px; }
   .it .facts div { font-size: 12px; padding: 1px 0; }
 </style>
@@ -371,7 +371,7 @@ function render() {
   const status = n === D.items.length ? '<span class="small t-green"><b>Day complete 🎉</b></span>' : `<span class="small muted">${n} of ${D.items.length} done</span>`;
   return `<div class="card it">
     <div class="pad" style="padding-bottom: 0">
-      <div class="row"><img src="sf:map.fill?size=18&color=ff9500" style="margin-right: 8px"><b class="grow" style="font-size: 17px">Itinerary</b><span class="badge orange">3 days · ${done.size}/${TOTAL} ✓</span></div>
+      <div class="row"><img src="icon:map-trifold-fill?size=22&color=ff9500" style="margin-right: 8px"><b class="grow" style="font-size: 17px">Itinerary</b><span class="badge orange">3 days · ${done.size}/${TOTAL} ✓</span></div>
       <div class="tiny muted">Tap a dot to tick a stop off, tap a stop for details and a map</div>
     </div>
     <div class="tabs">${tabs}</div>
@@ -408,14 +408,14 @@ function render() {
 <div class="card pad wx"><b>☀️ Lisbon · 24°</b><div class="small muted">Sunny, light breeze · H 26° · L 17° · Saturday drizzle</div></div>
 <script>
 const SLOTS = ['00', '03', '06', '09', '12', '15', '18', '21'];
-const SUN = 'sun.max.fill?size=22&mode=multicolor', PART = 'cloud.sun.fill?size=22&color=ff9f0a';
+const SUN = 'sun-fill?size=26&color=ffcc00', PART = 'cloud-sun-fill?size=26&color=ff9f0a';
 const DAYS = [
   { n: 'Thu', full: 'Thursday', sky: 'Sunny', icon: SUN, hi: 26, lo: 17, uv: 6, set: '19:12', temp: [18, 17, 17, 21, 25, 26, 23, 20], rain: [0, 0, 0, 0, 0, 0, 5, 5], wind: [6, 6, 8, 12, 16, 19, 15, 9] },
   { n: 'Fri', full: 'Friday', sky: 'Partly cloudy', icon: PART, hi: 24, lo: 17, uv: 5, set: '19:10', temp: [18, 17, 17, 20, 23, 24, 22, 19], rain: [5, 5, 10, 10, 15, 20, 10, 5], wind: [8, 8, 10, 14, 18, 20, 16, 10] },
-  { n: 'Sat', full: 'Saturday', sky: 'Drizzle', icon: 'cloud.drizzle.fill?size=22&color=5ac8fa', hi: 21, lo: 15, uv: 3, set: '19:09', temp: [16, 15, 15, 17, 19, 21, 19, 17], rain: [40, 55, 60, 70, 65, 50, 45, 35], wind: [14, 16, 18, 22, 24, 24, 20, 16] },
+  { n: 'Sat', full: 'Saturday', sky: 'Drizzle', icon: 'cloud-rain-fill?size=26&color=5ac8fa', hi: 21, lo: 15, uv: 3, set: '19:09', temp: [16, 15, 15, 17, 19, 21, 19, 17], rain: [40, 55, 60, 70, 65, 50, 45, 35], wind: [14, 16, 18, 22, 24, 24, 20, 16] },
   { n: 'Sun', full: 'Sunday', sky: 'Clearing up', icon: PART, hi: 23, lo: 16, uv: 5, set: '19:07', temp: [17, 16, 16, 19, 22, 23, 21, 18], rain: [20, 15, 10, 5, 5, 5, 0, 0], wind: [12, 10, 10, 12, 15, 16, 12, 10] },
   { n: 'Mon', full: 'Monday', sky: 'Sunny and warm', icon: SUN, hi: 27, lo: 18, uv: 7, set: '19:06', temp: [19, 18, 18, 22, 26, 27, 24, 21], rain: [0, 0, 0, 0, 0, 0, 0, 0], wind: [6, 6, 6, 10, 14, 16, 12, 8] },
-  { n: 'Tue', full: 'Tuesday', sky: 'Windy', icon: 'wind?size=22&color=8e8e93', hi: 22, lo: 16, uv: 5, set: '19:04', temp: [17, 16, 16, 18, 21, 22, 20, 18], rain: [0, 0, 5, 5, 0, 0, 0, 0], wind: [22, 24, 26, 30, 34, 32, 28, 24] },
+  { n: 'Tue', full: 'Tuesday', sky: 'Windy', icon: 'wind?size=26&color=8e8e93', hi: 22, lo: 16, uv: 5, set: '19:04', temp: [17, 16, 16, 18, 21, 22, 20, 18], rain: [0, 0, 5, 5, 0, 0, 0, 0], wind: [22, 24, 26, 30, 34, 32, 28, 24] },
   { n: 'Wed', full: 'Wednesday', sky: 'Sunny', icon: SUN, hi: 25, lo: 17, uv: 6, set: '19:03', temp: [18, 17, 17, 21, 24, 25, 22, 19], rain: [0, 0, 0, 0, 0, 0, 0, 0], wind: [8, 8, 8, 12, 15, 16, 12, 9] },
 ];
 const METRICS = { temp: { label: 'Temp', color: '#ff9500', lo: 12, hi: 30 }, rain: { label: 'Rain', color: '#0a84ff', lo: 0, hi: 100 }, wind: { label: 'Wind', color: '#30b0c7', lo: 0, hi: 40 } };
@@ -507,13 +507,13 @@ function hourly() {
 function render() {
   const days = DAYS.map((d, i) => {
     const w = (d.hi - d.lo) / 12 * 100 * fx.intro, m = (d.lo - 15) / 12 * 100;
-    return `<div class="day ${open && i === sel ? 'on' : ''}" data-action="day" data-value="${i}"><div class="n">${d.n}</div><img src="sf:${d.icon}" style="margin: 4px 0">
+    return `<div class="day ${open && i === sel ? 'on' : ''}" data-action="day" data-value="${i}"><div class="n">${d.n}</div><img src="icon:${d.icon}" style="margin: 4px 0">
       <div class="hi">${T(d.hi)}</div><div class="rng"><div style="width: ${w.toFixed(1)}%; margin-left: ${m.toFixed(1)}%"></div></div><div class="lo muted">${T(d.lo)}</div></div>`;
   }).join('');
   const units = ['C', 'F'].map(u => `<span class="${u === unit ? 'on' : ''}" data-action="unit" data-value="${u}">°${u}</span>`).join('');
   return `<div class="card wx">
     <div class="pad row">
-      <img src="sf:sun.max.fill?size=36&mode=multicolor" style="margin-right: 12px">
+      <img src="icon:sun-fill?size=43&color=ffcc00" style="margin-right: 12px">
       <div class="grow"><div class="caps">Lisbon · now</div><div style="font-size: 30px; font-weight: 800; line-height: 1.1">${T(24 * fx.intro)}</div></div>
       <div class="right small"><span class="seg">${units}</span><div style="margin-top: 4px">Sunny, light breeze</div><div class="muted">H ${T(26)} · L ${T(17)} · UV 6</div></div>
     </div>
@@ -530,7 +530,7 @@ Saturday looks drizzly for Sintra 🌦 — bring a rain jacket, the palace is ha
 --- ana 08:30 bare
 <style>
   .ht { width: 380px; max-width: 100%; }
-  .ht .ht-img { position: relative; height: 140px; border-radius: 13px 13px 0 0; background-image: url(app:sunset); background-size: cover; background-position: center; }
+  .ht .ht-img { position: relative; height: 140px; border-radius: 13px 13px 0 0; background-image: url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27360%27%20height=%27180%27%20viewBox=%270%200%20360%20180%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%232b1055%27/%3E%3Cstop%20offset=%270.33%27%20stop-color=%27%237597de%27/%3E%3Cstop%20offset=%270.67%27%20stop-color=%27%23ff9a8b%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%23ffd194%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27360%27%20height=%27180%27%20fill=%27url%28%23g%29%27/%3E%3Ccircle%20cx=%27252%27%20cy=%27110%27%20r=%2732%27%20fill=%27%23fff3c4%27/%3E%3Cpolygon%20points=%270,180%200,130%200,112%2030,110%2060,107%2090,105%20120,102%20150,123%20180,97%20210,118%20240,92%20270,113%20300,110%20330,108%20360,105%20360,180%27%20fill=%27%236a3d7c%27%20fill-opacity=%270.9%27/%3E%3Cpolygon%20points=%270,180%200,150%200,132%2030,130%2060,127%2090,125%20120,122%20150,143%20180,117%20210,138%20240,112%20270,133%20300,130%20330,128%20360,125%20360,180%27%20fill=%27%233f2a5c%27/%3E%3C/svg%3E); background-size: cover; background-position: center; }
   .ht .price { position: absolute; right: 10px; top: 10px; background-color: rgba(0,0,0,0.6); color: #ffffff; font-weight: 700; padding: 3px 10px; border-radius: 12px; font-size: 13px; }
   .ht .fav { position: absolute; left: 8px; top: 8px; width: 32px; height: 32px; line-height: 32px; text-align: center; border-radius: 16px; background-color: rgba(0,0,0,0.25); }
   .ht .fav:hover { background-color: rgba(0,0,0,0.45); }
@@ -638,7 +638,7 @@ function hero() {
   const s = Math.max(4, Math.round(20 * fx.heart));
   const stamp = step === 'done' ? '<span class="stamp">BOOKED ✓</span>' : step === 'cancelled' ? '<span class="stamp" style="background-color: #ff3b30">CANCELLED</span>' : '';
   return `<div class="ht-img" style="background-position: ${(25 + 50 * fx.pan).toFixed(1)}% 50%">
-    <span class="fav" data-action="fav"><img src="sf:${fav ? 'heart.fill' : 'heart'}?size=20&color=${fav ? 'ff2d55' : 'ffffff'}" width="${s}" height="${s}"></span>
+    <span class="fav" data-action="fav"><img src="icon:${fav ? 'heart-fill' : 'heart'}?size=24&color=${fav ? 'ff2d55' : 'ffffff'}" width="${s}" height="${s}"></span>
     <span class="price">${eur(fx.night)} / night</span>${stamp}</div>`;
 }
 
@@ -661,7 +661,7 @@ function formView() {
       <span class="small muted" style="margin-left: 8px">nights × 2 rooms</span>
       <div class="grow right"><b style="font-size: 17px">${eur(fx.total)}</b><div class="tiny muted">${eur(fx.each)} each, split 3 ways</div></div>
     </div>
-    <div class="amen"><span><img src="sf:wifi?size=12&color=007aff">Wi-Fi</span><span><img src="sf:cup.and.saucer.fill?size=12&color=a2845e">Breakfast</span><span><img src="sf:snowflake?size=12&color=5ac8fa">A/C</span><span><img src="sf:sun.horizon.fill?size=12&color=ff9500">Rooftop</span><span><img src="sf:pawprint.fill?size=12&color=8e8e93">Pets OK</span></div>
+    <div class="amen"><span><img src="icon:wifi-high?size=14&color=007aff">Wi-Fi</span><span><img src="icon:coffee-fill?size=14&color=a2845e">Breakfast</span><span><img src="icon:snowflake?size=14&color=5ac8fa">A/C</span><span><img src="icon:sun-horizon-fill?size=14&color=ff9500">Rooftop</span><span><img src="icon:paw-print-fill?size=14&color=8e8e93">Pets OK</span></div>
     <div class="btn primary book center" data-action="book">${busy ? spin + 'Confirming with the hotel…' : 'Book · ' + eur(fx.total)}</div>
     <div class="center tiny muted" style="margin-top: 5px">Free cancellation until Tue 7 Oct</div>
   </div>`;
@@ -686,7 +686,7 @@ function doneView() {
 
 function cancelledView() {
   return `<div class="pad">
-    <div class="row"><img src="sf:xmark.circle.fill?size=24&color=ff3b30" style="margin-right: 10px"><div class="grow"><b>Booking ${esc(code)} cancelled</b><div class="small muted">${eur(total())} goes back to your card in 3–5 days</div></div></div>
+    <div class="row"><img src="icon:x-circle-fill?size=29&color=ff3b30" style="margin-right: 10px"><div class="grow"><b>Booking ${esc(code)} cancelled</b><div class="small muted">${eur(total())} goes back to your card in 3–5 days</div></div></div>
     <div class="row" style="margin-top: 12px"><div class="grow"><div class="meter"><div style="width: ${(fx.undo * 100).toFixed(1)}%"></div></div><div class="tiny muted" style="margin-top: 4px">Changed your mind? Undo within ${Math.ceil(fx.undo * 5)} s</div></div>
       <button class="primary" data-action="undo" style="margin-left: 12px">Undo</button></div>
   </div>`;
@@ -1054,9 +1054,9 @@ function render() {
 <div class="card pad rs"><b>🍽 Friday lunch — pick one</b><div class="small muted">Sea Me Peixaria · Ao 26 Vegan Food Project · O Trevo</div></div>
 <script>
 const PLACES = [
-  { name: 'Sea Me Peixaria', img: 'app:ocean', kind: 'Seafood', price: '€€€', stars: '4.6', area: 'Chiado', note: 'Sushi-meets-Portuguese. Book ahead.' },
-  { name: 'Ao 26 Vegan Food Project', img: 'app:forest', kind: 'Vegan', price: '€€', stars: '4.7', area: 'Baixa', note: "Tom's choice. The seitan bifana is real." },
-  { name: 'O Trevo', img: 'app:dunes', kind: 'Bifanas', price: '€', stars: '4.5', area: 'Bairro Alto', note: 'Bourdain ate here. Standing room only.' },
+  { name: 'Sea Me Peixaria', img: 'data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%2389f7fe%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%2366a6ff%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%232a5298%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M0%2070C10%2062%2030%2078%2040%2070C50%2062%2070%2078%2080%2070C90%2062%20110%2078%20120%2070C130%2062%20150%2078%20160%2070C170%2062%20190%2078%20200%2070M0%2094C10%2086%2030%20102%2040%2094C50%2086%2070%20102%2080%2094C90%2086%20110%20102%20120%2094C130%2086%20150%20102%20160%2094C170%2086%20190%20102%20200%2094M0%20118C10%20110%2030%20126%2040%20118C50%20110%2070%20126%2080%20118C90%20110%20110%20126%20120%20118C130%20110%20150%20126%20160%20118C170%20110%20190%20126%20200%20118M0%20142C10%20134%2030%20150%2040%20142C50%20134%2070%20150%2080%20142C90%20134%20110%20150%20120%20142C130%20134%20150%20150%20160%20142C170%20134%20190%20150%20200%20142M0%20166C10%20158%2030%20174%2040%20166C50%20158%2070%20174%2080%20166C90%20158%20110%20174%20120%20166C130%20158%20150%20174%20160%20166C170%20158%20190%20174%20200%20166M0%20190C10%20182%2030%20198%2040%20190C50%20182%2070%20198%2080%20190C90%20182%20110%20198%20120%20190C130%20182%20150%20198%20160%20190C170%20182%20190%20198%20200%20190%27%20fill=%27none%27%20stroke=%27%23ffffff%27%20stroke-opacity=%270.35%27%20stroke-width=%272%27/%3E%3C/svg%3E', kind: 'Seafood', price: '€€€', stars: '4.6', area: 'Chiado', note: 'Sushi-meets-Portuguese. Book ahead.' },
+  { name: 'Ao 26 Vegan Food Project', img: 'data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%23d4fc79%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%2396e6a1%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%233a7d44%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M-10%20200L10%20130L30%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M16%20200L36%2093L56%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M42%20200L62%20106L82%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M68%20200L88%20119L108%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M94%20200L114%2082L134%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M120%20200L140%2095L160%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M146%20200L166%20108L186%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M172%20200L192%20121L212%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M198%20200L218%2084L238%20200Z%27%20fill=%27%232d6a4f%27/%3E%3C/svg%3E', kind: 'Vegan', price: '€€', stars: '4.7', area: 'Baixa', note: "Tom's choice. The seitan bifana is real." },
+  { name: 'O Trevo', img: 'data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%23ffe29f%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%23ffa99f%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%23ff719a%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M0%20200V110C60%2070%20120%20140%20200%20100V200Z%27%20fill=%27%23f6a05c%27/%3E%3Cpath%20d=%27M0%20200V140C60%20100%20120%20170%20200%20138V200Z%27%20fill=%27%23e07b39%27/%3E%3Cpath%20d=%27M0%20200V170C60%20130%20120%20200%20200%20176V200Z%27%20fill=%27%23b85a26%27/%3E%3C/svg%3E', kind: 'Bifanas', price: '€', stars: '4.5', area: 'Bairro Alto', note: 'Bourdain ate here. Standing room only.' },
 ];
 const PEOPLE = [{ id: 'ana', ini: 'AS', color: '#ff9500' }, { id: 'tom', ini: 'TB', color: '#30b0c7' }, { id: 'me', ini: 'ME', color: '#007aff' }];
 const votes = { ana: 0, tom: 1, me: null };

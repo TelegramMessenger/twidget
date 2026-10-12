@@ -47,7 +47,7 @@
   .bld .yes { color: #ffffff; background-color: #ff3b30; }
   .bld .yes:hover { background-color: #d92c22; }
 </style>
-<div class="card bld"><div class="hd"><img src="sf:checkmark.seal.fill?size=24&color=34c759"><div class="grow"><b>Build #1842 passed</b><div class="small muted">litechat/main · 4m 12s · triggered by Leo</div></div><span class="st badge green">SUCCESS</span></div><div class="bd small muted" style="padding-bottom: 12px">412 tests passed · LiteChat.app (4.1 MB)</div></div>
+<div class="card bld"><div class="hd"><img src="icon:seal-check-fill?size=29&color=34c759"><div class="grow"><b>Build #1842 passed</b><div class="small muted">litechat/main · 4m 12s · triggered by Leo</div></div><span class="st badge green">SUCCESS</span></div><div class="bd small muted" style="padding-bottom: 12px">412 tests passed · LiteChat.app (4.1 MB)</div></div>
 <script>
 const STEPS = [['Checkout', '2s'], ['Build (clang, -O2)', '1m 48s'], ['Unit tests', '1m 55s'], ['Package & notarize', '27s']];
 const SPARK = [30, 26, 28, 18, 22, 12, 16, 20, 10, 14, 8, 12];
@@ -70,11 +70,11 @@ const INK = { cmd: '#89b4fa', ok: '#a6e3a1', warn: '#f9e2af', err: '#f38ba8', in
 const COMMITS = [['a1b2c3d', 'Render bubbles with litehtml'], ['9f8e7d6', 'Dark mode stylesheet'], ['5c4b3a2', 'Card components']];
 const POD = ['rgba(142,142,147,0.35)', '#5856d6', '#34c759', '#ff9500'];
 const BADGE = {
-  passed: ['SUCCESS', '#34c759', 'sf:checkmark.seal.fill?size=24&color=34c759'],
-  deploying: ['DEPLOYING', '#5856d6', 'sf:arrow.triangle.2.circlepath?size=24&color=5856d6'],
-  live: ['LIVE', '#34c759', 'sf:checkmark.seal.fill?size=24&color=34c759'],
-  rolling: ['ROLLING BACK', '#ff9500', 'sf:arrow.uturn.backward.circle.fill?size=24&color=ff9500'],
-  rolledback: ['ROLLED BACK', '#ff3b30', 'sf:arrow.uturn.backward.circle.fill?size=24&color=ff3b30'],
+  passed: ['SUCCESS', '#34c759', 'icon:seal-check-fill?size=29&color=34c759'],
+  deploying: ['DEPLOYING', '#5856d6', 'icon:arrows-clockwise?size=29&color=5856d6'],
+  live: ['LIVE', '#34c759', 'icon:seal-check-fill?size=29&color=34c759'],
+  rolling: ['ROLLING BACK', '#ff9500', 'icon:arrow-circle-left-fill?size=29&color=ff9500'],
+  rolledback: ['ROLLED BACK', '#ff3b30', 'icon:arrow-circle-left-fill?size=29&color=ff3b30'],
 };
 
 let intro = 0, state = 'passed', prod = '#1839', canary = '#1842', view = 'main', job = null, result = null, run = 0;
@@ -195,7 +195,7 @@ function details() {
   const steps = STEPS.map(([name, time], i) => {
     const k = clamp((intro * 900 - 120 - i * 150) / 240, 0, 1);
     const d = Math.max(1, Math.round(13 * ease.outBack(k)));
-    const icon = k > 0 ? `<img src="sf:checkmark.circle.fill?size=13&color=34c759" width="${d}" height="${d}">` : '<img src="sf:circle?size=13&color=c7c7cc" width="13" height="13">';
+    const icon = k > 0 ? `<img src="icon:check-circle-fill?size=16&color=34c759" width="${d}" height="${d}">` : '<img src="icon:circle?size=16&color=c7c7cc" width="13" height="13">';
     return `<div class="sr"><span class="ic">${icon}</span><span class="grow ${k > 0 ? '' : 'muted'}">${esc(name)}</span><span class="muted">${k >= 1 ? time : ''}</span></div>`;
   }).join('');
   const where = prod === '#1842' ? '<b>#1842</b> <span class="muted">· this build</span>'
@@ -224,7 +224,7 @@ function jobPanel() {
   const spin = `<span class="spin" style="background: conic-gradient(from ${Math.round(now * 0.6) % 360}deg, ${alpha(c[0], 0)} 0deg, ${c[0]} 300deg, ${alpha(c[0], 0)} 300deg)"></span>`;
   const moved = j.pods.filter(s => s === (j.kind === 'promote' ? 2 : 3)).length;
   const steps = j.steps.map((s, i) => {
-    const icon = i < j.step ? '<img src="sf:checkmark.circle.fill?size=13&color=34c759">' : i === j.step ? spin : '<img src="sf:circle?size=13&color=c7c7cc">';
+    const icon = i < j.step ? '<img src="icon:check-circle-fill?size=16&color=34c759">' : i === j.step ? spin : '<img src="icon:circle?size=16&color=c7c7cc">';
     const label = i === 1 ? `${s} <b>${moved}/10</b> pods` : s;
     return `<div class="js"><span class="ic">${icon}</span><span class="${i > j.step ? 'muted' : ''}">${label}</span></div>`;
   }).join('');
@@ -270,7 +270,7 @@ function buttons() {
 function confirmPanel() {
   const target = rollTarget();
   return `<div class="warn">
-    <div style="font-weight: 700"><img src="sf:exclamationmark.triangle.fill?size=15&color=ff9500"> Roll back ${target} to #1839?</div>
+    <div style="font-weight: 700"><img src="icon:warning-fill?size=18&color=ff9500"> Roll back ${target} to #1839?</div>
     <div class="small muted" style="margin: 4px 0 6px 0">This reverts 3 commits${target === 'canary' ? ' on the canary (10% of traffic)' : ''}:</div>
     <ul>${COMMITS.map(([sha, msg]) => `<li><code>${sha}</code> ${esc(msg)}</li>`).join('')}</ul>
     <div class="row"><span class="b yes" data-action="confirm">Yes, roll back</span><span class="b lg last" data-action="cancel">Cancel</span></div>

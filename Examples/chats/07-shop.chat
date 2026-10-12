@@ -21,9 +21,9 @@
   .prod .btn { display: block; margin-top: 8px; padding: 6px 0; font-size: 13px; }
 </style>
 <div class="car">
-  <div class="card prod"><div class="img" style="background-image: url(app:forest)"><span class="badge green tag" style="background-color: #34c759; color: #ffffff">NEW</span></div><div class="body2"><div class="name">Trailhead Rain Jacket</div><div class="tiny muted">Waterproof · 3 colours</div><div class="small"><span class="t-orange">★★★★★</span> <span class="muted">4.9 (218)</span></div><div class="price">€129</div><a class="btn primary" href="chat:run?id=jacket">View</a></div></div>
-  <div class="card prod"><div class="img" style="background-image: url(app:dunes)"><span class="badge tag" style="background-color: #ff3b30; color: #ffffff">−30%</span></div><div class="body2"><div class="name">Dune Daypack 22L</div><div class="tiny muted">Recycled nylon</div><div class="small"><span class="t-orange">★★★★☆</span> <span class="muted">4.4 (97)</span></div><div class="price">€62 <span class="old muted">€89</span></div><a class="btn" href="chat:send?text=Tell%20me%20about%20the%20daypack">Details</a></div></div>
-  <div class="card prod"><div class="img" style="background-image: url(app:ocean)"><span class="badge tag" style="background-color: rgba(0,0,0,0.55); color: #ffffff">2 LEFT</span></div><div class="body2"><div class="name">Tide Water Bottle</div><div class="tiny muted">Insulated · 750 ml</div><div class="small"><span class="t-orange">★★★★★</span> <span class="muted">4.8 (1.2k)</span></div><div class="price">€34</div><a class="btn" href="chat:send?text=Add%20the%20water%20bottle">Add</a></div></div>
+  <div class="card prod"><div class="img" style="background-image: url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%23d4fc79%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%2396e6a1%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%233a7d44%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M-10%20200L10%20130L30%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M16%20200L36%2093L56%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M42%20200L62%20106L82%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M68%20200L88%20119L108%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M94%20200L114%2082L134%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M120%20200L140%2095L160%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M146%20200L166%20108L186%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M172%20200L192%20121L212%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M198%20200L218%2084L238%20200Z%27%20fill=%27%232d6a4f%27/%3E%3C/svg%3E)"><span class="badge green tag" style="background-color: #34c759; color: #ffffff">NEW</span></div><div class="body2"><div class="name">Trailhead Rain Jacket</div><div class="tiny muted">Waterproof · 3 colours</div><div class="small"><span class="t-orange">★★★★★</span> <span class="muted">4.9 (218)</span></div><div class="price">€129</div><a class="btn primary" href="chat:run?id=jacket">View</a></div></div>
+  <div class="card prod"><div class="img" style="background-image: url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%23ffe29f%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%23ffa99f%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%23ff719a%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M0%20200V110C60%2070%20120%20140%20200%20100V200Z%27%20fill=%27%23f6a05c%27/%3E%3Cpath%20d=%27M0%20200V140C60%20100%20120%20170%20200%20138V200Z%27%20fill=%27%23e07b39%27/%3E%3Cpath%20d=%27M0%20200V170C60%20130%20120%20200%20200%20176V200Z%27%20fill=%27%23b85a26%27/%3E%3C/svg%3E)"><span class="badge tag" style="background-color: #ff3b30; color: #ffffff">−30%</span></div><div class="body2"><div class="name">Dune Daypack 22L</div><div class="tiny muted">Recycled nylon</div><div class="small"><span class="t-orange">★★★★☆</span> <span class="muted">4.4 (97)</span></div><div class="price">€62 <span class="old muted">€89</span></div><a class="btn" href="chat:send?text=Tell%20me%20about%20the%20daypack">Details</a></div></div>
+  <div class="card prod"><div class="img" style="background-image: url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%2389f7fe%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%2366a6ff%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%232a5298%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M0%2070C10%2062%2030%2078%2040%2070C50%2062%2070%2078%2080%2070C90%2062%20110%2078%20120%2070C130%2062%20150%2078%20160%2070C170%2062%20190%2078%20200%2070M0%2094C10%2086%2030%20102%2040%2094C50%2086%2070%20102%2080%2094C90%2086%20110%20102%20120%2094C130%2086%20150%20102%20160%2094C170%2086%20190%20102%20200%2094M0%20118C10%20110%2030%20126%2040%20118C50%20110%2070%20126%2080%20118C90%20110%20110%20126%20120%20118C130%20110%20150%20126%20160%20118C170%20110%20190%20126%20200%20118M0%20142C10%20134%2030%20150%2040%20142C50%20134%2070%20150%2080%20142C90%20134%20110%20150%20120%20142C130%20134%20150%20150%20160%20142C170%20134%20190%20150%20200%20142M0%20166C10%20158%2030%20174%2040%20166C50%20158%2070%20174%2080%20166C90%20158%20110%20174%20120%20166C130%20158%20150%20174%20160%20166C170%20158%20190%20174%20200%20166M0%20190C10%20182%2030%20198%2040%20190C50%20182%2070%20198%2080%20190C90%20182%20110%20198%20120%20190C130%20182%20150%20198%20160%20190C170%20182%20190%20198%20200%20190%27%20fill=%27none%27%20stroke=%27%23ffffff%27%20stroke-opacity=%270.35%27%20stroke-width=%272%27/%3E%3C/svg%3E)"><span class="badge tag" style="background-color: rgba(0,0,0,0.55); color: #ffffff">2 LEFT</span></div><div class="body2"><div class="name">Tide Water Bottle</div><div class="tiny muted">Insulated · 750 ml</div><div class="small"><span class="t-orange">★★★★★</span> <span class="muted">4.8 (1.2k)</span></div><div class="price">€34</div><a class="btn" href="chat:send?text=Add%20the%20water%20bottle">Add</a></div></div>
 </div>
 
 --- me 14:03
@@ -93,18 +93,18 @@ The rain jacket looks perfect for Sintra 🌧 — what sizes?
 <div class="card pd"><div class="pad"><b style="font-size: 18px">Trailhead Rain Jacket · €129</b><div class="small muted">Forest, Tide or Dune · sizes S–XXL · free returns</div></div></div>
 <script>
 const COLS = [
-  { id: 'green', name: 'Forest', hex: '#2d6a4f', photo: 'app:forest', where: 'Sintra, after the rain' },
-  { id: 'blue', name: 'Tide', hex: '#2a5298', photo: 'app:ocean', where: 'Atlantic coast' },
-  { id: 'sand', name: 'Dune', hex: '#e07b39', photo: 'app:dunes', where: 'Comporta dunes' },
+  { id: 'green', name: 'Forest', hex: '#2d6a4f', photo: 'data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%23d4fc79%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%2396e6a1%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%233a7d44%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M-10%20200L10%20130L30%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M16%20200L36%2093L56%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M42%20200L62%20106L82%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M68%20200L88%20119L108%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M94%20200L114%2082L134%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M120%20200L140%2095L160%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M146%20200L166%20108L186%20200Z%27%20fill=%27%232d6a4f%27/%3E%3Cpath%20d=%27M172%20200L192%20121L212%20200Z%27%20fill=%27%231e5631%27/%3E%3Cpath%20d=%27M198%20200L218%2084L238%20200Z%27%20fill=%27%232d6a4f%27/%3E%3C/svg%3E', where: 'Sintra, after the rain' },
+  { id: 'blue', name: 'Tide', hex: '#2a5298', photo: 'data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%2389f7fe%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%2366a6ff%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%232a5298%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M0%2070C10%2062%2030%2078%2040%2070C50%2062%2070%2078%2080%2070C90%2062%20110%2078%20120%2070C130%2062%20150%2078%20160%2070C170%2062%20190%2078%20200%2070M0%2094C10%2086%2030%20102%2040%2094C50%2086%2070%20102%2080%2094C90%2086%20110%20102%20120%2094C130%2086%20150%20102%20160%2094C170%2086%20190%20102%20200%2094M0%20118C10%20110%2030%20126%2040%20118C50%20110%2070%20126%2080%20118C90%20110%20110%20126%20120%20118C130%20110%20150%20126%20160%20118C170%20110%20190%20126%20200%20118M0%20142C10%20134%2030%20150%2040%20142C50%20134%2070%20150%2080%20142C90%20134%20110%20150%20120%20142C130%20134%20150%20150%20160%20142C170%20134%20190%20150%20200%20142M0%20166C10%20158%2030%20174%2040%20166C50%20158%2070%20174%2080%20166C90%20158%20110%20174%20120%20166C130%20158%20150%20174%20160%20166C170%20158%20190%20174%20200%20166M0%20190C10%20182%2030%20198%2040%20190C50%20182%2070%20198%2080%20190C90%20182%20110%20198%20120%20190C130%20182%20150%20198%20160%20190C170%20182%20190%20198%20200%20190%27%20fill=%27none%27%20stroke=%27%23ffffff%27%20stroke-opacity=%270.35%27%20stroke-width=%272%27/%3E%3C/svg%3E', where: 'Atlantic coast' },
+  { id: 'sand', name: 'Dune', hex: '#e07b39', photo: 'data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27200%27%20height=%27200%27%20viewBox=%270%200%20200%20200%27%3E%3Cdefs%3E%3ClinearGradient%20id=%27g%27%20x1=%270%27%20y1=%271%27%20x2=%270%27%20y2=%270%27%3E%3Cstop%20offset=%270%27%20stop-color=%27%23ffe29f%27/%3E%3Cstop%20offset=%270.5%27%20stop-color=%27%23ffa99f%27/%3E%3Cstop%20offset=%271%27%20stop-color=%27%23ff719a%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width=%27200%27%20height=%27200%27%20fill=%27url%28%23g%29%27/%3E%3Cpath%20d=%27M0%20200V110C60%2070%20120%20140%20200%20100V200Z%27%20fill=%27%23f6a05c%27/%3E%3Cpath%20d=%27M0%20200V140C60%20100%20120%20170%20200%20138V200Z%27%20fill=%27%23e07b39%27/%3E%3Cpath%20d=%27M0%20200V170C60%20130%20120%20200%20200%20176V200Z%27%20fill=%27%23b85a26%27/%3E%3C/svg%3E', where: 'Comporta dunes' },
 ];
 const SIZES = ['S', 'M', 'L', 'XL', 'XXL'];
 const STOCK = { green: [6, 2, 9, 4, 0], blue: [0, 7, 3, 0, 1], sand: [5, 1, 0, 6, 0] };
 const SLIDES = ['Studio', 'On location', 'Packs small'];
 const FEATS = [
-  ['drop.fill', '007aff', '20,000 mm waterproof, taped seams'],
+  ['drop-fill', '007aff', '20,000 mm waterproof, taped seams'],
   ['wind', '8e8e93', 'Breathable 3-layer shell'],
-  ['leaf.fill', '34c759', '100% recycled face fabric'],
-  ['scalemass.fill', 'af52de', 'Packs into its own pocket · 310 g'],
+  ['leaf-fill', '34c759', '100% recycled face fabric'],
+  ['scales-fill', 'af52de', 'Packs into its own pocket · 310 g'],
 ];
 const PRICE = 129, FREE_SHIP = 150, MAX_QTY = 5;
 
@@ -289,13 +289,13 @@ function render() {
   const buy = st === 0
     ? `<button class="grow addb${notify[key] ? ' ok' : ''}" data-action="notify" style="transform: scale(${pop.notify.toFixed(3)})">${notify[key] ? '✓ We’ll email you' : '🔔 Notify me when it’s back'}</button>`
     : `<button class="primary grow addb" data-action="add">Add to bag · €${Math.round(price.v)}</button>`;
-  const toastHTML = toast ? `<div class="toast"><div class="row"><img src="sf:checkmark.circle.fill?size=18&color=34c759" style="margin-right: 8px">
+  const toastHTML = toast ? `<div class="toast"><div class="row"><img src="icon:check-circle-fill?size=22&color=34c759" style="margin-right: 8px">
       <div class="grow"><b>Added to bag</b><div class="tiny muted">${COLS[toast.col].name} · ${SIZES[toast.size]} · ${toast.qty} × €${PRICE}</div></div>
       <button data-action="undo">Undo</button>${bagOpen ? '' : '<button data-action="bag" style="margin-left: 6px">View bag</button>'}</div>
       <div class="tbar"><div style="width: ${(life.toast * 100).toFixed(1)}%"></div></div></div>` : '';
   const feats = FEATS.map(([icon, tintHex, text], i) => {
     const e = ease.outCubic(clamp((intro.rows * 900 - 180 - i * 110) / 320, 0, 1));
-    return `<div class="fr"><div style="left: ${Math.round((1 - e) * 440)}px"><img src="sf:${icon}?size=13&color=${tintHex}">${text}</div></div>`;
+    return `<div class="fr"><div style="left: ${Math.round((1 - e) * 440)}px"><img src="icon:${icon}?size=16&color=${tintHex}">${text}</div></div>`;
   }).join('');
   return `<div class="card pd">
     <div class="hero">${slides}
@@ -363,13 +363,13 @@ Medium, forest green. Ordering! 🛍
 <div class="card rc"><div class="pad"><b>NORTHWIND OUTFITTERS</b><div class="small muted">Order #NW-58214 · 10 items · total €310.53 · Visa ···· 4242</div></div></div>
 <script>
 const ITEMS = [
-  { q: 1, name: 'Trailhead Rain Jacket', sub: 'Forest · M', sku: 'TRJ-FOR-M', unit: 129, icon: 'cloud.rain.fill', tint: '2d6a4f', note: '20,000 mm waterproof 3-layer shell' },
-  { q: 1, name: 'Dune Daypack 22L', sub: 'Sand · one size · −30%', sku: 'DDP-SND-22', unit: 62.3, icon: 'bag.fill', tint: 'e07b39', note: 'Was €89.00 · recycled nylon' },
-  { q: 2, name: 'Tide Water Bottle', sub: 'Ocean · 750 ml', sku: 'TWB-OCN-750', unit: 34, icon: 'drop.fill', tint: '2a5298', note: 'Insulated · cold 24 h, hot 12 h' },
-  { q: 3, name: 'Merino Hiking Socks', sub: 'Charcoal · 39–42', sku: 'MHS-CHR-3942', unit: 15, icon: 'figure.walk', tint: '636366', note: '70% merino wool · cushioned heel' },
-  { q: 1, name: 'Packable Sun Hat', sub: 'Natural · L', sku: 'PSH-NAT-L', unit: 29, icon: 'sun.max.fill', tint: 'ff9500', note: 'UPF 50+ · folds flat into a pocket' },
-  { q: 1, name: 'Trail First-Aid Kit', sub: '42 pieces', sku: 'TFA-42', unit: 24.9, icon: 'cross.case.fill', tint: 'ff3b30', note: 'Waterproof roll-top pouch' },
-  { q: 1, name: 'Gift wrap', sub: 'Recycled kraft paper', sku: 'GFT-KRF', unit: 3.5, icon: 'gift.fill', tint: 'af52de', note: 'A service, so it can’t be returned', final: true },
+  { q: 1, name: 'Trailhead Rain Jacket', sub: 'Forest · M', sku: 'TRJ-FOR-M', unit: 129, icon: 'cloud-rain-fill', tint: '2d6a4f', note: '20,000 mm waterproof 3-layer shell' },
+  { q: 1, name: 'Dune Daypack 22L', sub: 'Sand · one size · −30%', sku: 'DDP-SND-22', unit: 62.3, icon: 'bag-fill', tint: 'e07b39', note: 'Was €89.00 · recycled nylon' },
+  { q: 2, name: 'Tide Water Bottle', sub: 'Ocean · 750 ml', sku: 'TWB-OCN-750', unit: 34, icon: 'drop-fill', tint: '2a5298', note: 'Insulated · cold 24 h, hot 12 h' },
+  { q: 3, name: 'Merino Hiking Socks', sub: 'Charcoal · 39–42', sku: 'MHS-CHR-3942', unit: 15, icon: 'person-simple-walk', tint: '636366', note: '70% merino wool · cushioned heel' },
+  { q: 1, name: 'Packable Sun Hat', sub: 'Natural · L', sku: 'PSH-NAT-L', unit: 29, icon: 'sun-fill', tint: 'ff9500', note: 'UPF 50+ · folds flat into a pocket' },
+  { q: 1, name: 'Trail First-Aid Kit', sub: '42 pieces', sku: 'TFA-42', unit: 24.9, icon: 'first-aid-kit-fill', tint: 'ff3b30', note: 'Waterproof roll-top pouch' },
+  { q: 1, name: 'Gift wrap', sub: 'Recycled kraft paper', sku: 'GFT-KRF', unit: 3.5, icon: 'gift-fill', tint: 'af52de', note: 'A service, so it can’t be returned', final: true },
 ];
 const TIPS = [['No tip', 0], ['€2', 2], ['€5', 5], ['€10', 10]];
 const PEOPLE = [['AM', '#007aff'], ['JK', '#af52de'], ['MR', '#30b0c7'], ['SL', '#ff9500'], ['TB', '#34c759'], ['NP', '#ff2d55']];
@@ -415,7 +415,7 @@ function onAction(name, value) {
 function detail(it, i) {
   const ret = returned.has(i);
   return `<div class="det">
-    <div class="row" style="margin-bottom: 4px"><img src="sf:${it.icon}?size=22&color=${it.tint}"><div class="grow"><b>${esc(it.name)}</b><div class="tiny muted">${esc(it.note)}</div></div></div>
+    <div class="row" style="margin-bottom: 4px"><img src="icon:${it.icon}?size=26&color=${it.tint}"><div class="grow"><b>${esc(it.name)}</b><div class="tiny muted">${esc(it.note)}</div></div></div>
     <div class="kv"><span class="muted">SKU</span><span class="mono">${it.sku}</span></div>
     <div class="kv"><span class="muted">Unit price</span><span class="mono">${it.q} × ${it.unit.toFixed(2)}</span></div>
     <div class="kv"><span class="muted">Returns</span><span>${it.final ? 'Not returnable' : ret ? '<b class="t-orange">Return label emailed</b>' : 'Free until 6 Nov 2026'}</span></div>
@@ -448,7 +448,7 @@ function render() {
   const m = (label, value, cls) => `<div class="m"><span>${label}</span><span class="p${cls ? ' ' + cls : ''}">${value}</span></div>`;
   const tips = TIPS.map(([l], i) => `<span class="tip${tip === i ? ' on' : ''}" data-action="tip" data-value="${i}">${l}</span>`).join('');
   return `<div class="card rc">
-    <div class="logo"><img src="sf:mountain.2.fill?size=26&color=34c759"><div style="font-weight: 800; font-size: 16px; margin-top: 2px">NORTHWIND OUTFITTERS</div><div class="tiny muted">Order #NW-58214 · 7 Oct 2026, 14:07</div></div>
+    <div class="logo"><img src="icon:mountains-fill?size=31&color=34c759"><div style="font-weight: 800; font-size: 16px; margin-top: 2px">NORTHWIND OUTFITTERS</div><div class="tiny muted">Order #NW-58214 · 7 Oct 2026, 14:07</div></div>
     <div class="pad" style="padding-top: 4px">
       <div class="dash"></div>
       <div class="tiny muted" style="padding: 0 6px 3px 6px">Tap an item for details or to start a return</div>
@@ -467,7 +467,7 @@ function render() {
       <div class="opt tap" data-action="split"><span class="grow">Split the bill</span><span class="tg" style="background-color: ${mix('rgba(120,120,128,0.32)', '#34c759', clamp(knob.x, 0, 1))}"><span class="kn" style="left: ${(2 + 16 * knob.x).toFixed(1)}px"></span></span></div>
       ${split ? splitHTML() : ''}
       <div class="dash"></div>
-      ${m('Paid with', '<img src="sf:creditcard.fill?size=12&color=8e8e93"> Visa ···· 4242')}
+      ${m('Paid with', '<img src="icon:credit-card-fill?size=14&color=8e8e93"> Visa ···· 4242')}
       ${m('Ship to', 'Alex Morgan, Torstraße 12, Berlin')}
       ${m('Points earned', `+${Math.round(shown.pts)} ✦`, 't-orange')}
       <div class="center" style="margin-top: 12px"><div class="bc"></div><div class="tiny muted" style="font-family: ui-monospace">NW58214 2026 1007 1407</div></div>
@@ -482,7 +482,7 @@ function render() {
 <style>
   .tr { width: 460px; max-width: 100%; }
   .tr .pref { display: inline-block; margin-top: 6px; padding: 2px 9px; border-radius: 9px; font-weight: 600; background-color: rgba(0,122,255,0.12); color: #007aff; }
-  .tr .map { position: relative; height: 128px; margin: 10px 0 10px 0; overflow: hidden; border-radius: 12px; background-image: url(app:map); background-size: cover; background-position: center; }
+  .tr .map { position: relative; height: 128px; margin: 10px 0 10px 0; overflow: hidden; border-radius: 12px; background-image: url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27360%27%20height=%27150%27%20viewBox=%270%200%20360%20150%27%3E%3Crect%20width=%27360%27%20height=%27150%27%20fill=%27%23f2efe9%27/%3E%3Crect%20x=%2730%27%20y=%2720%27%20width=%2790%27%20height=%2760%27%20rx=%2718%27%20fill=%27%23c8e6c9%27/%3E%3Cpath%20d=%27M0%20120C120%2080%20240%20150%20360%20100%27%20fill=%27none%27%20stroke=%27%23aad3df%27%20stroke-width=%2714%27/%3E%3Cpath%20d=%27M0%2060L360%2050M200%200L230%20150M90%200L140%20150M0%20140L360%2030%27%20fill=%27none%27%20stroke=%27%23ffffff%27%20stroke-width=%276%27/%3E%3Ccircle%20cx=%27207%27%20cy=%2751%27%20r=%2711%27%20fill=%27%23ff3b30%27/%3E%3Cpath%20d=%27M199%2056L207%2072L215%2056Z%27%20fill=%27%23ff3b30%27/%3E%3Ccircle%20cx=%27207%27%20cy=%2751%27%20r=%274%27%20fill=%27%23ffffff%27/%3E%3C/svg%3E); background-size: cover; background-position: center; }
   .tr .route { position: absolute; left: 0; top: 0; }
   .tr .mk { position: absolute; width: 28px; height: 28px; line-height: 28px; border-radius: 14px; text-align: center; }
   .tr .truck { background-color: #007aff; }
@@ -526,17 +526,17 @@ function render() {
 <div class="card pad tr"><b>📦 Order #NW-58214</b> <span class="badge blue">OUT FOR DELIVERY</span><div class="small muted">DHL Express · arriving today, 16:00–18:00 · 14 stops before you</div></div>
 <script>
 const STAGES = [
-  { name: 'Ordered', when: 'Yesterday 14:07', icon: 'checkmark.seal.fill', text: 'Payment authorised · Visa ···· 4242 · €310.53' },
-  { name: 'Packed', when: 'Yesterday 16:40', icon: 'shippingbox.fill', text: 'Packed by Mia at the Hamburg warehouse · 1 box · 2.4 kg' },
+  { name: 'Ordered', when: 'Yesterday 14:07', icon: 'seal-check-fill', text: 'Payment authorised · Visa ···· 4242 · €310.53' },
+  { name: 'Packed', when: 'Yesterday 16:40', icon: 'package-fill', text: 'Packed by Mia at the Hamburg warehouse · 1 box · 2.4 kg' },
   { name: 'Shipped', when: 'Yesterday 17:02', icon: 'airplane', text: 'DHL Express JD014600006281 · via Leipzig/Halle hub' },
-  { name: 'On the way', when: 'Today 08:12', icon: 'truck.box.fill', text: '' },
-  { name: 'Delivered', when: '', icon: 'house.fill', text: '' },
+  { name: 'On the way', when: 'Today 08:12', icon: 'truck-fill', text: '' },
+  { name: 'Delivered', when: '', icon: 'house-fill', text: '' },
 ];
 const PREFS = [
-  ['bell.fill', 'Hand it to me', 'Jonas rings the bell and waits'],
-  ['person.2.fill', 'Leave with a neighbour', 'Jana Weber, 2nd floor'],
-  ['house.fill', 'Leave at the door', 'Jonas takes a photo on delivery'],
-  ['lock.fill', 'Parcel locker', 'Packstation 112, Torstraße 20'],
+  ['bell-fill', 'Hand it to me', 'Jonas rings the bell and waits'],
+  ['users-fill', 'Leave with a neighbour', 'Jana Weber, 2nd floor'],
+  ['house-fill', 'Leave at the door', 'Jonas takes a photo on delivery'],
+  ['lock-fill', 'Parcel locker', 'Packstation 112, Torstraße 20'],
 ];
 const DELIVERED = ['Handed to resident · signed “A. Morgan”', 'Handed to you · signed “A. Morgan”', 'Left with Jana Weber, 2nd floor', 'Left at your door · photo taken', 'In Packstation 112 · pickup code 4471'];
 const MILESTONES = [
@@ -553,11 +553,11 @@ const LEN = SEG.reduce((a, b) => a + b, 0);
 let evId = 0;
 const ev = (time, icon, color, title, sub) => ({ id: ++evId, time, icon, color, title, sub });
 const seed = () => [
-  ev('Today 08:12', 'truck.box.fill', '007aff', 'Out for delivery', 'Berlin-Mitte depot · driver Jonas · 14 stops before you'),
-  ev('Today 05:40', 'building.2.fill', '8e8e93', 'Arrived at local depot', 'Berlin-Mitte'),
+  ev('Today 08:12', 'truck-fill', '007aff', 'Out for delivery', 'Berlin-Mitte depot · driver Jonas · 14 stops before you'),
+  ev('Today 05:40', 'buildings-fill', '8e8e93', 'Arrived at local depot', 'Berlin-Mitte'),
   ev('Yesterday 22:15', 'airplane', '8e8e93', 'Departed hub', 'Leipzig/Halle (LEJ)'),
-  ev('Yesterday 17:02', 'shippingbox', '8e8e93', 'Picked up by DHL', 'Northwind warehouse, Hamburg'),
-  ev('Yesterday 14:07', 'checkmark.seal.fill', '34c759', 'Order confirmed', 'Payment authorised'),
+  ev('Yesterday 17:02', 'package', '8e8e93', 'Picked up by DHL', 'Northwind warehouse, Hamburg'),
+  ev('Yesterday 14:07', 'seal-check-fill', '34c759', 'Order confirmed', 'Payment authorised'),
 ];
 
 let pos, nextEv, delivered, events, eta, freshId, rating;
@@ -616,11 +616,11 @@ function reach(m) {
     transition('pop');
     delivered = true;
     setLive(false);
-    events.unshift(ev(m.time, 'checkmark.circle.fill', '34c759', 'Delivered', DELIVERED[pref + 1]));
+    events.unshift(ev(m.time, 'check-circle-fill', '34c759', 'Delivered', DELIVERED[pref + 1]));
     fx.home = 0; tween(fx, { home: 1 }, 600, ease.outBack);
   } else {
     eta = m.eta;
-    events.unshift(ev(m.time, 'truck.box.fill', '007aff', m.title, m.sub + ' · ETA ' + m.eta));
+    events.unshift(ev(m.time, 'truck-fill', '007aff', m.title, m.sub + ' · ETA ' + m.eta));
   }
   freshen();
 }
@@ -661,7 +661,7 @@ function onAction(name, value) {
     if (name === 'save' && pick >= 0 && pick !== pref) {
       pref = pick;
       fx.pref = 1.3; tween(fx, { pref: 1 }, 450, ease.outBack);
-      events.unshift(ev('Just now', 'pencil.circle.fill', 'af52de', 'Delivery instructions updated', PREFS[pref][1]));
+      events.unshift(ev('Just now', 'pencil-circle-fill', 'af52de', 'Delivery instructions updated', PREFS[pref][1]));
       freshen();
     }
   } else if (name === 'rate') { rating = Number(value); fx.rate = 1.5; tween(fx, { rate: 1 }, 420, ease.outBack); }
@@ -676,7 +676,7 @@ function halo(x, y, base) {
 function optsHTML() {
   const opts = PREFS.map(([icon, title, subtitle], i) => {
     const on = pick === i, r = 10 * fx.radio;
-    return `<div class="opt${on ? ' on' : ''}" data-action="pick" data-value="${i}"><img src="sf:${icon}?size=18&color=${on ? '007aff' : '8e8e93'}"><div class="grow"><b>${title}</b><div class="tiny muted">${subtitle}</div></div>
+    return `<div class="opt${on ? ' on' : ''}" data-action="pick" data-value="${i}"><img src="icon:${icon}?size=22&color=${on ? '007aff' : '8e8e93'}"><div class="grow"><b>${title}</b><div class="tiny muted">${subtitle}</div></div>
       <span class="radio">${on ? `<span class="rd" style="width: ${r.toFixed(1)}px; height: ${r.toFixed(1)}px; margin: ${(9 - r / 2).toFixed(1)}px; border-radius: ${(r / 2).toFixed(1)}px"></span>` : ''}</span></div>`;
   }).join('');
   return `<div class="card pad tr">
@@ -708,20 +708,20 @@ function render() {
       : sel === 4 ? (delivered ? DELIVERED[pref + 1] : `Expected today ${eta}` + (pref >= 0 ? ' · ' + PREFS[pref][1].toLowerCase() : ' · no signature needed'))
       : s.text;
     const when = sel === 4 ? (delivered ? 'Today 16:21' : 'Pending') : s.when;
-    detail = `<div class="det"><img src="sf:${s.icon}?size=16&color=007aff"><div class="grow"><b>${s.name}</b> <span class="tiny muted">${when}</span><div class="small" style="margin-top: 2px">${esc(text)}</div></div><span class="x" data-action="stage" data-value="${sel}">✕</span></div>`;
+    detail = `<div class="det"><img src="icon:${s.icon}?size=19&color=007aff"><div class="grow"><b>${s.name}</b> <span class="tiny muted">${when}</span><div class="small" style="margin-top: 2px">${esc(text)}</div></div><span class="x" data-action="stage" data-value="${sel}">✕</span></div>`;
   }
   const list = showAll ? events : events.slice(0, 3);
-  const feed = list.map((e, i) => `<div class="ev"${e.id === freshId && fx.fresh > 0.01 ? ` style="background-color: ${alpha('#007aff', 0.18 * fx.fresh)}"` : ''}><span class="t muted">${e.time}</span><img src="sf:${e.icon}?size=15&color=${i === 0 ? e.color : '8e8e93'}"><div class="grow">${i === 0 ? `<b>${esc(e.title)}</b>` : esc(e.title)}<div class="tiny muted">${esc(e.sub)}</div></div></div>`).join('');
-  const truck = delivered && f > 0.98 ? '' : `${delivered ? '' : halo(tx, ty, 28)}<span class="mk truck" style="left: ${(tx - 14).toFixed(1)}px; top: ${(ty - 14).toFixed(1)}px"><img src="sf:truck.box.fill?size=13&color=ffffff"></span>`;
+  const feed = list.map((e, i) => `<div class="ev"${e.id === freshId && fx.fresh > 0.01 ? ` style="background-color: ${alpha('#007aff', 0.18 * fx.fresh)}"` : ''}><span class="t muted">${e.time}</span><img src="icon:${e.icon}?size=18&color=${i === 0 ? e.color : '8e8e93'}"><div class="grow">${i === 0 ? `<b>${esc(e.title)}</b>` : esc(e.title)}<div class="tiny muted">${esc(e.sub)}</div></div></div>`).join('');
+  const truck = delivered && f > 0.98 ? '' : `${delivered ? '' : halo(tx, ty, 28)}<span class="mk truck" style="left: ${(tx - 14).toFixed(1)}px; top: ${(ty - 14).toFixed(1)}px"><img src="icon:truck-fill?size=16&color=ffffff"></span>`;
   const homeSize = delivered ? 13 * Math.max(0.2, fx.home) : 13;
   const rate = delivered ? `<div class="rate row"><span class="grow small">${rating ? `Thanks! You rated Jonas <b>${rating}★</b>` : 'How was your delivery?'}</span>${[1, 2, 3, 4, 5].map(n => `<span class="s" data-action="rate" data-value="${n}" style="color: ${n <= rating ? '#ff9f0a' : 'rgba(142,142,147,0.6)'}; font-size: ${(n === rating ? 20 * fx.rate : 20).toFixed(1)}px">★</span>`).join('')}</div>` : '';
   return `<div class="card pad tr">
-    <div class="row"><img src="sf:shippingbox.fill?size=20&color=34c759" style="margin-right: 8px"><b class="grow" style="font-size: 16px">Order #NW-58214</b><span class="badge ${delivered ? 'green' : 'blue'}">${delivered ? 'DELIVERED' : 'OUT FOR DELIVERY'}</span></div>
+    <div class="row"><img src="icon:package-fill?size=24&color=34c759" style="margin-right: 8px"><b class="grow" style="font-size: 16px">Order #NW-58214</b><span class="badge ${delivered ? 'green' : 'blue'}">${delivered ? 'DELIVERED' : 'OUT FOR DELIVERY'}</span></div>
     <div class="small muted" style="margin-top: 2px">${delivered ? 'DHL Express · delivered <b class="fg">today, 16:21</b>' : `DHL Express · arriving <b class="fg">today, ${eta}</b>`}</div>
     ${pref >= 0 ? `<span class="pref" style="font-size: ${(12 * fx.pref).toFixed(1)}px">📦 ${PREFS[pref][1]}</span>` : ''}
     <div class="map">
       <img class="route" src="${route(f)}" width="460" height="128">
-      <span class="mk" style="left: ${hx - 14}px; top: ${hy - 14}px; background-color: ${delivered ? '#34c759' : '#ffffff'}"><img src="sf:house.fill?size=${homeSize.toFixed(0)}&color=${delivered ? 'ffffff' : '34c759'}"></span>
+      <span class="mk" style="left: ${hx - 14}px; top: ${hy - 14}px; background-color: ${delivered ? '#34c759' : '#ffffff'}"><img src="icon:house-fill?size=${(homeSize * 1.2).toFixed(0)}&color=${delivered ? 'ffffff' : '34c759'}"></span>
       ${truck}
       <span class="eta">${delivered ? '✓ Delivered at 16:21' : `${left} stop${left === 1 ? '' : 's'} before you · ETA ${eta}`}</span>
       ${live ? '<span class="lv">● LIVE</span>' : ''}
