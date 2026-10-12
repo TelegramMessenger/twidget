@@ -430,6 +430,7 @@ public final class LiteHTMLWidgetRenderer {
 
     private var retiredURLs: [String] = []
     private var listDebt: [CGRect] = []
+    private var layoutExclusions: Set<Int> = []
     static let slowLayoutMilliseconds = ProcessInfo.processInfo.environment["TW_SLOW_MS"].flatMap { Double($0) }
     static let patchRegions = ProcessInfo.processInfo.environment["TW_NO_PATCH_REGIONS"] == nil
     private var lastLayoutRevision: UInt64 = .max
@@ -497,6 +498,8 @@ public final class LiteHTMLWidgetRenderer {
         if !excluded.isEmpty {
             next.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
+        let exclusionsChanged = excluded != layoutExclusions
+        layoutExclusions = excluded
         stage("document")
         if next.reusedPrevious {
             stageMilliseconds["reused", default: 0] += 1
@@ -545,7 +548,7 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         defer { stage("report") }
-        if LiteHTMLWidgetRenderer.patchRegions, next.reusedLayout, displayList != nil, documentView.document != nil, let regions = next.patchDirtyRects?.map({ $0.rectValue }) {
+        if LiteHTMLWidgetRenderer.patchRegions, next.reusedLayout, !exclusionsChanged, displayList != nil, documentView.document != nil, let regions = next.patchDirtyRects?.map({ $0.rectValue }) {
             stage("diff-list")
             stageMilliseconds["regions", default: 0] += 1
             if listDebt.count + regions.count > 32 {
