@@ -1152,6 +1152,35 @@ final class WidgetDocumentView: NSView {
         }
     }
 
+    private final class TileDrawer: NSObject, CALayerDelegate {
+        weak var view: WidgetDocumentView?
+
+        func draw(_ layer: CALayer, in ctx: CGContext) {
+            guard let view = view, let document = view.document else {
+                return
+            }
+            let start = CACurrentMediaTime()
+            let clip = ctx.boundingBoxOfClipPath
+            let origin = layer.frame.origin
+            ctx.saveGState()
+            ctx.translateBy(x: -origin.x, y: -origin.y)
+            ctx.setAllowsFontSmoothing(false)
+            ctx.setShouldAntialias(true)
+            let dirty = clip.offsetBy(dx: origin.x, dy: origin.y)
+            document.draw(in: ctx, origin: .zero, clip: dirty.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+            ctx.restoreGState()
+            view.layerDrawMilliseconds += (CACurrentMediaTime() - start) * 1000
+        }
+
+        func action(for layer: CALayer, forKey event: String) -> CAAction? {
+            return NSNull()
+        }
+    }
+
+    private let drawer = TileDrawer()
+    var layerDrawMilliseconds = 0.0
+    static let layerTiles = ProcessInfo.processInfo.environment["TW_LAYER_TILES"] != nil
+
     private final class Tile {
         let layer = CALayer()
         var surfaces: [Surface] = []
@@ -1200,6 +1229,17 @@ final class WidgetDocumentView: NSView {
             return
         }
         let everything = CGRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude / 4, height: CGFloat.greatestFiniteMagnitude / 4)
+        if WidgetDocumentView.layerTiles {
+            for tile in tiles where rect.map({ $0.intersects(tile.rect) }) ?? true {
+                if let rect = rect {
+                    tile.layer.setNeedsDisplay(rect.intersection(tile.rect).offsetBy(dx: -tile.rect.minX, dy: -tile.rect.minY))
+                } else {
+                    tile.layer.setNeedsDisplay()
+                }
+            }
+            needsDisplay = true
+            return
+        }
         for tile in tiles {
             if rect.map({ $0.intersects(tile.rect) }) ?? true {
                 tile.pending = true
@@ -1278,6 +1318,21 @@ final class WidgetDocumentView: NSView {
                 tile.surfaces.removeAll()
                 tile.shown = nil
                 tile.pending = true
+            }
+            if WidgetDocumentView.layerTiles {
+                if tile.layer.delegate == nil {
+                    drawer.view = self
+                    tile.layer.delegate = drawer
+                    tile.layer.isGeometryFlipped = false
+                    tile.layer.needsDisplayOnBoundsChange = true
+                }
+                if tile.layer.frame != rect || tile.layer.contentsScale != scale {
+                    tile.layer.frame = rect
+                    tile.layer.contentsScale = scale
+                    tile.layer.setNeedsDisplay()
+                }
+                tile.pending = false
+                continue
             }
             if !tile.pending {
                 continue
