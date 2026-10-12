@@ -286,6 +286,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func apply(_ ops: [WidgetOp]) {
+        defer {
+            pacer.answered(CACurrentMediaTime())
+        }
         if LiteHTMLWidgetRenderer.canvasFastPath, !ops.isEmpty, ops.allSatisfy({ $0.kind == .canvas && $0.canvas != nil }) {
             sendCanvas(ops.map { ($0.id, CanvasStream(batch: $0.canvas!)) })
             return
@@ -1516,6 +1519,18 @@ public final class LiteHTMLWidgetRenderer {
 
     public static var hiddenTrimDelay: TimeInterval = 2
 
+    public static var scriptFrameBudget: TimeInterval = ScriptFramePacer.defaultBudget
+    public var scriptFrameBudget: TimeInterval? {
+        didSet {
+            pacer.budget = scriptFrameBudget ?? LiteHTMLWidgetRenderer.scriptFrameBudget
+        }
+    }
+    public var scriptFrameCost: TimeInterval {
+        return pacer.cost
+    }
+    public private(set) var scriptFramesPaced = 0
+    private lazy var pacer = ScriptFramePacer(budget: LiteHTMLWidgetRenderer.scriptFrameBudget, fallbackInterval: LiteHTMLWidgetRenderer.frameInterval)
+
     private var trimWork: DispatchWorkItem?
 
     public var keepsTilesWhileHidden = false {
@@ -1612,10 +1627,13 @@ public final class LiteHTMLWidgetRenderer {
         if frameRequested {
             worked = true
             let now = CACurrentMediaTime()
-            if now - lastFramePost >= LiteHTMLWidgetRenderer.frameInterval {
+            if pacer.due(now) {
                 frameRequested = false
                 lastFramePost = now
+                pacer.posted(now)
                 post(["type": "frame", "time": (now - timeOrigin) * 1000])
+            } else {
+                scriptFramesPaced += 1
             }
         }
         idleTicks = worked ? 0 : idleTicks + 1
@@ -2511,6 +2529,46 @@ enum CSSFont {
             font = styled
         }
         return font
+    }
+}
+
+public struct ScriptFramePacer {
+    public static let defaultBudget: TimeInterval = ProcessInfo.processInfo.environment["TW_RAF_BUDGET_MS"].flatMap { Double($0) }.map { $0 / 1000 } ?? 0.001
+    public var budget: TimeInterval
+    public let fallbackInterval: CFTimeInterval
+    public private(set) var cost: TimeInterval = 0
+    public private(set) var fullRate = true
+    private var postedAt: CFTimeInterval?
+    private var lastPost: CFTimeInterval = -.infinity
+
+    public init(budget: TimeInterval, fallbackInterval: CFTimeInterval) {
+        self.budget = budget
+        self.fallbackInterval = fallbackInterval
+    }
+
+    public func due(_ now: CFTimeInterval) -> Bool {
+        return fullRate || now - lastPost >= fallbackInterval
+    }
+
+    public mutating func posted(_ now: CFTimeInterval) {
+        lastPost = now
+        if postedAt.map({ now - $0 > 0.25 }) ?? true {
+            postedAt = now
+        }
+    }
+
+    public mutating func answered(_ now: CFTimeInterval) {
+        guard let posted = postedAt else {
+            return
+        }
+        postedAt = nil
+        let spent = now - posted
+        cost = cost == 0 ? spent : cost * 0.8 + spent * 0.2
+        if fullRate && cost > budget {
+            fullRate = false
+        } else if !fullRate && cost < budget * 0.7 {
+            fullRate = true
+        }
     }
 }
 
