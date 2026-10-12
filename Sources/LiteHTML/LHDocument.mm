@@ -34,7 +34,7 @@ static double NowMs()
 
 static const std::string &MasterCSS()
 {
-    static const std::string css = [] {
+    static const std::string& css = *new std::string([] {
         std::string s     = lh::master_css;
         size_t      start = s.find("a:link");
         size_t      end   = start == std::string::npos ? start : s.find('}', start);
@@ -61,7 +61,7 @@ progress, meter { appearance: auto; display: inline-block; box-sizing: border-bo
 meter { width: 70px; }
 )CSS";
         return s;
-    }();
+    }());
     return css;
 }
 

@@ -374,8 +374,8 @@ bool Sanitizer::atRule(const std::string& name, const Report& report) const
 
 namespace
 {
-std::mutex                             currentLock;
-std::shared_ptr<const SanitizerPolicy> currentPolicy;
+std::mutex&                             currentLock = *new std::mutex;
+std::shared_ptr<const SanitizerPolicy>& currentPolicy = *new std::shared_ptr<const SanitizerPolicy>;
 }
 
 std::shared_ptr<const SanitizerPolicy> Sanitizer::current()

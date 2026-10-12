@@ -1,10 +1,11 @@
 #include "html.h"
 #include "string_id.h"
 #include <cassert>
+#include <deque>
 
 #ifndef LITEHTML_NO_THREADS
 #include <mutex>
-static std::mutex mutex;
+static std::mutex& mutex = *new std::mutex;
 #define lock_guard std::lock_guard<std::mutex> lock(mutex)
 #else
 #define lock_guard
@@ -13,8 +14,8 @@ static std::mutex mutex;
 namespace litehtml
 {
 
-    static std::map<std::string, string_id> map;
-    static std::vector<std::string>         array;
+    static std::map<std::string, string_id>& map = *new std::map<std::string, string_id>;
+    static std::deque<std::string>&          array = *new std::deque<std::string>;
 
     static int init()
     {

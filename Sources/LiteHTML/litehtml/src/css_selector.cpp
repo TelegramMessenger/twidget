@@ -458,7 +458,7 @@ namespace litehtml
     // simple = non-functional (without parentheses)
     bool is_supported_simple_pseudo_class(const std::string& name)
     {
-        static std::set<std::string> supported_simple_pseudo_classes = {
+        static std::set<std::string>& supported_simple_pseudo_classes = *new std::set<std::string>{
             // Location Pseudo-classes  https://www.w3.org/TR/selectors-4/#location
             "any-link",
             "link",

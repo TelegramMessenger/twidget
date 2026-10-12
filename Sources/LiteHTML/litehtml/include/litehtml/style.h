@@ -50,7 +50,7 @@ namespace litehtml
       private:
         props_map                              m_properties;
         int                                    m_counter = 0;
-        static std::map<string_id, css_values> m_valid_values;
+        static std::map<string_id, css_values>& m_valid_values;
 
       public:
         void add(const css_token_vector& tokens, const std::string& baseurl = "",

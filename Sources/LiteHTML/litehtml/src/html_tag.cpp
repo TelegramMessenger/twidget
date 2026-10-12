@@ -856,7 +856,7 @@ namespace litehtml
 
     void litehtml::html_tag::parse_attributes()
     {
-        static const std::set<std::string> svg_text_tags = {"svg", "g", "text", "tspan", "textpath", "a"};
+        static const std::set<std::string>& svg_text_tags = *new std::set<std::string>{"svg", "g", "text", "tspan", "textpath", "a"};
         bool                               svg_context   = false;
         for(element::ptr cur = parent(); cur && !svg_context; cur = cur->parent())
             svg_context = lowcase(cur->get_tagName()) == "svg";

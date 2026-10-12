@@ -28,7 +28,7 @@ namespace litehtml
     bool parse_font_family(const css_token_vector& tokens, std::string& font_family);
     bool parse_font_weight(const css_token& tok, css_length& weight);
 
-    std::map<string_id, css_values> style::m_valid_values = {
+    std::map<string_id, css_values>& style::m_valid_values = *new std::map<string_id, css_values>{
         {_display_,                style_display_strings               },
         {_visibility_,             visibility_strings                  },
         {_position_,               element_position_strings            },
@@ -314,12 +314,12 @@ namespace litehtml
 
     static const std::map<string_id, string_id>& raw_declaration_ids()
     {
-        static const std::map<string_id, string_id> ids = [] {
+        static const std::map<string_id, string_id>& ids = *new std::map<string_id, string_id>([] {
             std::map<string_id, string_id> map;
             for(const char* name : raw_declaration_names)
                 map[_id(name)] = _id(std::string("-lh-raw-") + name);
             return map;
-        }();
+        }());
         return ids;
     }
 
@@ -332,12 +332,12 @@ namespace litehtml
 
     bool is_raw_declaration(string_id name)
     {
-        static const std::set<string_id> raws = [] {
+        static const std::set<string_id>& raws = *new std::set<string_id>([] {
             std::set<string_id> set;
             for(const auto& entry : raw_declaration_ids())
                 set.insert(entry.second);
             return set;
-        }();
+        }());
         return raws.count(name) != 0;
     }
 

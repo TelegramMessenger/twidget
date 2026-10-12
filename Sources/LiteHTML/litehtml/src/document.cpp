@@ -372,7 +372,7 @@ namespace litehtml
     // quote and text cannot contain '<', so each hole ends at the first delimiter that starts the next literal.
     static bool svg_geometry_attribute(const char* name)
     {
-        static const std::unordered_set<std::string> names = {
+        static const std::unordered_set<std::string>& names = *new std::unordered_set<std::string>{
             "points", "d", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "dx", "dy", "transform",
             "fill", "stroke", "stroke-width", "stroke-dasharray", "stroke-dashoffset", "opacity", "fill-opacity",
             "stroke-opacity", "offset", "stop-color", "stop-opacity", "text-anchor", "width", "height", "display", "visibility",
@@ -424,7 +424,7 @@ namespace litehtml
     // whose effects reach other elements.
     static bool paint_only_property(const std::string& name)
     {
-        static const std::unordered_set<std::string> paint = {
+        static const std::unordered_set<std::string>& paint = *new std::unordered_set<std::string>{
             "color", "background", "background-color", "background-image", "background-position", "background-repeat",
             "opacity", "transform", "transform-origin", "box-shadow", "text-shadow", "filter", "outline", "outline-color",
             "outline-width", "outline-style", "outline-offset", "visibility", "fill", "fill-opacity", "stroke", "stroke-opacity",
@@ -460,11 +460,11 @@ namespace litehtml
     // around it (svg = true); nothing it changes is inherited or paints outside those boxes.
     static int style_change_region(const std::string& before, const std::string& after)
     {
-        static const std::unordered_set<std::string> box = {
+        static const std::unordered_set<std::string>& box = *new std::unordered_set<std::string>{
             "background", "background-color", "background-image", "background-position", "background-repeat",
             "border-color", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
             "caret-color", "cursor", "-lh-anim"};
-        static const std::unordered_set<std::string> svg = {
+        static const std::unordered_set<std::string>& svg = *new std::unordered_set<std::string>{
             "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-dasharray", "stroke-dashoffset",
             "stop-color", "stop-opacity"};
         auto a = split_style_declarations(before), b = split_style_declarations(after);
@@ -501,7 +501,7 @@ namespace litehtml
 
     static int declared_region(const std::string& name)
     {
-        static const std::unordered_set<std::string> box = {
+        static const std::unordered_set<std::string>& box = *new std::unordered_set<std::string>{
             "border-color", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color", "caret-color", "cursor"};
         if(name.compare(0, 10, "background") == 0 || box.count(name))
             return 1;
@@ -728,7 +728,7 @@ namespace litehtml
 
         bool tree_neutral_change(const std::string& before, const std::string& after, bool inline_box, bool table_cached)
         {
-            static const std::unordered_set<std::string> neutral = {
+            static const std::unordered_set<std::string>& neutral = *new std::unordered_set<std::string>{
                 "width", "height", "min-width", "min-height", "max-width", "max-height", "left", "top", "right", "bottom",
                 "margin", "margin-left", "margin-right", "margin-top", "margin-bottom", "padding", "padding-left",
                 "padding-right", "padding-top", "padding-bottom", "border-radius", "border-top-left-radius",
@@ -2074,8 +2074,8 @@ namespace litehtml
                 : base_master_styles;
         if(master_styles != "")
         {
-            static std::mutex                           master_cache_mutex;
-            static std::unordered_map<std::string, css> master_cache;
+            static std::mutex&                           master_cache_mutex = *new std::mutex;
+            static std::unordered_map<std::string, css>& master_cache = *new std::unordered_map<std::string, css>;
             const bool                                  cacheable =
                 master_styles.find("@media") == std::string::npos && master_styles.find("@import") == std::string::npos;
             bool hit = false;
@@ -2128,8 +2128,8 @@ namespace litehtml
             // Parsed and sorted document stylesheets are immutable, so documents built from the same
             // <style> text share one parse. Media and imports register per-document state while parsing,
             // so sheets that use them are parsed every time.
-            static std::mutex                           styles_cache_mutex;
-            static std::unordered_map<std::string, css> styles_cache;
+            static std::mutex&                           styles_cache_mutex = *new std::mutex;
+            static std::unordered_map<std::string, css>& styles_cache = *new std::unordered_map<std::string, css>;
             std::string                                 styles_key;
             bool                                        styles_cacheable = !m_css.empty();
             for(const auto& css : m_css)

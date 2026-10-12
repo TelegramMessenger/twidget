@@ -390,7 +390,7 @@ ImageHandle LoadIcon(const std::string& url)
 }
 
 NSImage* (^g_provider)(NSString* url) = nil;
-std::mutex g_providerLock;
+std::mutex& g_providerLock = *new std::mutex;
 
 ImageHandle LoadProvided(const std::string& url)
 {
@@ -749,8 +749,8 @@ struct SharedFont
     }
 };
 
-std::mutex                                                   gFontCacheMutex;
-std::unordered_map<std::string, std::shared_ptr<SharedFont>> gFontCache;
+std::mutex&                                                   gFontCacheMutex = *new std::mutex;
+std::unordered_map<std::string, std::shared_ptr<SharedFont>>& gFontCache = *new std::unordered_map<std::string, std::shared_ptr<SharedFont>>;
 constexpr size_t                                             kFontCacheLimit = 256;
 
 }
@@ -784,8 +784,8 @@ static NSInteger ManagerWeightFromCSS(int w)
 
 static bool HasWeightAxis(NSFont* font)
 {
-    static std::mutex                            mutex;
-    static std::unordered_map<std::string, bool> known;
+    static std::mutex&                            mutex = *new std::mutex;
+    static std::unordered_map<std::string, bool>& known = *new std::unordered_map<std::string, bool>;
     const int                                    axis = 0x77676874;
     NSString*                                    name = CFBridgingRelease(CTFontCopyPostScriptName((__bridge CTFontRef)font));
     const std::string                            key  = name.UTF8String ?: "";

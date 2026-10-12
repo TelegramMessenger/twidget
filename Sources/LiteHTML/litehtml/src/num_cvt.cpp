@@ -2,11 +2,11 @@
 #include "utf8_strings.h"
 #include <vector>
 
-static std::vector<char>           latin_lower = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+static std::vector<char>&           latin_lower = *new std::vector<char>{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
                                                   'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'};
-static std::vector<char>           latin_upper = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+static std::vector<char>&           latin_upper = *new std::vector<char>{'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
                                                   'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'};
-static std::vector<std::u32string> greek_lower = {U"α", U"β", U"γ", U"δ", U"ε", U"ζ", U"η", U"θ",
+static std::vector<std::u32string>& greek_lower = *new std::vector<std::u32string>{U"α", U"β", U"γ", U"δ", U"ε", U"ζ", U"η", U"θ",
                                                   U"ι", U"κ", U"λ", U"μ", U"ν", U"ξ", U"ο", U"π",
                                                   U"ρ", U"σ", U"τ", U"υ", U"φ", U"χ", U"ψ", U"ω"};
 
