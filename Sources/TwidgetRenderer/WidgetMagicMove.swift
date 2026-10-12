@@ -19,6 +19,8 @@ final class WidgetMagicMove {
     private let stage: MagicMoveStage
     private(set) var excluded: Set<Int> = []
     private(set) var transitions = 0
+    private var changedAt: [String: CFTimeInterval] = [:]
+    static let liveWindow: CFTimeInterval = 0.6
 
     var onFinish: (() -> Void)? {
         get { stage.onFinish }
@@ -172,6 +174,15 @@ final class WidgetMagicMove {
         let now = WidgetMagicMove.keyedNodes(dom, signatures: &signatures).keyed
         let gone = Set(capture.keyed.keys.filter { now[$0] == nil })
         capture.changed = Set(capture.signatures.compactMap { entry in signatures[entry.key].flatMap { $0 != entry.value ? entry.key : nil } })
+        let moment = CACurrentMediaTime()
+        changedAt = changedAt.filter { moment - $0.value < WidgetMagicMove.liveWindow }
+        var live: Set<String> = []
+        for key in capture.changed {
+            if changedAt[key] != nil {
+                live.insert(key)
+            }
+            changedAt[key] = moment
+        }
         var pixels = 0
         var count = 0
         let ranked = capture.keyed.keys.sorted { a, b in
@@ -183,7 +194,7 @@ final class WidgetMagicMove {
             return da != db ? da < db : a < b
         }
         for key in ranked {
-            if gone.contains(key), !(capture.ancestors[key] ?? []).isDisjoint(with: gone) {
+            if gone.contains(key) ? !(capture.ancestors[key] ?? []).isDisjoint(with: gone) : !capture.changed.contains(key) || live.contains(key) {
                 continue
             }
             guard let id = capture.keyed[key], let rect = capture.rects[id], rect.width > 0, rect.height > 0 else {
@@ -234,8 +245,8 @@ final class WidgetMagicMove {
         let chosen = Set(candidates.keys)
         candidates = candidates.filter { (ancestors[$0.key] ?? []).isDisjoint(with: chosen) }
         let riding = Set(chosen.flatMap { ancestors[$0] ?? [] })
-        let fading = Set(inPlace.keys)
-        for (key, item) in inPlace where !riding.contains(key) && (ancestors[key] ?? []).isDisjoint(with: chosen.union(fading)) {
+        let enclosing = Set(inPlace.keys.flatMap { ancestors[$0] ?? [] })
+        for (key, item) in inPlace where !riding.contains(key) && !enclosing.contains(key) && (ancestors[key] ?? []).isDisjoint(with: chosen) {
             candidates[key] = item
         }
         if candidates.isEmpty && capture.leaving.isEmpty {
