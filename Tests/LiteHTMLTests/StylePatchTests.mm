@@ -157,6 +157,23 @@ static LHDocument *Laid(NSString *html)
     XCTAssertNil(found[@"3"]);
 }
 
+- (void)testInlineBoxModelPatchesMatchAFreshParse
+{
+    NSString *(^page)(NSString *) = ^NSString *(NSString *style) {
+        return [NSString stringWithFormat:@"<!DOCTYPE html><style>.on{color:#c00;padding:2px}.r{position:relative}</style><div>a <b data-lh-id=\"1\" class=\"on r\" style=\"%@\">beta gamma <i>d</i></b> c</div>", style];
+    };
+    NSArray<NSArray<NSString *> *> *pairs = @[
+        @[@"padding:3px", @"color:#06c"], @[@"padding:3px", @"padding:9px"], @[@"margin-left:2px", @"margin-left:20px"],
+        @[@"left:14px", @"left:2px"], @[@"top:1px", @"top:6px"], @[@"color:red", @"padding:5px"],
+    ];
+    for(NSArray<NSString *> *pair in pairs)
+    {
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:page(pair[1]) css:nil previous:Laid(page(pair[0]))];
+        XCTAssertTrue(patched.reusedPrevious, @"%@", pair);
+        XCTAssertEqualObjects(Pixels(patched), Pixels(Laid(page(pair[1]))), @"%@", pair);
+    }
+}
+
 - (void)testRandomStylePatchesMatchAFreshParse
 {
     std::mt19937 random(7);

@@ -508,7 +508,7 @@ namespace litehtml
 
     namespace
     {
-        bool tree_neutral_change(const std::string& before, const std::string& after)
+        bool tree_neutral_change(const std::string& before, const std::string& after, bool inline_box)
         {
             static const std::unordered_set<std::string> neutral = {
                 "width", "height", "min-width", "min-height", "max-width", "max-height", "left", "top", "right", "bottom",
@@ -550,15 +550,21 @@ namespace litehtml
             std::map<std::string, std::string> a, b;
             if(!parse(before, a) || !parse(after, b))
                 return false;
+            auto allowed = [&](const std::string& name) {
+                if(inline_box && (name.compare(0, 6, "margin") == 0 || name.compare(0, 7, "padding") == 0 || name == "left" ||
+                                  name == "top" || name == "right" || name == "bottom"))
+                    return false;
+                return neutral.count(name) != 0;
+            };
             for(const auto& kv : a)
             {
                 auto it = b.find(kv.first);
-                if((it == b.end() || it->second != kv.second) && !neutral.count(kv.first))
+                if((it == b.end() || it->second != kv.second) && !allowed(kv.first))
                     return false;
             }
             for(const auto& kv : b)
             {
-                if(!a.count(kv.first) && !neutral.count(kv.first))
+                if(!a.count(kv.first) && !allowed(kv.first))
                     return false;
             }
             return true;
@@ -730,7 +736,8 @@ namespace litehtml
                     paint_only = style_change_is_paint_only(hole.value, value);
                 }
             }
-            if(keep_tree && (hole.text || hole.src || (hole.attr.empty() && !tree_neutral_change(hole.value, value))))
+            if(keep_tree && (hole.text || hole.src ||
+                             (hole.attr.empty() && !tree_neutral_change(hole.value, value, hole.owner->css().get_display() == display_inline))))
                 keep_tree = false;
             hole.value      = value;
             if(hole.src)
