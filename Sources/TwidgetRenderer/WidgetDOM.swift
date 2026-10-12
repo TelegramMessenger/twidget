@@ -438,6 +438,7 @@ final class WidgetDOM {
         }
         let id = (op["id"] as? NSNumber)?.intValue ?? 0
         notePatch(kind, id, op)
+        noteSheets(kind, id, op)
         switch kind {
         case "el":
             let tag = (op["tag"] as? String) ?? "span"
@@ -640,7 +641,37 @@ final class WidgetDOM {
 
     private var lastSize = 16 * 1024
 
+    private var sheets: [String]?
+
+    private func noteSheets(_ kind: String, _ id: Int, _ op: [String: Any]) {
+        guard sheets != nil else {
+            return
+        }
+        switch kind {
+        case "css":
+            sheets = nil
+        case "el":
+            if op["adopt"] != nil {
+                sheets = nil
+            }
+        case "ins", "rm", "data":
+            guard let node = nodes[id] else {
+                return
+            }
+            if !node.isText || node.parent?.tag == "style" {
+                sheets = nil
+            } else if kind == "ins", let parentId = (op["parent"] as? NSNumber)?.intValue, parentId != 0, nodes[parentId]?.tag == "style" {
+                sheets = nil
+            }
+        default:
+            break
+        }
+    }
+
     func styleSheets() -> [String] {
+        if let sheets = sheets {
+            return sheets
+        }
         var texts: [String] = []
         func visit(_ node: WidgetNode) {
             if node.tag == "style" {
@@ -652,6 +683,7 @@ final class WidgetDOM {
             }
         }
         visit(html)
+        sheets = texts
         return texts
     }
 
