@@ -132,8 +132,8 @@ namespace litehtml
             return next == ':' || isspace(static_cast<unsigned char>(next));
         }
 
-        std::mutex                                                   declaration_cache_lock;
-        std::unordered_map<std::string, std::vector<style_op>>       declaration_cache;
+        std::mutex&                                                  declaration_cache_lock = *new std::mutex;
+        std::unordered_map<std::string, std::vector<style_op>>&      declaration_cache = *new std::unordered_map<std::string, std::vector<style_op>>;
 
         bool split_declarations(const std::string& txt, std::vector<std::pair<size_t, size_t>>& out)
         {
