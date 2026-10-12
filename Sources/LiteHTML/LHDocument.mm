@@ -1326,42 +1326,62 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     if(!_doc || !_doc->root())
         return result;
-    std::vector<std::string> keys;
+    std::vector<std::pair<lh::string_id, NSString *>> keys;
     for(NSString *name in names)
-        keys.emplace_back(name.UTF8String);
-    std::vector<std::string> gates;
+    {
+        const lh::string_id raw = lh::raw_declaration_id(lh::_id(name.UTF8String ?: ""));
+        if(raw != lh::empty_id)
+            keys.emplace_back(raw, name);
+    }
+    std::vector<lh::string_id> gates;
     for(NSString *name in required)
-        gates.emplace_back(name.UTF8String);
+    {
+        const lh::string_id raw = lh::raw_declaration_id(lh::_id(name.UTF8String ?: ""));
+        if(raw != lh::empty_id)
+            gates.push_back(raw);
+    }
+    if(required.count > 0 && gates.empty())
+        return result;
     const char *key = attribute.UTF8String;
-    std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
+    std::vector<const lh::element *> pending{_doc->root().get()};
+    while(!pending.empty())
+    {
+        const lh::element *el = pending.back();
+        pending.pop_back();
         if(el->css().get_display() == lh::display_none)
-            return;
-        if(auto tag = std::dynamic_pointer_cast<lh::html_tag>(el))
+            continue;
+        if(auto tag = dynamic_cast<const lh::html_tag *>(el))
         {
-            const char *value = tag->get_attr(key);
-            bool        open  = gates.empty();
-            for(size_t i = 0; value && !open && i < gates.size(); i++)
-                open = !tag->raw_declaration(gates[i]).empty();
-            if(value && open)
+            bool open = gates.empty();
+            for(size_t i = 0; !open && i < gates.size(); i++)
+            {
+                const lh::css_token_vector *tokens = tag->get_token_property(gates[i]);
+                open = tokens && !lh::get_repr(*tokens, 0, -1, true).empty();
+            }
+            const char *value = open ? tag->get_attr(key) : nullptr;
+            if(value)
             {
                 NSMutableDictionary<NSString *, NSString *> *found = nil;
-                for(const auto &name : keys)
+                for(const auto &entry : keys)
                 {
-                    std::string raw = tag->raw_declaration(name);
+                    const lh::css_token_vector *tokens = tag->get_token_property(entry.first);
+                    if(!tokens)
+                        continue;
+                    std::string raw = lh::get_repr(*tokens, 0, -1, true);
                     if(raw.empty())
                         continue;
                     if(!found)
                         found = [NSMutableDictionary dictionary];
-                    found[@(name.c_str())] = @(raw.c_str());
+                    found[entry.second] = @(raw.c_str());
                 }
                 if(found)
                     result[@(value)] = found;
             }
         }
-        for(const auto &child : el->children())
-            visit(child);
-    };
-    visit(_doc->root());
+        const auto &children = el->children();
+        for(auto it = children.rbegin(); it != children.rend(); ++it)
+            pending.push_back(it->get());
+    }
     return result;
 }
 

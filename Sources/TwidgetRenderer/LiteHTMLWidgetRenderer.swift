@@ -292,20 +292,24 @@ public final class LiteHTMLWidgetRenderer {
         needsRender = false
         updateAnimationClock()
         let now = animationNow
+        let sheetsStart = CACurrentMediaTime()
         let sheets = dom.styleSheets()
         let key = sheets.joined(separator: "\u{1}")
         if key != styleSheetKey {
             styleSheetKey = key
             animator.setStyleSheets(sheets.map { CSSTheme.resolve($0, theme: theme) })
         }
+        stageMilliseconds["sheets", default: 0] += (CACurrentMediaTime() - sheetsStart) * 1000
         compositor.styleKey = (key + "\u{2}" + theme + "\u{2}\(hoverId)\u{2}\(pressId)").hashValue
         layout(overrides)
+        let scanStart = CACurrentMediaTime()
         var declarations: [Int: [String: String]] = [:]
         for (key, values) in document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: WidgetAnimator.entryProperties) ?? [:] {
             if let id = Int(key) {
                 declarations[id] = values
             }
         }
+        stageMilliseconds["declarations", default: 0] += (CACurrentMediaTime() - scanStart) * 1000
         animator.update(declarations: declarations, now: now)
         let sampled = animator.sample(now: now)
         let before = compositor.ids
@@ -481,6 +485,7 @@ public final class LiteHTMLWidgetRenderer {
             mark = now
         }
         let fast = styleOnlyDocument(overrides)
+        stage("style-patch")
         let html = fast == nil || LiteHTMLWidgetRenderer.patchCheck ? dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) }) : ""
         stage("serialize")
         let next = fast ?? LHDocument(html: html, css: nil, previous: document)
@@ -582,6 +587,7 @@ public final class LiteHTMLWidgetRenderer {
             } else {
                 documentView.invalidate(nil)
             }
+            stage("diff")
         }
         document = next
         for url in retiredURLs {
