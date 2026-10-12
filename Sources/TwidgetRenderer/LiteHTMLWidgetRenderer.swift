@@ -556,9 +556,7 @@ public final class LiteHTMLWidgetRenderer {
             if LiteHTMLWidgetRenderer.dirtyLog, !regions.isEmpty {
                 print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) regions \(regions.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
             }
-            for rect in regions {
-                documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
-            }
+            documentView.invalidate(regions.map { $0.insetBy(dx: -1, dy: -1) })
         } else {
             let list = next.displayList(maxWidth: width, scale: documentView.scale)
             let previousList = displayList
@@ -572,9 +570,7 @@ public final class LiteHTMLWidgetRenderer {
                     if LiteHTMLWidgetRenderer.dirtyLog {
                         print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) \(rects.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
                     }
-                    for rect in rects {
-                        documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
-                    }
+                    documentView.invalidate(rects.map { $0.insetBy(dx: -1, dy: -1) })
                 }
             } else {
                 documentView.invalidate(nil)
@@ -1485,6 +1481,38 @@ final class WidgetDocumentView: NSView {
         ctx.clear(dirtyRect)
         document.draw(in: ctx, origin: .zero, clip: dirtyRect.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
         ctx.restoreGState()
+    }
+
+    func invalidate(_ rects: [CGRect]) {
+        if rects.count <= 32 || WidgetDocumentView.backingStore || tiles.isEmpty {
+            for rect in rects {
+                invalidate(rect)
+            }
+            return
+        }
+        var pieces = [CGRect](repeating: .null, count: tiles.count)
+        var all = CGRect.null
+        for rect in rects {
+            all = all.union(rect)
+            for (index, tile) in tiles.enumerated() where rect.intersects(tile.rect) {
+                pieces[index] = pieces[index].union(rect.intersection(tile.rect))
+            }
+        }
+        for (index, tile) in tiles.enumerated() where !pieces[index].isNull {
+            if WidgetDocumentView.layerTiles {
+                tile.layer.setNeedsDisplay(pieces[index].offsetBy(dx: -tile.rect.minX, dy: -tile.rect.minY))
+            } else {
+                tile.pending = true
+            }
+        }
+        if !WidgetDocumentView.layerTiles {
+            for tile in tiles {
+                for surface in tile.surfaces {
+                    surface.stale = surface.stale.union(all)
+                }
+            }
+        }
+        needsDisplay = true
     }
 
     func invalidate(_ rect: CGRect?) {
