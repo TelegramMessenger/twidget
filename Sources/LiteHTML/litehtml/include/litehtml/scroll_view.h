@@ -51,6 +51,17 @@ namespace litehtml
             return m_viewport;
         }
 
+        const size& get_scroll_size() const
+        {
+            return m_scroll_size;
+        }
+
+        void scroll_to(const pixel_t left, const pixel_t top)
+        {
+            m_left = std::clamp(left, 0_px, get_max_h_scroll());
+            m_top  = std::clamp(top, 0_px, get_max_v_scroll());
+        }
+
         bool is_h_scrollable(const pixel_t dx) const
         {
             if(m_scroll_size.width == 0_px)

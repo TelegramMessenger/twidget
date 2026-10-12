@@ -59,6 +59,8 @@ namespace litehtml
         const element* bare_effects = nullptr;
         bool bare_shadows = false;
         bool has_backdrop = false;
+        std::unordered_set<const element*> skip_scroll_content;
+        const element* unclipped_scroll = nullptr;
         bool m_paint_only_patch = false;
         bool m_patch_confined   = false;
         std::vector<std::shared_ptr<element>> m_patch_regions;
@@ -167,6 +169,7 @@ namespace litehtml
         uint32_t  paint_generation() const { return m_paint_generation; }
         void      invalidate_paint() const { m_paint_generation = m_paint_generation + 1 == 0 ? 1 : m_paint_generation + 1; }
         bool      culls_paint() const { return m_cull_paint; }
+        void      set_culls_paint(bool cull) { m_cull_paint = cull; }
         web_color get_def_color() const
         {
             return m_def_color;

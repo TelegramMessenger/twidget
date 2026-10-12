@@ -64,6 +64,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:gpu:scale:));
 - (CGRect)boundsOfElementsMatching:(NSString *)selector NS_SWIFT_NAME(bounds(matching:));
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setPaintExclusions(_:attribute:));
+- (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setScrollContentExclusions(_:attribute:));
+- (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute NS_SWIFT_NAME(scrollers(byAttribute:));
+- (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(setScrollOffset(_:attribute:value:));
+- (nullable CGImageRef)copyScrollContentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyScrollContent(attribute:value:rect:scale:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox radii:(nullable CGFloat *)radii CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:radii:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox radii:(nullable CGFloat *)radii bareShadows:(BOOL)bareShadows CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:radii:bareShadows:));

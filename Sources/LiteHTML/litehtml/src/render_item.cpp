@@ -1179,13 +1179,18 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
 void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, draw_flag flag,
                                           int zindex)
 {
+    document* doc = src_el()->doc_ptr();
+    if(!doc->skip_scroll_content.empty() && doc->skip_scroll_content.count(src_el().get()))
+    {
+        return;
+    }
+
     position pos  = m_pos;
     pos.x        += x - get_scroll_left();
     pos.y        += y - get_scroll_top();
 
-    document* doc = src_el()->doc_ptr();
-
-    if(src_el()->css().get_overflow() > overflow_visible)
+    const bool clips = src_el()->css().get_overflow() > overflow_visible && src_el().get() != doc->unclipped_scroll;
+    if(clips)
     {
         // TODO: Process overflow for inline elements
         if(src_el()->css().get_display() != display_inline)
@@ -1326,7 +1331,7 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
         }
     }
 
-    if(src_el()->css().get_overflow() > overflow_visible)
+    if(clips)
     {
         doc->container()->del_clip();
     }

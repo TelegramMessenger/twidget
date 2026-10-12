@@ -484,6 +484,9 @@ static bool LHPaintTraceUncached()
     CGFloat                      _consumedMaxWidth;
     NSString                    *_exclusionAttribute;
     NSSet<NSString *>           *_exclusions;
+    NSSet<NSString *>           *_scrollExclusions;
+    std::unordered_map<std::string, std::weak_ptr<lh::render_item>> _scrollItems;
+    NSString                    *_scrollAttribute;
     NSDictionary                *_declarations;
     NSArray                     *_declarationsKey;
     uint64_t                     _declarationsEpoch;
@@ -1084,6 +1087,22 @@ static std::string MasterWithCSS(NSString *css)
 - (void)resolveExclusionsLocked
 {
     _doc->skip_paint.clear();
+    _doc->skip_scroll_content.clear();
+    if(_scrollExclusions.count > 0 && _doc->root())
+    {
+        std::unordered_set<std::string> scrollers;
+        for(NSString *value in _scrollExclusions)
+            scrollers.insert(value.UTF8String);
+        const char *scrollKey = _scrollAttribute.UTF8String;
+        std::function<void(const lh::element::ptr &)> visitScrollers = [&](const lh::element::ptr &el) {
+            const char *value = el->get_attr(scrollKey);
+            if(value && scrollers.count(value))
+                _doc->skip_scroll_content.insert(el.get());
+            for(const auto &child : el->children())
+                visitScrollers(child);
+        };
+        visitScrollers(_doc->root());
+    }
     if(_exclusions.count == 0 || !_doc->root())
         return;
     std::unordered_set<std::string> wanted;
@@ -1098,6 +1117,134 @@ static std::string MasterWithCSS(NSString *css)
             visit(child);
     };
     visit(_doc->root());
+}
+
+- (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _scrollExclusions = [values copy];
+    _scrollAttribute  = [attribute copy];
+}
+
+- (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    if(!_doc || !_doc->root_render())
+        return result;
+    const char *key = attribute.UTF8String;
+    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
+        const lh::scroll_view *view = ri->get_scroll_view();
+        const char            *v    = ri->src_el()->get_attr(key);
+        if(view && v && ri->is_visible() && ri->src_el()->css().get_display() != lh::display_inline)
+        {
+            const lh::position placement = ri->get_placement();
+            const auto        &css       = ri->src_el()->css();
+            lh::position       border    = placement;
+            border += ri->get_paddings();
+            border += ri->get_borders();
+            lh::border_radiuses radius = css.get_borders().radius.calc_percents(border.width, border.height);
+            radius -= ri->get_borders();
+            radius -= ri->get_paddings();
+            const lh::size &content = view->get_scroll_size();
+            result[@(v)] = @{
+                @"viewport": [NSValue valueWithRect:NSMakeRect(placement.x.value(), placement.y.value(), placement.width.value(), placement.height.value())],
+                @"content": [NSValue valueWithSize:NSMakeSize(content.width.value(), content.height.value())],
+                @"offset": [NSValue valueWithPoint:NSMakePoint(ri->get_scroll_left().value(), ri->get_scroll_top().value())],
+                @"radii": @[@(radius.top_left_x.value()), @(radius.top_left_y.value()), @(radius.top_right_x.value()), @(radius.top_right_y.value()),
+                            @(radius.bottom_right_x.value()), @(radius.bottom_right_y.value()), @(radius.bottom_left_x.value()), @(radius.bottom_left_y.value())],
+            };
+        }
+        for(const auto &child : ri->children())
+            visit(child);
+    };
+    visit(_doc->root_render());
+    return result;
+}
+
+- (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    std::string cacheKey = std::string(attribute.UTF8String) + "\x01" + value.UTF8String;
+    std::shared_ptr<lh::render_item> ri;
+    if(auto it = _scrollItems.find(cacheKey); it != _scrollItems.end())
+    {
+        ri = it->second.lock();
+        if(ri)
+        {
+            auto top = ri;
+            while(auto up = top->parent())
+                top = up;
+            const char *v = ri->src_el()->get_attr(attribute.UTF8String);
+            if(top != _doc->root_render() || !v || strcmp(v, value.UTF8String) != 0)
+                ri = nullptr;
+        }
+    }
+    if(!ri)
+    {
+        ri = [self renderItemLockedWithAttribute:attribute value:value];
+        if(ri)
+            _scrollItems[cacheKey] = ri;
+    }
+    if(!ri || !ri->get_scroll_view())
+        return CGPointZero;
+    ri->scroll_to(lh::pixel_t(static_cast<float>(offset.x)), lh::pixel_t(static_cast<float>(offset.y)));
+    return CGPointMake(ri->get_scroll_left().value(), ri->get_scroll_top().value());
+}
+
+- (CGImageRef)copyScrollContentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri || !ri->get_scroll_view())
+        return nullptr;
+    const size_t pw = (size_t)std::ceil(rect.size.width * scale), ph = (size_t)std::ceil(rect.size.height * scale);
+    if(pw == 0 || ph == 0 || pw > 8192 || ph > 8192)
+        return nullptr;
+    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    if(!ctx)
+        return nullptr;
+    const lh::position placement = ri->get_placement();
+    const lh::pixel_t  x         = placement.x - ri->pos().x;
+    const lh::pixel_t  y         = placement.y - ri->pos().y;
+    CGContextTranslateCTM(ctx, 0, ph);
+    CGContextScaleCTM(ctx, scale, -scale);
+    CGContextTranslateCTM(ctx, -(placement.x.value() + rect.origin.x), -(placement.y.value() + rect.origin.y));
+    CGContextSetAllowsFontSmoothing(ctx, false);
+    CGContextSetShouldAntialias(ctx, true);
+    [self resolveExclusionsLocked];
+    _doc->skip_scroll_content.erase(ri->src_el().get());
+    const lh::pixel_t left = ri->get_scroll_left(), top = ri->get_scroll_top();
+    ri->scroll_to(0, 0);
+    const lh::element *savedUnclipped = _doc->unclipped_scroll;
+    _doc->unclipped_scroll            = ri->src_el().get();
+    const bool savedCull              = _doc->culls_paint();
+    _doc->set_culls_paint(true);
+    lh::position clip(static_cast<float>(placement.x.value() + rect.origin.x), static_cast<float>(placement.y.value() + rect.origin.y), static_cast<float>(rect.size.width), static_cast<float>(rect.size.height));
+    {
+        PixelSnap snap(ctx);
+        std::set<int> z;
+        CollectPositionedZ(ri, z);
+        auto hdc = reinterpret_cast<lh::uint_ptr>(ctx);
+        for(int index : z)
+            if(index < 0)
+                ri->draw_children(hdc, x, y, &clip, lh::draw_positioned, index);
+        ri->draw_children(hdc, x, y, &clip, lh::draw_block, 0);
+        ri->draw_children(hdc, x, y, &clip, lh::draw_floats, 0);
+        ri->draw_children(hdc, x, y, &clip, lh::draw_inlines, 0);
+        for(int index : z)
+            if(index >= 0)
+                ri->draw_children(hdc, x, y, &clip, lh::draw_positioned, index);
+    }
+    _doc->set_culls_paint(savedCull);
+    _doc->unclipped_scroll = savedUnclipped;
+    ri->scroll_to(left, top);
+    CGImageRef image = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return image;
 }
 
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
