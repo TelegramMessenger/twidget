@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "Twidget3D", targets: ["Twidget3D"]),
         .library(name: "TwidgetRenderer", targets: ["TwidgetRenderer"]),
         .library(name: "CQuickJSNG", targets: ["CQuickJSNG"]),
+        .library(name: "TwidgetProtocol", targets: ["TwidgetProtocol"]),
     ],
     targets: [
         .target(
@@ -88,13 +89,16 @@ let package = Package(
             path: "Sources/HTML3D",
             linkerSettings: [.linkedFramework("JavaScriptCore")]),
         .target(
+            name: "TwidgetProtocol",
+            path: "Sources/TwidgetProtocol"),
+        .target(
             name: "TwidgetRenderer",
-            dependencies: ["LiteHTML"],
+            dependencies: ["LiteHTML", "TwidgetProtocol"],
             path: "Sources/TwidgetRenderer",
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(
             name: "TwidgetRendererTests",
-            dependencies: ["TwidgetRenderer", "HTMLScript", "HTMLSandbox", "LiteHTML", "CQuickJSNG"],
+            dependencies: ["TwidgetRenderer", "TwidgetProtocol", "HTMLScript", "HTMLSandbox", "LiteHTML", "CQuickJSNG"],
             path: "Tests/TwidgetRendererTests"),
         .testTarget(
             name: "Twidget3DTests",

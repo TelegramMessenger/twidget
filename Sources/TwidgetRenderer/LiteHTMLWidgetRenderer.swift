@@ -2,6 +2,7 @@ import AppKit
 import IOSurface
 import CoreVideo
 import LiteHTML
+import TwidgetProtocol
 
 public final class LiteHTMLWidgetRenderer {
     public let view: NSView
@@ -227,45 +228,12 @@ public final class LiteHTMLWidgetRenderer {
         guard !destroyed, let data = json.data(using: .utf8), let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let type = message["type"] as? String else {
             return
         }
-        if LiteHTMLWidgetRenderer.messageLog {
-            let ops = ((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map { "\($0["op"] ?? "?"):\($0["name"] ?? "")" } }
-            print(String(format: "MSG %.4f %@ %@", CACurrentMediaTime(), type, ops.joined(separator: ",")))
+        if LiteHTMLWidgetRenderer.messageLog, type != "ops" {
+            print(String(format: "MSG %.4f %@", CACurrentMediaTime(), type))
         }
         switch type {
         case "ops":
-            let ops = ((message["ops"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
-            if !frozen, let touched = scriptedOnly(ops) {
-                for op in ops {
-                    dom.apply(op)
-                }
-                stageMilliseconds["scripted-fast", default: 0] += 1
-                if compositor.applyScripted(touched, dom: dom, document: document) {
-                    if !animator.isActive {
-                        compositeCheck([:])
-                    }
-                    return
-                }
-                render()
-                return
-            }
-            noteScriptedTransforms(ops)
-            var capture: WidgetMagicMove.Capture?
-            if dom.usesTransitions, let document = document, !frozen, isOnScreen, WidgetMagicMove.isStructural(ops, dom: dom) {
-                capture = magic.capture(dom: dom, document: document)
-            }
-            for op in ops {
-                dom.apply(op)
-            }
-            if var pending = capture, let document = document {
-                magic.collectLeaving(&pending, dom: dom, document: document, scale: documentView.scale)
-                capture = pending
-            }
-            sizeTransition = capture != nil
-            render()
-            sizeTransition = false
-            if let capture = capture, let document = document, magic.run(capture, dom: dom, document: document, skip: animator.animatedIDs().union(compositor.ids), scale: documentView.scale) {
-                applyExclusions()
-            }
+            apply(((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map(WidgetOp.init) })
         case "query":
             let qid = message["qid"] ?? NSNull()
             let q = (message["query"] as? [String: Any]) ?? [:]
@@ -288,6 +256,55 @@ public final class LiteHTMLWidgetRenderer {
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
         default:
             break
+        }
+    }
+
+    public var acceptsTypedOps: Bool {
+        return true
+    }
+
+    public func send(ops: [WidgetOp]) {
+        guard !destroyed else {
+            return
+        }
+        apply(ops)
+    }
+
+    private func apply(_ ops: [WidgetOp]) {
+        if LiteHTMLWidgetRenderer.messageLog {
+            print(String(format: "MSG %.4f ops %@", CACurrentMediaTime(), ops.map { "\($0.op ?? "?"):\($0.kind == .other ? ($0["name"] as? String) ?? "" : $0.name)" }.joined(separator: ",")))
+        }
+        if !frozen, let touched = scriptedOnly(ops) {
+            for op in ops {
+                dom.apply(op)
+            }
+            stageMilliseconds["scripted-fast", default: 0] += 1
+            if compositor.applyScripted(touched, dom: dom, document: document) {
+                if !animator.isActive {
+                    compositeCheck([:])
+                }
+                return
+            }
+            render()
+            return
+        }
+        noteScriptedTransforms(ops)
+        var capture: WidgetMagicMove.Capture?
+        if dom.usesTransitions, let document = document, !frozen, isOnScreen, WidgetMagicMove.isStructural(ops, dom: dom) {
+            capture = magic.capture(dom: dom, document: document)
+        }
+        for op in ops {
+            dom.apply(op)
+        }
+        if var pending = capture, let document = document {
+            magic.collectLeaving(&pending, dom: dom, document: document, scale: documentView.scale)
+            capture = pending
+        }
+        sizeTransition = capture != nil
+        render()
+        sizeTransition = false
+        if let capture = capture, let document = document, magic.run(capture, dom: dom, document: document, skip: animator.animatedIDs().union(compositor.ids), scale: documentView.scale) {
+            applyExclusions()
         }
     }
 
@@ -851,28 +868,29 @@ public final class LiteHTMLWidgetRenderer {
     private var scriptedHits: [Int: (count: Int, batch: Int)] = [:]
     private var opsBatch = 0
 
-    private func scriptedOnly(_ ops: [[String: Any]]) -> Set<Int>? {
+    private func scriptedOnly(_ ops: [WidgetOp]) -> Set<Int>? {
         let promoted = compositor.scriptedIDs
         if promoted.isEmpty || ops.isEmpty {
             return nil
         }
         var touched: Set<Int> = []
         for op in ops {
-            guard (op["op"] as? String) == "style", let name = (op["name"] as? String)?.lowercased(), LiteHTMLWidgetRenderer.scriptedProperties.contains(name), let id = (op["id"] as? NSNumber)?.intValue, promoted.contains(id) else {
+            guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()), promoted.contains(op.id) else {
                 return nil
             }
-            touched.insert(id)
+            touched.insert(op.id)
         }
         return touched
     }
 
-    private func noteScriptedTransforms(_ ops: [[String: Any]]) {
+    private func noteScriptedTransforms(_ ops: [WidgetOp]) {
         opsBatch += 1
         var promote = false
         for op in ops {
-            guard (op["op"] as? String) == "style", let name = (op["name"] as? String)?.lowercased(), LiteHTMLWidgetRenderer.scriptedProperties.contains(name), let id = (op["id"] as? NSNumber)?.intValue else {
+            guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()) else {
                 continue
             }
+            let id = op.id
             let hit = scriptedHits[id] ?? (0, 0)
             if hit.batch == opsBatch {
                 continue

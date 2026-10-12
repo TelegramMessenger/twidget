@@ -1,3 +1,4 @@
+import TwidgetProtocol
 import Foundation
 
 final class WidgetNode {
@@ -350,7 +351,7 @@ final class WidgetDOM {
         patchLog.attributes[key]!.names.insert(name)
     }
 
-    private func notePatch(_ kind: String, _ id: Int, _ op: [String: Any]) {
+    private func notePatch(_ kind: String, _ id: Int, _ op: WidgetOp) {
         guard patchLog.valid else {
             return
         }
@@ -440,11 +441,25 @@ final class WidgetDOM {
     }
 
     func apply(_ op: [String: Any]) {
+        apply(WidgetOp(op))
+    }
+
+    func apply(_ op: WidgetOp) {
         WidgetDOM.revision &+= 1
-        guard let kind = op["op"] as? String else {
+        if op.kind == .style {
+            guard let node = nodes[op.id] else {
+                return
+            }
+            if patchLog.valid {
+                noteAttribute(node, "style")
+            }
+            node.setProperty(op.name, op.value, important: op.important)
             return
         }
-        let id = (op["id"] as? NSNumber)?.intValue ?? 0
+        guard let kind = op.op else {
+            return
+        }
+        let id = op.kind == .other ? (op["id"] as? NSNumber)?.intValue ?? 0 : op.id
         notePatch(kind, id, op)
         noteSheets(kind, id, op)
         switch kind {
@@ -651,7 +666,7 @@ final class WidgetDOM {
 
     private var sheets: [String]?
 
-    private func noteSheets(_ kind: String, _ id: Int, _ op: [String: Any]) {
+    private func noteSheets(_ kind: String, _ id: Int, _ op: WidgetOp) {
         guard sheets != nil else {
             return
         }

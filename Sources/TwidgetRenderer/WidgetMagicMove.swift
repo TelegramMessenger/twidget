@@ -1,5 +1,6 @@
 import AppKit
 import LiteHTML
+import TwidgetProtocol
 
 final class WidgetMagicMove {
     struct Capture {
@@ -35,7 +36,7 @@ final class WidgetMagicMove {
         return stage.isActive
     }
 
-    static func isStructural(_ ops: [[String: Any]], dom: WidgetDOM) -> Bool {
+    static func isStructural(_ ops: [WidgetOp], dom: WidgetDOM) -> Bool {
         func inside(_ id: Any?) -> Bool? {
             guard let id = (id as? NSNumber)?.intValue, var node = dom.node(id) else {
                 return nil

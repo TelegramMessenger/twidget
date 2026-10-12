@@ -1,5 +1,6 @@
 import XCTest
 @testable import TwidgetRenderer
+import TwidgetProtocol
 
 private struct SeededRandom: RandomNumberGenerator {
     var state: UInt64
@@ -171,6 +172,63 @@ final class RendererFuzzTests: XCTestCase {
         XCTAssertTrue(html.contains("opacity:0.5"))
         XCTAssertTrue(html.contains("&quot;&gt;&lt;script&gt;"))
         XCTAssertGreaterThanOrEqual(violations, 3)
+    }
+
+    func testTypedOpsRenderLikeTheirDictionaries() {
+        let typed = WidgetDOM()
+        let generic = WidgetDOM()
+        for dom in [typed, generic] {
+            dom.apply(["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"])
+        }
+        var typedStyles = 0
+        for round in 0..<800 {
+            let batch: [[String: Any]] = (0..<Int(random.next() % 12 + 1)).map { _ in
+                if chance(40) {
+                    var o: [String: Any] = ["op": "style", "id": id(), "name": chance(25) ? pick(RendererFuzzTests.hostileNames) : pick(["transform", "opacity", "color", "left", "width", "background"]), "value": value()]
+                    if chance(50) { o["important"] = chance(50) }
+                    return o
+                }
+                return op()
+            }
+            for o in batch {
+                let op = WidgetOp(o)
+                if op.kind == .style { typedStyles += 1 }
+                typed.apply(op)
+                var padded = o
+                padded["pad1"] = 1
+                padded["pad2"] = 2
+                padded["pad3"] = 3
+                XCTAssertEqual(WidgetOp(padded).kind, .other)
+                generic.apply(WidgetOp(padded))
+            }
+            if round % 20 == 0 {
+                let theme = round % 40 == 0 ? "dark" : "light"
+                XCTAssertEqual(typed.serialize(theme: theme), generic.serialize(theme: theme))
+            }
+        }
+        XCTAssertEqual(typed.serialize(theme: "light"), generic.serialize(theme: "light"))
+        XCTAssertGreaterThan(typedStyles, 1500)
+    }
+
+    func testTypedOpsSurviveTheJSONFallback() throws {
+        var ops: [WidgetOp] = []
+        for _ in 0..<2000 {
+            switch random.next() % 3 {
+            case 0: ops.append(WidgetOp(style: id(), name: pick(RendererFuzzTests.hostileNames), value: "\(value())", important: chance(50)))
+            case 1: ops.append(WidgetOp(attribute: id(), name: pick(RendererFuzzTests.hostileNames), value: "\(value())"))
+            default: ops.append(WidgetOp(op()))
+            }
+        }
+        let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(WidgetOp.json(ops).utf8)) as? [[String: Any]])
+        XCTAssertEqual(parsed.count, ops.count)
+        for (op, back) in zip(ops, parsed) {
+            XCTAssertEqual(back["op"] as? String, op.op)
+            XCTAssertEqual((back["id"] as? NSNumber)?.intValue, op.kind == .other ? (op["id"] as? NSNumber)?.intValue : op.id)
+            if op.kind != .other {
+                XCTAssertEqual(back["name"] as? String, op.name)
+                XCTAssertEqual(back["value"] as? String, op.value)
+            }
+        }
     }
 
     func testCachedSerializationMatchesFresh() {
