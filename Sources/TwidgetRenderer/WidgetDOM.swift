@@ -9,6 +9,7 @@ final class WidgetNode {
     var text: String {
         didSet {
             cache = nil
+            WidgetDOM.revision &+= 1
         }
     }
     var cache: [UInt8]?
@@ -41,6 +42,7 @@ final class WidgetNode {
 
     func setAttribute(_ name: String, _ value: String) {
         cache = nil
+        WidgetDOM.revision &+= 1
         if name.lowercased() == "style" {
             declarations = WidgetNode.parseDeclarations(value)
             return
@@ -55,6 +57,7 @@ final class WidgetNode {
 
     func removeAttribute(_ name: String) {
         cache = nil
+        WidgetDOM.revision &+= 1
         if name.lowercased() == "style" {
             declarations.removeAll()
             return
@@ -65,6 +68,7 @@ final class WidgetNode {
 
     func setProperty(_ name: String, _ value: String, important: Bool) {
         cache = nil
+        WidgetDOM.revision &+= 1
         let key = name.hasPrefix("--") ? name : name.lowercased()
         if !WidgetNames.isProperty(key) {
             return
@@ -229,6 +233,7 @@ final class WidgetDOM {
 
     private func register(_ id: Int, _ node: WidgetNode) {
         node.cache = nil
+        WidgetDOM.revision &+= 1
         nodes[id] = node
         if node.id < 0 {
             rootIds[ObjectIdentifier(node)] = id
@@ -236,6 +241,7 @@ final class WidgetDOM {
     }
 
     private func unregister(_ node: WidgetNode) {
+        WidgetDOM.revision &+= 1
         let key = publicId(node)
         if key != 0, nodes[key] === node {
             nodes[key] = nil
@@ -281,6 +287,7 @@ final class WidgetDOM {
     }
 
     func apply(_ op: [String: Any]) {
+        WidgetDOM.revision &+= 1
         guard let kind = op["op"] as? String else {
             return
         }
@@ -444,9 +451,11 @@ final class WidgetDOM {
 
     private var epoch = 0
     private var epochTheme = ""
+    static var revision: UInt64 = 0
 
     static func invalidatingCaches(_ dom: WidgetDOM) -> WidgetDOM {
         dom.epoch += 1
+        WidgetDOM.revision &+= 1
         return dom
     }
 
@@ -550,27 +559,43 @@ final class WidgetDOM {
         }
         if !node.declarations.isEmpty || animated != nil {
             put(" style=\"")
-            for declaration in node.declarations where declaration.name != "-lh-anim" && WidgetNames.isProperty(declaration.name) {
-                put(declaration.name)
-                put(":")
-                WidgetDOM.escape(CSSTheme.resolve(declaration.value, theme: theme), into: &out, attribute: true)
-                if declaration.important {
-                    put(" !important")
-                }
-                put(";")
-            }
-            if let animated = animated {
-                put("-lh-anim:1;")
-                for (name, value) in animated where WidgetNames.isProperty(name) {
-                    put(name)
-                    put(":")
-                    WidgetDOM.escape(CSSTheme.resolve(value, theme: theme), into: &out, attribute: true)
-                    put(";")
-                }
-            }
+            WidgetDOM.writeStyle(node, animated: animated, theme: theme, into: &out)
             put("\"")
         }
         put(">")
+    }
+
+    static func styleValue(_ node: WidgetNode, animated: [(String, String)]?, theme: String) -> String? {
+        if node.isText || node.declarations.isEmpty && animated == nil {
+            return nil
+        }
+        var out: [UInt8] = []
+        writeStyle(node, animated: animated, theme: theme, into: &out)
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    private static func writeStyle(_ node: WidgetNode, animated: [(String, String)]?, theme: String, into out: inout [UInt8]) {
+        func put(_ text: String) {
+            out.append(contentsOf: Array(text.utf8))
+        }
+        for declaration in node.declarations where declaration.name != "-lh-anim" && WidgetNames.isProperty(declaration.name) {
+            put(declaration.name)
+            put(":")
+            WidgetDOM.escape(CSSTheme.resolve(declaration.value, theme: theme), into: &out, attribute: true)
+            if declaration.important {
+                put(" !important")
+            }
+            put(";")
+        }
+        if let animated = animated {
+            put("-lh-anim:1;")
+            for (name, value) in animated where WidgetNames.isProperty(name) {
+                put(name)
+                put(":")
+                WidgetDOM.escape(CSSTheme.resolve(value, theme: theme), into: &out, attribute: true)
+                put(";")
+            }
+        }
     }
 
     static func escape(_ text: String, into out: inout [UInt8], attribute: Bool) {

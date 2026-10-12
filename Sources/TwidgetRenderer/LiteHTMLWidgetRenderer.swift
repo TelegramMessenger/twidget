@@ -172,9 +172,15 @@ public final class LiteHTMLWidgetRenderer {
         documentView.removeFromSuperview()
     }
 
+    static let messageLog = ProcessInfo.processInfo.environment["TW_MSG_LOG"] != nil
+
     public func send(_ json: String) {
         guard !destroyed, let data = json.data(using: .utf8), let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let type = message["type"] as? String else {
             return
+        }
+        if LiteHTMLWidgetRenderer.messageLog {
+            let ops = ((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map { "\($0["op"] ?? "?"):\($0["name"] ?? "")" } }
+            print(String(format: "MSG %.4f %@ %@", CACurrentMediaTime(), type, ops.joined(separator: ",")))
         }
         switch type {
         case "ops":
@@ -409,6 +415,34 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private var retiredURLs: [String] = []
+    private var listDebt: [CGRect] = []
+    static let patchRegions = ProcessInfo.processInfo.environment["TW_NO_PATCH_REGIONS"] == nil
+    private var lastLayoutRevision: UInt64 = .max
+    private var lastLayoutTheme = ""
+    private var lastLayoutOverrides: [Int: [(String, String)]]?
+    public private(set) var styleFastMismatches = 0
+    static let styleFastPath = ProcessInfo.processInfo.environment["TW_NO_STYLE_FAST"] == nil
+
+    private func styleOnlyDocument(_ overrides: [Int: [(String, String)]]) -> LHDocument? {
+        guard LiteHTMLWidgetRenderer.styleFastPath, let document = document, onSerialized == nil, canvases.isEmpty, lastLayoutRevision == WidgetDOM.revision, lastLayoutTheme == theme, let last = lastLayoutOverrides else {
+            return nil
+        }
+        var styles: [String: String] = [:]
+        for id in Set(last.keys).union(overrides.keys) {
+            let before = last[id], after = overrides[id]
+            if before?.count == after?.count, zip(before ?? [], after ?? []).allSatisfy({ $0.0 == $1.0 && $0.1 == $1.1 }) {
+                continue
+            }
+            guard let node = dom.node(id), let value = WidgetDOM.styleValue(node, animated: after, theme: theme) else {
+                return nil
+            }
+            styles[String(id)] = value
+        }
+        if styles.isEmpty {
+            return nil
+        }
+        return LHDocument(previous: document, styles: styles, attribute: WidgetDOM.idAttribute, css: nil)
+    }
 
     private func layout(_ overrides: [Int: [(String, String)]]) {
         let start = CACurrentMediaTime()
@@ -425,9 +459,20 @@ public final class LiteHTMLWidgetRenderer {
             stageMilliseconds[name, default: 0] += (now - mark) * 1000
             mark = now
         }
-        let html = dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) })
+        let fast = styleOnlyDocument(overrides)
+        let html = fast == nil || LiteHTMLWidgetRenderer.patchCheck ? dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) }) : ""
         stage("serialize")
-        let next = LHDocument(html: html, css: nil, previous: document)
+        let next = fast ?? LHDocument(html: html, css: nil, previous: document)
+        if fast != nil {
+            stageMilliseconds["style-fast", default: 0] += 1
+            if LiteHTMLWidgetRenderer.patchCheck && next.html != html {
+                styleFastMismatches += 1
+                print("STYLEFAST source differs from serialized HTML")
+            }
+        }
+        lastLayoutRevision = WidgetDOM.revision
+        lastLayoutTheme = theme
+        lastLayoutOverrides = overrides
         let excluded = compositor.ids.union(magic.excluded)
         if !excluded.isEmpty {
             next.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
@@ -471,22 +516,40 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         defer { stage("report") }
-        let list = next.displayList(maxWidth: width)
-        let previousList = displayList
-        displayList = list
-        stage("diff-list")
-        if let previous = previousList, documentView.document != nil {
-            let rects = list.changedRects(since: previous).map { $0.rectValue }
-            if !rects.isEmpty {
-                if LiteHTMLWidgetRenderer.dirtyLog {
-                    print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) \(rects.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
-                }
-                for rect in rects {
-                    documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
-                }
+        if LiteHTMLWidgetRenderer.patchRegions, next.reusedLayout, displayList != nil, documentView.document != nil, let regions = next.patchDirtyRects?.map({ $0.rectValue }) {
+            stage("diff-list")
+            stageMilliseconds["regions", default: 0] += 1
+            if listDebt.count + regions.count > 32 {
+                listDebt = [(listDebt + regions).reduce(CGRect.null) { $0.union($1) }]
+            } else {
+                listDebt += regions
+            }
+            if LiteHTMLWidgetRenderer.dirtyLog, !regions.isEmpty {
+                print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) regions \(regions.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
+            }
+            for rect in regions {
+                documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
             }
         } else {
-            documentView.invalidate(nil)
+            let list = next.displayList(maxWidth: width)
+            let previousList = displayList
+            displayList = list
+            let debt = listDebt
+            listDebt.removeAll()
+            stage("diff-list")
+            if let previous = previousList, documentView.document != nil {
+                let rects = list.changedRects(since: previous).map { $0.rectValue } + debt
+                if !rects.isEmpty {
+                    if LiteHTMLWidgetRenderer.dirtyLog {
+                        print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) \(rects.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
+                    }
+                    for rect in rects {
+                        documentView.invalidate(rect.insetBy(dx: -1, dy: -1))
+                    }
+                }
+            } else {
+                documentView.invalidate(nil)
+            }
         }
         document = next
         for url in retiredURLs {
