@@ -233,6 +233,7 @@ namespace litehtml
 
     void element::add_render(const std::shared_ptr<render_item>& ri)
     {
+        m_renders.remove_if([](const std::weak_ptr<render_item>& item) { return item.expired(); });
         m_renders.push_back(ri);
     }
 
