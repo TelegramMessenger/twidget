@@ -1460,6 +1460,7 @@ namespace litehtml
     bool document::update_structure(const std::string& html, bool* changed)
     {
         invalidate_paint();
+        note_style_change();
         if(!m_gumbo || !m_root || !m_finalized || m_build_limited || getenv("LH_NO_STRUCTURE"))
             return false;
         const int scope = selector_scope();

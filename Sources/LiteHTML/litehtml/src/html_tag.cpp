@@ -388,6 +388,7 @@ namespace litehtml
     void litehtml::html_tag::compute_styles(bool recursive)
     {
         document::ptr doc = get_document();
+        doc->note_style_change();
 
         bool        eligible = false;
         bool        shared   = false;

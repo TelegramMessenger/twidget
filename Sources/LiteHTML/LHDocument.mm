@@ -429,6 +429,9 @@ static bool LHPaintTraceUncached()
     CGFloat                      _consumedMaxWidth;
     NSString                    *_exclusionAttribute;
     NSSet<NSString *>           *_exclusions;
+    NSDictionary                *_declarations;
+    NSArray                     *_declarationsKey;
+    uint64_t                     _declarationsEpoch;
 }
 
 - (void)bindContainerLocked
@@ -502,6 +505,7 @@ static std::string MasterWithCSS(NSString *css)
                 _doc       = std::move(previous->_doc);
                 _container = std::move(previous->_container);
                 _cursor    = previous->_cursor;
+                [self takeDeclarationsLocked:previous];
                 previous->_consumed         = YES;
                 previous->_consumedMaxWidth = previous->_lastMaxWidth;
                 previous->_consumedCulling  = _container->clip_culling();
@@ -651,6 +655,7 @@ static std::string MasterWithCSS(NSString *css)
     _doc                        = std::move(previous->_doc);
     _container                  = std::move(previous->_container);
     _cursor                     = previous->_cursor;
+    [self takeDeclarationsLocked:previous];
     previous->_consumed         = YES;
     previous->_consumedMaxWidth = previous->_lastMaxWidth;
     previous->_consumedCulling  = _container->clip_culling();
@@ -763,11 +768,21 @@ static std::string MasterWithCSS(NSString *css)
     return rects;
 }
 
+- (void)takeDeclarationsLocked:(LHDocument *)previous
+{
+    _declarations              = previous->_declarations;
+    _declarationsKey           = previous->_declarationsKey;
+    _declarationsEpoch         = previous->_declarationsEpoch;
+    previous->_declarations    = nil;
+    previous->_declarationsKey = nil;
+}
+
 - (void)restoreLocked
 {
     if(!_consumed || _doc)
         return;
-    _consumed  = NO;
+    _consumed     = NO;
+    _declarations = nil;
     _paintTraceValid = NO;
     _container = std::make_unique<LHContainer>();
     _container->set_clip_culling(_consumedCulling);
@@ -1433,6 +1448,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     if(!_doc || !_doc->root())
         return result;
+    NSArray *cacheKey = @[names, attribute, required];
+    if(_declarations && _declarationsEpoch == _doc->style_epoch() && [_declarationsKey isEqualToArray:cacheKey] && !getenv("LH_NO_DECLARATION_CACHE"))
+        return _declarations;
     std::vector<std::pair<lh::string_id, NSString *>> keys;
     for(NSString *name in names)
     {
@@ -1489,7 +1507,10 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         for(auto it = children.rbegin(); it != children.rend(); ++it)
             pending.push_back(it->get());
     }
-    return result;
+    _declarations      = [result copy];
+    _declarationsKey   = cacheKey;
+    _declarationsEpoch = _doc->style_epoch();
+    return _declarations;
 }
 
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value

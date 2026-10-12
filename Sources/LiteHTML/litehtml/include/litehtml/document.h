@@ -59,6 +59,11 @@ namespace litehtml
         bool m_paint_only_patch = false;
         bool m_patch_confined   = false;
         std::vector<std::shared_ptr<element>> m_patch_regions;
+        uint64_t m_style_epoch = 0;
+        // Counts style computations and structure updates, so a caller can tell nothing it derived from computed
+        // styles can have changed since it last looked.
+        uint64_t style_epoch() const { return m_style_epoch; }
+        void     note_style_change() { m_style_epoch++; }
         using ptr      = std::shared_ptr<document>;
         using weak_ptr = std::weak_ptr<document>;
 
