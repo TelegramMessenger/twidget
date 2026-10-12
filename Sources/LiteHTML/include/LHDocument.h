@@ -29,6 +29,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Whether this document was made by patching the previous one.
 /// Fonts resolved and cached for every document in the process; fonts no document uses are dropped past a bound.
 + (NSUInteger)cachedFontCount;
++ (NSUInteger)rasterCacheBytes;
++ (void)purgeCaches;
 @property (readonly) BOOL reusedPrevious;
 @property (readonly) BOOL reusedLayout;
 /// After a paint-only patch, the document rects that hold every pixel it can have changed; nil when the change may

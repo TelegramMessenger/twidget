@@ -550,6 +550,16 @@ static std::string MasterWithCSS(NSString *css)
     return LHContainer::cached_font_count();
 }
 
++ (NSUInteger)rasterCacheBytes
+{
+    return LHContainer::raster_cache_bytes();
+}
+
++ (void)purgeCaches
+{
+    LHContainer::purge_caches();
+}
+
 - (NSString *)html
 {
     std::lock_guard<std::mutex> guard(_lock);

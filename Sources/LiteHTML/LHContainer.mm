@@ -4,6 +4,7 @@
 #include "LHContainer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <list>
 #include <memory>
@@ -528,6 +529,22 @@ class RasterCache
         }
     }
 
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for(auto& entry : m_entries)
+            CGImageRelease(entry.second.image);
+        m_entries.clear();
+        m_order.clear();
+        m_bytes = 0;
+    }
+
+    size_t bytes()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_bytes;
+    }
+
   private:
     struct Entry
     {
@@ -832,8 +849,81 @@ size_t LHContainer::cached_font_count()
     return gFontCache.size();
 }
 
-LHContainer::LHContainer() = default;
-LHContainer::~LHContainer() = default;
+size_t LHContainer::raster_cache_bytes()
+{
+    return SharedRasterCache().bytes();
+}
+
+void LHContainer::purge_caches()
+{
+    SharedRasterCache().clear();
+    std::vector<std::shared_ptr<SharedFont>> fonts;
+    {
+        std::lock_guard<std::mutex> lock(gFontCacheMutex);
+        for(auto it = gFontCache.begin(); it != gFontCache.end();)
+        {
+            if(it->second.use_count() == 1)
+                it = gFontCache.erase(it);
+            else
+            {
+                fonts.push_back(it->second);
+                ++it;
+            }
+        }
+    }
+    for(auto& font : fonts)
+    {
+        {
+            std::lock_guard<std::mutex> lock(font->linesMutex);
+            for(auto& entry : font->lines)
+                CFRelease(entry.second);
+            for(auto& entry : font->oldLines)
+                CFRelease(entry.second);
+            font->lines.clear();
+            font->oldLines.clear();
+        }
+        std::lock_guard<std::mutex> lock(font->widthsMutex);
+        font->widths.clear();
+    }
+}
+
+namespace {
+
+std::atomic<long> gLiveContainers{0};
+
+void WatchMemoryPressure()
+{
+    static dispatch_source_t source = [] {
+        dispatch_source_t made = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
+                                                        DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
+                                                        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+        dispatch_source_set_event_handler(made, ^{
+            LHContainer::purge_caches();
+        });
+        dispatch_resume(made);
+        return made;
+    }();
+    (void)source;
+}
+
+}
+
+LHContainer::LHContainer()
+{
+    WatchMemoryPressure();
+    gLiveContainers.fetch_add(1);
+}
+
+LHContainer::~LHContainer()
+{
+    if(gLiveContainers.fetch_sub(1) == 1)
+    {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            if(gLiveContainers.load() == 0)
+                LHContainer::purge_caches();
+        });
+    }
+}
 
 static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description& descr, CGFloat size)
 {
