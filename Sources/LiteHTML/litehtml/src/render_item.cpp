@@ -1054,6 +1054,11 @@ const litehtml::paint_ink& litehtml::render_item::ink(uint32_t generation, bool 
         add_self_ink(m_ink, 0, 0);
         add_children_ink(generation, m_ink);
         const auto& el_css = src_el()->css();
+        if(!el_css.get_filter().empty() && !m_ink.empty && !m_ink.unbounded)
+        {
+            const float reach = filter_reach(el_css.get_filter());
+            m_ink.add(m_ink.l - reach, m_ink.t - reach, m_ink.r + reach, m_ink.b + reach);
+        }
         if(el_css.get_position() == element_position_fixed)
         {
             m_ink.unbounded = true;
@@ -1120,12 +1125,54 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
         group.matrix = group_transform(el_css, border_box);
     }
 
+    const auto& filter   = el_css.get_filter();
+    const auto& backdrop = el_css.get_backdrop_filter();
+    const bool  bare     = src_el()->doc_ptr()->bare_effects == el->src_el().get();
+    if(!filter.empty() && !bare)
+    {
+        const float reach  = filter_reach(filter);
+        group.bounds.x      -= reach;
+        group.bounds.y      -= reach;
+        group.bounds.width  += reach * 2;
+        group.bounds.height += reach * 2;
+    }
+
     auto container = src_el()->doc_ptr()->container();
     container->begin_group(hdc, group);
     const position* inner_clip = group.matrix.is_identity() ? clip : nullptr;
     if(g_paint_trace) g_paint_trace->push_back(el.get());
-    el->src_el()->draw(hdc, x, y, inner_clip, el);
-    el->draw_stacking_context(hdc, x, y, inner_clip, true);
+    if(!backdrop.empty() && !bare)
+    {
+        filter_paint paint;
+        paint.steps  = &backdrop;
+        paint.box    = border_box;
+        paint.bounds = border_box;
+        paint.radius = el_css.get_borders().radius.calc_percents(border_box.width, border_box.height);
+        paint.radius.fix_values(border_box.width, border_box.height);
+        paint.owner  = el->src_el().get();
+        container->draw_backdrop(hdc, paint);
+    }
+    if(!filter.empty() && !bare)
+    {
+        const auto& ink = el->ink(src_el()->doc_ptr()->paint_generation(), false);
+        filter_paint paint;
+        paint.steps  = &filter;
+        paint.owner  = el->src_el().get();
+        paint.box    = border_box;
+        paint.bounds = border_box;
+        if(!ink.empty && !ink.unbounded)
+        {
+            paint.bounds = position(pixel_t(ink.l) + x, pixel_t(ink.t) + y, pixel_t(ink.r - ink.l), pixel_t(ink.b - ink.t));
+        }
+        container->draw_filtered(hdc, paint, [&](uint_ptr target) {
+            el->src_el()->draw(target, x, y, nullptr, el);
+            el->draw_stacking_context(target, x, y, nullptr, true);
+        });
+    } else
+    {
+        el->src_el()->draw(hdc, x, y, inner_clip, el);
+        el->draw_stacking_context(hdc, x, y, inner_clip, true);
+    }
     container->end_group(hdc);
 }
 

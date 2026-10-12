@@ -307,7 +307,7 @@ namespace litehtml
         "transform", "opacity", "color", "background-color", "background", "width", "height", "top", "left", "right",
         "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
         "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow",
-        "transform-origin",
+        "transform-origin", "backdrop-filter",
     };
 
     static const std::map<string_id, string_id>& raw_declaration_ids()
@@ -347,6 +347,10 @@ namespace litehtml
         {
             add_parsed_property(name, property_value(value, important, has_var(value)));
             return;
+        }
+        if(name == __webkit_backdrop_filter_)
+        {
+            name = _backdrop_filter_;
         }
         if(string_id raw = raw_declaration_id(name); raw != empty_id && !value.empty() && !suppress_raw)
         {
@@ -909,6 +913,8 @@ namespace litehtml
         case _text_anchor_:
         case _box_shadow_:
         case _text_shadow_:
+        case _filter_:
+        case _backdrop_filter_:
         case _transform_:
         case _transform_origin_:
         case _grid_template_columns_:

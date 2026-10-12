@@ -230,6 +230,127 @@ namespace litehtml
         return true;
     }
 
+    float filter_reach(const filter_vector& filters)
+    {
+        float reach = 0;
+        for(const auto& fn : filters)
+        {
+            if(fn.kind == filter_function::blur)
+            {
+                reach += std::ceil(std::fabs(fn.radius.val()) * 3);
+            } else if(fn.kind == filter_function::drop_shadow)
+            {
+                reach += std::ceil(std::fabs(fn.radius.val()) * 3) + std::max(std::fabs(fn.x.val()), std::fabs(fn.y.val()));
+            }
+        }
+        return reach;
+    }
+
+    bool parse_filter(const css_token_vector& tokens, filter_vector& functions, document_container* container)
+    {
+        functions.clear();
+        if(tokens.size() == 1 && tokens[0].ident() == "none")
+        {
+            return true;
+        }
+        if(tokens.empty() || tokens.size() > 32)
+        {
+            return false;
+        }
+        std::vector<css_token> args;
+        for(const auto& tok : tokens)
+        {
+            if(tok.type != CV_FUNCTION)
+            {
+                functions.clear();
+                return false;
+            }
+            function_args(tok, args);
+            for(auto& arg : args)
+            {
+                if(!fold_calc(arg))
+                {
+                    functions.clear();
+                    return false;
+                }
+            }
+            std::string     name = lowcase(tok.name());
+            filter_function fn;
+            bool            ok = args.size() <= 1;
+            if(name == "blur")
+            {
+                fn.kind = filter_function::blur;
+                if(!args.empty())
+                {
+                    ok = ok && fn.radius.from_token(args[0], f_length | f_positive);
+                }
+            } else if(name == "hue-rotate")
+            {
+                fn.kind = filter_function::hue_rotate;
+                if(!args.empty())
+                {
+                    ok = ok && (args[0].type == NUMBER && args[0].n.number == 0 ? true : parse_angle(args[0], fn.amount));
+                }
+            } else if(name == "drop-shadow")
+            {
+                fn.kind     = filter_function::drop_shadow;
+                int  count  = 0;
+                bool colors = false;
+                ok          = !args.empty() && args.size() <= 4;
+                for(size_t i = 0; ok && i < args.size(); i++)
+                {
+                    css_length len;
+                    if(count < 3 && len.from_token(args[i], f_length))
+                    {
+                        css_length* slots[3] = {&fn.x, &fn.y, &fn.radius};
+                        *slots[count++]      = len;
+                        continue;
+                    }
+                    web_color color;
+                    if(!colors && parse_color(args[i], color, container))
+                    {
+                        fn.color = color;
+                        colors   = true;
+                        continue;
+                    }
+                    ok = false;
+                }
+                ok = ok && count >= 2 && fn.radius.val() >= 0;
+            } else
+            {
+                static const std::pair<const char*, filter_function::kind_t> amounts[] = {
+                    {"brightness", filter_function::brightness}, {"contrast", filter_function::contrast},
+                    {"grayscale", filter_function::grayscale},   {"invert", filter_function::invert},
+                    {"opacity", filter_function::opacity},       {"saturate", filter_function::saturate},
+                    {"sepia", filter_function::sepia},
+                };
+                ok = false;
+                for(const auto& entry : amounts)
+                {
+                    if(name == entry.first)
+                    {
+                        fn.kind   = entry.second;
+                        fn.amount = 1;
+                        ok        = args.size() <= 1 && (args.empty() || parse_number(args[0], fn.amount)) && fn.amount >= 0;
+                        if(ok && (fn.kind == filter_function::grayscale || fn.kind == filter_function::invert ||
+                                  fn.kind == filter_function::opacity || fn.kind == filter_function::sepia))
+                        {
+                            fn.amount = std::min(fn.amount, 1.f);
+                        }
+                        break;
+                    }
+                }
+            }
+            if(!ok || !std::isfinite(fn.amount))
+            {
+                functions.clear();
+                return false;
+            }
+            functions.push_back(fn);
+        }
+        return true;
+    }
+
     bool parse_transform(const css_token_vector& tokens, transform_vector& functions)
     {
         functions.clear();

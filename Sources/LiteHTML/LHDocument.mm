@@ -327,6 +327,22 @@ using OpIdentitySet = std::unordered_set<std::pair<uint64_t, size_t>, OpIdentity
         for(const auto &op : b)
             add(op);
     }
+    for(const auto *list : {&a, &b})
+    {
+        for(const auto &op : *list)
+        {
+            if(!op.backdrop || CGRectIsNull(op.bounds))
+                continue;
+            for(NSUInteger i = 0, n = rects.count; i < n; i++)
+            {
+                if(CGRectIntersectsRect(rects[i].rectValue, op.bounds))
+                {
+                    add(op);
+                    break;
+                }
+            }
+        }
+    }
     return rects;
 }
 
@@ -448,6 +464,7 @@ static bool LHPaintTraceUncached()
     std::string                  _htmlSource;
     std::vector<const lh::render_item *> _paintTrace;
     BOOL                         _paintTraceValid;
+    int                          _backdropDepth;
     NSString                    *_html;
     lh::document::ptr            _doc;
     CGFloat                      _lastMaxWidth;
@@ -472,6 +489,67 @@ static bool LHPaintTraceUncached()
     uint64_t                     _declarationsEpoch;
 }
 
+- (BOOL)ensurePaintTraceLocked
+{
+    if(_paintTraceValid && !LHPaintTraceUncached())
+        return YES;
+    _paintTrace.clear();
+    _paintTrace.reserve(512);
+    CGContextRef ctx = [self createContextWithWidth:1 height:1];
+    if(!ctx)
+        return NO;
+    [self resolveExclusionsLocked];
+    auto saved        = _doc->skip_paint;
+    lh::g_paint_trace = &_paintTrace;
+    _doc->skip_paint.clear();
+    _backdropDepth++;
+    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, nullptr);
+    _backdropDepth--;
+    lh::g_paint_trace = nullptr;
+    _doc->skip_paint  = saved;
+    CGContextRelease(ctx);
+    _paintTraceValid = YES;
+    return YES;
+}
+
+- (CGImageRef)backdropLockedForOwner:(const void *)owner rect:(CGRect)rect scaleX:(CGFloat)sx scaleY:(CGFloat)sy flipped:(BOOL)flipped CF_RETURNS_RETAINED
+{
+    if(_backdropDepth > 0 || !_doc || !_doc->root_render() || !owner)
+        return nullptr;
+    if(![self ensurePaintTraceLocked])
+        return nullptr;
+    auto at = std::find_if(_paintTrace.begin(), _paintTrace.end(), [owner](const lh::render_item *item) { return item->src_el().get() == owner; });
+    if(at == _paintTrace.end())
+        return nullptr;
+    const size_t pw = (size_t)std::llround(rect.size.width * sx), ph = (size_t)std::llround(rect.size.height * sy);
+    if(pw == 0 || ph == 0 || pw * ph > (16u << 20))
+        return nullptr;
+    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    if(!ctx)
+        return nullptr;
+    if(flipped)
+    {
+        CGContextTranslateCTM(ctx, 0, ph);
+        CGContextScaleCTM(ctx, sx, -sy);
+    } else
+        CGContextScaleCTM(ctx, sx, sy);
+    CGContextTranslateCTM(ctx, -rect.origin.x, -rect.origin.y);
+    CGContextSetAllowsFontSmoothing(ctx, false);
+    CGContextSetShouldAntialias(ctx, true);
+    auto saved = _doc->skip_paint;
+    for(auto it = at; it != _paintTrace.end(); ++it)
+        _doc->skip_paint.insert((*it)->src_el().get());
+    _backdropDepth++;
+    lh::position clip(static_cast<float>(rect.origin.x), static_cast<float>(rect.origin.y), static_cast<float>(rect.size.width), static_cast<float>(rect.size.height));
+    PixelSnap snap(ctx);
+    _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &clip, false);
+    _backdropDepth--;
+    _doc->skip_paint = saved;
+    CGImageRef image = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return image;
+}
+
 - (void)bindContainerLocked
 {
     __weak LHDocument *weakSelf = self;
@@ -492,6 +570,9 @@ static bool LHPaintTraceUncached()
         });
     };
     LHDocument *__unsafe_unretained unsafeSelf = self;
+    _container->backdrop_source = [unsafeSelf](const void *owner, CGRect rect, CGFloat sx, CGFloat sy, bool flipped) -> CGImageRef {
+        return [unsafeSelf backdropLockedForOwner:owner rect:rect scaleX:sx scaleY:sy flipped:flipped];
+    };
     _container->on_cursor = [unsafeSelf](const std::string &cursor) {
         unsafeSelf->_cursor = @(cursor.c_str()) ?: @"auto";
     };
@@ -745,7 +826,7 @@ static std::string MasterWithCSS(NSString *css)
 {
     std::lock_guard<std::mutex> guard(_lock);
     std::vector<lh::element::ptr> regions;
-    if(!_paintOnly || !_doc || !_doc->root_render() || !_doc->last_patch_regions(regions))
+    if(!_paintOnly || !_doc || !_doc->root_render() || _doc->has_backdrop || !_doc->last_patch_regions(regions))
         return nil;
     if(regions.empty())
         return @[];
@@ -1125,6 +1206,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkOut borderBox:(CGRect *)boxOut radii:(CGFloat *)radiiOut
 {
+    return [self copyImageOfElementWithAttribute:attribute value:value scale:scale inkBounds:inkOut borderBox:boxOut radii:radiiOut bareShadows:NO];
+}
+
+- (CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkOut borderBox:(CGRect *)boxOut radii:(CGFloat *)radiiOut bareShadows:(BOOL)bareShadows
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
@@ -1152,9 +1238,13 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self resolveExclusionsLocked];
     _doc->skip_paint.erase(ri->src_el().get());
     PixelSnap snap(ctx);
+    _doc->bare_effects = ri->src_el().get();
+    _doc->bare_shadows = bareShadows;
     ri->src_el()->draw(reinterpret_cast<lh::uint_ptr>(ctx), x, y, nullptr, ri);
     if(ri->is_visible())
         DrawAsStackingContext(ri, reinterpret_cast<lh::uint_ptr>(ctx), x, y);
+    _doc->bare_effects = nullptr;
+    _doc->bare_shadows = false;
     CGRect tight = TightInk(ctx, ink, box, scale);
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
@@ -1321,23 +1411,8 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
                 return nil;
         }
     }
-    if(!_paintTraceValid || LHPaintTraceUncached())
-    {
-        _paintTrace.clear();
-        _paintTrace.reserve(512);
-        CGContextRef ctx = [self createContextWithWidth:1 height:1];
-        if(!ctx)
-            return nil;
-        [self resolveExclusionsLocked];
-        auto saved        = _doc->skip_paint;
-        lh::g_paint_trace = &_paintTrace;
-        _doc->skip_paint.clear();
-        _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, nullptr);
-        lh::g_paint_trace = nullptr;
-        _doc->skip_paint  = saved;
-        CGContextRelease(ctx);
-        _paintTraceValid = YES;
-    }
+    if(![self ensurePaintTraceLocked])
+        return nil;
     const std::vector<const lh::render_item *> &trace = _paintTrace;
     const char *key = attribute.UTF8String;
     NSMutableOrderedSet<NSString *> *found = [NSMutableOrderedSet orderedSet];

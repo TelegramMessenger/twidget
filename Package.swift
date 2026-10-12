@@ -54,6 +54,7 @@ let package = Package(
                 .linkedFramework("ImageIO"),
                 .linkedFramework("Metal"),
                 .linkedFramework("IOSurface"),
+                .linkedFramework("CoreImage"),
             ]),
         .target(
             name: "CQuickJSNG",

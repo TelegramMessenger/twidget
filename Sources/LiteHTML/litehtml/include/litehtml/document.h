@@ -56,6 +56,9 @@ namespace litehtml
       public:
         bool take_table_cells(int count);
         std::unordered_set<const element*> skip_paint;
+        const element* bare_effects = nullptr;
+        bool bare_shadows = false;
+        bool has_backdrop = false;
         bool m_paint_only_patch = false;
         bool m_patch_confined   = false;
         std::vector<std::shared_ptr<element>> m_patch_regions;

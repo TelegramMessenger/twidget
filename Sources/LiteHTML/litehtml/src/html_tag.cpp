@@ -1126,9 +1126,10 @@ namespace litehtml
                 border_radiuses shadow_radius =
                     m_css.get_borders().radius.calc_percents(shadow_box.width, shadow_box.height);
                 const auto& shadows = m_css.get_box_shadows();
+                const bool bare = doc_ptr()->bare_shadows && doc_ptr()->bare_effects == this;
                 for(auto it = shadows.rbegin(); it != shadows.rend(); ++it)
                 {
-                    if(!it->inset)
+                    if(!it->inset && !bare)
                     {
                         doc_ptr()->container()->draw_box_shadow(hdc, shadow_box, shadow_radius,
                                                                      shadow_paint_for(*it));

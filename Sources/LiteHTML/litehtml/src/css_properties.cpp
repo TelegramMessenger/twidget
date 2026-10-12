@@ -817,6 +817,32 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
         }
     }
 
+    for(auto [id, list] : {std::pair<string_id, filter_vector*>{_filter_, &m_filter}, {_backdrop_filter_, &m_backdrop_filter}})
+    {
+        list->clear();
+        if(const auto* tokens = el->get_token_property(id))
+        {
+            if(parse_filter(*tokens, *list, doc->container()))
+            {
+                for(auto& fn : *list)
+                {
+                    for(auto* len : {&fn.x, &fn.y, &fn.radius})
+                    {
+                        doc->cvt_units(*len, m_font_metrics, 0_px);
+                    }
+                    if(fn.color.is_current_color)
+                    {
+                        fn.color = m_color;
+                    }
+                }
+            }
+        }
+    }
+    if(!m_backdrop_filter.empty())
+    {
+        doc->has_backdrop = true;
+    }
+
     m_transform.clear();
     if(const auto* tokens = el->get_token_property(_transform_))
     {

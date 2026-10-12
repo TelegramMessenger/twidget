@@ -115,6 +115,8 @@ namespace litehtml
         css_length        m_letter_spacing;
         box_shadow_vector m_text_shadows;
         box_shadow_vector m_box_shadows;
+        filter_vector     m_filter;
+        filter_vector     m_backdrop_filter;
         transform_vector  m_transform;
         css_length        m_transform_origin_x = css_length(50, css_units_percentage);
         css_length        m_transform_origin_y = css_length(50, css_units_percentage);
@@ -304,6 +306,8 @@ namespace litehtml
         }
         pixel_t                  get_letter_spacing() const { return pixel_t(m_letter_spacing.val()); }
         const box_shadow_vector& get_box_shadows() const { return m_box_shadows; }
+        const filter_vector&     get_filter() const { return m_filter; }
+        const filter_vector&     get_backdrop_filter() const { return m_backdrop_filter; }
         const box_shadow_vector& get_text_shadows() const { return m_text_shadows; }
         const transform_vector&  get_transform() const { return m_transform; }
         const css_length&        get_transform_origin_x() const { return m_transform_origin_x; }
@@ -313,7 +317,10 @@ namespace litehtml
         pixel_t                  get_outline_offset() const { return pixel_t(m_outline_offset.val()); }
         web_color                get_accent_color() const { return m_accent_color; }
         bool                     get_dark_scheme() const { return m_dark_scheme != 0; }
-        bool                     is_paint_group() const { return m_opacity < 1 || !m_transform.empty() || m_backface_hidden; }
+        bool                     is_paint_group() const
+        {
+            return m_opacity < 1 || !m_transform.empty() || m_backface_hidden || !m_filter.empty() || !m_backdrop_filter.empty();
+        }
 
         int                   get_text_decoration_line() const;
         text_decoration_style get_text_decoration_style() const;

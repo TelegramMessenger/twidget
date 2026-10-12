@@ -39,6 +39,7 @@ struct LHDrawOp
     CGRect   bounds;
     uint64_t hash;
     uint64_t shape;
+    bool     backdrop = false;
 };
 
 using LHGPUOp       = lhx::RenderOp;
@@ -101,6 +102,9 @@ class LHContainer : public litehtml::document_container
     void begin_group(litehtml::uint_ptr hdc, const litehtml::paint_group& group) override;
     void draw_path(litehtml::uint_ptr hdc, const litehtml::vector_path& path) override;
     void end_group(litehtml::uint_ptr hdc) override;
+    void draw_filtered(litehtml::uint_ptr hdc, const litehtml::filter_paint& filter, const std::function<void(litehtml::uint_ptr)>& paint) override;
+    void draw_backdrop(litehtml::uint_ptr hdc, const litehtml::filter_paint& filter) override;
+    std::function<CGImageRef(const void* owner, CGRect rect, CGFloat scaleX, CGFloat scaleY, bool flipped)> backdrop_source;
     bool draw_cached(litehtml::uint_ptr hdc, const litehtml::position& box, uint64_t key, const std::function<void(litehtml::uint_ptr)>& paint) override;
     void draw_isolated(litehtml::uint_ptr hdc, const litehtml::position& box, const std::function<void(litehtml::uint_ptr)>& paint) override;
     bool sanitize_element(std::string& tag, bool svg, litehtml::string_map& attrs) override;
@@ -168,6 +172,7 @@ class LHContainer : public litehtml::document_container
     lhx::Painter*   m_painter = nullptr;
     void apply_clips(CGContextRef ctx, CGRect bounds) const;
     void record_op(OpHash& hash, CGRect ink, bool capture = true);
+    void paint_box_shadow(CGContextRef ctx, CGRect r, const litehtml::border_radiuses& radius, const litehtml::shadow_paint& shadow);
     void flush_capture();
     bool record_solid(const litehtml::background_layer& layer, const litehtml::web_color& color);
     bool record_rounded(CGRect rect, const litehtml::border_radiuses& radius, const litehtml::web_color& color);
@@ -180,6 +185,12 @@ class LHContainer : public litehtml::document_container
 
     std::vector<Clip>        m_clips;
     std::vector<Group>       m_groups;
+    struct Effect
+    {
+        CGFloat  reach;
+        uint64_t hash;
+    };
+    std::vector<Effect>      m_effects;
     int                      m_hidden_depth = 0;
 
     CGAffineTransform group_matrix() const { return m_groups.empty() ? CGAffineTransformIdentity : m_groups.back().matrix; }

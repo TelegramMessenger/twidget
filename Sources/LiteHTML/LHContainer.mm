@@ -2,6 +2,7 @@
 #import <ImageIO/ImageIO.h>
 
 #include "LHContainer.h"
+#include "LHFilters.h"
 #include "twidget_assets.h"
 
 #include <algorithm>
@@ -1760,6 +1761,11 @@ void LHContainer::record_op(OpHash& hash, CGRect ink, bool capture)
         for(CGFloat v : {m.a, m.b, m.c, m.d, m.tx, m.ty})
             hash.number(v);
     };
+    for(const auto& effect : m_effects)
+    {
+        ink = CGRectInset(ink, -effect.reach, -effect.reach);
+        hash.integer(static_cast<int64_t>(effect.hash));
+    }
     CGAffineTransform matrix = group_matrix();
     CGRect            bounds = CGAffineTransformIsIdentity(matrix) ? ink : CGRectApplyAffineTransform(ink, matrix);
     const CGRect      drawn  = bounds;
@@ -2541,7 +2547,36 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
     auto ctx = reinterpret_cast<CGContextRef>(hdc);
     if(!ctx || r.size.width <= 0 || r.size.height <= 0)
         return;
+    if(!m_capture)
+    {
+        CGRect device = CGRectIntegral(CGContextConvertRectToDeviceSpace(ctx, ink));
+        CGRect aligned = CGContextConvertRectToUserSpace(ctx, device);
+        std::string key = "shadow:";
+        for(CGFloat v : {r.size.width, r.size.height, r.origin.x - aligned.origin.x, r.origin.y - aligned.origin.y, dx, dy, blur, spread})
+            AppendNumber(key, v);
+        for(auto v : {radius.top_left_x, radius.top_left_y, radius.top_right_x, radius.top_right_y, radius.bottom_right_x, radius.bottom_right_y, radius.bottom_left_x, radius.bottom_left_y})
+            AppendNumber(key, F(v));
+        AppendInteger(key, (shadow.color.red << 24) | (shadow.color.green << 16) | (shadow.color.blue << 8) | shadow.color.alpha);
+        AppendInteger(key, shadow.inset);
+        CGContextSaveGState(ctx);
+        apply_clips(ctx, ink);
+        lh::shadow_paint copy = shadow;
+        bool drawn = DrawRasterized(ctx, aligned, key, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, r, radius, copy); });
+        CGContextRestoreGState(ctx);
+        if(drawn)
+            return;
+    }
+    CGContextSaveGState(ctx);
+    apply_clips(ctx, ink);
+    paint_box_shadow(ctx, r, radius, shadow);
+    CGContextRestoreGState(ctx);
+}
 
+void LHContainer::paint_box_shadow(CGContextRef ctx, CGRect r, const lh::border_radiuses& radius, const lh::shadow_paint& shadow)
+{
+    CGFloat dx = F(shadow.x), dy = F(shadow.y), blur = F(shadow.blur), spread = F(shadow.spread);
+    CGFloat reach = blur + std::fabs(spread) + std::max(std::fabs(dx), std::fabs(dy)) + 2;
+    CGRect  ink   = shadow.inset ? r : CGRectInset(r, -reach, -reach);
     lh::border_radiuses shape_radius = radius;
     CGRect              shape        = r;
     if(shadow.inset)
@@ -2556,7 +2591,6 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
     }
 
     CGContextSaveGState(ctx);
-    apply_clips(ctx, ink);
     CGFloat far = CGRectGetWidth(ink) + reach * 4 + 1000;
     CGMutablePathRef path = CGPathCreateMutable();
     if(shadow.inset)
@@ -2818,6 +2852,184 @@ void LHContainer::end_group(lh::uint_ptr hdc)
     }
     if(g.hidden)
         m_hidden_depth--;
+}
+
+static uint64_t FilterHash(const lh::filter_vector& steps, uint64_t seed)
+{
+    uint64_t hash = seed;
+    auto     mix  = [&](double v) {
+        uint64_t bits;
+        memcpy(&bits, &v, sizeof(bits));
+        hash = (hash ^ bits) * 0x100000001b3ULL;
+        hash ^= hash >> 29;
+    };
+    for(const auto& fn : steps)
+    {
+        mix(fn.kind);
+        mix(fn.amount);
+        mix(fn.x.val());
+        mix(fn.y.val());
+        mix(fn.radius.val());
+        mix(fn.color.red | (fn.color.green << 8) | (fn.color.blue << 16) | (fn.color.alpha << 24));
+    }
+    return hash;
+}
+
+struct FilterTarget
+{
+    CGRect  user;
+    size_t  pw, ph;
+    CGFloat sx, sy;
+    bool    flipped;
+};
+
+static bool FilterTargetFor(CGContextRef ctx, CGRect r, FilterTarget& out)
+{
+    CGAffineTransform m = CGContextGetCTM(ctx);
+    if(std::fabs(m.b) > 1e-6 || std::fabs(m.c) > 1e-6 || r.size.width <= 0 || r.size.height <= 0)
+        return false;
+    CGRect device = CGRectIntegral(CGContextConvertRectToDeviceSpace(ctx, r));
+    out.user      = CGContextConvertRectToUserSpace(ctx, device);
+    out.pw        = (size_t)std::llround(device.size.width);
+    out.ph        = (size_t)std::llround(device.size.height);
+    out.sx        = std::fabs(m.a);
+    out.sy        = std::fabs(m.d);
+    out.flipped   = m.d < 0;
+    return out.pw > 0 && out.ph > 0 && out.pw <= 8192 && out.ph <= 8192 && out.pw * out.ph <= (16u << 20);
+}
+
+static CGContextRef CreateFilterBitmap(const FilterTarget& t, CGColorSpaceRef space)
+{
+    CGContextRef bitmap = CGBitmapContextCreate(nullptr, t.pw, t.ph, 8, 0, space, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    if(!bitmap)
+        return nullptr;
+    if(t.flipped)
+    {
+        CGContextTranslateCTM(bitmap, 0, t.ph);
+        CGContextScaleCTM(bitmap, t.sx, -t.sy);
+    } else
+        CGContextScaleCTM(bitmap, t.sx, t.sy);
+    CGContextTranslateCTM(bitmap, -t.user.origin.x, -t.user.origin.y);
+    CGContextSetAllowsFontSmoothing(bitmap, false);
+    CGContextSetShouldAntialias(bitmap, true);
+    return bitmap;
+}
+
+static void DrawFilterResult(CGContextRef ctx, const FilterTarget& t, CGImageRef image)
+{
+    CGContextSaveGState(ctx);
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+    if(t.flipped)
+    {
+        CGContextTranslateCTM(ctx, t.user.origin.x, t.user.origin.y + t.user.size.height);
+        CGContextScaleCTM(ctx, 1, -1);
+    } else
+        CGContextTranslateCTM(ctx, t.user.origin.x, t.user.origin.y);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, t.user.size.width, t.user.size.height), image);
+    CGContextRestoreGState(ctx);
+}
+
+static CGColorSpaceRef FilterSpace(CGContextRef ctx)
+{
+    CGColorSpaceRef space = CGBitmapContextGetColorSpace(ctx);
+    if(!space || CGColorSpaceGetModel(space) != kCGColorSpaceModelRGB)
+        space = SRGB();
+    return space;
+}
+
+void LHContainer::draw_filtered(lh::uint_ptr hdc, const lh::filter_paint& filter, const std::function<void(lh::uint_ptr)>& paint)
+{
+    if(m_painter || m_runs || !filter.steps || filter.steps->empty())
+    {
+        paint(hdc);
+        return;
+    }
+    if(m_ops)
+    {
+        if(m_gpu)
+            m_gpu->unsupported = true;
+        m_effects.push_back({lh::filter_reach(*filter.steps), FilterHash(*filter.steps, 0x51)});
+        paint(hdc);
+        m_effects.pop_back();
+        return;
+    }
+    auto ctx = reinterpret_cast<CGContextRef>(hdc);
+    FilterTarget target;
+    if(!ctx || m_hidden_depth > 0 || !FilterTargetFor(ctx, R(filter.bounds), target))
+    {
+        paint(hdc);
+        return;
+    }
+    CGColorSpaceRef space  = FilterSpace(ctx);
+    CGContextRef    bitmap = CreateFilterBitmap(target, space);
+    if(!bitmap)
+    {
+        paint(hdc);
+        return;
+    }
+    auto saved = m_clips;
+    m_clips.clear();
+    paint(reinterpret_cast<lh::uint_ptr>(bitmap));
+    m_clips = saved;
+    CGImageRef source = CGBitmapContextCreateImage(bitmap);
+    CGContextRelease(bitmap);
+    CGImageRef filtered = LHCreateFilteredImage(source, *filter.steps, std::max(target.sx, target.sy), target.flipped, false, space);
+    CGImageRelease(source);
+    if(filtered)
+    {
+        CGContextSaveGState(ctx);
+        apply_clips(ctx, target.user);
+        DrawFilterResult(ctx, target, filtered);
+        CGContextRestoreGState(ctx);
+        CGImageRelease(filtered);
+    }
+}
+
+void LHContainer::draw_backdrop(lh::uint_ptr hdc, const lh::filter_paint& filter)
+{
+    if(m_painter || m_runs || !filter.steps || filter.steps->empty())
+        return;
+    CGRect box = R(filter.box);
+    if(m_ops)
+    {
+        if(m_gpu)
+            m_gpu->unsupported = true;
+        OpHash hash;
+        hash.integer(91);
+        hash.box(filter.box);
+        hash.radius(filter.radius);
+        hash.integer(static_cast<int64_t>(FilterHash(*filter.steps, 0x52)));
+        record_op(hash, box, false);
+        if(!m_ops->empty())
+            m_ops->back().backdrop = true;
+        return;
+    }
+    auto ctx = reinterpret_cast<CGContextRef>(hdc);
+    FilterTarget target;
+    if(!ctx || m_hidden_depth > 0 || !backdrop_source || !FilterTargetFor(ctx, box, target))
+        return;
+    const CGAffineTransform placed = group_matrix();
+    if(std::fabs(placed.a - 1) > 1e-6 || std::fabs(placed.d - 1) > 1e-6 || std::fabs(placed.b) > 1e-6 || std::fabs(placed.c) > 1e-6)
+        return;
+    CGImageRef source = backdrop_source(filter.owner, CGRectOffset(target.user, placed.tx, placed.ty), target.sx, target.sy, target.flipped);
+    if(!source)
+        return;
+    CGColorSpaceRef space    = FilterSpace(ctx);
+    CGImageRef      filtered = LHCreateFilteredImage(source, *filter.steps, std::max(target.sx, target.sy), target.flipped, true, space);
+    CGImageRelease(source);
+    if(!filtered)
+        return;
+    CGContextSaveGState(ctx);
+    apply_clips(ctx, box);
+    CGMutablePathRef clip = CGPathCreateMutable();
+    AddRoundedRect(clip, box, filter.radius);
+    CGContextAddPath(ctx, clip);
+    CGContextClip(ctx);
+    CGPathRelease(clip);
+    CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+    DrawFilterResult(ctx, target, filtered);
+    CGContextRestoreGState(ctx);
+    CGImageRelease(filtered);
 }
 
 void LHContainer::on_anchor_click(const char* url, const lh::element::ptr& el)

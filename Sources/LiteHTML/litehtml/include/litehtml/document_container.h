@@ -89,6 +89,12 @@ namespace litehtml
         {
         }
         virtual void begin_group(litehtml::uint_ptr /*hdc*/, const paint_group& /*group*/) {}
+        virtual void draw_filtered(litehtml::uint_ptr hdc, const filter_paint& /*filter*/,
+                                   const std::function<void(litehtml::uint_ptr)>& paint)
+        {
+            paint(hdc);
+        }
+        virtual void draw_backdrop(litehtml::uint_ptr /*hdc*/, const filter_paint& /*filter*/) {}
         virtual void draw_path(litehtml::uint_ptr /*hdc*/, const vector_path& /*path*/) {}
         virtual void end_group(litehtml::uint_ptr /*hdc*/) {}
         virtual bool draw_cached(litehtml::uint_ptr /*hdc*/, const position& /*box*/, uint64_t /*key*/,

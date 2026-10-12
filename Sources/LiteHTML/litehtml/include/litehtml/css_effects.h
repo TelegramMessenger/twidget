@@ -5,6 +5,7 @@
 #include "css_length.h"
 #include "types.h"
 #include "web_color.h"
+#include "borders.h"
 
 namespace litehtml
 {
@@ -66,6 +67,41 @@ namespace litehtml
         web_color color;
         bool      inset = false;
     };
+
+    struct filter_function
+    {
+        enum kind_t
+        {
+            blur,
+            brightness,
+            contrast,
+            grayscale,
+            hue_rotate,
+            invert,
+            opacity,
+            saturate,
+            sepia,
+            drop_shadow,
+        };
+        kind_t     kind   = blur;
+        float      amount = 0;
+        css_length x;
+        css_length y;
+        css_length radius;
+        web_color  color = web_color::current_color;
+    };
+    using filter_vector = std::vector<filter_function>;
+
+    struct filter_paint
+    {
+        const filter_vector* steps = nullptr;
+        position             bounds;
+        position             box;
+        border_radiuses      radius;
+        const void*          owner = nullptr;
+    };
+
+    float filter_reach(const filter_vector& filters);
 
     struct paint_group
     {
@@ -144,6 +180,7 @@ namespace litehtml
 
     bool parse_box_shadow(const css_token_vector& tokens, box_shadow_vector& shadows, document_container* container);
     bool parse_transform(const css_token_vector& tokens, transform_vector& functions);
+    bool parse_filter(const css_token_vector& tokens, filter_vector& functions, document_container* container);
     bool parse_transform_origin(const css_token_vector& tokens, css_length& x, css_length& y);
     bool parse_grid_track_list(const css_token_vector& tokens, grid_track_list& list);
     bool parse_grid_placement(const css_token_vector& tokens, grid_placement& placement);
