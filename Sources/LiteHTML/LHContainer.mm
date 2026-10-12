@@ -660,8 +660,8 @@ void AppendNumber(std::string& key, double v)
 // relative to the current clip, so drawing them straight into a partially redrawn tile gives
 // slightly different pixels than a full redraw; a pixel-aligned copy does not. Returns false when the
 // transform is not axis-aligned or r is not on device pixels, and the caller draws directly.
-static const CGFloat kMaxTextShadowBlur = 24;
-static const CGFloat kMaxTextShadowOffset = 200;
+static const CGFloat kMaxTextShadowBlur = 200;
+static const CGFloat kMaxTextShadowOffset = 400;
 static const size_t kMaxBackdrops = 8;
 
 static bool DrawDownsampled(CGContextRef ctx, CGRect r, std::string key, CGFloat blur, const std::function<void(CGContextRef)>& paint)
@@ -1563,7 +1563,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
     CGRect  box   = R(pos);
     CGFloat slack = std::max<CGFloat>(4, box.size.height / 2);
     if(f->shadow_color.alpha != 0)
-        slack += f->shadow_blur + std::max(std::fabs(f->shadow_x), std::fabs(f->shadow_y));
+        slack += f->shadow_blur * 2 + std::max(std::fabs(f->shadow_x), std::fabs(f->shadow_y));
     CGRect  ink   = CGRectInset(box, -slack, -slack);
     if(m_ops)
     {
@@ -1605,9 +1605,48 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
             CGContextSetShouldAntialias(ctx, false);
         CGFloat x        = F(pos.x);
         CGFloat baseline = F(pos.y) + f->shared->ascent;
+        auto drawGlyphs = [&](CGContextRef target) {
+            if(simpleRun)
+            {
+                CGPoint points[LHSimpleShaper::kMaxLength];
+                for(size_t i = 0; i < simple.count; i++)
+                    points[i] = CGPointMake(simple.xs[i], 0);
+                CTFontDrawGlyphs(f->shared->font, simple.glyphs, points, simple.count, target);
+            }
+            else
+                CTLineDraw(line, target);
+        };
+        bool shadowRasterized = false;
+        if(f->shadow_color.alpha != 0 && !m_capture)
+        {
+            CGAffineTransform ctm   = CGContextGetCTM(ctx);
+            CGFloat           scale = std::sqrt(std::fabs(ctm.a * ctm.d - ctm.b * ctm.c));
+            if(f->shadow_blur * scale > 24)
+            {
+                std::string key = "tshadow:";
+                key.append(text);
+                AppendInteger(key, reinterpret_cast<intptr_t>(f->shared.get()));
+                for(CGFloat v : {f->shadow_x, f->shadow_y, f->shadow_blur, slack, box.size.width, box.size.height, x - ink.origin.x, baseline - ink.origin.y})
+                    AppendNumber(key, v);
+                AppendInteger(key, (f->shadow_color.red << 24) | (f->shadow_color.green << 16) | (f->shadow_color.blue << 8) | f->shadow_color.alpha);
+                AppendInteger(key, f->smoothing);
+                shadowRasterized = DrawDownsampled(ctx, ink, key, f->shadow_blur, [&](CGContextRef bitmap) {
+                    CGFloat           far = ink.size.width + slack * 4 + 1000;
+                    CGAffineTransform bm  = CGContextGetCTM(bitmap);
+                    CGFloat           bs  = std::sqrt(std::fabs(bm.a * bm.d - bm.b * bm.c));
+                    CGColorRef        sc  = CreateColor(f->shadow_color);
+                    CGContextSetShadowWithColor(bitmap, CGSizeApplyAffineTransform(CGSizeMake(f->shadow_x - far, f->shadow_y), bm), f->shadow_blur * bs, sc);
+                    CGColorRelease(sc);
+                    CGContextSetRGBFillColor(bitmap, 0, 0, 0, 1);
+                    CGContextSetTextMatrix(bitmap, CGAffineTransformMakeScale(1, -1));
+                    CGContextSetTextPosition(bitmap, x + far, baseline);
+                    drawGlyphs(bitmap);
+                });
+            }
+        }
         CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
         CGContextSetTextPosition(ctx, x, baseline);
-        if(f->shadow_color.alpha != 0)
+        if(f->shadow_color.alpha != 0 && !shadowRasterized)
         {
             CGAffineTransform ctm    = CGContextGetCTM(ctx);
             CGSize            offset = CGSizeApplyAffineTransform(CGSizeMake(f->shadow_x, f->shadow_y), ctm);
@@ -1616,15 +1655,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
             CGContextSetShadowWithColor(ctx, offset, f->shadow_blur * scale, shadow);
             CGColorRelease(shadow);
         }
-        if(simpleRun)
-        {
-            CGPoint points[LHSimpleShaper::kMaxLength];
-            for(size_t i = 0; i < simple.count; i++)
-                points[i] = CGPointMake(simple.xs[i], 0);
-            CTFontDrawGlyphs(f->shared->font, simple.glyphs, points, simple.count, ctx);
-        }
-        else
-            CTLineDraw(line, ctx);
+        drawGlyphs(ctx);
         CGContextSetShadowWithColor(ctx, CGSizeZero, 0, nullptr);
 
         if(f->underline || f->overline || f->strike)
