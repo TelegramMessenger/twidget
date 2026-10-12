@@ -306,6 +306,7 @@ final class WidgetCompositor {
     private weak var host: CALayer?
     private(set) var promotions = 0
     private var driven: [Int: String] = [:]
+    private var drivenSince: [Int: CFTimeInterval] = [:]
     private(set) var bakes = 0
     var scriptedCandidates: Set<Int> = []
     private var scripted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
@@ -471,6 +472,7 @@ final class WidgetCompositor {
                 item.layer.add(animation, forKey: "tw.opacity")
             }
             driven[id] = signature
+            drivenSince[id] = CACurrentMediaTime()
             bakes += 1
         }
     }
@@ -480,7 +482,7 @@ final class WidgetCompositor {
         var alpha: Float = 0
         var offsetAtWorst = 0.0
         for id in driven.keys {
-            guard let item = promoted[id], let shown = item.layer.presentation() else {
+            guard let item = promoted[id], let shown = item.layer.presentation(), CACurrentMediaTime() - (drivenSince[id] ?? 0) > 0.034 else {
                 continue
             }
             let actual = CATransform3DGetAffineTransform(shown.transform)
