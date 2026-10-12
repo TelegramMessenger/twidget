@@ -644,6 +644,9 @@ final class WidgetWebAnimations {
             guard let aid = (item["aid"] as? NSNumber)?.intValue else {
                 continue
             }
+            if item["css"] != nil {
+                continue
+            }
             if item["remove"] as? Bool == true {
                 byAid[aid] = nil
                 continue
@@ -883,5 +886,96 @@ final class WidgetWebAnimations {
             return Bake(properties: properties, signature: signature, value: { sample(timing, $0 * active) }, begin: (start + timing.delay / rate) / 1000, cycle: active / 1000, repeatCount: 1, speed: Float(rate), caBackwards: fillsBackwards, caForwards: fillsForwards)
         }
         return Bake(properties: properties, signature: signature, value: { sample(timing, active - $0 * active) }, begin: (start + (timing.delay + active) / rate) / 1000, cycle: active / 1000, repeatCount: 1, speed: Float(-rate), caBackwards: fillsForwards, caForwards: fillsBackwards)
+    }
+}
+
+struct CSSOverride {
+    let origin: CFTimeInterval
+    var start: CFTimeInterval?
+    var hold: Double?
+    var rate: Double
+    var cancelled: Bool
+
+    func local(_ now: CFTimeInterval) -> Double {
+        if let hold = hold {
+            return hold
+        }
+        return (now - (start ?? now)) * rate
+    }
+}
+
+extension WidgetAnimator {
+    func pruneCSSOverrides() {
+        if cssOverrides.isEmpty {
+            return
+        }
+        for (id, list) in cssOverrides {
+            var kept = list
+            for (key, override) in list {
+                let alive: Bool
+                if key.hasPrefix("animation:") {
+                    let name = String(key.dropFirst("animation:".count))
+                    alive = running[id]?.contains { $0.spec.name == name && abs($0.start - override.origin) < 0.002 } ?? false
+                } else {
+                    let property = String(key.dropFirst("transition:".count))
+                    alive = transitions[id]?[property].map { abs($0.start - override.origin) < 0.002 } ?? override.cancelled
+                }
+                if !alive {
+                    kept[key] = nil
+                }
+            }
+            cssOverrides[id] = kept.isEmpty ? nil : kept
+        }
+    }
+
+    func cssAnimations(_ ids: [Int], now: CFTimeInterval) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        for id in ids {
+            for (property, transition) in (transitions[id] ?? [:]).sorted(by: { $0.key < $1.key }) {
+                let override = cssOverrides[id]?["transition:" + property]
+                if override?.cancelled == true {
+                    continue
+                }
+                out.append(["kind": "transition", "id": id, "name": property, "index": 0, "origin": transition.start * 1000, "currentTime": (override?.local(now) ?? now - transition.start) * 1000, "playbackRate": override?.rate ?? 1, "paused": override?.hold != nil, "duration": transition.spec.duration * 1000, "delay": transition.spec.delay * 1000, "iterations": 1, "direction": "normal", "fill": "backwards", "easing": transition.spec.timingText])
+            }
+            for (index, item) in (running[id] ?? []).enumerated() where keyframes[item.spec.name] != nil {
+                let override = cssOverrides[id]?["animation:" + item.spec.name]
+                if override?.cancelled == true {
+                    continue
+                }
+                var entry: [String: Any] = ["kind": "animation", "id": id, "name": item.spec.name, "index": index, "origin": item.start * 1000, "currentTime": (override?.local(now) ?? now - item.start) * 1000, "playbackRate": override?.rate ?? 1, "paused": override.map { $0.hold != nil } ?? item.spec.paused, "duration": item.spec.duration * 1000, "delay": item.spec.delay * 1000, "direction": item.spec.direction, "fill": item.spec.fill, "easing": item.spec.timingText]
+                entry["iterations"] = item.spec.iterations.isFinite ? item.spec.iterations : NSNull()
+                out.append(entry)
+            }
+        }
+        return out
+    }
+
+    func applyCSSOverride(_ record: [String: Any], offset: CFTimeInterval) {
+        guard let id = (record["target"] as? NSNumber)?.intValue, let css = record["css"] as? [String: Any], let kind = css["kind"] as? String, kind == "animation" || kind == "transition", let name = css["name"] as? String, let origin = (css["origin"] as? NSNumber)?.doubleValue else {
+            return
+        }
+        let key = kind + ":" + name
+        if record["remove"] as? Bool == true {
+            cssOverrides[id]?[key] = nil
+            if cssOverrides[id]?.isEmpty == true {
+                cssOverrides[id] = nil
+            }
+            return
+        }
+        let rate = (record["playbackRate"] as? NSNumber)?.doubleValue ?? 1
+        guard rate.isFinite, abs(rate) <= 1000 else {
+            return
+        }
+        let start = (record["startTime"] as? NSNumber).map { $0.doubleValue / 1000 - offset }
+        let hold = (record["holdTime"] as? NSNumber).map { $0.doubleValue / 1000 }
+        let cancelled = record["cancelled"] as? Bool == true
+        guard cancelled || start != nil || hold != nil, start?.isFinite ?? true, hold?.isFinite ?? true else {
+            return
+        }
+        if cssOverrides[id] == nil && cssOverrides.count >= WidgetWebAnimations.maxAnimations {
+            return
+        }
+        cssOverrides[id, default: [:]][key] = CSSOverride(origin: origin / 1000, start: start, hold: hold, rate: rate, cancelled: cancelled)
     }
 }

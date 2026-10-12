@@ -465,6 +465,7 @@ struct CSSTransitionSpec {
     var duration: Double
     var timing: CSSTiming
     var delay: Double
+    var timingText = "ease"
 
     static func list(_ declarations: [String: String]) -> [CSSTransitionSpec] {
         var specs: [CSSTransitionSpec] = []
@@ -482,6 +483,7 @@ struct CSSTransitionSpec {
                         }
                     } else if let timing = CSSTiming.parse(token) {
                         spec.timing = timing
+                        spec.timingText = token
                     } else {
                         spec.property = token.lowercased()
                     }
@@ -503,7 +505,8 @@ struct CSSTransitionSpec {
                     property: property.lowercased(),
                     duration: durations.isEmpty ? base.duration : (CSSTime.parse(durations[index % durations.count]) ?? 0),
                     timing: timings.isEmpty ? base.timing : (CSSTiming.parse(timings[index % timings.count]) ?? .ease),
-                    delay: delays.isEmpty ? base.delay : (CSSTime.parse(delays[index % delays.count]) ?? 0))
+                    delay: delays.isEmpty ? base.delay : (CSSTime.parse(delays[index % delays.count]) ?? 0),
+                    timingText: timings.isEmpty ? base.timingText : (CSSTiming.parse(timings[index % timings.count]) != nil ? timings[index % timings.count] : "ease"))
             }
         } else {
             let durations = items("transition-duration")
@@ -824,14 +827,14 @@ enum CSSInterpolate {
 }
 
 final class WidgetAnimator {
-    private struct Running {
+    struct Running {
         let spec: CSSAnimationSpec
         let start: CFTimeInterval
         var iteration = 0
         var ended = false
     }
 
-    private struct Transition {
+    struct Transition {
         let from: String
         let to: String
         let start: CFTimeInterval
@@ -879,6 +882,9 @@ final class WidgetAnimator {
     }
 
     func isCompositable(_ id: Int) -> Bool {
+        if cssOverrides[id] != nil {
+            return false
+        }
         if !web.animations(id).isEmpty {
             guard web.onlyCompositable(id) else {
                 return false
@@ -963,7 +969,7 @@ final class WidgetAnimator {
     }
 
     func bakeable(_ id: Int) -> Baked? {
-        guard transitions[id] == nil, web.animations(id).isEmpty, let list = running[id] else {
+        guard transitions[id] == nil, web.animations(id).isEmpty, cssOverrides[id] == nil, let list = running[id] else {
             return nil
         }
         let live = list.filter { keyframes[$0.spec.name] != nil }
@@ -1053,8 +1059,9 @@ final class WidgetAnimator {
         return item.start + item.spec.delay + item.spec.iterations * max(item.spec.duration, 0.0001)
     }
 
-    private var running: [Int: [Running]] = [:]
-    private var transitions: [Int: [String: Transition]] = [:]
+    private(set) var running: [Int: [Running]] = [:]
+    private(set) var transitions: [Int: [String: Transition]] = [:]
+    var cssOverrides: [Int: [String: CSSOverride]] = [:]
     private var bases: [Int: [String: String]] = [:]
     private var lastOverrides: [Int: [(String, String)]] = [:]
     var onEvent: ((String, Int, String, Double) -> Void)?
@@ -1105,7 +1112,7 @@ final class WidgetAnimator {
             var base = bases[id] ?? [:]
             for property in WidgetAnimator.watched where !property.hasPrefix("animation") && !property.hasPrefix("transition") {
                 let newValue = values[property]
-                let oldValue = base[property]
+                let oldValue = base[property] ?? (bases[id] != nil && newValue != nil ? WidgetAnimator.initialValues[property] : nil)
                 defer { base[property] = newValue }
                 guard let old = oldValue, let new = newValue, old != new else {
                     if newValue == nil {
@@ -1130,6 +1137,7 @@ final class WidgetAnimator {
             transitions[id] = nil
         }
         running = nextRunning
+        pruneCSSOverrides()
     }
 
     private func currentTransitionValue(_ id: Int, _ property: String, _ now: CFTimeInterval) -> String? {
@@ -1165,7 +1173,14 @@ final class WidgetAnimator {
         }
         for (id, list) in transitions {
             for (property, transition) in list {
-                let elapsed = now - transition.start - transition.spec.delay
+                var elapsed = now - transition.start - transition.spec.delay
+                if let override = cssOverrides[id]?["transition:" + property] {
+                    if override.cancelled {
+                        transitions[id]?[property] = nil
+                        continue
+                    }
+                    elapsed = override.local(now) - transition.spec.delay
+                }
                 if elapsed >= transition.spec.duration {
                     transitions[id]?[property] = nil
                     onEvent?("transitionend", id, property, transition.spec.duration)
@@ -1189,7 +1204,13 @@ final class WidgetAnimator {
 
     private func sampleAnimation(_ item: Running, frames: [CSSKeyframe], now: CFTimeInterval, id: Int, state: inout Running) -> [(String, String)]? {
         let spec = item.spec
-        let local = now - item.start - spec.delay
+        var local = now - item.start - spec.delay
+        if let override = cssOverrides[id]?["animation:" + spec.name] {
+            if override.cancelled {
+                return nil
+            }
+            local = override.local(now) - spec.delay
+        }
         if local < 0 {
             if spec.fill == "backwards" || spec.fill == "both" {
                 return values(frames: frames, base: bases[id] ?? [:], progress: spec.direction.hasPrefix("reverse") || spec.direction == "alternate-reverse" ? 1 : 0, spec: spec)

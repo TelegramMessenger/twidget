@@ -260,6 +260,9 @@ public final class LiteHTMLWidgetRenderer {
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
         case "anim":
             animator.web.apply(message)
+            for item in (message["anims"] as? [[String: Any]]) ?? [] where item["css"] != nil {
+                animator.applyCSSOverride(item, offset: hiddenTotal)
+            }
             if !frozen {
                 render()
             }
@@ -1342,6 +1345,20 @@ public final class LiteHTMLWidgetRenderer {
             return measureText((q["text"] as? String) ?? "", font: (q["font"] as? String) ?? "10px sans-serif")
         case "canvasCall":
             return canvasCall(q)
+        case "anims":
+            guard let id = (q["id"] as? NSNumber)?.intValue, let root = dom.node(id) else {
+                return ["list": []]
+            }
+            var ids = [id]
+            if q["subtree"] as? Bool == true {
+                var stack = Array(root.children.reversed())
+                while let node = stack.popLast(), ids.count < 100_000 {
+                    ids.append(dom.publicId(node))
+                    stack.append(contentsOf: node.children.reversed())
+                }
+            }
+            updateAnimationClock()
+            return ["list": animator.cssAnimations(ids, now: animationNow)]
         case "cs":
             let id = (q["id"] as? NSNumber)?.intValue ?? 0
             let style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id)) ?? [:]
