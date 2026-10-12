@@ -179,17 +179,20 @@ namespace
     XCTAssertEqual(p.at(60, 60)[3], 0);
 }
 
-- (void)testTimesHelveticaCourierGetWebKitAscentAndTimesIsTheDefaultFont
+- (void)testTimesHelveticaCourierGetWebKitAscentAndTheSystemFontIsTheDefault
 {
-    for(NSString* family in @[@"serif", @"sans-serif", @"Courier", @"'No Such Font'"])
+    for(NSString* family in @[@"serif", @"sans-serif", @"Courier"])
     {
         CGFloat height = 0;
         Render([NSString stringWithFormat:@"<div style=\"font-family:%@;font-size:13px\">Hxg</div>", family], 200, &height);
         XCTAssertEqual(height, 15, @"%@", family);
     }
-    CGFloat height = 0;
-    Render(@"<div style=\"font-size:20px\">Hxg</div>", 200, &height);
-    XCTAssertEqual(height, 23);
+    CGFloat system = 0, plain = 0, unknown = 0;
+    Render(@"<div style=\"font-family:-apple-system;font-size:20px\">Hxg</div>", 200, &system);
+    Render(@"<div style=\"font-size:20px\">Hxg</div>", 200, &plain);
+    Render(@"<div style=\"font-family:'No Such Font';font-size:20px\">Hxg</div>", 200, &unknown);
+    XCTAssertEqual(plain, system);
+    XCTAssertEqual(unknown, system);
 }
 
 - (void)testLineBoxesKeepTheStrutAndHalfLeadingOfEveryInlineBox

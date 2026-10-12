@@ -891,12 +891,7 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
             break;
     }
     if(!font)
-    {
-        NSFontManager*  fm     = NSFontManager.sharedFontManager;
-        NSFontTraitMask traits = (italic ? NSItalicFontMask : 0) | (cssWeight >= 600 ? NSBoldFontMask : 0);
-        font = [fm fontWithFamily:@"Times" traits:traits weight:ManagerWeightFromCSS(cssWeight) size:size]
-                   ?: WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
-    }
+        font = WithCSSWeight([NSFont systemFontOfSize:size weight:NSFontWeightRegular], cssWeight);
 
     if(italic && !(font.fontDescriptor.symbolicTraits & NSFontDescriptorTraitItalic))
     {
@@ -1533,7 +1528,7 @@ lh::pixel_t LHContainer::get_default_font_size() const
 
 const char* LHContainer::get_default_font_name() const
 {
-    return "Times";
+    return "-apple-system";
 }
 
 void LHContainer::transform_text(std::string& text, lh::text_transform tt)
