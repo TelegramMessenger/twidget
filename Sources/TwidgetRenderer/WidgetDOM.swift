@@ -218,6 +218,14 @@ final class WidgetDOM {
         html.children = [head, body]
     }
 
+    func canvasNode(_ id: Int) -> WidgetNode? {
+        WidgetDOM.revision &+= 1
+        guard let node = nodes[id], node.tag == "canvas" else {
+            return nil
+        }
+        return node
+    }
+
     func node(_ id: Int) -> WidgetNode? {
         return nodes[id]
     }

@@ -43,16 +43,28 @@ public enum WidgetCanvasImages {
         lock.unlock()
     }
 
+    private static let placeholder: CGImage? = {
+        let ctx = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        return ctx?.makeImage()
+    }()
+
     private static func image(_ url: String) -> NSImage? {
         let body = url.dropFirst("twcanvas:".count)
-        guard let dash = body.lastIndex(of: "-"), let version = Int(body[body.index(after: dash)...]) else {
+        guard let dash = body.lastIndex(of: "-") else {
             return nil
         }
+        let tail = body[body.index(after: dash)...]
         let key = String(body[..<dash])
         lock.lock()
         let canvas = canvases[key]?.canvas
         lock.unlock()
-        guard let target = canvas, target.version == version, let image = target.image else {
+        if tail.hasPrefix("p") {
+            guard let target = canvas, target.width > 0, target.height > 0, let clear = placeholder else {
+                return nil
+            }
+            return NSImage(cgImage: clear, size: NSSize(width: target.width, height: target.height))
+        }
+        guard let version = Int(tail), let target = canvas, target.version == version, let image = target.image else {
             return nil
         }
         return NSImage(cgImage: image, size: NSSize(width: target.width, height: target.height))

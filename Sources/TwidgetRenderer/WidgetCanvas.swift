@@ -20,6 +20,9 @@ final class WidgetCanvas {
         var shadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
         var shadowOffset = CGSize.zero
         var alpha: CGFloat = 1
+        var composite = "source-over"
+        var clipped = false
+        var fillRGBA: SIMD4<Float>? = SIMD4(0, 0, 0, 1)
     }
 
     private struct Gradient {
@@ -38,6 +41,10 @@ final class WidgetCanvas {
     private(set) var height = 150
     private(set) var version = 0
     private var context: CGContext?
+    private(set) var storage: WidgetCanvasSurface?
+    var backend: WidgetCanvasBackend?
+    var onDraw: (() -> Void)?
+    private var colors: [String: (CGColor, SIMD4<Float>)] = [:]
     private var state = State()
     private var stack: [State] = []
     private var gradients: [Int: Gradient] = [:]
@@ -59,8 +66,50 @@ final class WidgetCanvas {
         if let cachedImage = cachedImage {
             return cachedImage
         }
+        finishGPU()
         cachedImage = context?.makeImage()
         return cachedImage
+    }
+
+    func finishGPU() {
+        backend?.finish()
+    }
+
+    var fillRGBA: SIMD4<Float>? {
+        return state.fillRGBA
+    }
+
+    var globalAlpha: Float {
+        return Float(state.alpha)
+    }
+
+    var composite: String {
+        return state.composite
+    }
+
+    var isPlain: Bool {
+        return WidgetCanvas.plain(state) && stack.allSatisfy(WidgetCanvas.plain)
+    }
+
+    private static func plain(_ state: State) -> Bool {
+        return state.fillRGBA != nil && !state.clipped && !(state.shadowColor.alpha > 0 && (state.shadowBlur > 0 || state.shadowOffset != .zero))
+    }
+
+    private func color(_ text: String) -> (CGColor, SIMD4<Float>)? {
+        if let known = colors[text] {
+            return known
+        }
+        guard let color = CSSColor.parse(text) else {
+            return nil
+        }
+        let srgb = color.colorSpace?.name == CGColorSpace.sRGB ? color : (color.converted(to: space, intent: .defaultIntent, options: nil) ?? color)
+        let c = srgb.components ?? []
+        let rgba: SIMD4<Float> = c.count >= 4 ? SIMD4(Float(c[0]), Float(c[1]), Float(c[2]), Float(c[3])) : c.count == 2 ? SIMD4(Float(c[0]), Float(c[0]), Float(c[0]), Float(c[1])) : SIMD4(0, 0, 0, 1)
+        if colors.count >= 1024 {
+            colors.removeAll(keepingCapacity: true)
+        }
+        colors[text] = (color, rgba)
+        return (color, rgba)
     }
 
     var allowance: () -> Int = { WidgetCanvas.maxPixels }
@@ -73,14 +122,22 @@ final class WidgetCanvas {
             width = 0
             height = 0
         }
+        finishGPU()
         state = State()
         stack = []
         context = nil
+        storage = nil
         cachedImage = nil
         version += 1
-        guard width > 0, height > 0, let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+        backend?.resized(canvas: self)
+        guard width > 0, height > 0 else {
             return
         }
+        let made = WidgetCanvasSurface.useSurfaces ? WidgetCanvasSurface(width: width, height: height, space: space) : nil
+        guard let ctx = made?.context ?? CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            return
+        }
+        storage = made
         ctx.translateBy(x: 0, y: CGFloat(height))
         ctx.scaleBy(x: 1, y: -1)
         ctx.setShouldAntialias(true)
@@ -94,96 +151,79 @@ final class WidgetCanvas {
         guard !commands.isEmpty else {
             return
         }
-        for element in commands {
-            guard let list = (element as AnyObject) as? NSArray, list.count >= 2, let kind = (list[0] as AnyObject) as? NSString as String? else {
-                continue
-            }
-            let command = list as [AnyObject]
-            let rest = Array(command.dropFirst(2)) as [Any]
-            switch kind {
-            case "c":
-                if let method = command[1] as? String {
-                    call(method, rest.map(resolve))
+        execute(CanvasStream(commands: commands))
+    }
+
+    func execute(_ stream: CanvasStream) {
+        guard !stream.isEmpty else {
+            return
+        }
+        let accelerated = backend?.begin(stream, canvas: self) ?? false
+        if !accelerated {
+            backend?.finish()
+            storage?.lock()
+        }
+        for op in stream.ops {
+            let rest = stream.arguments(op)
+            switch op.kind {
+            case .call:
+                if accelerated, let backend = backend, backend.draw(op.name, rest, canvas: self) {
+                    continue
                 }
-            case "s":
-                if let property = command[1] as? String, let value = rest.first {
-                    set(property, resolve(value))
+                call(op.name, rest)
+            case .set:
+                if let value = rest.first {
+                    set(op.name, value)
                 }
-            case "r":
-                resize(WidgetCanvas.int(command[1]), WidgetCanvas.int(rest.first ?? 0))
-            case "g":
-                let id = WidgetCanvas.int(command[1])
-                if let gradientKind = rest.first as? String, gradients[id] != nil || gradients.count < WidgetCanvas.maxObjects {
-                    gradients[id] = Gradient(kind: gradientKind, args: rest.dropFirst().map { WidgetCanvas.number($0) })
+            case .resize:
+                storage?.unlock()
+                resize(WidgetCanvas.int(op.ident), WidgetCanvas.int(rest.first.map(WidgetCanvas.value) ?? 0))
+                storage?.lock()
+            case .gradient:
+                let id = WidgetCanvas.int(op.ident)
+                if case let .string(gradientKind)? = rest.first, gradients[id] != nil || gradients.count < WidgetCanvas.maxObjects {
+                    gradients[id] = Gradient(kind: gradientKind, args: rest.dropFirst().map { WidgetCanvas.value($0) })
                 }
-            case "gs":
-                let id = WidgetCanvas.int(command[1])
-                if rest.count >= 2, (gradients[id]?.stops.count ?? 0) < WidgetCanvas.maxStops, let color = CSSColor.parse(rest[1] as? String ?? "") {
-                    gradients[id]?.stops.append((WidgetCanvas.number(rest[0]), color))
+            case .gradientStop:
+                let id = WidgetCanvas.int(op.ident)
+                if rest.count >= 2, (gradients[id]?.stops.count ?? 0) < WidgetCanvas.maxStops, case let .string(text) = rest[rest.startIndex + 1], let color = CSSColor.parse(text) {
+                    gradients[id]?.stops.append((WidgetCanvas.value(rest[rest.startIndex]), color))
                 }
-            case "pn":
-                let id = WidgetCanvas.int(command[1])
+            case .pathNew:
+                let id = WidgetCanvas.int(op.ident)
                 if paths[id] == nil && paths.count >= WidgetCanvas.maxObjects {
                     continue
                 }
                 let path = CGMutablePath()
-                if let d = rest.first as? String, d.utf8.count <= 1 << 20 {
+                if case let .string(d)? = rest.first, d.utf8.count <= 1 << 20 {
                     SVGPath.append(d, to: path)
                 }
                 paths[id] = path
-            case "pc":
-                let id = WidgetCanvas.int(command[1])
-                if let path = paths[id], let method = rest.first as? String {
-                    pathCall(path, method, rest.dropFirst().map(resolve))
+            case .pathCall:
+                let id = WidgetCanvas.int(op.ident)
+                if let path = paths[id] {
+                    pathCall(path, op.name, rest)
                 }
-            default:
-                break
             }
+        }
+        if accelerated {
+            backend?.commit(canvas: self)
+        } else {
+            storage?.unlock()
         }
         cachedImage = nil
         version += 1
+        onDraw?()
     }
 
-    private enum Value {
-        case number(CGFloat)
-        case string(String)
-        case gradient(Int)
-        case path(Int)
-        case node(Int)
-        case pixels(Data, Int, Int)
-        case list([CGFloat])
-        case other
-    }
+    typealias Value = CanvasArg
+    typealias Args = ArraySlice<CanvasArg>
 
-    private func resolve(_ value: Any) -> Value {
-        let object = value as AnyObject
-        if let n = object as? NSNumber {
-            return .number(CGFloat(n.doubleValue))
+    static func value(_ arg: CanvasArg) -> CGFloat {
+        if case let .number(v) = arg {
+            return CGFloat(v)
         }
-        if let s = object as? NSString {
-            return .string(s as String)
-        }
-        if let a = object as? NSArray {
-            return .list(a.map { WidgetCanvas.number($0) })
-        }
-        switch value {
-        case let d as [String: Any]:
-            if let g = d["g"] {
-                return .gradient(WidgetCanvas.int(g))
-            }
-            if let p = d["p"] {
-                return .path(WidgetCanvas.int(p))
-            }
-            if let n = d["n"] {
-                return .node(WidgetCanvas.int(n))
-            }
-            if let b64 = d["b64"] as? String, let data = Data(base64Encoded: b64) {
-                return .pixels(data, WidgetCanvas.int(d["w"] ?? 0), WidgetCanvas.int(d["h"] ?? 0))
-            }
-            return .other
-        default:
-            return .other
-        }
+        return 0
     }
 
     static let directRects = ProcessInfo.processInfo.environment["TW_CANVAS_PATH_RECTS"] == nil
@@ -197,68 +237,71 @@ final class WidgetCanvas {
         return CGFloat(((value as AnyObject) as? NSNumber)?.doubleValue ?? 0)
     }
 
-    private func n(_ args: [Value], _ i: Int, _ fallback: CGFloat = 0) -> CGFloat {
-        if i < args.count, case let .number(v) = args[i], v.isFinite {
-            return v
+    private func n(_ args: Args, _ i: Int, _ fallback: CGFloat = 0) -> CGFloat {
+        if i < args.count, case let .number(v) = args[args.startIndex + i], v.isFinite {
+            return CGFloat(v)
         }
         return fallback
     }
 
-    private func set(_ property: String, _ value: Value) {
+    private func set(_ property: CanvasName, _ value: Value) {
         guard let ctx = context else {
             return
         }
         switch (property, value) {
-        case ("fillStyle", .string(let s)):
-            if let color = CSSColor.parse(s) {
+        case (.fillStyle, .string(let s)):
+            if let (color, rgba) = color(s) {
                 state.fill = .color(color)
+                state.fillRGBA = rgba
             }
-        case ("fillStyle", .gradient(let id)):
+        case (.fillStyle, .gradient(let id)):
             state.fill = .gradient(id)
-        case ("strokeStyle", .string(let s)):
+            state.fillRGBA = nil
+        case (.strokeStyle, .string(let s)):
             if let color = CSSColor.parse(s) {
                 state.stroke = .color(color)
             }
-        case ("strokeStyle", .gradient(let id)):
+        case (.strokeStyle, .gradient(let id)):
             state.stroke = .gradient(id)
-        case ("lineWidth", .number(let v)) where v > 0:
-            state.lineWidth = v
-            ctx.setLineWidth(v)
-        case ("lineCap", .string(let s)):
+        case (.lineWidth, .number(let v)) where v > 0:
+            state.lineWidth = CGFloat(v)
+            ctx.setLineWidth(CGFloat(v))
+        case (.lineCap, .string(let s)):
             ctx.setLineCap(s == "round" ? .round : s == "square" ? .square : .butt)
-        case ("lineJoin", .string(let s)):
+        case (.lineJoin, .string(let s)):
             ctx.setLineJoin(s == "round" ? .round : s == "bevel" ? .bevel : .miter)
-        case ("miterLimit", .number(let v)) where v > 0:
-            ctx.setMiterLimit(v)
-        case ("lineDashOffset", .number(let v)):
-            state.dashOffset = v
-            ctx.setLineDash(phase: v, lengths: state.dash)
-        case ("font", .string(let s)):
+        case (.miterLimit, .number(let v)) where v > 0:
+            ctx.setMiterLimit(CGFloat(v))
+        case (.lineDashOffset, .number(let v)) where v.isFinite:
+            state.dashOffset = CGFloat(v)
+            ctx.setLineDash(phase: CGFloat(v), lengths: state.dash)
+        case (.font, .string(let s)):
             state.font = s
-        case ("textAlign", .string(let s)):
+        case (.textAlign, .string(let s)):
             state.align = s
-        case ("textBaseline", .string(let s)):
+        case (.textBaseline, .string(let s)):
             state.baseline = s
-        case ("globalAlpha", .number(let v)) where v >= 0 && v <= 1:
-            state.alpha = v
-            ctx.setAlpha(v)
-        case ("globalCompositeOperation", .string(let s)):
+        case (.globalAlpha, .number(let v)) where v >= 0 && v <= 1:
+            state.alpha = CGFloat(v)
+            ctx.setAlpha(CGFloat(v))
+        case (.globalCompositeOperation, .string(let s)):
+            state.composite = s
             ctx.setBlendMode(WidgetCanvas.blendMode(s))
-        case ("shadowBlur", .number(let v)) where v >= 0:
-            state.shadowBlur = min(v, 100)
+        case (.shadowBlur, .number(let v)) where v >= 0:
+            state.shadowBlur = min(CGFloat(v), 100)
             applyShadow()
-        case ("shadowColor", .string(let s)):
+        case (.shadowColor, .string(let s)):
             if let color = CSSColor.parse(s) {
                 state.shadowColor = color
                 applyShadow()
             }
-        case ("shadowOffsetX", .number(let v)):
-            state.shadowOffset.width = v
+        case (.shadowOffsetX, .number(let v)) where v.isFinite:
+            state.shadowOffset.width = CGFloat(v)
             applyShadow()
-        case ("shadowOffsetY", .number(let v)):
-            state.shadowOffset.height = v
+        case (.shadowOffsetY, .number(let v)) where v.isFinite:
+            state.shadowOffset.height = CGFloat(v)
             applyShadow()
-        case ("imageSmoothingEnabled", .number(let v)):
+        case (.imageSmoothingEnabled, .number(let v)):
             ctx.interpolationQuality = v != 0 ? .high : .none
         default:
             break
@@ -307,38 +350,38 @@ final class WidgetCanvas {
         }
     }
 
-    private func call(_ method: String, _ a: [Value]) {
+    private func call(_ method: CanvasName, _ a: Args) {
         guard let ctx = context else {
             return
         }
         switch method {
-        case "save":
+        case .save:
             if stack.count >= WidgetCanvas.maxStack {
                 return
             }
             stack.append(state)
             ctx.saveGState()
-        case "restore":
+        case .restore:
             if let last = stack.popLast() {
                 state = last
                 ctx.restoreGState()
             }
-        case "scale":
+        case .scale:
             ctx.scaleBy(x: n(a, 0, 1), y: n(a, 1, 1))
-        case "rotate":
+        case .rotate:
             ctx.rotate(by: n(a, 0))
-        case "translate":
+        case .translate:
             ctx.translateBy(x: n(a, 0), y: n(a, 1))
-        case "transform":
+        case .transform:
             ctx.concatenate(CGAffineTransform(a: n(a, 0, 1), b: n(a, 1), c: n(a, 2), d: n(a, 3, 1), tx: n(a, 4), ty: n(a, 5)))
-        case "setTransform", "resetTransform":
-            let target = method == "resetTransform" ? CGAffineTransform.identity : CGAffineTransform(a: n(a, 0, 1), b: n(a, 1), c: n(a, 2), d: n(a, 3, 1), tx: n(a, 4), ty: n(a, 5))
+        case .setTransform, .resetTransform:
+            let target = method == .resetTransform ? CGAffineTransform.identity : CGAffineTransform(a: n(a, 0, 1), b: n(a, 1), c: n(a, 2), d: n(a, 3, 1), tx: n(a, 4), ty: n(a, 5))
             ctx.concatenate(ctx.ctm.inverted())
             ctx.concatenate(base)
             ctx.concatenate(target)
-        case "clearRect":
+        case .clearRect:
             ctx.clear(CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3)))
-        case "fillRect":
+        case .fillRect:
             let rect = CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3))
             if case let .color(color) = state.fill, WidgetCanvas.directRects, ctx.isPathEmpty {
                 ctx.setFillColor(color)
@@ -350,55 +393,55 @@ final class WidgetCanvas {
             ctx.addRect(rect)
             fillCurrent(ctx, evenOdd: false)
             restorePath(ctx, saved)
-        case "strokeRect":
+        case .strokeRect:
             let rect = CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3))
             let saved = ctx.path
             ctx.beginPath()
             ctx.addRect(rect)
             strokeCurrent(ctx)
             restorePath(ctx, saved)
-        case "beginPath":
+        case .beginPath:
             ctx.beginPath()
-        case "closePath":
+        case .closePath:
             ctx.closePath()
-        case "moveTo":
+        case .moveTo:
             ctx.move(to: CGPoint(x: n(a, 0), y: n(a, 1)))
-        case "lineTo":
+        case .lineTo:
             ensureStart(ctx, CGPoint(x: n(a, 0), y: n(a, 1)))
             ctx.addLine(to: CGPoint(x: n(a, 0), y: n(a, 1)))
-        case "bezierCurveTo":
+        case .bezierCurveTo:
             ensureStart(ctx, CGPoint(x: n(a, 0), y: n(a, 1)))
             ctx.addCurve(to: CGPoint(x: n(a, 4), y: n(a, 5)), control1: CGPoint(x: n(a, 0), y: n(a, 1)), control2: CGPoint(x: n(a, 2), y: n(a, 3)))
-        case "quadraticCurveTo":
+        case .quadraticCurveTo:
             ensureStart(ctx, CGPoint(x: n(a, 0), y: n(a, 1)))
             ctx.addQuadCurve(to: CGPoint(x: n(a, 2), y: n(a, 3)), control: CGPoint(x: n(a, 0), y: n(a, 1)))
-        case "arc":
+        case .arc:
             ctx.addArc(center: CGPoint(x: n(a, 0), y: n(a, 1)), radius: max(0, n(a, 2)), startAngle: n(a, 3), endAngle: n(a, 4), clockwise: WidgetCanvas.truthy(a, 5))
-        case "arcTo":
+        case .arcTo:
             ensureStart(ctx, CGPoint(x: n(a, 0), y: n(a, 1)))
             ctx.addArc(tangent1End: CGPoint(x: n(a, 0), y: n(a, 1)), tangent2End: CGPoint(x: n(a, 2), y: n(a, 3)), radius: max(0, n(a, 4)))
-        case "ellipse":
+        case .ellipse:
             let path = CGMutablePath()
-            WidgetCanvas.ellipse(path, a.map { v -> CGFloat in if case let .number(x) = v { return x } else { return 0 } }, anticlockwise: WidgetCanvas.truthy(a, 7))
+            WidgetCanvas.ellipse(path, a.map(WidgetCanvas.value), anticlockwise: WidgetCanvas.truthy(a, 7))
             ctx.addPath(path)
-        case "rect":
+        case .rect:
             ctx.addRect(CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3)))
-        case "roundRect":
+        case .roundRect:
             let rect = CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3)).standardized
             var radius: CGFloat = 0
             if a.count > 4 {
-                switch a[4] {
+                switch a[a.startIndex + 4] {
                 case let .number(v):
-                    radius = v
+                    radius = v.isFinite ? CGFloat(v) : 0
                 case let .list(values):
-                    radius = values.first ?? 0
+                    radius = values.first.map { $0.isFinite ? CGFloat($0) : 0 } ?? 0
                 default:
                     break
                 }
             }
             radius = min(radius, rect.width / 2, rect.height / 2)
             ctx.addPath(CGPath(roundedRect: rect, cornerWidth: max(0, radius), cornerHeight: max(0, radius), transform: nil))
-        case "fill":
+        case .fill:
             if case let .path(id)? = a.first, let path = paths[id] {
                 let saved = ctx.path
                 ctx.beginPath()
@@ -410,7 +453,7 @@ final class WidgetCanvas {
                 fillCurrent(ctx, evenOdd: WidgetCanvas.evenOdd(a, 0))
                 restorePath(ctx, saved)
             }
-        case "stroke":
+        case .stroke:
             let saved = ctx.path
             if case let .path(id)? = a.first, let path = paths[id] {
                 ctx.beginPath()
@@ -418,29 +461,32 @@ final class WidgetCanvas {
             }
             strokeCurrent(ctx)
             restorePath(ctx, saved)
-        case "clip":
+        case .clip:
             if case let .path(id)? = a.first, let path = paths[id] {
                 let saved = ctx.path
                 ctx.beginPath()
                 ctx.addPath(path)
                 ctx.clip(using: WidgetCanvas.evenOdd(a, 1) ? .evenOdd : .winding)
+                state.clipped = true
                 restorePath(ctx, saved)
             } else if !ctx.isPathEmpty {
                 let saved = ctx.path
+                state.clipped = true
                 ctx.clip(using: WidgetCanvas.evenOdd(a, 0) ? .evenOdd : .winding)
                 restorePath(ctx, saved)
             }
-        case "fillText", "strokeText":
+        case .fillText, .strokeText:
             if case let .string(full)? = a.first {
                 let text = String(full.prefix(WidgetCanvas.maxText))
-                drawText(ctx, text, x: n(a, 1), y: n(a, 2), maxWidth: a.count > 3 ? n(a, 3) : nil, stroke: method == "strokeText")
+                drawText(ctx, text, x: n(a, 1), y: n(a, 2), maxWidth: a.count > 3 ? n(a, 3) : nil, stroke: method == .strokeText)
             }
-        case "setLineDash":
-            if case let .list(values)? = a.first, values.count <= 64, values.allSatisfy({ $0.isFinite && $0 >= 0 }) {
+        case .setLineDash:
+            if case let .list(raw)? = a.first, raw.count <= 64, raw.allSatisfy({ $0.isFinite && $0 >= 0 }) {
+                let values = raw.map { CGFloat($0) }
                 state.dash = values.count % 2 == 1 ? values + values : values
                 ctx.setLineDash(phase: state.dashOffset, lengths: state.dash)
             }
-        case "putImageData":
+        case .putImageData:
             if case let .pixels(data, w, h)? = a.first, let image = WidgetCanvas.image(rgba: data, width: w, height: h) {
                 ctx.saveGState()
                 ctx.concatenate(ctx.ctm.inverted())
@@ -451,7 +497,7 @@ final class WidgetCanvas {
                 drawImage(ctx, image, CGRect(x: n(a, 1), y: n(a, 2), width: CGFloat(w), height: CGFloat(h)))
                 ctx.restoreGState()
             }
-        case "drawImage":
+        case .drawImage:
             if case let .node(id)? = a.first, let image = resolveImage?(id) {
                 let iw = CGFloat(image.width), ih = CGFloat(image.height)
                 switch a.count {
@@ -473,7 +519,7 @@ final class WidgetCanvas {
         }
     }
 
-    private var base: CGAffineTransform {
+    var base: CGAffineTransform {
         return CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: CGFloat(height))
     }
 
@@ -497,11 +543,11 @@ final class WidgetCanvas {
         }
     }
 
-    private static func truthy(_ args: [Value], _ index: Int) -> Bool {
+    private static func truthy(_ args: Args, _ index: Int) -> Bool {
         guard index < args.count else {
             return false
         }
-        switch args[index] {
+        switch args[args.startIndex + index] {
         case let .number(v):
             return v != 0
         case let .string(s):
@@ -511,8 +557,8 @@ final class WidgetCanvas {
         }
     }
 
-    private static func evenOdd(_ args: [Value], _ index: Int) -> Bool {
-        if index < args.count, case let .string(rule) = args[index] {
+    private static func evenOdd(_ args: Args, _ index: Int) -> Bool {
+        if index < args.count, case let .string(rule) = args[args.startIndex + index] {
             return rule == "evenodd"
         }
         return false
@@ -646,40 +692,40 @@ final class WidgetCanvas {
         ctx.restoreGState()
     }
 
-    private func pathCall(_ path: CGMutablePath, _ method: String, _ a: [Value]) {
+    private func pathCall(_ path: CGMutablePath, _ method: CanvasName, _ a: Args) {
         let start = { (point: CGPoint) in
             if path.isEmpty {
                 path.move(to: point)
             }
         }
         switch method {
-        case "moveTo":
+        case .moveTo:
             path.move(to: CGPoint(x: n(a, 0), y: n(a, 1)))
-        case "lineTo":
+        case .lineTo:
             start(CGPoint(x: n(a, 0), y: n(a, 1)))
             path.addLine(to: CGPoint(x: n(a, 0), y: n(a, 1)))
-        case "bezierCurveTo":
+        case .bezierCurveTo:
             start(CGPoint(x: n(a, 0), y: n(a, 1)))
             path.addCurve(to: CGPoint(x: n(a, 4), y: n(a, 5)), control1: CGPoint(x: n(a, 0), y: n(a, 1)), control2: CGPoint(x: n(a, 2), y: n(a, 3)))
-        case "quadraticCurveTo":
+        case .quadraticCurveTo:
             start(CGPoint(x: n(a, 0), y: n(a, 1)))
             path.addQuadCurve(to: CGPoint(x: n(a, 2), y: n(a, 3)), control: CGPoint(x: n(a, 0), y: n(a, 1)))
-        case "arc":
+        case .arc:
             path.addArc(center: CGPoint(x: n(a, 0), y: n(a, 1)), radius: max(0, n(a, 2)), startAngle: n(a, 3), endAngle: n(a, 4), clockwise: WidgetCanvas.truthy(a, 5))
-        case "arcTo":
+        case .arcTo:
             start(CGPoint(x: n(a, 0), y: n(a, 1)))
             path.addArc(tangent1End: CGPoint(x: n(a, 0), y: n(a, 1)), tangent2End: CGPoint(x: n(a, 2), y: n(a, 3)), radius: max(0, n(a, 4)))
-        case "ellipse":
-            WidgetCanvas.ellipse(path, a.map { v -> CGFloat in if case let .number(x) = v { return x } else { return 0 } }, anticlockwise: WidgetCanvas.truthy(a, 7))
-        case "rect":
+        case .ellipse:
+            WidgetCanvas.ellipse(path, a.map(WidgetCanvas.value), anticlockwise: WidgetCanvas.truthy(a, 7))
+        case .rect:
             path.addRect(CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3)))
-        case "roundRect":
+        case .roundRect:
             let rect = CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3)).standardized
             let radius = min(n(a, 4), rect.width / 2, rect.height / 2)
             path.addRoundedRect(in: rect, cornerWidth: max(0, radius), cornerHeight: max(0, radius))
-        case "closePath":
+        case .closePath:
             path.closeSubpath()
-        case "addPath":
+        case .addPath:
             if case let .path(id)? = a.first, let other = paths[id] {
                 path.addPath(other)
             }
@@ -697,7 +743,8 @@ final class WidgetCanvas {
     }
 
     func isPointInPath(_ args: [Any]) -> Bool {
-        let values = args.map(resolve)
+        finishGPU()
+        let values = ArraySlice(args.map(CanvasStream.resolve))
         var path: CGPath? = context?.path
         var offset = 0
         if case let .path(id)? = values.first {
@@ -716,6 +763,7 @@ final class WidgetCanvas {
     }
 
     func pixels(x: Int, y: Int, w requestedW: Int, h requestedH: Int) -> Data {
+        finishGPU()
         let w = max(0, min(requestedW, 8192)), h = max(0, min(requestedH, 8192))
         if w * h > WidgetCanvas.maxPixels {
             return Data()

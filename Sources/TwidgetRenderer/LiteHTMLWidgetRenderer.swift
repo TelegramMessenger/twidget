@@ -151,7 +151,7 @@ public final class LiteHTMLWidgetRenderer {
         guard let image = document.copyImage(maxWidth: size.width, rect: CGRect(origin: .zero, size: size), scale: scale) else {
             return nil
         }
-        if compositor.ids.isEmpty && !magic.isActive {
+        if compositor.ids.isEmpty && !magic.isActive && presenters.isEmpty {
             return NSImage(cgImage: image, size: size)
         }
         guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
@@ -160,6 +160,9 @@ public final class LiteHTMLWidgetRenderer {
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         ctx.translateBy(x: 0, y: CGFloat(image.height))
         ctx.scaleBy(x: scale, y: -scale)
+        for (_, presenter) in presenters.sorted(by: { $0.key < $1.key }) {
+            presenter.draw(into: ctx, frame: presenter.layer.frame)
+        }
         compositor.draw(into: ctx)
         magic.draw(into: ctx)
         return ctx.makeImage().map { NSImage(cgImage: $0, size: size) } ?? NSImage(cgImage: image, size: size)
@@ -173,6 +176,10 @@ public final class LiteHTMLWidgetRenderer {
             LHImages.forgetImage(withURL: url)
         }
         canvasURLs.removeAll()
+        for presenter in presenters.values {
+            presenter.remove()
+        }
+        presenters.removeAll()
         clock?.stop()
         clock = nil
         trimWork?.cancel()
@@ -184,6 +191,10 @@ public final class LiteHTMLWidgetRenderer {
     static let messageLog = ProcessInfo.processInfo.environment["TW_MSG_LOG"] != nil
 
     public func send(_ json: String) {
+        if !destroyed, LiteHTMLWidgetRenderer.canvasFastPath, json.hasPrefix("{\"type\":\"ops\",\"ops\":[{\"op\":\"canvas\""), let list = CanvasStream.canvasOps(json: json) {
+            sendCanvas(list)
+            return
+        }
         guard !destroyed, let data = json.data(using: .utf8), let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let type = message["type"] as? String else {
             return
         }
@@ -325,9 +336,172 @@ public final class LiteHTMLWidgetRenderer {
             layout(overrides)
         }
         scheduleDrivenEnds(now: now)
+        updateCanvasPresentation()
         if needsFrames && !frozen {
             startClock()
         }
+    }
+
+    static let canvasFastPath = ProcessInfo.processInfo.environment["TW_CANVAS_FAST"] != "0"
+    static let canvasGPUAfter = ProcessInfo.processInfo.environment["TW_CANVAS_GPU_AFTER"].flatMap { Int($0) }.map { max(1, $0) } ?? 3
+    private var presenters: [Int: WidgetCanvasPresenter] = [:]
+    private var canvasDraws: [Int: Int] = [:]
+    private var presentationEpoch = 0
+    private var presentationBackoff = 0
+    private var presentationChecked: LHDocument?
+    public private(set) var canvasFastMessages = 0
+
+    public var canvasReport: String {
+        var accelerated = 0, fallback = 0, gpuFrames = 0, gpuMilliseconds = 0.0
+        #if canImport(Metal)
+        for canvas in canvases.values {
+            if let gpu = canvas.backend as? WidgetCanvasMetal {
+                accelerated += gpu.acceleratedBatches
+                fallback += gpu.fallbackBatches
+                let stats = gpu.gpuStats
+                gpuFrames += stats.frames
+                gpuMilliseconds += stats.milliseconds
+            }
+        }
+        #endif
+        let shown = presenters.values.reduce(0) { $0 + $1.presented }
+        let skipped = presenters.values.reduce(0) { $0 + $1.skipped }
+        return String(format: "canvas: fast=%d gpu-batches=%d cg-batches=%d gpu-buffers=%d gpu-ms=%.3f/buffer presented=%d layers=%d skipped=%d", canvasFastMessages, accelerated, fallback, gpuFrames, gpuMilliseconds / Double(max(1, gpuFrames)), shown, presenters.count, skipped)
+    }
+
+    private func sendCanvas(_ list: [(id: Int, stream: CanvasStream)]) {
+        canvasFastMessages += 1
+        opsBatch += 1
+        var direct = true
+        for (id, stream) in list {
+            guard let node = dom.canvasNode(id) else {
+                continue
+            }
+            canvas(for: node).execute(stream)
+            if presenters[id] == nil {
+                direct = false
+            }
+        }
+        if direct {
+            stageMilliseconds["canvas-direct", default: 0] += 1
+            return
+        }
+        render()
+    }
+
+    private func canvasDrew(_ id: Int) {
+        let count = (canvasDraws[id] ?? 0) + 1
+        canvasDraws[id] = count
+        if let presenter = presenters[id] {
+            presenter.present()
+            return
+        }
+        #if canImport(Metal)
+        if count + 1 >= LiteHTMLWidgetRenderer.canvasGPUAfter, let canvas = canvases[id], canvas.backend == nil, canvas.storage != nil, WidgetCanvasMetal.enabled {
+            canvas.backend = WidgetCanvasMetal()
+        }
+        #endif
+    }
+
+    private func canvasPresentable(_ id: Int, _ canvas: WidgetCanvas, document: LHDocument, boxes: [String: NSValue]) -> CGRect? {
+        guard WidgetCanvasPresenter.enabled, canvas.storage != nil, canvas.width > 0, canvas.height > 0, !magic.isActive, let node = dom.node(id), node.tag == "canvas", !node.svg else {
+            return nil
+        }
+        let key = String(id)
+        guard let box = boxes[key]?.rectValue, box.width >= 1, box.height >= 1, box.width * box.height < 4_000_000 else {
+            return nil
+        }
+        for other in compositor.ids where other == id || isAncestor(other, of: id) {
+            return nil
+        }
+        let style = document.computedStyle(attribute: WidgetDOM.idAttribute, value: key)
+        for name in ["padding-top", "padding-right", "padding-bottom", "padding-left", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width"] {
+            guard let value = style[name], value == "0px" else {
+                return nil
+            }
+        }
+        if let opacity = style["opacity"], let number = Double(opacity), number < 0.999 {
+            return nil
+        }
+        if let visibility = style["visibility"], visibility != "visible" {
+            return nil
+        }
+        let declared = document.declarations(["transform", "filter", "border-radius", "clip-path", "mix-blend-mode", "object-fit", "object-position", "image-rendering", "mask", "-webkit-mask", "backdrop-filter", "outline-style"], byAttribute: WidgetDOM.idAttribute)[key] ?? [:]
+        for (name, value) in declared {
+            let trimmed = value.trimmingCharacters(in: .whitespaces).lowercased()
+            if trimmed.isEmpty || trimmed == "none" || trimmed == "normal" || trimmed == "initial" || trimmed == "fill" || (name == "border-radius" && (trimmed == "0" || trimmed == "0px")) || (name == "image-rendering" && trimmed == "auto") {
+                continue
+            }
+            return nil
+        }
+        guard document.isElement(attribute: WidgetDOM.idAttribute, value: key, unobscuredIn: box) else {
+            return nil
+        }
+        var clip = CGRect.zero
+        var radii = [CGFloat](repeating: 0, count: 8)
+        if document.clipOfElement(attribute: WidgetDOM.idAttribute, value: key, rect: &clip, radii: &radii) {
+            guard clip.contains(box) || radii.allSatisfy({ $0 == 0 }) && clip.intersection(box) == box else {
+                return nil
+            }
+        }
+        return box
+    }
+
+    private func updateCanvasPresentation() {
+        guard let document = document, !presenters.isEmpty || canvasDraws.values.contains(where: { $0 >= LiteHTMLWidgetRenderer.canvasGPUAfter }) else {
+            return
+        }
+        if presentationChecked === document {
+            return
+        }
+        if presenters.isEmpty && presentationBackoff > 0 {
+            presentationBackoff -= 1
+            return
+        }
+        presentationChecked = document
+        let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
+        var changed = false
+        var added: [WidgetCanvasPresenter] = []
+        for (id, canvas) in canvases {
+            let wanted = presenters[id] != nil || (canvasDraws[id] ?? 0) >= LiteHTMLWidgetRenderer.canvasGPUAfter
+            let frame = wanted ? canvasPresentable(id, canvas, document: document, boxes: boxes) : nil
+            if let frame = frame {
+                let presenter: WidgetCanvasPresenter
+                if let existing = presenters[id] {
+                    presenter = existing
+                } else {
+                    presenter = WidgetCanvasPresenter(canvas: canvas)
+                    presenters[id] = presenter
+                    added.append(presenter)
+                    changed = true
+                }
+                if presenter.layer.frame != frame {
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    presenter.layer.frame = frame
+                    CATransaction.commit()
+                }
+            } else if let removed = presenters.removeValue(forKey: id) {
+                removed.remove()
+                changed = true
+            }
+        }
+        if presenters.isEmpty && !changed {
+            presentationBackoff = 30
+        }
+        guard changed else {
+            return
+        }
+        presentationEpoch += 1
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for presenter in added {
+            presenter.presentNow()
+            documentView.layer?.addSublayer(presenter.layer)
+        }
+        layout(overrides)
+        presentationChecked = document
+        CATransaction.commit()
     }
 
     public private(set) var handoffWorst: (geometry: CGFloat, alpha: Float) = (0, 0)
@@ -375,6 +549,17 @@ public final class LiteHTMLWidgetRenderer {
         canvas.resolveImage = { [weak self] other in
             self?.image(forNode: other)
         }
+        canvas.onDraw = { [weak self] in
+            self?.canvasDrew(id)
+        }
+        #if canImport(Metal)
+        if LiteHTMLWidgetRenderer.canvasGPUAfter <= 1, canvas.storage != nil, WidgetCanvasMetal.enabled {
+            WidgetCanvasMetal.prepare(wait: true)
+            canvas.backend = WidgetCanvasMetal()
+        } else if canvas.storage != nil, WidgetCanvasMetal.enabled {
+            WidgetCanvasMetal.prepare(wait: false)
+        }
+        #endif
         canvases[id] = canvas
         WidgetCanvasImages.register(uid + "-" + String(id), canvas)
         return canvas
@@ -405,6 +590,8 @@ public final class LiteHTMLWidgetRenderer {
             guard let node = dom.node(id), node.tag == "canvas" else {
                 canvases[id] = nil
                 canvasAttributeSizes[id] = nil
+                canvasDraws[id] = nil
+                presenters.removeValue(forKey: id)?.remove()
                 WidgetCanvasImages.unregister(uid + "-" + String(id))
                 if let url = canvasURLs.removeValue(forKey: id) {
                     LHImages.forgetImage(withURL: url)
@@ -424,7 +611,7 @@ public final class LiteHTMLWidgetRenderer {
     private func canvasSource(_ node: WidgetNode) -> String? {
         let canvas = self.canvas(for: node)
         let id = dom.publicId(node)
-        let url = "twcanvas:" + uid + "-" + String(id) + "-" + String(canvas.version)
+        let url = "twcanvas:" + uid + "-" + String(id) + "-" + (presenters[id] != nil ? "p" + String(presentationEpoch) : String(canvas.version))
         if let previous = canvasURLs[id], previous != url {
             retiredURLs.append(previous)
         }
