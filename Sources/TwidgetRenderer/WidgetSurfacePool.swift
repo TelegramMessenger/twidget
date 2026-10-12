@@ -11,7 +11,7 @@ public final class WidgetSurfacePool {
 
     public var perSize = 4
     public var maxBytes = 16 << 20
-    public private(set) var hits = 0, misses = 0, created = 0
+    public private(set) var hits = 0, misses = 0, created = 0, recycled = 0
 
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "twidget.surface-pool", qos: .utility)
@@ -39,7 +39,11 @@ public final class WidgetSurfacePool {
     public func take(width: Int, height: Int) -> IOSurfaceRef? {
         let key = Key(width: width, height: height)
         lock.lock()
-        let surface = idle[key]?.popLast()
+        var surface: IOSurfaceRef?
+        if var list = idle[key], let index = list.lastIndex(where: { !IOSurfaceIsInUse($0) }) {
+            surface = list.remove(at: index)
+            idle[key] = list
+        }
         if surface != nil {
             bytes -= WidgetSurfacePool.size(of: key)
             hits += 1
@@ -59,6 +63,19 @@ public final class WidgetSurfacePool {
         lock.unlock()
         scheduleRefill(key)
         return surface
+    }
+
+    public func recycle(_ surface: IOSurfaceRef) {
+        let key = Key(width: IOSurfaceGetWidth(surface), height: IOSurfaceGetHeight(surface))
+        let size = WidgetSurfacePool.size(of: key)
+        lock.lock()
+        defer { lock.unlock() }
+        guard hot.contains(key), (idle[key]?.count ?? 0) < perSize * 2, bytes + size <= maxBytes else {
+            return
+        }
+        idle[key, default: []].append(surface)
+        bytes += size
+        recycled += 1
     }
 
     public func prewarm(width: Int, height: Int, count: Int = 4) {
@@ -130,6 +147,6 @@ public final class WidgetSurfacePool {
     public var status: String {
         lock.lock()
         defer { lock.unlock() }
-        return "surfaces \(idle.values.reduce(0) { $0 + $1.count }) (\(bytes >> 10) KB, hits \(hits), misses \(misses), created \(created))"
+        return "surfaces \(idle.values.reduce(0) { $0 + $1.count }) (\(bytes >> 10) KB, hits \(hits), misses \(misses), created \(created), recycled \(recycled))"
     }
 }

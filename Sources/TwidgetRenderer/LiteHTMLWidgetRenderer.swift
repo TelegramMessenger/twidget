@@ -2102,6 +2102,7 @@ final class WidgetDocumentView: NSView {
     }
 
     static let cullMargin: CGFloat = 32
+    static let recycleSurfaces = ProcessInfo.processInfo.environment["TW_NO_SURFACE_RECYCLE"] == nil
     static let surfaceSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     static let screenTagged = ProcessInfo.processInfo.environment["TW_SURFACE_SCREEN"] != nil
     static var verify = ProcessInfo.processInfo.environment["TW_VERIFY"] != nil
@@ -2285,8 +2286,12 @@ final class WidgetDocumentView: NSView {
                         if WidgetDocumentView.verifyPrepared {
                             WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.bounds.width, scale: scale)
                         }
+                        let previous = WidgetDocumentView.surface(of: tile.layer)
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
+                        if let previous = previous, WidgetDocumentView.recycleSurfaces {
+                            WidgetSurfacePool.shared.recycle(previous)
+                        }
                         tile.prepared = true
                         self.preparedTiles += 1
                     }
@@ -2543,8 +2548,12 @@ final class WidgetDocumentView: NSView {
                         if WidgetDocumentView.verifyPrepared, self.document === document {
                             WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.bounds.width, scale: scale, label: "async")
                         }
+                        let previous = WidgetDocumentView.surface(of: tile.layer)
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
+                        if let previous = previous, WidgetDocumentView.recycleSurfaces {
+                            WidgetSurfacePool.shared.recycle(previous)
+                        }
                         tile.prepared = true
                         self.asyncTilesInstalled += 1
                     }
