@@ -299,7 +299,7 @@ final class WidgetCompositor {
         var ink: CGRect
     }
 
-    static let maxLayers = 48
+    static let maxLayers = ProcessInfo.processInfo.environment["TW_MAX_LAYERS"].flatMap { Int($0) } ?? 256
     static let maxPixels = 4096 * 4096
 
     private var promoted: [Int: Promoted] = [:]
@@ -416,7 +416,7 @@ final class WidgetCompositor {
         driven.removeAll()
     }
 
-    func drive(animator: WidgetAnimator, now: CFTimeInterval, enabled: Bool) {
+    func drive(animator: WidgetAnimator, now: CFTimeInterval, mediaOffset: CFTimeInterval, enabled: Bool) {
         for id in driven.keys where promoted[id] == nil || !enabled {
             promoted[id]?.layer.removeAnimation(forKey: "tw.transform")
             promoted[id]?.layer.removeAnimation(forKey: "tw.opacity")
@@ -435,7 +435,7 @@ final class WidgetCompositor {
                 continue
             }
             let spec = baked.spec
-            let signature = "\(spec.name)|\(spec.duration)|\(spec.timingText)|\(spec.delay)|\(spec.iterations)|\(spec.direction)|\(spec.fill)|\(baked.start)|\(item.box)|\(item.origin)"
+            let signature = "\(spec.name)|\(spec.duration)|\(spec.timingText)|\(spec.delay)|\(spec.iterations)|\(spec.direction)|\(spec.fill)|\(baked.start)|\(item.box)|\(item.origin)|\(Int((mediaOffset * 1000).rounded()))"
             if driven[id] == signature {
                 continue
             }
@@ -446,8 +446,7 @@ final class WidgetCompositor {
             guard let track = WidgetCompositor.bake(baked, base: base, box: item.box.size, origin: item.origin, resolve: { [self] in self.resolved($0, id: id) }) else {
                 continue
             }
-            let localNow = item.layer.convertTime(CACurrentMediaTime(), from: nil)
-            var begin = localNow - (now - (baked.start + spec.delay))
+            var begin = item.layer.convertTime(baked.start + spec.delay + mediaOffset, from: nil)
             if begin == 0 {
                 begin = 1e-9
             }
@@ -493,43 +492,56 @@ final class WidgetCompositor {
     }
 
     func handoffError(animator: WidgetAnimator, now: CFTimeInterval) -> (geometry: CGFloat, alpha: Float, offset: Double) {
-        var geometry: CGFloat = 0
-        var alpha: Float = 0
-        var offsetAtWorst = 0.0
+        var samples: [(id: Int, item: Promoted, shown: CALayer)] = []
         for id in driven.keys {
             guard let item = promoted[id], let shown = item.layer.presentation(), CACurrentMediaTime() - (drivenSince[id] ?? 0) > 0.034 else {
                 continue
             }
-            let actual = CATransform3DGetAffineTransform(shown.transform)
-            var best: (CGFloat, Float, Double) = (.greatestFiniteMagnitude, 1, 0)
-            for step in -25...25 {
-                let offset = Double(step) / 1000
-                guard let value = animator.peek(id, at: now + offset) else {
+            samples.append((id, item, shown))
+        }
+        if samples.isEmpty {
+            return (0, 0, 0)
+        }
+        func error(_ sample: (id: Int, item: Promoted, shown: CALayer), at time: CFTimeInterval) -> (CGFloat, Float)? {
+            guard let value = animator.peek(sample.id, at: time) else {
+                return nil
+            }
+            let item = sample.item
+            let transform = parse(value.transform, box: item.box.size, id: sample.id) ?? .identity
+            let actual = CATransform3DGetAffineTransform(sample.shown.transform)
+            let opacity = Float(max(0, min(1, Double(value.opacity ?? "1") ?? 1)))
+            var geometry: CGFloat = 0
+            for corner in [CGPoint(x: -item.origin.x, y: -item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: item.box.height - item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: -item.origin.y)] {
+                let a = corner.applying(transform), b = corner.applying(actual)
+                geometry = max(geometry, hypot(a.x - b.x, a.y - b.y))
+            }
+            return (geometry, abs(opacity - sample.shown.opacity))
+        }
+        var best: (score: CGFloat, geometry: CGFloat, alpha: Float, offset: Double) = (.greatestFiniteMagnitude, 0, 0, 0)
+        for step in stride(from: -100, through: 25, by: 1) {
+            let offset = Double(step) / 1000
+            var geometry: CGFloat = 0
+            var alpha: Float = 0
+            for sample in samples {
+                guard let (g, a) = error(sample, at: now + offset) else {
                     continue
                 }
-                let transform = parse(value.transform, box: item.box.size, id: id) ?? .identity
-                let opacity = Float(max(0, min(1, Double(value.opacity ?? "1") ?? 1)))
-                var error: CGFloat = 0
-                for corner in [CGPoint(x: -item.origin.x, y: -item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: item.box.height - item.origin.y), CGPoint(x: item.box.width - item.origin.x, y: -item.origin.y)] {
-                    let a = corner.applying(transform), b = corner.applying(actual)
-                    error = max(error, hypot(a.x - b.x, a.y - b.y))
-                }
-                let alphaError = abs(opacity - shown.opacity)
-                if error + CGFloat(alphaError) * 100 < best.0 + CGFloat(best.1) * 100 {
-                    best = (error, alphaError, offset)
-                }
+                geometry = max(geometry, g)
+                alpha = max(alpha, a)
             }
-            if best.0 > 1, WidgetCompositor.log {
-                let parentLayer = item.layer.superlayer
-                print("HANDOFF \(id) error=\(best.0) offset=\(best.2) nested=\(parentLayer !== host) transform=\(animator.peek(id, at: now)?.transform ?? "nil") presentation=\(CATransform3DGetAffineTransform(shown.transform)) box=\(item.box) origin=\(item.origin)")
+            let score = geometry + CGFloat(alpha) * 100
+            if score < best.score {
+                best = (score, geometry, alpha, offset)
             }
-            if best.0 > geometry {
-                geometry = best.0
-                offsetAtWorst = best.2
-            }
-            alpha = max(alpha, best.1)
         }
-        return (geometry, alpha, offsetAtWorst)
+        if best.geometry > 1, WidgetCompositor.log {
+            for sample in samples {
+                if let (g, _) = error(sample, at: now + best.offset), g > 1 {
+                    print("HANDOFF \(sample.id) error=\(g) offset=\(best.offset) nested=\(sample.item.layer.superlayer !== host) transform=\(animator.peek(sample.id, at: now + best.offset)?.transform ?? "nil") presentation=\(CATransform3DGetAffineTransform(sample.shown.transform)) box=\(sample.item.box)")
+                }
+            }
+        }
+        return (best.geometry, best.alpha, best.offset)
     }
 
     static func decomposable(_ t: CGAffineTransform) -> CGAffineTransform {
