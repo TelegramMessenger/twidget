@@ -1748,7 +1748,9 @@ final class WidgetFrameClock {
     private let tick: () -> Void
     private var running = false
     private var scheduled = false
+    private var lastFire: CFTimeInterval = 0
     private let lock = NSLock()
+    private static let minimumInterval = ProcessInfo.processInfo.environment["TW_FPS"].flatMap { Double($0) }.map { 1 / $0 - 0.002 } ?? 0
 
     init(tick: @escaping () -> Void) {
         self.tick = tick
@@ -1769,10 +1771,12 @@ final class WidgetFrameClock {
 
     private func fire() {
         lock.lock()
-        if scheduled {
+        let now = CACurrentMediaTime()
+        if scheduled || now - lastFire < WidgetFrameClock.minimumInterval {
             lock.unlock()
             return
         }
+        lastFire = now
         scheduled = true
         lock.unlock()
         DispatchQueue.main.async { [weak self] in
