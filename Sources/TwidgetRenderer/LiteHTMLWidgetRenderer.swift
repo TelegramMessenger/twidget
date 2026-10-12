@@ -88,6 +88,9 @@ public final class LiteHTMLWidgetRenderer {
     public var promotionCount: Int {
         return compositor.promotions
     }
+    public var rereachCount: Int {
+        return compositor.rereaches
+    }
     private(set) var canvases: [Int: WidgetCanvas] = [:]
     private var canvasAttributeSizes: [Int: (Int, Int)] = [:]
     private var canvasURLs: [Int: String] = [:]
@@ -191,7 +194,7 @@ public final class LiteHTMLWidgetRenderer {
                     dom.apply(op)
                 }
                 stageMilliseconds["scripted-fast", default: 0] += 1
-                if compositor.applyScripted(touched, dom: dom) {
+                if compositor.applyScripted(touched, dom: dom, document: document) {
                     if !animator.isActive {
                         compositeCheck([:])
                     }
@@ -307,7 +310,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         compositor.drive(animator: animator, now: now, mediaOffset: hiddenTotal, enabled: canDrive)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
-        _ = compositor.applyScripted(compositor.scriptedIDs, dom: dom)
+        _ = compositor.applyScripted(compositor.scriptedIDs, dom: dom, document: document)
         if !LiteHTMLWidgetRenderer.same(rest, overrides) || before != compositor.ids {
             overrides = rest
             layout(overrides)

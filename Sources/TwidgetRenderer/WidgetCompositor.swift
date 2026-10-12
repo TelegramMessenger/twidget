@@ -2,7 +2,60 @@ import AppKit
 import LiteHTML
 
 enum CSSTransform {
+    private static let translatePrefix = Array("translate(".utf8)
+
+    static func translation(_ text: String) -> CGAffineTransform? {
+        let bytes = Array(text.utf8)
+        let end = bytes.count - 1
+        guard bytes.count < 96, end > translatePrefix.count, bytes.starts(with: translatePrefix), bytes[end] == 0x29 else {
+            return nil
+        }
+        var values: [CGFloat] = []
+        var index = translatePrefix.count
+        while index < end && values.count < 2 {
+            while index < end && bytes[index] == 0x20 {
+                index += 1
+            }
+            let start = index
+            while index < end, (0x30...0x39).contains(bytes[index]) || bytes[index] == 0x2E || bytes[index] == 0x2D || bytes[index] == 0x2B {
+                index += 1
+            }
+            guard index > start, index + 1 < end, bytes[index] == 0x70, bytes[index + 1] == 0x78, let value = Double(String(decoding: bytes[start..<index], as: UTF8.self)) else {
+                return nil
+            }
+            values.append(CGFloat(value))
+            index += 2
+            while index < end && bytes[index] == 0x20 {
+                index += 1
+            }
+            if index < end {
+                guard bytes[index] == 0x2C else {
+                    return nil
+                }
+                index += 1
+            }
+        }
+        guard index == end, !values.isEmpty, bytes[end - 1] != 0x2C else {
+            return nil
+        }
+        return CGAffineTransform(translationX: values[0], y: values.count > 1 ? values[1] : 0)
+    }
+
+    static func needsResolving(_ text: String) -> Bool {
+        var window: UInt32 = 0
+        for byte in text.utf8 {
+            if byte == 0x28 && (window & 0xFFFFFF == 0x766172 || window == 0x63616C63) {
+                return true
+            }
+            window = window << 8 | UInt32(byte)
+        }
+        return false
+    }
+
     static func parse(_ text: String?, box: CGSize) -> CGAffineTransform? {
+        if let text = text, let translation = translation(text) {
+            return translation
+        }
         guard let text = text?.trimmingCharacters(in: .whitespaces), !text.isEmpty, text.lowercased() != "none" else {
             return .identity
         }
@@ -314,6 +367,9 @@ final class WidgetCompositor {
     private var drivenSince: [Int: CFTimeInterval] = [:]
     private(set) var bakes = 0
     var scriptedCandidates: Set<Int> = []
+    private var promotedClips: [Int: Clip] = [:]
+    private var ignoredIDs: Set<String> = []
+    static let rereachEnabled = ProcessInfo.processInfo.environment["TW_NO_REREACH"] == nil
     private var scripted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
 
     var scriptedIDs: Set<Int> {
@@ -332,8 +388,82 @@ final class WidgetCompositor {
         return CGAffineTransform(translationX: -origin.x, y: -origin.y).concatenating(transform).concatenating(CGAffineTransform(translationX: origin.x + box.minX, y: origin.y + box.minY))
     }
 
-    func applyScripted(_ ids: Set<Int>, dom: WidgetDOM) -> Bool {
+    private(set) var rereaches = 0
+
+    static func unobscured(_ document: LHDocument, _ id: Int, _ reach: CGRect, clip: Clip?, ignoring: Set<String>) -> Bool {
+        if let clip = clip {
+            let clipped = reach.intersection(clip.rect)
+            return !clipped.isNull && document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: clipped, ignoring: ignoring, clipped: true)
+        }
+        return document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach, ignoring: ignoring)
+    }
+
+    static let reachMargins: [CGFloat] = [192, 48, 16, 2]
+
+    private func covers(_ reach: CGRect, _ moved: CGRect, container clip: Clip?) -> Bool {
+        if let clip = clip {
+            let visible = moved.intersection(clip.rect)
+            return visible.isNull || reach.contains(visible)
+        }
+        return reach.contains(moved)
+    }
+
+    private func containerClip(_ id: Int) -> Clip? {
+        guard let layer = promoted[id]?.layer, let clip = promotedClips[id], let host = host, layer.superlayer !== host else {
+            return nil
+        }
+        return containers.values.contains { $0 === layer.superlayer } ? clip : nil
+    }
+
+    private func rereach(_ id: Int, item: Promoted, moved: CGRect, scale: CGFloat, document: LHDocument) -> CGRect? {
+        if let clip = containerClip(id) {
+            return ([clip.rect] + WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }).first { covers($0, moved, container: clip) && WidgetCompositor.unobscured(document, id, $0, clip: clip, ignoring: ignoredIDs) }
+        }
+        guard let clip = promotedClips[id] else {
+            return WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }.first { WidgetCompositor.unobscured(document, id, $0, clip: nil, ignoring: ignoredIDs) }
+        }
+        guard item.layer.superlayer === host else {
+            return nil
+        }
+        let bands = WidgetCompositor.cornerFreeBands(clip, containing: moved)
+        let candidates = (bands + WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }).compactMap { reach in bands.map { reach.intersection($0) }.max { $0.width * $0.height < $1.width * $1.height } }
+        if let reach = candidates.first(where: { $0.contains(moved) && WidgetCompositor.clipIsInert(clip, reach: $0, box: item.box, ink: item.ink, scale: scale) && WidgetCompositor.unobscured(document, id, $0, clip: clip, ignoring: ignoredIDs) }) {
+            return reach
+        }
+        guard contain(clip) else {
+            return nil
+        }
+        return rereach(id, item: item, moved: moved, scale: scale, document: document)
+    }
+
+    private func contain(_ clip: Clip) -> Bool {
+        guard let host = host else {
+            return false
+        }
+        let members = promoted.filter { promotedClips[$0.key] == clip && $0.value.layer.superlayer === host }
+        if members.isEmpty || members.values.contains(where: { $0.layer.animationKeys()?.isEmpty == false }) {
+            return false
+        }
+        let container = clipContainer(clip, host: host)
+        for (id, item) in members {
+            container.addSublayer(item.layer)
+            item.layer.position = CGPoint(x: item.box.minX + item.origin.x - clip.rect.minX, y: item.box.minY + item.origin.y - clip.rect.minY)
+            container.zPosition = min(container.zPosition == 0 ? item.layer.zPosition : container.zPosition, item.layer.zPosition)
+            clipOf[id] = clip
+        }
+        let layers = Set(promoted.values.map { ObjectIdentifier($0.layer) }).union(containers.values.map { ObjectIdentifier($0) })
+        WidgetCompositor.orderSublayers(of: container, members: layers)
+        WidgetCompositor.orderSublayers(of: host, members: layers)
+        return true
+    }
+
+    func applyScripted(_ ids: Set<Int>, dom: WidgetDOM, document: LHDocument?) -> Bool {
         var updates: [(CALayer, CGAffineTransform, Float)] = []
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer {
+            CATransaction.commit()
+        }
         for id in ids {
             guard let item = promoted[id], let limits = scripted[id], let node = dom.node(id) else {
                 return false
@@ -352,18 +482,22 @@ final class WidgetCompositor {
                 opacity = 1
             }
             let moved = CGRect(origin: .zero, size: item.box.size).applying(WidgetCompositor.anchored(transform, box: item.box, origin: item.origin))
-            if !limits.reach.contains(moved) || sqrt(abs(transform.a * transform.d - transform.b * transform.c)) > limits.scale + 0.001 {
+            if sqrt(abs(transform.a * transform.d - transform.b * transform.c)) > limits.scale + 0.001 {
                 return false
+            }
+            if !covers(limits.reach, moved, container: containerClip(id)) {
+                guard WidgetCompositor.rereachEnabled, let document = document, let reach = rereach(id, item: item, moved: moved, scale: limits.scale, document: document) else {
+                    return false
+                }
+                scripted[id]?.reach = reach
+                rereaches += 1
             }
             updates.append((item.layer, transform, opacity))
         }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         for (layer, transform, opacity) in updates {
             layer.setAffineTransform(transform)
             layer.opacity = opacity
         }
-        CATransaction.commit()
         return true
     }
 
@@ -746,7 +880,7 @@ final class WidgetCompositor {
             let rotated = abs(transform.b) > 0.0001 || abs(transform.c) > 0.0001
             let scale: CGFloat = min(3, max(rotated ? 2 : 1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
             wanted[id] = (box, origin, scale)
-            reaches[id] = [max(48, max(box.width, box.height) / 2), 16, 2].map { box.union(current).insetBy(dx: -$0, dy: -$0) }
+            reaches[id] = [max(48, max(box.width, box.height) / 2), 16, 2].map { current.insetBy(dx: -$0, dy: -$0) }
             scriptedBases[id] = current
             scriptedWanted[id] = (.null, scale)
         }
@@ -785,11 +919,7 @@ final class WidgetCompositor {
             }
         }
         func unobscured(_ id: Int, _ reach: CGRect, _ ignoring: Set<String>) -> Bool {
-            if let clip = clips[id] {
-                let clipped = reach.intersection(clip.rect)
-                return !clipped.isNull && document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: clipped, ignoring: ignoring, clipped: true)
-            }
-            return document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach, ignoring: ignoring)
+            return WidgetCompositor.unobscured(document, id, reach, clip: clips[id], ignoring: ignoring)
         }
         var overlapAdded: Set<Int> = []
         if WidgetCompositor.overlapPromotion {
@@ -970,6 +1100,8 @@ final class WidgetCompositor {
             containers[key] = nil
         }
         clipOf = clips.filter { entry in promoted[entry.key].map { $0.layer.superlayer !== host } ?? false }
+        promotedClips = clips.filter { promoted[$0.key] != nil }
+        ignoredIDs = Set(promoted.keys.map { String($0) })
         let members = Set(promoted.values.map { ObjectIdentifier($0.layer) }).union(containers.values.map { ObjectIdentifier($0) })
         WidgetCompositor.orderSublayers(of: host, members: members)
         for container in containers.values {
@@ -1103,7 +1235,7 @@ final class WidgetCompositor {
     private weak var currentDOM: WidgetDOM?
 
     func resolved(_ text: String?, id: Int) -> String? {
-        guard let text = text, text.contains("var(") || text.contains("calc(") else {
+        guard let text = text, CSSTransform.needsResolving(text) else {
             return text
         }
         let node = currentDOM?.node(id)
