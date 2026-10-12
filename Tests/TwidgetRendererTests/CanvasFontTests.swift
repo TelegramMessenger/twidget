@@ -47,3 +47,34 @@ final class CanvasColorTests: XCTestCase {
         XCTAssertLessThanOrEqual(CSSColor.cachedCount, CSSColor.cacheLimit)
     }
 }
+
+final class CanvasRectTests: XCTestCase {
+    private func alpha(_ canvas: WidgetCanvas, _ x: Int, _ y: Int) -> UInt8 {
+        let data = canvas.pixels(x: x, y: y, w: 1, h: 1)
+        return data.count == 4 ? data[3] : 0
+    }
+
+    func testFillRectKeepsThePendingPath() {
+        let canvas = WidgetCanvas(width: 100, height: 100, allowance: { WidgetCanvas.maxPixels })
+        canvas.run([
+            ["c", "beginPath"], ["c", "moveTo", 10, 50], ["c", "lineTo", 90, 50],
+            ["s", "fillStyle", "#ff0000"], ["c", "fillRect", 0, 0, 5, 5],
+            ["s", "strokeStyle", "#00ff00"], ["s", "lineWidth", 4], ["c", "stroke"],
+        ])
+        XCTAssertEqual(alpha(canvas, 2, 2), 255)
+        XCTAssertEqual(alpha(canvas, 50, 50), 255)
+        XCTAssertEqual(alpha(canvas, 50, 80), 0)
+    }
+
+    func testFillRectWithGradientAndEmptyPath() {
+        let canvas = WidgetCanvas(width: 100, height: 100, allowance: { WidgetCanvas.maxPixels })
+        canvas.run([
+            ["g", 1, "linear", 0, 0, 100, 0], ["gs", 1, 0, "#000000"], ["gs", 1, 1, "#0000ff"],
+            ["s", "fillStyle", ["g": 1]], ["c", "fillRect", 10, 10, 80, 80],
+            ["s", "fillStyle", "rgba(255,0,0,0.5)"], ["c", "fillRect", -20, -20, 30, 30],
+        ])
+        XCTAssertEqual(alpha(canvas, 50, 50), 255)
+        XCTAssertEqual(alpha(canvas, 5, 5), 128, accuracy: 1)
+        XCTAssertEqual(alpha(canvas, 95, 95), 0)
+    }
+}

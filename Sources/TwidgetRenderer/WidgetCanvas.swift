@@ -186,6 +186,8 @@ final class WidgetCanvas {
         }
     }
 
+    static let directRects = ProcessInfo.processInfo.environment["TW_CANVAS_PATH_RECTS"] == nil
+
     static func int(_ value: Any) -> Int {
         let number = ((value as AnyObject) as? NSNumber)?.doubleValue ?? 0
         return number.isFinite ? Int(max(-1e9, min(1e9, number))) : 0
@@ -338,6 +340,11 @@ final class WidgetCanvas {
             ctx.clear(CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3)))
         case "fillRect":
             let rect = CGRect(x: n(a, 0), y: n(a, 1), width: n(a, 2), height: n(a, 3))
+            if case let .color(color) = state.fill, WidgetCanvas.directRects, ctx.isPathEmpty {
+                ctx.setFillColor(color)
+                ctx.fill(rect)
+                return
+            }
             let saved = ctx.path
             ctx.beginPath()
             ctx.addRect(rect)
