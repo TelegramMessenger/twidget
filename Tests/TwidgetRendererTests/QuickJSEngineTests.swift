@@ -61,4 +61,23 @@ final class QuickJSEngineTests: XCTestCase {
         let expected = String(decoding: Data(base64Encoded: "WzAsMCwxLjUsMC4xLDFlKzIxLDFlLTcsOTAwNzE5OTI1NDc0MDk5Miw1ZS0zMjQsbnVsbCxudWxsLDUyNS43MTMwNDA1NjA0ODM5LC0xMjMsMjE0NzQ4MzY0NywtMjE0NzQ4MzY0OF0KeyJvcCI6InN0eWxlIiwiaWQiOjEzLCJuYW1lIjoidHJhbnNmb3JtIiwidmFsdWUiOiJ0cmFuc2xhdGUoMjUwLjVweCw5MS4zcHgpIn0KWyJhXCJiXFxjXG5cdFxyXGJcZlx1MDAwMFx1MDAxZn8iLCLDqeKCrPCfmIAiLCJcdWQ4MDB4XHVkYzAwIiwiw79hYmNhYmNhYmMiXQp7IjMiOiJrZXkgMyIsImtcImV5IjoxLCLDqSI6W251bGwsbnVsbCxudWxsXX0KWyJpZHggMCIsMi41LCJzIixmYWxzZSxbbnVsbCwxXV0KWzIsWzQuNSwieCJdLHsiYSI6Mn1dCnsKICAiYSI6IFsKICAgIDEsCiAgICB7CiAgICAgICJiIjogMgogICAgfQogIF0sCiAgImMiOiAiZCIKfQp7ImMiOjMsImEiOjF9")!, as: UTF8.self)
         XCTAssertEqual(try js.evaluate(script, filename: "t.js").string, expected)
     }
+
+    func testRegExpBytecodeReuseKeepsObjectsIndependent() throws {
+        let js = context()
+        let r = try js.evaluate(#"""
+        (() => {
+          const a = new RegExp('a(b)?', 'g'), b = new RegExp('a(b)?', 'g'), c = new RegExp('a(b)?', 'y'), d = new RegExp('a(b)?');
+          const s = 'xab ab a';
+          const first = [a.exec(s).index, a.lastIndex, b.lastIndex, a.exec(s).index, b.exec(s).index];
+          const sticky = [c.test(s), c.lastIndex, d.test(s), d.lastIndex, a !== b];
+          const splits = ['a  b c'.split(/\s+/).join('|'), 'a  b c'.split(new RegExp('\\s+')).join('|'), 'A b'.split(new RegExp('a', 'i')).length];
+          let errors = 0;
+          for (const [p, f] of [['(', ''], ['a', 'gg'], ['a', 'uv']]) { try { new RegExp(p, f); } catch (e) { errors++; } }
+          for (let i = 0; i < 40; i++) new RegExp('p' + i, i % 2 ? 'g' : '');
+          const after = new RegExp('a(b)?', 'g');
+          return JSON.stringify([first, sticky, splits, errors, after.exec(s).index, after.flags, d.flags, c.sticky]);
+        })()
+        """#, filename: "t.js")
+        XCTAssertEqual(r.string, #"[[1,3,0,4,1],[false,0,true,0,true],["a|b|c","a|b|c",2],3,1,"g","",true]"#)
+    }
 }
