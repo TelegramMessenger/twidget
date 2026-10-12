@@ -2632,16 +2632,48 @@ final class WidgetDocumentView: NSView {
         markNeedsDisplay()
     }
 
-    private static var screenScale: CGFloat = 2
+    private static let screenScaleLock = NSLock()
+    private static var screenScaleValue: CGFloat = 2
+    private let scaleLock = NSLock()
+    private var windowScale: CGFloat?
 
-    var scale: CGFloat {
-        if let window = window {
-            return window.backingScaleFactor
+    private static var screenScale: CGFloat {
+        get {
+            screenScaleLock.lock()
+            defer { screenScaleLock.unlock() }
+            return screenScaleValue
         }
-        if Thread.isMainThread, let main = NSScreen.main {
+        set {
+            screenScaleLock.lock()
+            screenScaleValue = newValue
+            screenScaleLock.unlock()
+        }
+    }
+
+    private func refreshWindowScale() {
+        let value = window?.backingScaleFactor
+        scaleLock.lock()
+        windowScale = value
+        scaleLock.unlock()
+        if let main = NSScreen.main {
             WidgetDocumentView.screenScale = main.backingScaleFactor
         }
-        return WidgetDocumentView.screenScale
+    }
+
+    var scale: CGFloat {
+        if Thread.isMainThread {
+            if let window = window {
+                return window.backingScaleFactor
+            }
+            if let main = NSScreen.main {
+                WidgetDocumentView.screenScale = main.backingScaleFactor
+            }
+            return WidgetDocumentView.screenScale
+        }
+        scaleLock.lock()
+        let cached = windowScale
+        scaleLock.unlock()
+        return cached ?? WidgetDocumentView.screenScale
     }
 
     private var displayPending = false
@@ -2656,6 +2688,7 @@ final class WidgetDocumentView: NSView {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        refreshWindowScale()
         if tileScale != scale {
             removeTiles()
         }
@@ -2879,6 +2912,7 @@ final class WidgetDocumentView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        refreshWindowScale()
         if displayPending {
             displayPending = false
             needsDisplay = true

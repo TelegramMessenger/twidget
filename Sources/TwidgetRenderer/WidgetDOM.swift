@@ -1,5 +1,6 @@
 import TwidgetProtocol
 import Foundation
+import os
 
 final class WidgetNode {
     let id: Int
@@ -10,7 +11,7 @@ final class WidgetNode {
     var text: String {
         didSet {
             cache = nil
-            WidgetDOM.revision &+= 1
+            WidgetDOM.bumpRevision()
         }
     }
     var cache: [UInt8]?
@@ -43,7 +44,7 @@ final class WidgetNode {
 
     func setAttribute(_ name: String, _ value: String) {
         cache = nil
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         if name.lowercased() == "style" {
             declarations = WidgetNode.parseDeclarations(value)
             return
@@ -58,7 +59,7 @@ final class WidgetNode {
 
     func removeAttribute(_ name: String) {
         cache = nil
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         if name.lowercased() == "style" {
             declarations.removeAll()
             return
@@ -69,7 +70,7 @@ final class WidgetNode {
 
     func setProperty(_ name: String, _ value: String, important: Bool) {
         cache = nil
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         let key = name.hasPrefix("--") ? name : name.lowercased()
         if !WidgetNames.isProperty(key) {
             return
@@ -220,7 +221,7 @@ final class WidgetDOM {
     }
 
     func canvasNode(_ id: Int) -> WidgetNode? {
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         guard let node = nodes[id], node.tag == "canvas" else {
             return nil
         }
@@ -242,7 +243,7 @@ final class WidgetDOM {
 
     private func register(_ id: Int, _ node: WidgetNode) {
         node.cache = nil
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         nodes[id] = node
         if node.id < 0 {
             rootIds[ObjectIdentifier(node)] = id
@@ -250,7 +251,7 @@ final class WidgetDOM {
     }
 
     private func unregister(_ node: WidgetNode) {
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         let key = publicId(node)
         if key != 0, nodes[key] === node {
             nodes[key] = nil
@@ -445,7 +446,7 @@ final class WidgetDOM {
     }
 
     func apply(_ op: WidgetOp) {
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         switch op.kind {
         case .style:
             guard let node = nodes[op.id] else {
@@ -735,11 +736,28 @@ final class WidgetDOM {
 
     private var epoch = 0
     private var epochTheme = ""
-    static var revision: UInt64 = 0
+    private static let revisionLock: UnsafeMutablePointer<os_unfair_lock> = {
+        let lock = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock())
+        return lock
+    }()
+    private static var revisionValue: UInt64 = 0
+
+    static var revision: UInt64 {
+        os_unfair_lock_lock(revisionLock)
+        defer { os_unfair_lock_unlock(revisionLock) }
+        return revisionValue
+    }
+
+    static func bumpRevision() {
+        os_unfair_lock_lock(revisionLock)
+        revisionValue &+= 1
+        os_unfair_lock_unlock(revisionLock)
+    }
 
     static func invalidatingCaches(_ dom: WidgetDOM) -> WidgetDOM {
         dom.epoch += 1
-        WidgetDOM.revision &+= 1
+        WidgetDOM.bumpRevision()
         return dom
     }
 
