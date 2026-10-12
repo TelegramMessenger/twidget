@@ -105,8 +105,16 @@ public final class LiteHTMLWidgetRenderer {
     public var tileLayerCount: Int {
         return documentView.tileCount
     }
+    private let statsLock = NSLock()
+    private var publishedComposited = 0
+
     public var compositedCount: Int {
-        return compositor.ids.count
+        if isOnExecutor() {
+            return compositor.ids.count
+        }
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return publishedComposited
     }
     public var promotionCount: Int {
         return compositor.promotions
@@ -621,6 +629,9 @@ public final class LiteHTMLWidgetRenderer {
             scrolling.attach(documentView.contentLayer)
             scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale)
             documentView.publishScrollRegions(scrolling.geometries.values.map { $0.viewport })
+            statsLock.lock()
+            publishedComposited = compositor.ids.count
+            statsLock.unlock()
         }
         compositor.drive(animator: animator, now: now, mediaOffset: hiddenTotal, enabled: canDrive)
         let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
