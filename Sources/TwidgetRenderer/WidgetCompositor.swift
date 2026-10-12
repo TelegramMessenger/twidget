@@ -500,6 +500,10 @@ final class WidgetCompositor {
                     best = (error, alphaError, offset)
                 }
             }
+            if best.0 > 1, WidgetCompositor.log {
+                let parentLayer = item.layer.superlayer
+                print("HANDOFF \(id) error=\(best.0) offset=\(best.2) nested=\(parentLayer !== host) transform=\(animator.peek(id, at: now)?.transform ?? "nil") presentation=\(CATransform3DGetAffineTransform(shown.transform)) box=\(item.box) origin=\(item.origin)")
+            }
             if best.0 > geometry {
                 geometry = best.0
                 offsetAtWorst = best.2
