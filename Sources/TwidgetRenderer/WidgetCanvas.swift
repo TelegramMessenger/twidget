@@ -94,11 +94,12 @@ final class WidgetCanvas {
         guard !commands.isEmpty else {
             return
         }
-        for case let command as [Any] in commands where command.count >= 2 {
-            guard let kind = command[0] as? String else {
+        for element in commands {
+            guard let list = (element as AnyObject) as? NSArray, list.count >= 2, let kind = (list[0] as AnyObject) as? NSString as String? else {
                 continue
             }
-            let rest = Array(command.dropFirst(2))
+            let command = list as [AnyObject]
+            let rest = Array(command.dropFirst(2)) as [Any]
             switch kind {
             case "c":
                 if let method = command[1] as? String {
@@ -155,13 +156,17 @@ final class WidgetCanvas {
     }
 
     private func resolve(_ value: Any) -> Value {
-        switch value {
-        case let n as NSNumber:
+        let object = value as AnyObject
+        if let n = object as? NSNumber {
             return .number(CGFloat(n.doubleValue))
-        case let s as String:
-            return .string(s)
-        case let a as [Any]:
+        }
+        if let s = object as? NSString {
+            return .string(s as String)
+        }
+        if let a = object as? NSArray {
             return .list(a.map { WidgetCanvas.number($0) })
+        }
+        switch value {
         case let d as [String: Any]:
             if let g = d["g"] {
                 return .gradient(WidgetCanvas.int(g))
@@ -182,12 +187,12 @@ final class WidgetCanvas {
     }
 
     static func int(_ value: Any) -> Int {
-        let number = (value as? NSNumber)?.doubleValue ?? 0
+        let number = ((value as AnyObject) as? NSNumber)?.doubleValue ?? 0
         return number.isFinite ? Int(max(-1e9, min(1e9, number))) : 0
     }
 
     static func number(_ value: Any) -> CGFloat {
-        return CGFloat((value as? NSNumber)?.doubleValue ?? 0)
+        return CGFloat(((value as AnyObject) as? NSNumber)?.doubleValue ?? 0)
     }
 
     private func n(_ args: [Value], _ i: Int, _ fallback: CGFloat = 0) -> CGFloat {
