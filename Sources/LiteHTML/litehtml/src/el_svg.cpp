@@ -1063,7 +1063,7 @@ namespace litehtml
         };
         uint64_t key    = 0;
         bool     cached = false;
-        if(cacheable_paint_key(key))
+        if(cached_paint_key(key))
         {
             for(float v : {pos.width.value(), pos.height.value(), view[0], view[1], view[2], view[3], sx, sy, tx - std::floor(tx), ty - std::floor(ty)})
             {
@@ -1090,6 +1090,18 @@ namespace litehtml
             container->draw_isolated(hdc, pos, paint);
         }
         container->del_clip();
+    }
+
+    bool el_svg::cached_paint_key(uint64_t& key)
+    {
+        const uint32_t generation = get_document()->paint_generation();
+        if(m_content_generation != generation)
+        {
+            m_content_generation = generation;
+            m_content_cacheable  = cacheable_paint_key(m_content_key);
+        }
+        key = m_content_key;
+        return m_content_cacheable;
     }
 
     bool el_svg::cacheable_paint_key(uint64_t& key) const

@@ -172,4 +172,31 @@ static void CheckClips(XCTestCase *test, LHDocument *document, CGSize size, std:
     XCTAssertGreaterThan(painted, 40);
 }
 
+- (void)testSVGPaintKeysFollowPatches
+{
+    NSString *(^page)(NSString *, NSString *) = ^NSString *(NSString *fill, NSString *stroke) {
+        return [NSString stringWithFormat:@"<!doctype html><body style=\"margin:0\"><div style=\"color:%@\"><svg width=\"160\" height=\"90\" viewBox=\"0 0 160 90\"><rect x=\"10\" y=\"10\" width=\"80\" height=\"50\" style=\"fill:%@\"/><circle cx=\"120\" cy=\"45\" r=\"30\" fill=\"currentColor\"/></svg></div></body>",
+                                          stroke, fill];
+    };
+    NSArray<NSArray<NSString *> *> *steps = @[@[@"#ff0000", @"#00ff00"], @[@"#0000ff", @"#00ff00"], @[@"#0000ff", @"#ff00ff"], @[@"#ff0000", @"#00ff00"]];
+    LHDocument *document = nil;
+    for(NSArray<NSString *> *step in steps)
+    {
+        document = [[LHDocument alloc] initWithHTML:page(step[0], step[1]) css:nil previous:document];
+        [document layoutWithMaxWidth:200 preferredWidth:200];
+        LHDocument *fresh = [[LHDocument alloc] initWithHTML:page(step[0], step[1]) css:nil];
+        [fresh layoutWithMaxWidth:200 preferredWidth:200];
+        for(int pass = 0; pass < 2; pass++)
+        {
+            CGImageRef a = [document copyImageWithMaxWidth:200 rect:CGRectMake(0, 0, 200, 100) scale:2];
+            CGImageRef b = [fresh copyImageWithMaxWidth:200 rect:CGRectMake(0, 0, 200, 100) scale:2];
+            NSData *da = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(a));
+            NSData *db = (__bridge_transfer NSData *)CGDataProviderCopyData(CGImageGetDataProvider(b));
+            XCTAssertEqualObjects(da, db, @"%@ pass %d reused %d", step, pass, document.reusedPrevious);
+            CGImageRelease(a);
+            CGImageRelease(b);
+        }
+    }
+}
+
 @end

@@ -11,7 +11,11 @@ namespace litehtml
         bool view_box(float box[4]) const;
         uint64_t m_last_paint_key = 0;
         int      m_stable_draws   = 0;
+        uint64_t m_content_key    = 0;
+        uint32_t m_content_generation = 0;
+        bool     m_content_cacheable  = false;
         bool     cacheable_paint_key(uint64_t& key) const;
+        bool     cached_paint_key(uint64_t& key);
 
       public:
         explicit el_svg(const document::ptr& doc);
