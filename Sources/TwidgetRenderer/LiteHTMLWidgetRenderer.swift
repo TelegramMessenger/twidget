@@ -2485,7 +2485,10 @@ final class WidgetDocumentView: NSView {
         WidgetDocumentView.prepareQueue.async { [weak self] in
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
             var aborted = false
+            var stats = WidgetTileStats.Snapshot()
+            stats.batches = 1
             for job in jobs {
+                var mark = WidgetTileStats.threadMilliseconds()
                 let rect = job.rect
                 let width = max(1, Int(ceil(rect.maxX * scale)) - Int(floor(rect.minX * scale)))
                 let height = max(1, Int(ceil(rect.height * scale)))
@@ -2496,6 +2499,9 @@ final class WidgetDocumentView: NSView {
                 let ctx = surface.context
                 IOSurfaceLock(surface.surface, [], nil)
                 var dirty = job.dirty.intersection(rect)
+                var now = WidgetTileStats.threadMilliseconds()
+                stats.setup += now - mark
+                mark = now
                 if let base = job.base, IOSurfaceGetWidth(base) == width, IOSurfaceGetHeight(base) == height {
                     IOSurfaceLock(base, .readOnly, nil)
                     let from = IOSurfaceGetBaseAddress(base), to = IOSurfaceGetBaseAddress(surface.surface)
@@ -2507,6 +2513,11 @@ final class WidgetDocumentView: NSView {
                 } else {
                     dirty = rect
                 }
+                now = WidgetTileStats.threadMilliseconds()
+                stats.copy += now - mark
+                mark = now
+                stats.jobs += 1
+                stats.area += Double(dirty.width * dirty.height)
                 let x0 = floor(dirty.minX * scale) / scale, y0 = floor(dirty.minY * scale) / scale
                 let x1 = ceil(dirty.maxX * scale) / scale, y1 = ceil(dirty.maxY * scale) / scale
                 let aligned = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
@@ -2522,12 +2533,14 @@ final class WidgetDocumentView: NSView {
                 ctx.restoreGState()
                 ctx.flush()
                 IOSurfaceUnlock(surface.surface, [], nil)
+                stats.draw += WidgetTileStats.threadMilliseconds() - mark
                 guard drawn else {
                     aborted = true
                     break
                 }
                 made.append((job.index, rect, surface.surface))
             }
+            WidgetTileStats.add(stats)
             let finish = {
                 guard let self = self else {
                     return
