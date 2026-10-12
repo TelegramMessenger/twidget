@@ -15,6 +15,7 @@ public final class LiteHTMLWidgetRenderer {
     public var schedule: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     public var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }
     public var isOnExecutor: () -> Bool = { Thread.isMainThread }
+    public lazy var scheduleUrgent: (@escaping () -> Void) -> Void = { [weak self] block in self?.schedule(block) }
     public var executorIsMain: () -> Bool = { true }
 
     func onExecutor(_ block: @escaping () -> Void) {
@@ -292,6 +293,14 @@ public final class LiteHTMLWidgetRenderer {
 
     public var preparedMilliseconds: Double {
         return documentView.preparedMilliseconds
+    }
+
+    public static func quiesceRaster() {
+        WidgetDocumentView.prepareQueue.sync(flags: .barrier) {}
+    }
+
+    public var tileDebug: String {
+        return "detached=\(documentView.detached) preparing=\(documentView.preparing) tiles=\(documentView.tileCount) trimmed=\(documentView.tilesTrimmed) \(documentView.flushDebug) doc=\(document != nil) h=\(document.map { Int($0.size.height) } ?? -1) inWindow=\(documentView.windowState.inWindow) onScreen=\(isOnScreen) hostVisible=\(hostVisible) frozen=\(frozen) destroyed=\(destroyed)"
     }
 
     public var isPrepared: Bool {
@@ -1102,6 +1111,7 @@ public final class LiteHTMLWidgetRenderer {
         reportResize()
         placeSurfaces()
         schedulePrepare()
+        documentView.flushIfDetached()
     }
 
     private static let scriptedProperties: Set<String> = ["transform", "opacity"]
@@ -2310,7 +2320,7 @@ final class WidgetDocumentView: NSView {
         let syncEpoch = syncInvalidations
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
-        let schedule = owner?.schedule
+        let schedule = owner?.scheduleUrgent
         WidgetDocumentView.prepareQueue.async { [weak self] in
             let start = CACurrentMediaTime()
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
@@ -2357,7 +2367,7 @@ final class WidgetDocumentView: NSView {
                             continue
                         }
                         if WidgetDocumentView.verifyPrepared {
-                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.bounds.width, scale: scale)
+                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.size.width, scale: scale)
                         }
                         let previous = WidgetDocumentView.surface(of: tile.layer)
                         tile.layer.contents = item.surface
@@ -2475,7 +2485,7 @@ final class WidgetDocumentView: NSView {
             return
         }
         flushScheduled = true
-        owner.schedule { [weak self] in
+        owner.scheduleUrgent { [weak self] in
             guard let self = self else {
                 return
             }
@@ -2484,8 +2494,22 @@ final class WidgetDocumentView: NSView {
         }
     }
 
+    var flushDebug: String {
+        return "flushScheduled=\(flushScheduled) gridFails=\(gridFails) size=\(size) scale=\(scale)"
+    }
+    private var gridFails = 0
+
+    func flushIfDetached() {
+        if detached {
+            flushDetached()
+        }
+    }
+
     private func flushDetached() {
-        guard detached, !preparing, document != nil, !tilesTrimmed, windowState.inWindow || owner?.preparesOffscreen == true else {
+        guard detached, document != nil, !tilesTrimmed, windowState.inWindow || owner?.preparesOffscreen == true else {
+            return
+        }
+        if preparing {
             return
         }
         let started = prepareTiles { [weak self] in
@@ -2605,7 +2629,7 @@ final class WidgetDocumentView: NSView {
         let syncEpoch = syncInvalidations
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
-        let schedule = owner?.schedule
+        let schedule = owner?.scheduleUrgent
         WidgetDocumentView.prepareQueue.async { [weak self] in
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
             var aborted = false
@@ -2684,7 +2708,7 @@ final class WidgetDocumentView: NSView {
                             continue
                         }
                         if WidgetDocumentView.verifyPrepared, self.document === document {
-                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.bounds.width, scale: scale, label: "async")
+                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.size.width, scale: scale, label: "async")
                         }
                         let previous = WidgetDocumentView.surface(of: tile.layer)
                         tile.layer.contents = item.surface
@@ -2698,7 +2722,9 @@ final class WidgetDocumentView: NSView {
                     CATransaction.commit()
                 }
                 self.owner?.rasterFinished()
-                if !self.asyncDirty.isEmpty {
+                if self.detached {
+                    self.scheduleFlush()
+                } else if !self.asyncDirty.isEmpty {
                     self.rasterDirtyTiles()
                 }
             }
@@ -2762,7 +2788,7 @@ final class WidgetDocumentView: NSView {
             return
         }
         if canInvalidateAsync {
-            invalidateAsync([rect ?? CGRect(x: 0, y: 0, width: bounds.width, height: CGFloat.greatestFiniteMagnitude / 4)])
+            invalidateAsync([rect ?? CGRect(x: 0, y: 0, width: size.width, height: CGFloat.greatestFiniteMagnitude / 4)])
             return
         }
         syncInvalidations += 1
@@ -2924,7 +2950,7 @@ final class WidgetDocumentView: NSView {
     private func syncGrid(layer: CALayer, document: LHDocument, scale: CGFloat) -> (columns: Int, tileSize: CGFloat, height: CGFloat, space: CGColorSpace)? {
         let space = WidgetDocumentView.screenTagged ? (window?.colorSpace?.cgColorSpace ?? WidgetDocumentView.surfaceSpace) : WidgetDocumentView.surfaceSpace
         let height = max(1, ceil(document.size.height))
-        let pixelWidth = Int(ceil(bounds.width * scale))
+        let pixelWidth = Int(ceil(size.width * scale))
         if pixelWidth <= 0 || Int(ceil(height * scale)) <= 0 || pixelWidth > 16384 || height * scale > 16384 {
             return nil
         }
@@ -2934,7 +2960,7 @@ final class WidgetDocumentView: NSView {
             surfaceWidth = pixelWidth
         }
         let tileSize = WidgetDocumentView.tileHeight
-        let columns = max(1, Int(ceil(bounds.width / tileSize)))
+        let columns = max(1, Int(ceil(size.width / tileSize)))
         let count = columns * Int(ceil(height / tileSize))
         while tiles.count > count {
             tiles.removeLast().layer.removeFromSuperlayer()
@@ -2957,6 +2983,7 @@ final class WidgetDocumentView: NSView {
 
     private func syncTiles(layer: CALayer, document: LHDocument, scale: CGFloat) -> Bool {
         guard let grid = syncGrid(layer: layer, document: document, scale: scale) else {
+            gridFails += 1
             return false
         }
         CATransaction.begin()
@@ -2965,7 +2992,7 @@ final class WidgetDocumentView: NSView {
         for (index, tile) in tiles.enumerated() {
             let top = CGFloat(index / grid.columns) * grid.tileSize
             let left = CGFloat(index % grid.columns) * grid.tileSize
-            let rect = CGRect(x: left, y: top, width: min(grid.tileSize, bounds.width - left), height: min(grid.tileSize, grid.height - top))
+            let rect = CGRect(x: left, y: top, width: min(grid.tileSize, size.width - left), height: min(grid.tileSize, grid.height - top))
             if rect != tile.rect {
                 tile.rect = rect
                 tile.surfaces.removeAll()
@@ -3102,7 +3129,7 @@ final class WidgetDocumentView: NSView {
         badge.contentsScale = scale
         badge.zPosition = 1000
         let width = ceil((text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width) + 14
-        badge.frame = CGRect(x: bounds.maxX - width - 6, y: 6, width: width, height: 17)
+        badge.frame = CGRect(x: size.width - width - 6, y: 6, width: width, height: 17)
         if badge.superlayer == nil {
             layer.addSublayer(badge)
         }
