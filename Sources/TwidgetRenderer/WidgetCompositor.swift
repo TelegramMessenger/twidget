@@ -543,6 +543,15 @@ final class WidgetCompositor {
     }
 
     func undrive() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for id in driven.keys {
+            if let layer = promoted[id]?.layer, let presentation = layer.presentation() {
+                layer.transform = presentation.transform
+                layer.opacity = presentation.opacity
+            }
+        }
+        CATransaction.commit()
         for id in driven.keys {
             promoted[id]?.layer.removeAnimation(forKey: "tw.transform")
             promoted[id]?.layer.removeAnimation(forKey: "tw.opacity")
