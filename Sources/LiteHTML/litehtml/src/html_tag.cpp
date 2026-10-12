@@ -739,6 +739,20 @@ namespace litehtml
                 return select_no_match;
             }
             break;
+        case _checked_:
+            if(!(m_tag == _input_ && get_attr("checked")) && !(m_tag == _option_ && get_attr("selected")))
+            {
+                return select_no_match;
+            }
+            break;
+        case _disabled_:
+        case _enabled_:
+            if(!is_one_of(m_tag, _input_, _button_, _select_, _textarea_, _option_, _optgroup_, _fieldset_) ||
+               (get_attr("disabled") != nullptr) != (sel.name == _disabled_))
+            {
+                return select_no_match;
+            }
+            break;
         default:
             if(!(sel.name in m_pseudo_classes))
             {

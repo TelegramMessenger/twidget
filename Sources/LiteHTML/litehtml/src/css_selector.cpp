@@ -482,6 +482,10 @@ namespace litehtml
             "first-of-type",
             "last-of-type",
             "only-of-type",
+            // Input pseudo-classes  https://www.w3.org/TR/selectors-4/#input-pseudos
+            "checked",
+            "disabled",
+            "enabled",
             // Shadow-tree pseudo-class  https://www.w3.org/TR/css-scoping-1/#host-selector
             // Shadow trees are not implemented, so :host never matches, which is what a browser does
             // for :host outside a shadow tree. Listed here so that a rule such as `:root, :host { ... }`

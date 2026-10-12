@@ -122,6 +122,7 @@ namespace litehtml
         css_border        m_outline;
         css_length        m_outline_offset;
         web_color         m_accent_color       = web_color::transparent;
+        int               m_dark_scheme        = 0;
 
         void      compute_font(const html_tag* el, const std::shared_ptr<document>& doc);
         void      compute_background(const html_tag* el, const std::shared_ptr<document>& doc);
@@ -309,6 +310,7 @@ namespace litehtml
         const css_border&        get_outline() const { return m_outline; }
         pixel_t                  get_outline_offset() const { return pixel_t(m_outline_offset.val()); }
         web_color                get_accent_color() const { return m_accent_color; }
+        bool                     get_dark_scheme() const { return m_dark_scheme != 0; }
         bool                     is_paint_group() const { return m_opacity < 1 || !m_transform.empty() || m_backface_hidden; }
 
         int                   get_text_decoration_line() const;

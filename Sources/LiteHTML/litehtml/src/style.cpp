@@ -832,6 +832,19 @@ namespace litehtml
             }
             break;
 
+        case _color_scheme_:
+            {
+                bool light = false, dark = false;
+                for(const auto& tok : value)
+                {
+                    std::string word = tok.ident();
+                    light = light || word == "light";
+                    dark  = dark || word == "dark";
+                }
+                add_parsed_property(name, property_value(dark && !light ? 1 : 0, important));
+            }
+            break;
+
         case _accent_color_:
             if(ident == "auto")
             {

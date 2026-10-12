@@ -766,6 +766,7 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
     m_backface_hidden = el->get_property<int>(_backface_visibility_, false, 0, offset(m_backface_hidden));
     m_accent_color =
         el->get_property<web_color>(_accent_color_, true, web_color::transparent, offset(m_accent_color));
+    m_dark_scheme = el->get_property<int>(_color_scheme_, true, 0, offset(m_dark_scheme));
 
     m_outline.style = static_cast<border_style>(
         el->get_property<int>(_outline_style_, false, border_style_none, offset(m_outline.style)));
