@@ -67,6 +67,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
         case iterator_item_type_start_parent:
             {
                 el->clear_inline_boxes();
+                el->pos() = position();
                 place_inline(std::make_unique<lbi_start>(el), self_size, fmt_ctx);
             }
             break;

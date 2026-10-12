@@ -49,6 +49,7 @@ namespace litehtml
         css_margins           m_css_padding;
         css_borders           m_css_borders;
         css_length            m_css_width;
+        css_length            m_cell_width;
         css_length            m_css_height;
         css_length            m_css_min_width;
         css_length            m_css_min_height;
@@ -182,6 +183,10 @@ namespace litehtml
         void               set_borders(const css_borders& mCssBorders);
 
         const css_length& get_width() const;
+        const css_length& get_cell_width() const
+        {
+            return m_cell_width;
+        }
         void              set_width(const css_length& mCssWidth);
 
         const css_length& get_height() const;

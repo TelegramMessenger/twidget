@@ -128,10 +128,10 @@ void litehtml::table_grid::finish()
 
             if(cell(col, row)->el && cell(col, row)->colspan <= 1)
             {
-                if(!cell(col, row)->el->src_el()->css().get_width().is_predefined() &&
+                if(!cell(col, row)->el->src_el()->css().get_cell_width().is_predefined() &&
                    m_columns[col].css_width.is_predefined())
                 {
-                    m_columns[col].css_width = cell(col, row)->el->src_el()->css().get_width();
+                    m_columns[col].css_width = cell(col, row)->el->src_el()->css().get_cell_width();
                 }
             }
         }

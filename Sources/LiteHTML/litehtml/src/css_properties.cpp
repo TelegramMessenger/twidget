@@ -119,6 +119,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     m_css_max_height = el->get_property<css_length>(_max_height_, false, none, offset(m_css_max_height));
 
     doc->cvt_units(m_css_width, m_font_metrics, 0_px);
+    m_cell_width = m_css_width;
     doc->cvt_units(m_css_height, m_font_metrics, 0_px);
 
     doc->cvt_units(m_css_min_width, m_font_metrics, 0_px);

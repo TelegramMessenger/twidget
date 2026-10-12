@@ -1472,6 +1472,13 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
             out += "#" + text;
         } else
             out += el->get_tagName();
+        if(ri->skip())
+        {
+            out += " skipped\n";
+            for(const auto &child : ri->children())
+                visit(child, depth + 1);
+            return;
+        }
         snprintf(line, sizeof(line), " %d %.3f %.3f %.3f %.3f m%.3f,%.3f,%.3f,%.3f p%.3f,%.3f,%.3f,%.3f b%.3f,%.3f,%.3f,%.3f %d\n", depth,
                  p.x.value(), p.y.value(), p.width.value(), p.height.value(), ri->margin_left().value(), ri->margin_top().value(),
                  ri->margin_right().value(), ri->margin_bottom().value(), ri->padding_left().value(), ri->padding_top().value(),
