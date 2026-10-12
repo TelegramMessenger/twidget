@@ -458,12 +458,14 @@ final class WidgetCompositor {
                 }
                 animation.isRemovedOnCompletion = !(spec.fill == "forwards" || spec.fill == "both")
             }
-            if track.transforms.contains(where: { $0 != track.transforms[0] }) {
+            let baseTransform = parse(base["transform"], box: item.box.size, id: id) ?? .identity
+            let baseOpacity = Float(max(0, min(1, Double(base["opacity"] ?? "1") ?? 1)))
+            if track.transforms.contains(where: { $0 != track.transforms[0] }) || track.transforms[0] != baseTransform {
                 let animation = CAKeyframeAnimation(keyPath: "transform")
                 configure(animation, track.transforms.map { NSValue(caTransform3D: CATransform3DMakeAffineTransform(WidgetCompositor.decomposable($0))) })
                 item.layer.add(animation, forKey: "tw.transform")
             }
-            if track.opacities.contains(where: { $0 != track.opacities[0] }) {
+            if track.opacities.contains(where: { $0 != track.opacities[0] }) || track.opacities[0] != baseOpacity {
                 let animation = CAKeyframeAnimation(keyPath: "opacity")
                 configure(animation, track.opacities.map { NSNumber(value: $0) })
                 item.layer.add(animation, forKey: "tw.opacity")
