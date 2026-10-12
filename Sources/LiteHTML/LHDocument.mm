@@ -1,4 +1,5 @@
 #import "LHDocument.h"
+#import <AppKit/AppKit.h>
 #import "LHGPUInternal.h"
 #import "LHDocumentPainting.h"
 
@@ -61,6 +62,18 @@ meter { width: 70px; }
         return s;
     }();
     return css;
+}
+
+static lh::web_color LHControlAccent()
+{
+    if(@available(macOS 10.14, *))
+    {
+        NSColor *accent = [NSColor.controlAccentColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        if(accent)
+            return lh::web_color((lh::byte)std::lround(accent.redComponent * 255), (lh::byte)std::lround(accent.greenComponent * 255),
+                                 (lh::byte)std::lround(accent.blueComponent * 255));
+    }
+    return lh::web_color(0, 122, 255);
 }
 
 static void IgnoreRedraw(const lh::position &) {}
@@ -445,6 +458,7 @@ static bool LHPaintTraceUncached()
     NSString                    *_cursor;
     CGColorSpaceRef              _colorSpace;
     BOOL                         _noSubtreeCulling;
+    BOOL                         _controlsActive;
     std::string                  _master;
     BOOL                         _updatable;
     BOOL                         _consumed;
@@ -810,6 +824,7 @@ static std::string MasterWithCSS(NSString *css)
     _paintTraceValid = NO;
     _container = std::make_unique<LHContainer>();
     _container->set_clip_culling(_consumedCulling);
+    _container->set_controls_active(_controlsActive, LHControlAccent());
     [self bindContainerLocked];
     _doc          = lh::document::createUpdatableFromString(_html ? std::string(_html.UTF8String ?: "") : _htmlSource, _container.get(), _master);
     _lastMaxWidth = -1;
@@ -859,6 +874,20 @@ static std::string MasterWithCSS(NSString *css)
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     _container->set_clip_culling(clipCulling);
+}
+
+- (BOOL)controlsActive
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return _controlsActive;
+}
+
+- (void)setControlsActive:(BOOL)controlsActive
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _controlsActive = controlsActive;
+    if(_container)
+        _container->set_controls_active(controlsActive, LHControlAccent());
 }
 
 - (BOOL)subtreeCulling

@@ -108,6 +108,13 @@ class LHContainer : public litehtml::document_container
     bool sanitize_at_rule(const std::string& name) override;
     void sanitizer_limit(const char* what) override;
     void trusted_styles(bool trusted) override { m_trusted_styles = trusted; }
+    bool controls_active() const override { return m_controls_active; }
+    litehtml::web_color control_accent() const override { return m_control_accent; }
+    void set_controls_active(bool active, litehtml::web_color accent)
+    {
+        m_controls_active = active;
+        m_control_accent  = accent;
+    }
 
     using SanitizerReport = std::map<std::string, std::pair<int, std::vector<std::string>>>;
     const SanitizerReport& sanitizer_report() const { return m_sanitizer_report; }
@@ -155,6 +162,8 @@ class LHContainer : public litehtml::document_container
     void sanitizer_report(const char* kind, const std::string& detail);
     SanitizerReport m_sanitizer_report;
     bool            m_trusted_styles = false;
+    bool            m_controls_active = false;
+    litehtml::web_color m_control_accent = litehtml::web_color(0, 122, 255);
     lhx::Sanitizer  m_sanitizer{nullptr};
     lhx::Painter*   m_painter = nullptr;
     void apply_clips(CGContextRef ctx, CGRect bounds) const;

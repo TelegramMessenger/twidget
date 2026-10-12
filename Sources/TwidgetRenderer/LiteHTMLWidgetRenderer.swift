@@ -43,6 +43,7 @@ public final class LiteHTMLWidgetRenderer {
     private var needsRender = false
     private var frameRequested = false
     private var idleTicks = 0
+    private var controlsActive = false
     private var lastFramePost: CFTimeInterval = 0
     private static let frameInterval = ProcessInfo.processInfo.environment["TW_RAF_FPS"].flatMap { Double($0) }.map { 1 / $0 - 0.002 } ?? 1.0 / 60 - 0.002
     private var clock: WidgetFrameClock?
@@ -712,6 +713,7 @@ public final class LiteHTMLWidgetRenderer {
         let html = fast == nil || LiteHTMLWidgetRenderer.patchCheck ? dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) }) : ""
         stage("serialize")
         let next = fast ?? LHDocument(html: html, css: nil, previous: document)
+        next.controlsActive = controlsActive
         dom.resetPatchLog()
         if fast != nil {
             stageMilliseconds["style-fast", default: 0] += 1
@@ -743,6 +745,7 @@ public final class LiteHTMLWidgetRenderer {
         if LiteHTMLWidgetRenderer.patchCheck && next.reusedPrevious {
             patchChecks += 1
             let fresh = LHDocument(html: html, css: nil)
+            fresh.controlsActive = controlsActive
             _ = fresh.layout(maxWidth: width, preferredWidth: width)
             let size = CGSize(width: width, height: max(1, ceil(max(next.size.height, fresh.size.height))))
             if !excluded.isEmpty {
@@ -923,6 +926,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         let html = dom.serialize(theme: theme, overrides: sampled, canvasSource: { [unowned self] node in self.canvasSource(node) })
         let reference = LHDocument(html: html, css: nil)
+        reference.controlsActive = controlsActive
         _ = reference.layout(maxWidth: width, preferredWidth: width)
         let size = CGSize(width: width, height: max(1, ceil(document.size.height)))
         let scale = documentView.window?.backingScaleFactor ?? 2
@@ -1339,6 +1343,17 @@ public final class LiteHTMLWidgetRenderer {
         pendingMoves.removeAll()
         documentView.showBadge(reason, fatal: fatal)
         placeSurfaces()
+    }
+
+    func keyChanged() {
+        let active = documentView.window?.isKeyWindow ?? false
+        guard active != controlsActive else {
+            return
+        }
+        controlsActive = active
+        document?.controlsActive = active
+        documentView.invalidate(nil)
+        setNeedsRender()
     }
 
     func screenChanged() {
@@ -2066,6 +2081,7 @@ final class WidgetDocumentView: NSView {
 
     private var screenObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
+    private var keyObservers: [NSObjectProtocol] = []
     var occlusionTrusted = false
 
     override func viewDidMoveToWindow() {
@@ -2078,8 +2094,15 @@ final class WidgetDocumentView: NSView {
         }
         screenObserver = nil
         occlusionObserver = nil
+        keyObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        keyObservers = []
         occlusionTrusted = false
         if let window = window {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                keyObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    self?.owner?.keyChanged()
+                })
+            }
             screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) { [weak self] _ in
                 self?.owner?.screenChanged()
             }
@@ -2092,10 +2115,12 @@ final class WidgetDocumentView: NSView {
             }
         }
         owner?.screenChanged()
+        owner?.keyChanged()
         owner?.setVisible(owner?.isHostVisible ?? true)
     }
 
     deinit {
+        keyObservers.forEach { NotificationCenter.default.removeObserver($0) }
         if let screenObserver = screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }

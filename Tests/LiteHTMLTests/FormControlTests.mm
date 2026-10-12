@@ -17,7 +17,12 @@ struct CountingPainter : lhx::Painter
     {
         texts.emplace_back(text);
     }
-    void solidFill(const litehtml::background_layer& layer, const litehtml::web_color& color) override { fills++; }
+    void solidFill(const litehtml::background_layer& layer, const litehtml::web_color& color) override
+    {
+        fills++;
+        colors.push_back(color);
+    }
+    std::vector<litehtml::web_color> colors;
     void path(const litehtml::vector_path& path) override { paths++; }
 };
 }
@@ -96,6 +101,22 @@ struct CountingPainter : lhx::Painter
         XCTAssertTrue(t.find("\xE2\x9C\x93") == std::string::npos);
 }
 
+- (void)testActiveWindowTintsCheckedControlsWithTheAccent
+{
+    auto paintsRed = [](BOOL active) {
+        LHDocument *document = [[LHDocument alloc] initWithHTML:@"<input type='checkbox' checked style='accent-color:#ff0000'>" css:nil];
+        document.controlsActive = active;
+        CountingPainter painter;
+        [document paintWithMaxWidth:200 clip:CGRectMake(0, 0, 200, 200) painter:painter];
+        for(const auto &c : painter.colors)
+            if(c.red == 255 && c.green == 0 && c.blue == 0)
+                return true;
+        return false;
+    };
+    XCTAssertTrue(paintsRed(YES));
+    XCTAssertFalse(paintsRed(NO));
+}
+
 - (void)testCheckedAndDisabledPseudoClasses
 {
     NSDictionary *b = [self boundsOf:@"<style>input:checked + span { display:inline-block; width:50px } button:disabled { width:70px } button:enabled { width:30px }</style><input type='checkbox' checked><span data-t='a'></span><input type='checkbox'><span data-t='b'></span><button disabled data-t='c'></button><button data-t='d'></button>" width:400];
@@ -128,7 +149,7 @@ struct CountingPainter : lhx::Painter
     XCTAssertEqualWithAccuracy([self rect:b key:@"c"].size.height, 14, 0.01);
 }
 
-- (void)testBackfaceHiddenSvgRecordsNoOps
+- (void)testBackfaceHiddenSvgDiffersFromTheVisibleOne
 {
     NSMutableString *rects = [NSMutableString string];
     for(int i = 0; i < 200; i++)

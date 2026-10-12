@@ -106,6 +106,8 @@ namespace litehtml
         virtual bool sanitize_at_rule(const std::string& /*name*/) { return true; }
         virtual void sanitizer_limit(const char* /*what*/) {}
         virtual void trusted_styles(bool /*trusted*/) {}
+        virtual bool controls_active() const { return false; }
+        virtual web_color control_accent() const { return web_color(0, 122, 255); }
 
       protected:
         virtual ~document_container() = default;

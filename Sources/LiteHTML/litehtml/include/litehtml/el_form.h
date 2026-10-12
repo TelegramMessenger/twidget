@@ -10,7 +10,9 @@ namespace litehtml
     {
         bool native   = false;
         bool dark     = false;
-        bool disabled = false;
+        bool      disabled = false;
+        bool      active   = false;
+        web_color accent;
     };
 
     class el_input : public html_tag

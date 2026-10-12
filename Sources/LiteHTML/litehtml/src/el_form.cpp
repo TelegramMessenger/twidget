@@ -352,6 +352,13 @@ namespace litehtml
             css.set_padding(padding);
         }
 
+        void refresh_active(form_look& look, const css_properties& css, document_container* container)
+        {
+            look.active = container->controls_active();
+            web_color accent = css.get_accent_color();
+            look.accent      = accent.alpha ? accent : container->control_accent();
+        }
+
         position border_box(const std::shared_ptr<render_item>& ri, pixel_t x, pixel_t y)
         {
             position pos  = ri->pos();
@@ -535,6 +542,8 @@ namespace litehtml
         }
         auto           container = get_document()->container();
         const palette& p         = colors(m_look.dark);
+        refresh_active(m_look, css(), container);
+        bool           tint      = m_look.active && !m_look.disabled;
         if(is_text_like())
         {
             if(m_look.native)
@@ -584,8 +593,8 @@ namespace litehtml
             float    unit   = side / 12;
             if(m_checked)
             {
-                fill_box(hdc, container, check, pixel_t(radius), m_look.disabled ? p.box_on_off : p.box_on);
-                web_color mark = m_look.disabled ? p.mark_off : p.mark;
+                fill_box(hdc, container, check, pixel_t(radius), tint ? m_look.accent : m_look.disabled ? p.box_on_off : p.box_on);
+                web_color mark = tint ? web_color::white : m_look.disabled ? p.mark_off : p.mark;
                 float     ox   = check.x.value();
                 float     oy   = check.y.value();
                 if(m_type == "radio")
@@ -618,7 +627,7 @@ namespace litehtml
             position rest(box.x + 1_px, pixel_t(cy - track_h / 2), box.width - 2_px, pixel_t(track_h));
             fill_box(hdc, container, rest, pixel_t(track_h / 2), m_look.disabled ? p.track_rest_off : p.track_rest);
             position filled(rest.x, rest.y, pixel_t(center) - rest.x, rest.height);
-            fill_box(hdc, container, filled, pixel_t(track_h / 2), m_look.disabled ? p.track_fill_off : p.track_fill);
+            fill_box(hdc, container, filled, pixel_t(track_h / 2), tint ? m_look.accent : m_look.disabled ? p.track_fill_off : p.track_fill);
             position knob(pixel_t(center - thumb_w / 2), pixel_t(cy - thumb_h / 2), pixel_t(thumb_w), pixel_t(thumb_h));
             border_radiuses round;
             round.top_left_x = round.top_left_y = round.top_right_x = round.top_right_y = pixel_t(thumb_h / 2);
@@ -841,8 +850,9 @@ namespace litehtml
         float          track_h   = std::min(box.height.value(), meter ? 12.f : 8.f);
         position       track(box.x + 1_px, box.y + (box.height - pixel_t(track_h)) / 2_px, box.width - 2_px, pixel_t(track_h));
         fill_box(hdc, container, track, pixel_t(track_h / 2), p.track_rest);
+        refresh_active(m_look, css(), container);
         float     fraction = 0;
-        web_color fill     = p.track_fill;
+        web_color fill     = m_look.active ? m_look.accent : p.track_fill;
         if(meter)
         {
             float min   = attr_number(this, "min", 0);
