@@ -534,16 +534,12 @@ bool Integral(CGFloat v)
 
 void AppendInteger(std::string& key, uint64_t v)
 {
-    char buf[24];
-    int  n = snprintf(buf, sizeof(buf), "%llx,", (unsigned long long)v);
-    key.append(buf, n);
+    key.append(reinterpret_cast<const char*>(&v), sizeof(v));
 }
 
 void AppendNumber(std::string& key, double v)
 {
-    char buf[40];
-    int  n = snprintf(buf, sizeof(buf), "%a,", v);
-    key.append(buf, n);
+    key.append(reinterpret_cast<const char*>(&v), sizeof(v));
 }
 
 }
@@ -1833,9 +1829,9 @@ void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_la
         hdc = reinterpret_cast<lh::uint_ptr>(m_capture);
     }
     auto          ctx = reinterpret_cast<CGContextRef>(hdc);
-    CGGradientRef g   = CreateGradient(gradient.color_points);
-    if(!g)
+    if(gradient.color_points.empty())
         return;
+    CGGradientRef g = nullptr;
     CGContextSaveGState(ctx);
     apply_clips(ctx, R(layer.clip_box));
     clip_background_layer(ctx, layer);
@@ -1848,6 +1844,10 @@ void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_la
     AppendNumber(key, gradient.end.y - origin.origin.y);
     for_each_tile(layer, origin.size, [&](CGRect tile) {
         auto paint = [&](CGContextRef c) {
+            if(!g)
+                g = CreateGradient(gradient.color_points);
+            if(!g)
+                return;
             CGContextSaveGState(c);
             CGContextClipToRect(c, tile);
             CGContextTranslateCTM(c, tile.origin.x - origin.origin.x, tile.origin.y - origin.origin.y);
@@ -1860,7 +1860,8 @@ void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_la
             paint(ctx);
     });
     CGContextRestoreGState(ctx);
-    CGGradientRelease(g);
+    if(g)
+        CGGradientRelease(g);
 }
 
 void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
@@ -1889,11 +1890,9 @@ void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_la
         hdc = reinterpret_cast<lh::uint_ptr>(m_capture);
     }
     auto ctx = reinterpret_cast<CGContextRef>(hdc);
-    if(gradient.radius.x <= 0 || gradient.radius.y <= 0)
+    if(gradient.radius.x <= 0 || gradient.radius.y <= 0 || gradient.color_points.empty())
         return;
-    CGGradientRef g = CreateGradient(gradient.color_points);
-    if(!g)
-        return;
+    CGGradientRef g = nullptr;
     CGContextSaveGState(ctx);
     apply_clips(ctx, R(layer.clip_box));
     clip_background_layer(ctx, layer);
@@ -1907,6 +1906,10 @@ void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_la
     AppendNumber(key, gradient.radius.y);
     for_each_tile(layer, origin.size, [&](CGRect tile) {
         auto paint = [&](CGContextRef cg) {
+            if(!g)
+                g = CreateGradient(gradient.color_points);
+            if(!g)
+                return;
             CGContextSaveGState(cg);
             CGContextClipToRect(cg, tile);
             CGContextTranslateCTM(cg, tile.origin.x - origin.origin.x, tile.origin.y - origin.origin.y);
@@ -1921,7 +1924,8 @@ void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_la
             paint(ctx);
     });
     CGContextRestoreGState(ctx);
-    CGGradientRelease(g);
+    if(g)
+        CGGradientRelease(g);
 }
 
 void LHContainer::draw_conic_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
