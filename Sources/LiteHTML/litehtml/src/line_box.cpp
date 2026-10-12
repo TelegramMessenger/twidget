@@ -205,7 +205,8 @@ litehtml::pixel_t litehtml::line_box::calc_va_baseline(const va_context& current
     case va_sub:
         return current.baseline + current.fm.sub_shift;
     case va_middle:
-        return current.baseline - current.fm.x_height / 2_px;
+        return current.baseline - current.fm.x_height / 2_px +
+               (new_font.height - new_font.base_line() - new_font.base_line()) / 2_px;
     case va_text_top:
         return current.baseline - (current.fm.height - current.fm.base_line()) + new_font.height - new_font.base_line();
     case va_text_bottom:
@@ -377,6 +378,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     };
 
     items_dimensions line_max_height;
+    items_dimensions leading_boxes;
     items_dimensions top_aligned_max_height;
     items_dimensions bottom_aligned_max_height;
     items_dimensions inline_boxes_dims;
@@ -518,6 +520,13 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             if(!lbi->get_el()->src_el()->is_inline_box())
             {
                 line_max_height.add_item(lbi.get());
+                const pixel_t leading = lbi->get_el()->css().line_height().computed_value - lbi->height();
+                const pixel_t above   = pixel_t(std::trunc(static_cast<float>(leading / 2_px)));
+                leading_boxes.top     = leading_boxes.count ? std::min(leading_boxes.top, lbi->top() - above)
+                                                            : lbi->top() - above;
+                leading_boxes.bottom  = leading_boxes.count ? std::max(leading_boxes.bottom, lbi->bottom() + leading - above)
+                                                            : lbi->bottom() + leading - above;
+                leading_boxes.count++;
             } else
             {
                 inline_boxes_dims.add_item(lbi.get());
@@ -559,7 +568,37 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     }
 
     pixel_t top_shift = 0_px;
-    if(line_height.has_value())
+    if(line_max_height.count != 0)
+    {
+        const pixel_t strut_leading = m_default_line_height.computed_value - m_font_metrics.height;
+        const pixel_t strut_above   = pixel_t(std::trunc(static_cast<float>(strut_leading / 2_px)));
+        pixel_t       top           = -(m_font_metrics.height - m_font_metrics.base_line()) - strut_above;
+        pixel_t       bottom        = m_font_metrics.base_line() + strut_leading - strut_above;
+        if(leading_boxes.count)
+        {
+            top    = std::min(top, leading_boxes.top);
+            bottom = std::max(bottom, leading_boxes.bottom);
+        }
+        if(inline_boxes_dims.count)
+        {
+            top    = std::min(top, inline_boxes_dims.top);
+            bottom = std::max(bottom, inline_boxes_dims.bottom);
+        }
+        m_height   = bottom - top;
+        top_shift  = -top;
+        m_baseline = bottom;
+
+        const pixel_t top_down_height =
+            std::max(top_aligned_max_height.max_height, bottom_aligned_max_height.max_height);
+        if(top_down_height > m_height)
+        {
+            if(bottom_aligned_max_height.count)
+            {
+                top_shift += bottom_aligned_max_height.height() - m_height;
+            }
+            m_height = top_down_height;
+        }
+    } else if(line_height.has_value())
     {
         m_height = line_height.value();
         if(line_max_height.count != 0)

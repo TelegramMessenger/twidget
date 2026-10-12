@@ -1102,8 +1102,8 @@ lh::uint_ptr LHContainer::create_font(const lh::font_description& descr, const l
         fm->descent     = static_cast<float>(f->shared->descent);
         fm->x_height    = static_cast<float>(f->shared->x_height);
         fm->draw_spaces = descr.decoration_line != lh::text_decoration_line_none;
-        fm->sub_shift   = descr.size / 5;
-        fm->super_shift = descr.size / 3;
+        fm->sub_shift   = static_cast<int>(descr.size.value()) / 5 + 1;
+        fm->super_shift = static_cast<int>(descr.size.value()) / 3 + 1;
         fm->ch_width    = text_width("0", reinterpret_cast<lh::uint_ptr>(f));
     }
     return reinterpret_cast<lh::uint_ptr>(f);

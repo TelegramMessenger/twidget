@@ -192,4 +192,16 @@ namespace
     XCTAssertEqual(height, 23);
 }
 
+- (void)testLineBoxesKeepTheStrutAndHalfLeadingOfEveryInlineBox
+{
+    CGFloat plain = 0, small = 0, tiny = 0, mixed = 0;
+    Render(@"<div style=\"font:20px -apple-system\">x</div>", 200, &plain);
+    Render(@"<div style=\"font:20px -apple-system\"><small>x</small></div>", 200, &small);
+    Render(@"<div style=\"font:20px -apple-system;line-height:30px\"><span style=\"font-size:10px;line-height:10px\">x</span></div>", 200, &tiny);
+    Render(@"<div style=\"font:12px -apple-system;line-height:16px\"><span style=\"font-size:24px;line-height:16px\">X</span>x</div>", 200, &mixed);
+    XCTAssertEqual(small, plain);
+    XCTAssertEqual(tiny, 30);
+    XCTAssertGreaterThan(mixed, 16);
+}
+
 @end
