@@ -2423,7 +2423,10 @@ public final class LiteHTMLWidgetRenderer {
         if !LiteHTMLWidgetRenderer.alwaysSent.contains(type) && !listened.contains(type) {
             return
         }
-        let payload = mouseEvent(type, target: target, point: point, event: event, buttons: buttons)
+        var payload = mouseEvent(type, target: target, point: point, event: event, buttons: buttons)
+        if type == "click" {
+            payload["defaultActions"] = true
+        }
         if LiteHTMLWidgetRenderer.coalesced.contains(type) {
             pendingMoves[type + ":1"] = payload
             startClock()

@@ -39,6 +39,22 @@ final class WidgetFormInputTests: XCTestCase {
         renderer.handleMouseDown(point, event: event)
     }
 
+    func testNativeClicksRequestSandboxDefaultActions() throws {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "button", "attrs": [["type", "submit"], ["style", "width:100px;height:40px"]]],
+            ["op": "ins", "parent": 7, "id": 10]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let box = try XCTUnwrap(renderer.elementBounds()[10])
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+        renderer.handleMouseUp(CGPoint(x: box.midX, y: box.midY), event: event)
+        let clicks = events().filter { $0["type"] as? String == "click" }
+        XCTAssertEqual(clicks.count, 1)
+        XCTAssertEqual(clicks.first?["defaultActions"] as? Bool, true)
+        XCTAssertFalse(events().contains { $0["type"] as? String == "submit" })
+    }
+
     func testRangeDragClampsSnapsAndCommitsOnceOutsideTheControl() {
         let (renderer, window, events) = make([
             ["op": "el", "id": 10, "tag": "input", "attrs": [["type", "range"], ["min", "10"], ["max", "90"], ["step", "10"], ["value", "50"], ["style", "width:200px"]]],
