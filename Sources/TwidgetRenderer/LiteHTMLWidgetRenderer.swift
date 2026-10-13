@@ -46,7 +46,7 @@ public final class LiteHTMLWidgetRenderer {
     public private(set) var stageMilliseconds: [String: Double] = [:]
     public private(set) var passMaxCPUMilliseconds = 0.0
 
-    private static func threadCPUSeconds() -> Double {
+    static func threadCPUSeconds() -> Double {
         var t = timespec()
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t)
         return Double(t.tv_sec) + Double(t.tv_nsec) / 1e9
@@ -304,8 +304,18 @@ public final class LiteHTMLWidgetRenderer {
     private var throttleFlushScheduled = false
     private var lastThrottleDiag: CFTimeInterval = -.infinity
     public private(set) var throttledUpdates = 0
-    static let throttleFactor = ProcessInfo.processInfo.environment["TW_THROTTLE_FACTOR"].flatMap { Double($0) } ?? 3
-    static let throttleFreeSeconds: CFTimeInterval = 0.004
+    static let fixedThrottleFactor = ProcessInfo.processInfo.environment["TW_THROTTLE_FACTOR"].flatMap { Double($0) }
+    static let throttleFactor = 3.0
+    static let sustainedThrottleFactor = 19.0
+    static let sustainedWindow: CFTimeInterval = 2
+    static let sustainedLimit: CFTimeInterval = 0.1
+    static let heavyPassSeconds: CFTimeInterval = 0.05
+    static let loadGraceSeconds: CFTimeInterval = 1
+    static let throttleFreeSeconds: CFTimeInterval = 0.016
+    private let throttleLock = NSLock()
+    private var chargeWindow: [(at: CFTimeInterval, spent: CFTimeInterval)] = []
+    private var firstChargeAt: CFTimeInterval?
+    public private(set) var escalations = 0
 
     private var meterDepth = 0
 
@@ -323,16 +333,59 @@ public final class LiteHTMLWidgetRenderer {
         return body()
     }
 
-    private func charge(_ spent: CFTimeInterval) {
-        guard spent > LiteHTMLWidgetRenderer.throttleFreeSeconds, LiteHTMLWidgetRenderer.throttleFactor > 0 else {
+    public func chargeTileDraw(_ spent: CFTimeInterval) {
+        charge(spent, tile: true)
+    }
+
+    private func charge(_ spent: CFTimeInterval, tile: Bool = false) {
+        guard spent > 0 else {
             return
         }
         let now = CACurrentMediaTime()
-        throttledUntil = max(throttledUntil, now) + spent * LiteHTMLWidgetRenderer.throttleFactor
+        throttleLock.lock()
+        defer { throttleLock.unlock() }
+        let first = firstChargeAt ?? now
+        firstChargeAt = first
+        if now - first < LiteHTMLWidgetRenderer.loadGraceSeconds {
+            return
+        }
+        chargeWindow.append((now, spent))
+        while let oldest = chargeWindow.first, now - oldest.at > LiteHTMLWidgetRenderer.sustainedWindow {
+            chargeWindow.removeFirst()
+        }
+        var factor: Double
+        if let fixed = LiteHTMLWidgetRenderer.fixedThrottleFactor {
+            guard spent > 0.004 else {
+                return
+            }
+            factor = fixed
+        } else {
+            let sustained = chargeWindow.reduce(0, { $0 + $1.spent }) > LiteHTMLWidgetRenderer.sustainedLimit * LiteHTMLWidgetRenderer.sustainedWindow
+            let heavy = chargeWindow.filter({ $0.spent > LiteHTMLWidgetRenderer.heavyPassSeconds }).count >= 2
+            guard !tile, spent > LiteHTMLWidgetRenderer.throttleFreeSeconds else {
+                return
+            }
+            if sustained && heavy {
+                factor = LiteHTMLWidgetRenderer.sustainedThrottleFactor
+                escalations += 1
+            } else {
+                factor = LiteHTMLWidgetRenderer.throttleFactor
+            }
+        }
+        guard factor > 0 else {
+            return
+        }
+        throttledUntil = max(throttledUntil, now) + spent * factor
+    }
+
+    private func throttleRemaining(_ now: CFTimeInterval) -> CFTimeInterval {
+        throttleLock.lock()
+        defer { throttleLock.unlock() }
+        return max(0, throttledUntil - now)
     }
 
     private var throttled: Bool {
-        return CACurrentMediaTime() < throttledUntil
+        return throttleRemaining(CACurrentMediaTime()) > 0
     }
 
     private func holdThrottled(_ item: Held) {
@@ -341,13 +394,13 @@ public final class LiteHTMLWidgetRenderer {
         let now = CACurrentMediaTime()
         if now - lastThrottleDiag > 1 {
             lastThrottleDiag = now
-            onDiag?("renderer-throttled", String(format: "widget updates cost %.0f ms of rendering ahead of budget; coalescing them", (throttledUntil - now) * 1000))
+            onDiag?("renderer-throttled", String(format: "widget updates cost %.0f ms of rendering ahead of budget; coalescing them", self.throttleRemaining(now) * 1000))
         }
         guard !throttleFlushScheduled else {
             return
         }
         throttleFlushScheduled = true
-        scheduleAfter(max(0, throttledUntil - now)) { [weak self] in
+        scheduleAfter(throttleRemaining(now)) { [weak self] in
             guard let self = self else {
                 return
             }
@@ -505,7 +558,7 @@ public final class LiteHTMLWidgetRenderer {
             if throttled {
                 if !throttleFlushScheduled {
                     throttleFlushScheduled = true
-                    scheduleAfter(max(0, throttledUntil - CACurrentMediaTime())) { [weak self] in
+                    scheduleAfter(throttleRemaining(CACurrentMediaTime())) { [weak self] in
                         self?.throttleFlushScheduled = false
                         self?.prepared()
                     }
@@ -526,6 +579,9 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         if (documentView.preparing || (!held.isEmpty && !flushingHeld)) && !destroyed {
+            if throttled && json.hasPrefix("{\"type\":\"ops\"") {
+                throttledUpdates += 1
+            }
             held.append(.json(json))
             return
         }
@@ -593,6 +649,9 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         if documentView.preparing || !held.isEmpty {
+            if throttled {
+                throttledUpdates += 1
+            }
             held.append(.ops(ops))
             return
         }
@@ -2573,7 +2632,9 @@ class WidgetDocumentView: NSView {
             ctx.setAllowsFontSmoothing(false)
             ctx.setShouldAntialias(true)
             let dirty = clip.offsetBy(dx: origin.x, dy: origin.y)
+            let drawCPU = LiteHTMLWidgetRenderer.threadCPUSeconds()
             document.draw(in: ctx, origin: .zero, clip: dirty.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+            view.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
             ctx.restoreGState()
             let spent = (CACurrentMediaTime() - start) * 1000
             view.recordDraw(spent)
@@ -2678,7 +2739,9 @@ class WidgetDocumentView: NSView {
                 ctx.translateBy(x: -rect.minX, y: -rect.minY)
                 ctx.setAllowsFontSmoothing(false)
                 ctx.setShouldAntialias(true)
+                let drawCPU = LiteHTMLWidgetRenderer.threadCPUSeconds()
                 let drawn = document.drawIfCurrent(in: ctx, origin: .zero, clip: rect.insetBy(dx: -margin, dy: -margin))
+                self?.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
                 ctx.restoreGState()
                 ctx.flush()
                 IOSurfaceUnlock(surface.surface, [], nil)
@@ -3143,7 +3206,9 @@ class WidgetDocumentView: NSView {
                 ctx.clear(aligned)
                 ctx.setAllowsFontSmoothing(false)
                 ctx.setShouldAntialias(true)
+                let drawCPU = LiteHTMLWidgetRenderer.threadCPUSeconds()
                 let drawn = document.drawIfCurrent(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -margin, dy: -margin))
+                self?.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
                 ctx.restoreGState()
                 ctx.flush()
                 IOSurfaceUnlock(targetSurface, [], nil)
@@ -3574,7 +3639,9 @@ class WidgetDocumentView: NSView {
                 ctx.setShouldAntialias(true)
                 ctx.clip(to: aligned)
                 ctx.clear(aligned)
+                let drawCPU = LiteHTMLWidgetRenderer.threadCPUSeconds()
                 document.draw(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+                owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
                 ctx.restoreGState()
                 ctx.flush()
                 IOSurfaceUnlock(surface.surface, [], nil)
