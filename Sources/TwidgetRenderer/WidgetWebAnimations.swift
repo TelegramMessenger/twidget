@@ -944,7 +944,7 @@ extension WidgetAnimator {
                 if override?.cancelled == true {
                     continue
                 }
-                var entry: [String: Any] = ["kind": "animation", "id": id, "name": item.spec.name, "index": index, "origin": item.start * 1000, "currentTime": (override?.local(now) ?? now - item.start) * 1000, "playbackRate": override?.rate ?? 1, "paused": override.map { $0.hold != nil } ?? item.spec.paused, "duration": item.spec.duration * 1000, "delay": item.spec.delay * 1000, "direction": item.spec.direction, "fill": item.spec.fill, "easing": item.spec.timingText]
+                var entry: [String: Any] = ["kind": "animation", "id": id, "name": item.spec.name, "index": index, "origin": item.start * 1000, "currentTime": (override?.local(now) ?? item.localTime(now)) * 1000, "playbackRate": override?.rate ?? 1, "paused": override.map { $0.hold != nil } ?? item.spec.paused, "duration": item.spec.duration * 1000, "delay": item.spec.delay * 1000, "direction": item.spec.direction, "fill": item.spec.fill, "easing": item.spec.timingText]
                 entry["iterations"] = item.spec.iterations.isFinite ? item.spec.iterations : NSNull()
                 out.append(entry)
             }

@@ -866,8 +866,16 @@ final class WidgetAnimator {
     struct Running {
         let spec: CSSAnimationSpec
         let start: CFTimeInterval
+        var pausedAt: CFTimeInterval?
+        var pausedDuration: CFTimeInterval = 0
         var iteration = 0
         var ended = false
+
+        var timelineStart: CFTimeInterval { start + pausedDuration }
+
+        func localTime(_ now: CFTimeInterval) -> CFTimeInterval {
+            return (pausedAt ?? now) - timelineStart
+        }
     }
 
     struct Transition {
@@ -1038,7 +1046,7 @@ final class WidgetAnimator {
         }
         let base = bases[id] ?? [:]
         let spec = item.spec
-        return Baked(spec: spec, start: item.start, value: { [self] progress in
+        return Baked(spec: spec, start: item.timelineStart, value: { [self] progress in
             let values = self.values(frames: frames, base: base, progress: progress, spec: spec)
             return (values.last { $0.0 == "transform" }?.1, values.last { $0.0 == "opacity" }?.1, values.last { $0.0 == "filter" }?.1 ?? base["filter"], values.last { $0.0 == "box-shadow" }?.1 ?? base["box-shadow"])
         })
@@ -1057,7 +1065,7 @@ final class WidgetAnimator {
         }
         let spec = item.spec
         let base = bases[id] ?? [:]
-        let local = now - item.start - spec.delay
+        let local = item.localTime(now) - spec.delay
         let duration = max(spec.duration, 0.0001)
         var progress: Double
         if local < 0 {
@@ -1093,11 +1101,11 @@ final class WidgetAnimator {
     }
 
     func nextIteration(_ id: Int, after now: CFTimeInterval) -> CFTimeInterval? {
-        guard let item = running[id]?.first(where: { !$0.ended && keyframes[$0.spec.name] != nil }) else {
+        guard let item = running[id]?.first(where: { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil }) else {
             return nil
         }
         let duration = max(item.spec.duration, 0.0001)
-        let begin = item.start + item.spec.delay
+        let begin = item.timelineStart + item.spec.delay
         let k = max(1, floor((now - begin) / duration) + 1)
         let next = begin + k * duration
         if item.spec.iterations.isFinite && next >= begin + item.spec.iterations * duration {
@@ -1110,10 +1118,10 @@ final class WidgetAnimator {
         if !web.animations(id).isEmpty {
             return web.endTime(id)
         }
-        guard let item = running[id]?.first(where: { !$0.ended && keyframes[$0.spec.name] != nil }), item.spec.iterations.isFinite else {
+        guard let item = running[id]?.first(where: { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil }), item.spec.iterations.isFinite else {
             return nil
         }
-        return item.start + item.spec.delay + item.spec.iterations * max(item.spec.duration, 0.0001)
+        return item.timelineStart + item.spec.delay + item.spec.iterations * max(item.spec.duration, 0.0001)
     }
 
     private(set) var running: [Int: [Running]] = [:]
@@ -1157,12 +1165,13 @@ final class WidgetAnimator {
                         if existing.spec == spec {
                             return existing
                         }
-                        return Running(spec: spec, start: existing.start, iteration: existing.iteration, ended: false)
+                        let resumedDuration = !spec.paused ? existing.pausedAt.map { now - $0 } ?? 0 : 0
+                        return Running(spec: spec, start: existing.start, pausedAt: spec.paused ? existing.pausedAt ?? now : nil, pausedDuration: existing.pausedDuration + resumedDuration, iteration: existing.iteration, ended: false)
                     }
                     if keyframes[spec.name] != nil {
                         onEvent?("animationstart", id, spec.name, 0)
                     }
-                    return Running(spec: spec, start: now)
+                    return Running(spec: spec, start: now, pausedAt: spec.paused ? now : nil)
                 }
             }
             let transitionSpecs = CSSTransitionSpec.list(values)
@@ -1261,7 +1270,7 @@ final class WidgetAnimator {
 
     private func sampleAnimation(_ item: Running, frames: [CSSKeyframe], now: CFTimeInterval, id: Int, state: inout Running) -> [(String, String)]? {
         let spec = item.spec
-        var local = now - item.start - spec.delay
+        var local = item.localTime(now) - spec.delay
         if let override = cssOverrides[id]?["animation:" + spec.name] {
             if override.cancelled {
                 return nil
