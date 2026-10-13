@@ -88,6 +88,20 @@ class LHContainer : public litehtml::document_container
     void set_clip_culling(bool enabled) { m_clip_culling = enabled; }
     static std::atomic<bool> s_text_batching;
     static std::atomic<long> s_shadow_line_batches;
+    static std::atomic<long> s_source_filter_hits;
+    static std::atomic<bool> s_source_filter_cache;
+    struct SourceFilter
+    {
+        CGImageRef image = nullptr;
+        CGRect     user;
+        CGFloat    scale = 1;
+        bool       flipped = false;
+    };
+    int                                            m_backdrop_source_depth = 0;
+    bool                                           m_source_filter_scope   = false;
+    std::unordered_map<std::string, SourceFilter>  m_source_filters;
+    bool begin_source_filters();
+    void end_source_filters();
     void begin_text_batching(CGContextRef ctx);
     void end_text_batching();
     void flush_text();

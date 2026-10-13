@@ -1559,6 +1559,25 @@ bool LHContainer::clips_needed(CGRect bounds) const
 
 std::atomic<long> LHContainer::s_shadow_line_batches{0};
 
+std::atomic<long> LHContainer::s_source_filter_hits{0};
+std::atomic<bool> LHContainer::s_source_filter_cache{getenv("LH_NO_SOURCE_FILTER_CACHE") == nullptr};
+
+bool LHContainer::begin_source_filters()
+{
+    if(m_source_filter_scope)
+        return false;
+    m_source_filter_scope = true;
+    return true;
+}
+
+void LHContainer::end_source_filters()
+{
+    for(auto& entry : m_source_filters)
+        CGImageRelease(entry.second.image);
+    m_source_filters.clear();
+    m_source_filter_scope = false;
+}
+
 std::atomic<bool> LHContainer::s_text_batching{getenv("LH_NO_TEXT_BATCH") == nullptr};
 
 void LHContainer::begin_text_batching(CGContextRef ctx)
@@ -3762,6 +3781,65 @@ void LHContainer::draw_filtered(lh::uint_ptr hdc, const lh::filter_paint& filter
     }
     ReduceForBlur(target, *filter.steps);
     CGColorSpaceRef space  = FilterSpace(ctx);
+    if(m_backdrop_source_depth > 0 && m_source_filter_scope && s_source_filter_cache.load(std::memory_order_relaxed))
+    {
+        const CGFloat need   = std::max<CGFloat>(std::max(target.sx, target.sy), 1.0 / 64);
+        const CGFloat bucket = std::exp2(std::ceil(std::log2(need)));
+        const CGRect  bounds = R(filter.bounds);
+        std::string   key(1, 's');
+        AppendInteger(key, reinterpret_cast<intptr_t>(filter.owner));
+        AppendInteger(key, static_cast<int64_t>(FilterHash(*filter.steps, 0x54)));
+        AppendInteger(key, reinterpret_cast<intptr_t>(space));
+        AppendInteger(key, target.flipped);
+        for(CGFloat v : {bucket, bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height})
+            AppendNumber(key, v);
+        auto found = m_source_filters.find(key);
+        if(found == m_source_filters.end())
+        {
+            FilterTarget canonical;
+            canonical.user    = bounds;
+            canonical.sx      = bucket;
+            canonical.sy      = bucket;
+            canonical.pw      = (size_t)std::max<double>(1, std::ceil(bounds.size.width * bucket));
+            canonical.ph      = (size_t)std::max<double>(1, std::ceil(bounds.size.height * bucket));
+            canonical.flipped = target.flipped;
+            canonical.reduced = true;
+            CGImageRef filtered = nullptr;
+            if(canonical.pw <= 8192 && canonical.ph <= 8192 && canonical.pw * canonical.ph <= (16u << 20))
+            {
+                if(CGContextRef local = CreateFilterBitmap(canonical, space))
+                {
+                    auto saved = m_clips;
+                    m_clips.clear();
+                    paint(reinterpret_cast<lh::uint_ptr>(local));
+                    m_clips = saved;
+                    CGImageRef source = CGBitmapContextCreateImage(local);
+                    CGContextRelease(local);
+                    filtered = LHCreateFilteredImage(source, *filter.steps, bucket, canonical.flipped, false, space);
+                    CGImageRelease(source);
+                }
+            }
+            found = m_source_filters.emplace(key, SourceFilter{filtered, canonical.user, bucket, canonical.flipped}).first;
+        }
+        else
+            s_source_filter_hits.fetch_add(1, std::memory_order_relaxed);
+        if(found->second.image)
+        {
+            FilterTarget cached;
+            cached.user    = found->second.user;
+            cached.sx      = found->second.scale;
+            cached.sy      = found->second.scale;
+            cached.pw      = CGImageGetWidth(found->second.image);
+            cached.ph      = CGImageGetHeight(found->second.image);
+            cached.flipped = found->second.flipped;
+            cached.reduced = true;
+            CGContextSaveGState(ctx);
+            apply_clips(ctx, cached.user);
+            DrawFilterResult(ctx, cached, found->second.image);
+            CGContextRestoreGState(ctx);
+            return;
+        }
+    }
     CGContextRef    bitmap = CreateFilterBitmap(target, space);
     if(!bitmap)
     {

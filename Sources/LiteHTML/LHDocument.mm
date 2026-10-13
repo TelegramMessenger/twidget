@@ -631,9 +631,11 @@ static bool LHPaintTraceUncached()
     for(auto it = at; it != _paintTrace.end(); ++it)
         _doc->skip_paint.insert((*it)->src_el().get());
     _backdropDepth++;
+    _container->m_backdrop_source_depth++;
     lh::position clip(static_cast<float>(rect.origin.x), static_cast<float>(rect.origin.y), static_cast<float>(rect.size.width), static_cast<float>(rect.size.height));
     PixelSnap snap(ctx);
     _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &clip, false);
+    _container->m_backdrop_source_depth--;
     _backdropDepth--;
     _doc->skip_paint = saved;
     CGImageRef image = CGBitmapContextCreateImage(ctx);
@@ -1826,9 +1828,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
                    static_cast<float>(clip.size.width), static_cast<float>(clip.size.height));
     PixelSnap  snap(ctx);
     static const bool disabled = getenv("LH_NO_SUBTREE_CULL") != nullptr;
+    const bool sourceFilters = _container->begin_source_filters();
     _container->begin_text_batching(ctx);
     _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &c, !_noSubtreeCulling && !disabled && _container->rasterizes());
     _container->end_text_batching();
+    if(sourceFilters)
+        _container->end_source_filters();
     CGContextRestoreGState(ctx);
 }
 
@@ -2217,6 +2222,16 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     _container->set_gpu_recorder(nullptr);
     _container->set_draw_ops(nullptr);
     CGContextRelease(ctx);
+}
+
++ (long)sourceFilterCacheHits
+{
+    return LHContainer::s_source_filter_hits.load(std::memory_order_relaxed);
+}
+
++ (void)setSourceFilterCacheEnabled:(BOOL)enabled
+{
+    LHContainer::s_source_filter_cache.store(enabled, std::memory_order_relaxed);
 }
 
 + (long)shadowLineBatches
