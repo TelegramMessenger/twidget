@@ -8,6 +8,11 @@
 #include <cmath>
 #include <cstdlib>
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+#include <cstdio>
+
 namespace litehtml
 {
     namespace
@@ -88,6 +93,97 @@ namespace litehtml
                 child->appendChild(std::make_shared<el_text>(text.c_str(), doc));
             }
             parent->appendChild(child);
+        }
+
+        std::string date_pattern()
+        {
+#ifdef __APPLE__
+            CFLocaleRef locale  = CFLocaleCopyCurrent();
+            CFStringRef pattern = CFDateFormatterCreateDateFormatFromTemplate(nullptr, CFSTR("ddMMyyyy"), 0, locale);
+            CFRelease(locale);
+            if(pattern)
+            {
+                char buffer[64] = {0};
+                bool ok         = CFStringGetCString(pattern, buffer, sizeof(buffer), kCFStringEncodingUTF8);
+                CFRelease(pattern);
+                if(ok && *buffer)
+                {
+                    return buffer;
+                }
+            }
+#endif
+            return "MM/dd/yyyy";
+        }
+
+        std::string format_date(const std::string& value, bool& placeholder)
+        {
+            std::string pattern = date_pattern();
+            int         year = 0, month = 0, day = 0;
+            char        tail = 0;
+            if(value.size() != 10 || sscanf(value.c_str(), "%4d-%2d-%2d%c", &year, &month, &day, &tail) != 3 ||
+               month < 1 || month > 12 || day < 1 || day > 31 || year < 1)
+            {
+                placeholder = true;
+                std::string hint;
+                for(char ch : pattern)
+                {
+                    hint += ch == 'M' ? 'm' : ch == 'y' ? 'y' : ch == 'd' ? 'd' : ch;
+                }
+                return hint;
+            }
+            placeholder = false;
+            std::string out;
+            char        number[8];
+            for(size_t i = 0; i < pattern.size();)
+            {
+                char   ch  = pattern[i];
+                size_t run = 1;
+                while(i + run < pattern.size() && pattern[i + run] == ch)
+                {
+                    run++;
+                }
+                if(ch == 'y')
+                {
+                    snprintf(number, sizeof(number), "%04d", year);
+                    out += number;
+                } else if(ch == 'M' || ch == 'd')
+                {
+                    snprintf(number, sizeof(number), run >= 2 ? "%02d" : "%d", ch == 'M' ? month : day);
+                    out += number;
+                } else if(ch != '\'')
+                {
+                    out.append(run, ch);
+                }
+                i += run;
+            }
+            return out;
+        }
+
+        bool has_generated(html_tag* parent)
+        {
+            for(const auto& child : parent->children())
+            {
+                const char* tag = child->get_tagName();
+                if(tag && !strncmp(tag, "lh-", 3))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        std::string textarea_text(html_tag* parent)
+        {
+            std::string text;
+            for(const auto& child : parent->children())
+            {
+                const char* tag = child->get_tagName();
+                if(!tag || strncmp(tag, "lh-", 3))
+                {
+                    child->get_text(text);
+                }
+            }
+            return text;
         }
 
         void remove_generated(html_tag* parent)
@@ -421,7 +517,10 @@ namespace litehtml
         {
             std::string text        = value ? value : "";
             bool        placeholder = false;
-            if(text.empty())
+            if(m_type == "date")
+            {
+                text = format_date(text, placeholder);
+            } else if(text.empty())
             {
                 const char* hint = get_attr("placeholder");
                 if(hint && *hint)
@@ -467,6 +566,20 @@ namespace litehtml
             float max  = attr_number(this, "max", 100);
             float val  = attr_number(this, "value", min + (max - min) / 2);
             m_fraction = max > min ? std::max(0.f, std::min(1.f, (val - min) / (max - min))) : 0.f;
+            char percent[32];
+            snprintf(percent, sizeof(percent), "%g%%", m_fraction * 100);
+            auto doc   = get_document();
+            auto track = std::make_shared<html_tag>(doc);
+            track->set_tagName("lh-range-track");
+            track->set_attr("style", "display:block;flex:1 1 auto;position:relative;min-width:0");
+            auto thumb = std::make_shared<html_tag>(doc);
+            thumb->set_tagName("lh-range-thumb");
+            thumb->set_attr("style", (std::string("display:block;position:absolute;top:0;left:") + percent +
+                                      ";transform:translateX(-" + percent + ")")
+                                         .c_str());
+            track->appendChild(thumb);
+            appendChild(track);
+            track->apply_stylesheet(doc->master_css());
         } else if(m_type == "color")
         {
             m_swatch = web_color::black;
@@ -510,6 +623,13 @@ namespace litehtml
         } else
         {
             m_look.native = appearance;
+            if(m_type == "range")
+            {
+                if(!m_look.native)
+                {
+                    make_flex(c, flex_direction_row, flex_justify_content_flex_start, flex_align_items_center);
+                }
+            }
             resolve_box(c, false, web_color::transparent, web_color::transparent);
             resolve_text(c, p.text);
             if(m_look.native && is_one_of(m_type, "checkbox", "radio", "range", "color"))
@@ -527,6 +647,13 @@ namespace litehtml
             for(const auto& el : m_children)
             {
                 el->compute_styles();
+            }
+        }
+        if(m_type == "range" && m_look.native)
+        {
+            for(const auto& el : m_children)
+            {
+                el->css_w().set_display(display_none);
             }
         }
     }
@@ -784,8 +911,24 @@ namespace litehtml
     {
     }
 
+    void el_textarea::parse_attributes()
+    {
+        html_tag::parse_attributes();
+        remove_generated(this);
+        const char* hint = get_attr("placeholder");
+        if(hint && *hint && textarea_text(this).empty())
+        {
+            append_content(this, "lh-placeholder", "display:inline", hint);
+            m_children.back()->apply_stylesheet(get_document()->master_css());
+        }
+    }
+
     void el_textarea::compute_styles(bool recursive)
     {
+        if(has_generated(this) && !textarea_text(this).empty())
+        {
+            remove_generated(this);
+        }
         html_tag::compute_styles(false);
         css_properties& c = css_w();
         const palette&  p = colors(c.get_dark_scheme());
@@ -813,7 +956,7 @@ namespace litehtml
             draw_field(hdc, container, box, m_look);
         }
         html_tag::draw(hdc, x, y, clip, ri);
-        if(box.width > 12_px && box.height > 12_px && css().get_appearance() != appearance_none)
+        if(box.width > 12_px && box.height > 12_px && css().get_resize() != resize_none)
         {
             float          rx = (box.x + box.width).value() - 4;
             float          by = (box.y + box.height).value() - 4;

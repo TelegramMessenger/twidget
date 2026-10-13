@@ -603,7 +603,8 @@ namespace litehtml
             // Highlight Pseudo-elements  https://www.w3.org/TR/css-pseudo-4/#highlight-pseudos
             "selection",
             // Tree-Abiding Pseudo-elements  https://www.w3.org/TR/css-pseudo-4/#treelike
-            "before", "after", "marker", "placeholder", "backdrop",
+            "before", "after", "marker", "placeholder", "backdrop", "-webkit-slider-thumb",
+            "-webkit-slider-runnable-track",
             // https://html.spec.whatwg.org/multipage/rendering.html#the-file-selector-button-pseudo-element
             "file-selector-button");
     }
@@ -733,6 +734,39 @@ namespace litehtml
         return false;
     }
 
+    static css_selector::ptr generated_part_selector(css_selector::ptr selector)
+    {
+        auto& attrs = selector->m_right.m_attrs;
+        for(size_t i = 0; i < attrs.size(); i++)
+        {
+            if(attrs[i].type != select_pseudo_element)
+            {
+                continue;
+            }
+            const std::string name = lowcase(_s(attrs[i].name));
+            const char*       tag  = name == "placeholder"                     ? "lh-placeholder"
+                                     : name == "-webkit-slider-runnable-track" ? "lh-range-track"
+                                     : name == "-webkit-slider-thumb"          ? "lh-range-thumb"
+                                                                               : nullptr;
+            if(!tag)
+            {
+                return selector;
+            }
+            auto part = std::make_shared<css_selector>();
+            part->m_right.m_tag = _id(tag);
+            part->m_right.m_attrs.assign(attrs.begin() + i + 1, attrs.end());
+            attrs.erase(attrs.begin() + i, attrs.end());
+            if(selector->m_right.m_tag == empty_id)
+            {
+                selector->m_right.m_tag = star_id;
+            }
+            part->m_left       = selector;
+            part->m_combinator = name == "-webkit-slider-thumb" ? combinator_descendant : combinator_child;
+            return part;
+        }
+        return selector;
+    }
+
     css_selector::ptr parse_complex_selector(const css_token_vector& tokens, document_mode mode)
     {
         int index = 0;
@@ -755,7 +789,7 @@ namespace litehtml
             if(index == static_cast<int>(tokens.size()))
             {
                 // combinator == 0 means index already was at the end before the call to parse_combinator
-                return !combinator || combinator == ' ' ? selector : nullptr;
+                return !combinator || combinator == ' ' ? generated_part_selector(selector) : nullptr;
             }
             if(!combinator) // not the end and combinator failed to parse
             {

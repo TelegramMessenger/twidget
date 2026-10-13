@@ -327,6 +327,14 @@ option {
 	display: none;
 }
 
+textarea {
+	resize: both;
+}
+
+lh-placeholder {
+	color: #a9a9a9;
+}
+
 input, textarea, keygen, select, button, isindex {
 	margin: 0em;
 	color: initial;

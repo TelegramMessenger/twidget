@@ -40,6 +40,7 @@ namespace litehtml
         style_display         m_display        = display_inline;
         visibility            m_visibility     = visibility_visible;
         appearance            m_appearance     = appearance_none;
+        resize                m_resize         = resize_none;
         box_sizing            m_box_sizing     = box_sizing_content_box;
         css_length            m_z_index        = 0;
         vertical_align        m_vertical_align = va_baseline;
@@ -164,6 +165,7 @@ namespace litehtml
         void       set_visibility(visibility mVisibility);
 
         appearance get_appearance() const;
+        resize     get_resize() const { return m_resize; }
         void       set_appearance(appearance mAppearance);
 
         box_sizing get_box_sizing() const;

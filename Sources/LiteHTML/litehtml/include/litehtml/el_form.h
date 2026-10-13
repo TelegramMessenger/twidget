@@ -68,6 +68,8 @@ namespace litehtml
       public:
         explicit el_textarea(const document::ptr& doc);
 
+        void parse_attributes() override;
+
         void compute_styles(bool recursive = true) override;
         void draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                   const std::shared_ptr<render_item>& ri) override;

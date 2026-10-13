@@ -36,6 +36,7 @@ namespace litehtml
         {_clear_,                  element_clear_strings               },
         {_overflow_,               overflow_strings                    },
         {_appearance_,             appearance_strings                  },
+        {_resize_,                 resize_strings                      },
         {_box_sizing_,             box_sizing_strings                  },
 
         {_text_align_,             text_align_strings                  },
@@ -404,6 +405,7 @@ namespace litehtml
         case _float_:
         case _clear_:
         case _appearance_:
+        case _resize_:
         case _box_sizing_:
         case _overflow_:
 

@@ -512,6 +512,18 @@ namespace litehtml
         content_property_no_close_quote,
     };
 
+    inline constexpr auto resize_strings = split_css_values<6>("none;both;horizontal;vertical;block;inline");
+
+    enum resize
+    {
+        resize_none,
+        resize_both,
+        resize_horizontal,
+        resize_vertical,
+        resize_block,
+        resize_inline
+    };
+
     // ==========================================================
     // CSS Property: appearance
     // ==========================================================
