@@ -672,8 +672,19 @@ public final class LiteHTMLWidgetRenderer {
         queued.forEach(onMessage)
     }
 
-    private var rendersAtTick: Bool {
-        return LiteHTMLWidgetRenderer.coalescesFrames && !frozen && clock?.isRunning == true && needsFrames && isOnScreen
+    static var inputImmediateWindow: CFTimeInterval = 0.25
+    private var lastInputAt: CFTimeInterval = -1
+
+    var isPreparingTiles: Bool {
+        return documentView.preparing
+    }
+
+    func noteUserInput() {
+        lastInputAt = CACurrentMediaTime()
+    }
+
+    var rendersAtTick: Bool {
+        return LiteHTMLWidgetRenderer.coalescesFrames && !frozen && clock?.isRunning == true && needsFrames && isOnScreen && CACurrentMediaTime() - lastInputAt > LiteHTMLWidgetRenderer.inputImmediateWindow
     }
 
     private func setNeedsRender() {
@@ -2132,6 +2143,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func dispatch(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int) {
+        noteUserInput()
         if frozen || target == 0 {
             return
         }
@@ -2155,6 +2167,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func handleScroll(_ point: CGPoint, event: NSEvent) -> Bool {
+        noteUserInput()
         if frozen {
             return false
         }
@@ -2288,6 +2301,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func handleKey(_ type: String, event: NSEvent) {
+        noteUserInput()
         if frozen {
             return
         }
