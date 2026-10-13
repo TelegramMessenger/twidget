@@ -58,7 +58,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Builds the next frame of `previous`. When only inline `style` values and text changed, the previous
 /// document's tree is patched in place and handed over (much cheaper than parsing); `previous` then
 /// rebuilds itself from its own HTML if it is used again. Otherwise this parses `html` from scratch.
-- (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous;
+- (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous viewportSize:(CGSize)viewportSize NS_DESIGNATED_INITIALIZER;
+@property (readonly) CGSize viewportSize;
 /// Patches `previous` in place with new inline style values, keyed by the value of `attribute`, without parsing HTML.
 /// Each value must be the exact `style` attribute text the full HTML would carry, and every element must already have a
 /// style attribute. Runs the same checks as an HTML patch and returns nil, leaving `previous` usable, when it can't apply.

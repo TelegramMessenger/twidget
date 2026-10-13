@@ -579,6 +579,7 @@ static uint64_t LHPackSize(CGSize size)
     CGFloat                      _lastMaxWidth;
     CGFloat                      _preferredWidth;
     CGSize                       _size;
+    CGSize                       _viewportSize;
     std::atomic<uint64_t>        _sizeMirror;
     BOOL                         _paintOnly;
     BOOL                         _pointerRestyled;
@@ -730,12 +731,18 @@ static std::string MasterWithCSS(NSString *css)
 
 - (instancetype)initWithHTML:(NSString *)html css:(NSString *)css previous:(LHDocument *)previous
 {
+    return [self initWithHTML:html css:css previous:previous viewportSize:previous ? previous.viewportSize : CGSizeZero];
+}
+
+- (instancetype)initWithHTML:(NSString *)html css:(NSString *)css previous:(LHDocument *)previous viewportSize:(CGSize)viewportSize
+{
     if((self = [super init]))
     {
         _html         = [html copy];
         _lastMaxWidth = -1;
         _cursor       = @"auto";
         _updatable    = YES;
+        _viewportSize = viewportSize;
         _master       = MasterWithCSS(css);
 
         double            t0   = NowMs();
@@ -743,7 +750,7 @@ static std::string MasterWithCSS(NSString *css)
         if(previous)
         {
             std::lock_guard<std::mutex> guard(previous->_lock);
-            if(previous->_doc && previous->_updatable && previous->_master == _master &&
+            if(previous->_doc && previous->_updatable && previous->_master == _master && CGSizeEqualToSize(previous->_viewportSize, _viewportSize) &&
                previous->_doc->update_from_string(body, nullptr))
             {
                 _doc       = std::move(previous->_doc);
@@ -766,6 +773,7 @@ static std::string MasterWithCSS(NSString *css)
         if(!_doc)
         {
             _container = std::make_unique<LHContainer>();
+            _container->set_viewport(lh::position(0, 0, static_cast<float>(_viewportSize.width), static_cast<float>(_viewportSize.height)));
             _doc       = lh::document::createUpdatableFromString(body, _container.get(), _master);
         }
         [self bindContainerLocked];
@@ -900,6 +908,7 @@ static std::string MasterWithCSS(NSString *css)
     _doc                        = std::move(previous->_doc);
     _container                  = std::move(previous->_container);
     _cursor                     = previous->_cursor;
+    _viewportSize               = previous->_viewportSize;
     [self takeDeclarationsLocked:previous];
     previous->_consumed         = YES;
     previous->_consumedMaxWidth = previous->_lastMaxWidth;
@@ -1073,6 +1082,7 @@ static std::string MasterWithCSS(NSString *css)
     _paintTraceValid = NO;
     _itemIndexValid  = NO;
     _container = std::make_unique<LHContainer>();
+    _container->set_viewport(lh::position(0, 0, static_cast<float>(_viewportSize.width), static_cast<float>(_viewportSize.height)));
     _container->set_clip_culling(_consumedCulling);
     _container->set_controls_active(_controlsActive, LHControlAccent());
     [self bindContainerLocked];
@@ -1110,6 +1120,11 @@ static std::string MasterWithCSS(NSString *css)
     if(_colorSpace)
         CGColorSpaceRelease(_colorSpace);
     _colorSpace = colorSpace ? CGColorSpaceRetain(colorSpace) : nullptr;
+}
+
+- (CGSize)viewportSize
+{
+    return _viewportSize;
 }
 
 - (CGSize)size
@@ -1178,7 +1193,7 @@ static std::string MasterWithCSS(NSString *css)
 {
     _paintTraceValid = NO;
     _itemIndexValid  = NO;
-    if(!NeedsViewportHeight(_doc))
+    if(_viewportSize.height > 0 || !NeedsViewportHeight(_doc))
         return;
     _container->set_viewport(lh::position(0, 0, static_cast<float>(width), static_cast<float>(std::ceil(_doc->height().value()))));
     _doc->render(static_cast<float>(width));
@@ -1198,7 +1213,7 @@ static std::string MasterWithCSS(NSString *css)
     {
         double  t0 = NowMs();
         CGFloat vw = std::min<CGFloat>(_preferredWidth, maxWidth);
-        _container->set_viewport(lh::position(0, 0, static_cast<float>(vw), 0));
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(vw), static_cast<float>(_viewportSize.height)));
         _doc->render(static_cast<float>(vw));
         CGFloat extent = std::ceil(_doc->width().value());
         if(vw >= maxWidth - 0.5 || extent <= vw + 0.5)
@@ -1214,20 +1229,20 @@ static std::string MasterWithCSS(NSString *css)
     _lastMaxWidth = maxWidth;
 
     double t0 = NowMs();
-    _container->set_viewport(lh::position(0, 0, static_cast<float>(maxWidth), 0));
+    _container->set_viewport(lh::position(0, 0, static_cast<float>(maxWidth), static_cast<float>(_viewportSize.height)));
     lh::pixel_t natural = _doc->render(static_cast<float>(maxWidth));
     CGFloat     width   = maxWidth;
     if(natural.value() > 0 && natural.value() < maxWidth)
     {
         width = std::min<CGFloat>(maxWidth, std::ceil(natural.value() + 0.01));
-        _container->set_viewport(lh::position(0, 0, static_cast<float>(width), 0));
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(width), static_cast<float>(_viewportSize.height)));
         _doc->render(static_cast<float>(width));
     }
     CGFloat extent = std::ceil(_doc->width().value());
     for(int pass = 0; pass < 2 && extent > width + 0.5 && width < maxWidth; pass++)
     {
         width = std::min<CGFloat>(maxWidth, extent);
-        _container->set_viewport(lh::position(0, 0, static_cast<float>(width), 0));
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(width), static_cast<float>(_viewportSize.height)));
         _doc->render(static_cast<float>(width));
         extent = std::ceil(_doc->width().value());
     }
@@ -1236,12 +1251,12 @@ static std::string MasterWithCSS(NSString *css)
         CGFloat target = std::floor(width - (extent - maxWidth));
         if(target < maxWidth / 2)
             break;
-        _container->set_viewport(lh::position(0, 0, static_cast<float>(target), 0));
+        _container->set_viewport(lh::position(0, 0, static_cast<float>(target), static_cast<float>(_viewportSize.height)));
         _doc->render(static_cast<float>(target));
         CGFloat narrowed = std::ceil(_doc->width().value());
         if(narrowed >= extent - 0.5)
         {
-            _container->set_viewport(lh::position(0, 0, static_cast<float>(width), 0));
+            _container->set_viewport(lh::position(0, 0, static_cast<float>(width), static_cast<float>(_viewportSize.height)));
             _doc->render(static_cast<float>(width));
             break;
         }

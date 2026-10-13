@@ -1325,8 +1325,12 @@ public final class LiteHTMLWidgetRenderer {
     static let styleFastPath = ProcessInfo.processInfo.environment["TW_NO_STYLE_FAST"] == nil
     static let holePatches = ProcessInfo.processInfo.environment["TW_NO_HOLE_PATCH"] == nil
 
+    private var layoutViewport: CGSize {
+        return CGSize(width: width, height: max(1, floor(documentView.size.height)))
+    }
+
     private func patchedDocument(_ overrides: [Int: [(String, String)]]) -> LHDocument? {
-        guard LiteHTMLWidgetRenderer.styleFastPath, let document = document, onSerialized == nil, canvases.isEmpty, lastLayoutTheme == theme, let last = lastLayoutOverrides else {
+        guard LiteHTMLWidgetRenderer.styleFastPath, let document = document, document.viewportSize == layoutViewport, onSerialized == nil, canvases.isEmpty, lastLayoutTheme == theme, let last = lastLayoutOverrides else {
             return nil
         }
         if !LiteHTMLWidgetRenderer.holePatches && (!dom.patchLog.attributes.isEmpty || !dom.patchLog.texts.isEmpty) {
@@ -1364,7 +1368,7 @@ public final class LiteHTMLWidgetRenderer {
         stage("style-patch")
         let html = fast == nil || LiteHTMLWidgetRenderer.patchCheck ? dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) }) : ""
         stage("serialize")
-        let next = fast ?? LHDocument(html: html, css: nil, previous: document)
+        let next = fast ?? LHDocument(html: html, css: nil, previous: document, viewportSize: layoutViewport)
         next.controlsActive = controlsActive
         dom.resetPatchLog()
         if fast != nil {
@@ -1410,7 +1414,7 @@ public final class LiteHTMLWidgetRenderer {
         stage("layout")
         if LiteHTMLWidgetRenderer.patchCheck && next.reusedPrevious {
             patchChecks += 1
-            let fresh = LHDocument(html: html, css: nil)
+            let fresh = LHDocument(html: html, css: nil, previous: nil, viewportSize: layoutViewport)
             fresh.controlsActive = controlsActive
             _ = fresh.layout(maxWidth: width, preferredWidth: width)
             let size = CGSize(width: width, height: max(1, ceil(max(next.size.height, fresh.size.height))))
@@ -1633,7 +1637,7 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         let html = dom.serialize(theme: theme, overrides: sampled, canvasSource: { [unowned self] node in self.canvasSource(node) })
-        let reference = LHDocument(html: html, css: nil)
+        let reference = LHDocument(html: html, css: nil, previous: nil, viewportSize: document.viewportSize)
         reference.controlsActive = controlsActive
         _ = reference.layout(maxWidth: width, preferredWidth: width)
         let size = CGSize(width: width, height: max(1, ceil(document.size.height)))
@@ -2676,10 +2680,8 @@ class WidgetDocumentView: NSView {
         CATransaction.setDisableActions(true)
         content.frame = CGRect(origin: .zero, size: newSize)
         CATransaction.commit()
-        if widthChanged {
+        if widthChanged || heightChanged {
             toOwner { $0.viewResized() }
-        } else if heightChanged {
-            toOwner { $0.placeSurfaces() }
         }
     }
 

@@ -5,6 +5,7 @@
 #include "style.h"
 #include "web_color.h"
 #include "css_parser.h"
+#include "document_container.h"
 
 namespace litehtml
 {
@@ -479,6 +480,22 @@ namespace litehtml
         return true;
     }
 
+    static int viewport_axis(const css_token& token)
+    {
+        if(token.type != DIMENSION)
+            return 0;
+        const std::string unit = lowcase(token.unit());
+        if(is_one_of(unit, "vw", "svw", "lvw", "dvw"))
+            return 1;
+        if(is_one_of(unit, "vh", "svh", "lvh", "dvh"))
+            return 2;
+        if(is_one_of(unit, "vmin", "svmin", "lvmin", "dvmin"))
+            return 3;
+        if(is_one_of(unit, "vmax", "svmax", "lvmax", "dvmax"))
+            return 4;
+        return 0;
+    }
+
     bool fold_math(css_token_vector& tokens, document_container* container, int depth)
     {
         if(depth > 16)
@@ -486,6 +503,15 @@ namespace litehtml
         bool changed = false;
         for(auto& tok : tokens)
         {
+            if(int axis = viewport_axis(tok); axis && container)
+            {
+                media_features media;
+                container->get_media_features(media);
+                const float width = media.width.value(), height = media.height.value();
+                const float extent = axis == 1 ? width : axis == 2 ? height : axis == 3 ? std::min(width, height) : std::max(width, height);
+                tok = css_token(DIMENSION, extent * tok.n.number / 100, css_number_number, "px");
+                changed = true;
+            }
             if(!tok.is_component_value())
                 continue;
             if(tok.type == CV_FUNCTION && lowcase(tok.name()) == "env" && fold_env(tok))
@@ -525,6 +551,8 @@ namespace litehtml
     {
         for(const auto& tok : tokens)
         {
+            if(viewport_axis(tok))
+                return true;
             if(tok.type == CV_FUNCTION && is_one_of(lowcase(tok.name()), "calc", "min", "max", "clamp", "env", "color-mix"))
                 return true;
             if(tok.is_component_value() && has_foldable_math(tok.value))
