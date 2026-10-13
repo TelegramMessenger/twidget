@@ -3,11 +3,13 @@ import XCTest
 
 final class ScriptedReachTests: XCTestCase {
     private var window: NSWindow?
+    private var scheduled: [() -> Void] = []
 
     private func renderer(css: String) -> LiteHTMLWidgetRenderer {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240), styleMask: [.borderless], backing: .buffered, defer: false)
         self.window = window
         let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        renderer.schedule = { [weak self] in self?.scheduled.append($0) }
         window.contentView?.addSubview(renderer.view)
         renderer.view.frame = NSRect(x: 0, y: 0, width: 400, height: 240)
         renderer.load()
@@ -32,6 +34,9 @@ final class ScriptedReachTests: XCTestCase {
     private func send(_ renderer: LiteHTMLWidgetRenderer, _ ops: [[String: Any]]) {
         let data = try! JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops])
         renderer.send(String(data: data, encoding: .utf8)!)
+        while !scheduled.isEmpty {
+            scheduled.removeFirst()()
+        }
     }
 
     private func move(_ renderer: LiteHTMLWidgetRenderer, x: CGFloat, y: CGFloat) {
