@@ -30,6 +30,7 @@
 #include "html_tag.h"
 #include "render_block.h"
 #include "render_item.h"
+#include "render_inline_context.h"
 #include "render_table.h"
 #include "stylesheet.h"
 #include "types.h"
@@ -1149,8 +1150,8 @@ namespace litehtml
                 }
                 continue;
             }
-            if(keep_tree && (hole.text || hole.src ||
-                             (hole.attr.empty() && !tree_neutral_change(hole.value, value, hole.owner->css().get_display() == display_inline,
+            if(keep_tree && (hole.src ||
+                             (!hole.text && hole.attr.empty() && !tree_neutral_change(hole.value, value, hole.owner->css().get_display() == display_inline,
                                                                          table_part(hole.owner->css().get_display())))))
                 keep_tree = false;
             hole.value      = value;
@@ -1186,6 +1187,8 @@ namespace litehtml
                 [this, &created](const char* text) { created.push_back(std::make_shared<el_text>(text, shared_from_this())); },
                 [this, &created](const char* text) { created.push_back(std::make_shared<el_space>(text, shared_from_this())); });
             hole.text_elements.front()->parent()->replace_children(hole.text_elements, created);
+            if(keep_tree && !replace_text_renderers(hole.text_elements, created))
+                keep_tree = false;
             hole.text_elements.assign(created.begin(), created.end());
             new_text.insert(new_text.end(), created.begin(), created.end());
         }
@@ -1295,6 +1298,45 @@ namespace litehtml
         return true;
     }
 
+    bool document::replace_text_renderers(const std::vector<element::ptr>& current,
+                                          const elements_list& replacement)
+    {
+        if(current.empty() || replacement.empty())
+            return false;
+        auto owner = current.front()->parent();
+        if(!owner || owner->children().size() != replacement.size() ||
+           !std::equal(owner->children().begin(), owner->children().end(), replacement.begin()))
+            return false;
+        std::shared_ptr<render_item> target;
+        owner->run_on_renderers([&](const std::shared_ptr<render_item>& item) {
+            if(!std::dynamic_pointer_cast<render_item_inline_context>(item) || item->children().size() != current.size())
+                return true;
+            auto root = item;
+            while(auto parent = root->parent())
+                root = parent;
+            if(root != m_root_render)
+                return true;
+            auto old = current.begin();
+            for(const auto& child : item->children())
+            {
+                if(child->src_el() != *old++)
+                    return true;
+            }
+            target = item;
+            return false;
+        });
+        if(!target)
+            return false;
+        for(const auto& child : target->children())
+            m_layout_marked.erase(std::remove(m_layout_marked.begin(), m_layout_marked.end(), child.get()), m_layout_marked.end());
+        target->children().clear();
+        for(const auto& child : replacement)
+            target->add_child(child->create_render_item(target)->init());
+        target->mark_layout_dirty();
+        m_render_tree_serial++;
+        return true;
+    }
+
     void document::restyle_after_patch(const std::vector<element::ptr>& restyle, const std::vector<element::ptr>& new_text,
                                        bool keep_tree, const std::vector<element::ptr>& retext)
     {
@@ -1366,7 +1408,7 @@ namespace litehtml
                 m_positioned_epoch = m_style_epoch;
         }
 
-        if(keep_tree && new_text.empty() && m_root_render)
+        if(keep_tree && m_root_render)
             return;
         m_tabular_elements.clear();
         m_table_cells = 0;

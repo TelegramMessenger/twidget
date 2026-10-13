@@ -240,6 +240,35 @@ static bool CacheFastPathEnabled()
     }
 }
 
+- (void)testTextTokenChangesReuseUnchangedCards
+{
+    std::string cards = "<div data-lh-id='5' style='display:flex;flex-direction:column'>";
+    for(int row = 0; row < 48; row++)
+        cards += "<div data-lh-id='" + std::to_string(10 + row) + "' class='card'>Unchanged dashboard card with wrapping contents</div>";
+    cards += "</div>";
+    for(NSString *container in @[@"div", @"textarea"])
+    {
+        LHDocument *document = nil;
+        for(NSString *value in @[@"One", @"Several new words that wrap onto another line", @"Two words", @"A\nB\nC", @"Final"])
+        {
+            NSString *body = [NSString stringWithFormat:@"%s<%@ data-lh-id='100' style='position:fixed;bottom:0;width:160px;white-space:pre-wrap'>%@</%@>", cards.c_str(), container, value, container];
+            NSString *html = Page(body.UTF8String);
+            LHDocument *patch = [[LHDocument alloc] initWithHTML:html css:nil previous:document viewportSize:CGSizeMake(320, 760)];
+            const long misses = [LHDocument.layoutCacheStats[@"misses"] longValue];
+            NSData *pixels = Image(patch, 320);
+            if(document && CacheFastPathEnabled())
+            {
+                XCTAssertTrue(patch.reusedPrevious);
+                XCTAssertLessThan([LHDocument.layoutCacheStats[@"misses"] longValue] - misses, 20, @"%@ %@", container, value);
+            }
+            LHDocument *fresh = [[LHDocument alloc] initWithHTML:html css:nil previous:nil viewportSize:CGSizeMake(320, 760)];
+            XCTAssertEqualObjects(pixels, Image(fresh, 320));
+            XCTAssertEqualObjects(patch.layoutSignature, fresh.layoutSignature);
+            document = patch;
+        }
+    }
+}
+
 - (void)testRandomEditsAroundCachedBoxesMatchAFreshLayout
 {
     const char  *budget   = getenv("TWIDGET_FUZZ_SECONDS");

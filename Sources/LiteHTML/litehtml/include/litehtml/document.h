@@ -325,6 +325,8 @@ namespace litehtml
         bool     class_change_allowed(const html_hole& hole, const std::string& value, string_map& attrs);
         bool     retext_in_place(const std::vector<std::shared_ptr<element>>& current, const char* text,
                                  std::vector<std::string>& words) const;
+        bool     replace_text_renderers(const std::vector<std::shared_ptr<element>>& current,
+                                        const elements_list& replacement);
 
         GumboOutput* parse_html(estring str);
         void         create_node(void* gnode, elements_list& elements, bool parseTextNode, bool process_root);
