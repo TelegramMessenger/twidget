@@ -52,6 +52,29 @@ static bool CacheFastPathEnabled()
     return !getenv("LH_NO_LAYOUT_CACHE") && !getenv("LH_LAYOUT_CACHE_CHECK");
 }
 
+- (void)testInitialFlexLayoutReusesMeasurements
+{
+    std::string body = "<div style='display:flex;flex-direction:column'>";
+    for(int row = 0; row < 8; row++)
+    {
+        body += "<div class='row card'><div style='display:flex;flex:1'><span>Nested heading with wrapping words</span>";
+        body += "<div style='display:flex;flex-direction:column'><b>Value</b><span>42</span></div></div>";
+        body += "<span style='margin-left:auto'>Details</span></div>";
+    }
+    body += "</div>";
+    LHDocument *document = [[LHDocument alloc] initWithHTML:Page(body) css:nil];
+    const long hits = Hits();
+    const long mismatches = [LHDocument.layoutCacheStats[@"mismatches"] longValue];
+    NSData *initial = Image(document, 320);
+    if(CacheFastPathEnabled())
+        XCTAssertGreaterThan(Hits(), hits);
+    NSString *signature = document.layoutSignature;
+    Image(document, 280);
+    XCTAssertEqualObjects(initial, Image(document, 320));
+    XCTAssertEqualObjects(signature, document.layoutSignature);
+    XCTAssertEqual([LHDocument.layoutCacheStats[@"mismatches"] longValue], mismatches);
+}
+
 - (void)testNestedFlexMeasurementsAcrossEditsAndViewportChanges
 {
     LHDocument *document = nil;

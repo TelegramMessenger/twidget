@@ -2811,11 +2811,6 @@ namespace litehtml
                 m_root_render->render_positioned(rt);
             } else
             {
-                ret = m_root_render->render(0_px, 0_px, cb_context, nullptr).natural_width;
-                for(render_item* item : m_relayout_roots)
-                    item->relayout();
-                m_relayout_roots.clear();
-                m_layout_after_render = true;
                 static const bool refetch = getenv("LH_NO_POSITIONED_REUSE") != nullptr;
                 if(refetch || m_positioned_epoch != m_style_epoch || m_positioned_tree != m_render_tree_serial)
                 {
@@ -2823,6 +2818,11 @@ namespace litehtml
                     m_positioned_epoch = m_style_epoch;
                     m_positioned_tree  = m_render_tree_serial;
                 }
+                ret = m_root_render->render(0_px, 0_px, cb_context, nullptr).natural_width;
+                for(render_item* item : m_relayout_roots)
+                    item->relayout();
+                m_relayout_roots.clear();
+                m_layout_after_render = true;
                 if(m_has_positioned)
                 {
                     m_fixed_boxes.clear();
