@@ -14,6 +14,17 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(TWIDGET_BUILD_TESTS "Build the TwidgetCore checks" ${PROJECT_IS_TOP_LEVEL})
 
+# widget-sandbox owns the protocol and its JSON helper. Package.swift finds it the same way: a checkout
+# next to twidget, or the path in TWIDGET_WIDGET_SANDBOX (a URL there is for SwiftPM only).
+set(TWIDGET_WIDGET_SANDBOX "$ENV{TWIDGET_WIDGET_SANDBOX}" CACHE PATH "widget-sandbox checkout")
+if(NOT TWIDGET_WIDGET_SANDBOX)
+    set(TWIDGET_WIDGET_SANDBOX "${CMAKE_CURRENT_SOURCE_DIR}/../widget-sandbox")
+endif()
+set(TW_SANDBOX_INCLUDE "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/include")
+if(NOT EXISTS "${TW_SANDBOX_INCLUDE}/twidget/json.h")
+    message(FATAL_ERROR "widget-sandbox not found at ${TWIDGET_WIDGET_SANDBOX}: check it out next to twidget or set TWIDGET_WIDGET_SANDBOX to its path")
+endif()
+
 set(TW_LITEHTML "${CMAKE_CURRENT_SOURCE_DIR}/Sources/LiteHTML/litehtml")
 set(TW_CORE "${CMAKE_CURRENT_SOURCE_DIR}/Sources/TwidgetCore")
 set(TW_PLATFORM "${TW_CORE}/platform")
@@ -45,7 +56,7 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/canvas.cpp"
     "${TW_CORE}/src/compositor.cpp")
 add_library(twidget::core ALIAS twidget_core)
-target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include")
+target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" "${TW_SANDBOX_INCLUDE}")
 target_link_libraries(twidget_core PUBLIC litehtml)
 target_compile_definitions(twidget_core PUBLIC TW_LITEHTML_TWIDGET)
 if(MSVC)

@@ -66,6 +66,10 @@ cmake --build build
 ctest --test-dir build
 ```
 
+widget-sandbox has to be checked out next to twidget (`../widget-sandbox`), or its path given in
+`TWIDGET_WIDGET_SANDBOX`, as for `Package.swift`: TwidgetCore reads the protocol's JSON helper
+(`twidget/json.h`) from it.
+
 The build produces `twidget::litehtml` (the fork and its gumbo), `twidget::core` and the platform's
 backend; Android and Emscripten builds go through their toolchain files. With `TWIDGET_BUILD_TESTS`
 (on when twidget is the top-level project) it also builds the checks in `Tests/TwidgetCoreTests`,
