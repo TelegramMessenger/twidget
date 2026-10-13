@@ -165,12 +165,36 @@ public final class LiteHTMLWidgetRenderer {
     static let maxSurfaces = 8
     static let surfaceAttribute = "data-tw3d"
 
+    private let surfaceCallbacksLock = NSLock()
+    private var lockedSurfaceLayer: ((String) -> CALayer?)?
+    private var lockedSurfaceLayout: ((String, CGSize, CGFloat, Bool) -> Void)?
+
     public var surfaceLayer: ((String) -> CALayer?)? {
-        didSet {
+        get {
+            surfaceCallbacksLock.lock()
+            defer { surfaceCallbacksLock.unlock() }
+            return lockedSurfaceLayer
+        }
+        set {
+            surfaceCallbacksLock.lock()
+            lockedSurfaceLayer = newValue
+            surfaceCallbacksLock.unlock()
             placeSurfaces()
         }
     }
-    public var surfaceLayout: ((String, CGSize, CGFloat, Bool) -> Void)?
+
+    public var surfaceLayout: ((String, CGSize, CGFloat, Bool) -> Void)? {
+        get {
+            surfaceCallbacksLock.lock()
+            defer { surfaceCallbacksLock.unlock() }
+            return lockedSurfaceLayout
+        }
+        set {
+            surfaceCallbacksLock.lock()
+            lockedSurfaceLayout = newValue
+            surfaceCallbacksLock.unlock()
+        }
+    }
     private var surfaceContainer: CALayer?
     private var placedSurfaces: [String: CALayer] = [:]
     private var surfaceTokens: [String] = []
@@ -1706,6 +1730,10 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func placeSurfaces() {
+        guard isOnExecutor() else {
+            schedule { [weak self] in self?.placeSurfaces() }
+            return
+        }
         guard !destroyed, surfaceLayer != nil || !placedSurfaces.isEmpty else {
             return
         }
