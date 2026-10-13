@@ -4,6 +4,7 @@
 #include <cctype>
 #include "html.h"
 #include "el_svg.h"
+#include "render_item.h"
 #include "render_image.h"
 #include "document_container.h"
 #include "css_parser.h"
@@ -1066,6 +1067,10 @@ namespace litehtml
     void el_svg::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, const std::shared_ptr<render_item>& ri)
     {
         html_tag::draw(hdc, x, y, clip, ri);
+        if(g_paint_trace)
+        {
+            return;
+        }
         position pos  = ri->pos();
         pos.x        += x;
         pos.y        += y;
