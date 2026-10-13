@@ -41,6 +41,35 @@ final class VisualQueryTests: XCTestCase {
         XCTAssertGreaterThan(renderer.layoutCount, count)
     }
 
+    func testTextareaSizeQueriesFlushValuesAndRows() {
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        renderer.schedule = { _ in }
+        renderer.load()
+        defer { renderer.destroy() }
+        send(renderer, ["type": "ops", "ops": [
+            ["op": "el", "id": 7, "tag": "body", "adopt": "body", "attrs": []],
+            ["op": "el", "id": 8, "tag": "textarea", "attrs": [["style", "display:block;width:300px;height:auto;font:16px/20px monospace;padding:6px 10px;border:2px solid black"]]],
+            ["op": "ins", "parent": 7, "id": 8],
+            ["op": "prop", "id": 8, "name": "value", "value": "a"]
+        ]])
+        XCTAssertEqual(query(renderer, "box")["offsetHeight"] as? Double, 56)
+        XCTAssertEqual(query(renderer, "box")["clientHeight"] as? Double, 52)
+        send(renderer, ["type": "ops", "ops": [["op": "prop", "id": 8, "name": "value", "value": "one\ntwo\nthree\nfour\nfive"]]])
+        XCTAssertEqual(query(renderer, "box")["offsetHeight"] as? Double, 56)
+        XCTAssertEqual(query(renderer, "box")["scrollHeight"] as? Double, 112)
+        send(renderer, ["type": "ops", "ops": [["op": "attr", "id": 8, "name": "rows", "value": "4"]]])
+        XCTAssertEqual(query(renderer, "box")["offsetHeight"] as? Double, 96)
+        XCTAssertEqual(query(renderer, "box")["clientHeight"] as? Double, 92)
+        send(renderer, ["type": "ops", "ops": [
+            ["op": "style", "id": 8, "name": "box-sizing", "value": "border-box"],
+            ["op": "style", "id": 8, "name": "height", "value": "40px"]
+        ]])
+        XCTAssertEqual(query(renderer, "box")["clientHeight"] as? Double, 36)
+        XCTAssertEqual(query(renderer, "box")["scrollHeight"] as? Double, 112)
+        send(renderer, ["type": "ops", "ops": [["op": "prop", "id": 8, "name": "value", "value": ""]]])
+        XCTAssertEqual(query(renderer, "box")["scrollHeight"] as? Double, 36)
+    }
+
     func testLayoutMutationAfterVisualWritesStillFlushes() {
         let renderer = make()
         defer { renderer.destroy() }

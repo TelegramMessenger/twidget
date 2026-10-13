@@ -120,6 +120,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable LHBackgroundTile *)backgroundTileWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth scale:(CGFloat)scale NS_SWIFT_NAME(backgroundTile(attribute:value:maxWidth:scale:));
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setScrollContentExclusions(_:attribute:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute NS_SWIFT_NAME(scrollers(byAttribute:));
+- (nullable NSDictionary<NSString *, NSNumber *> *)textareaMetricsWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(textareaMetrics(attribute:value:));
 - (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(setScrollOffset(_:attribute:value:));
 - (nullable CGImageRef)copyScrollContentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyScrollContent(attribute:value:rect:scale:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:));

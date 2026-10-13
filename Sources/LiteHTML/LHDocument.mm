@@ -6,6 +6,7 @@
 #include "LHContainer.h"
 #include "LHSimpleText.h"
 #include "render_item.h"
+#include "render_inline_context.h"
 #include "html_tag.h"
 #include "el_space.h"
 #include "el_svg.h"
@@ -55,7 +56,7 @@ input[type="range"] { width: 129px; height: 16px; margin: 2px; padding: 0; borde
 input[type="color"] { box-sizing: border-box; width: 44px; height: 23px; padding: 1px; border-width: 2px; }
 input[type="button"], input[type="submit"], input[type="reset"], button { box-sizing: border-box; padding: 0.01px 6.01px 1.01px; border: 2px outset rgba(1, 2, 3, 0.004); background-color: rgba(3, 2, 1, 0.004); text-align: center; }
 select { box-sizing: border-box; padding: 0; border: 1px solid rgba(1, 2, 3, 0.004); border-radius: 5px; background-color: rgba(3, 2, 1, 0.004); vertical-align: baseline; }
-textarea { display: inline-block; box-sizing: content-box; width: 12.73em; height: 2.36em; padding: 2px 5px; border: 1px solid rgba(1, 2, 3, 0.004); background-color: rgba(3, 2, 1, 0.004); white-space: pre-wrap; overflow: hidden; }
+textarea { display: inline-block; box-sizing: content-box; width: 12.73em; height: auto; padding: 2px 5px; border: 1px solid rgba(1, 2, 3, 0.004); background-color: rgba(3, 2, 1, 0.004); white-space: pre-wrap; overflow: hidden; }
 fieldset { display: block; margin: 0 2px; padding: 0.35em 0.75em 0.625em; border: 2px groove rgb(192, 192, 192); }
 legend { display: table; padding: 0 2px; }
 progress, meter { appearance: auto; display: inline-block; box-sizing: border-box; width: 140px; height: 14px; vertical-align: -0.2em; overflow: hidden; color: transparent; font-size: 0; }
@@ -1394,6 +1395,31 @@ static std::string MasterWithCSS(NSString *css)
     };
     visit(_doc->root_render());
     return result;
+}
+
+- (nullable NSDictionary<NSString *, NSNumber *> *)textareaMetricsWithAttribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri || ri->src_el()->tag() != lh::_textarea_ || !ri->is_visible())
+        return nil;
+    auto text = std::dynamic_pointer_cast<lh::render_item_inline_context>(ri);
+    if(!text)
+        return nil;
+    const auto& padding = ri->get_paddings();
+    const auto& borders = ri->get_borders();
+    const auto content = text->text_content_size();
+    const float width = ri->pos().width.value() + padding.width().value();
+    const float height = ri->pos().height.value() + padding.height().value();
+    return @{
+        @"clientWidth": @(std::round(width)),
+        @"clientHeight": @(std::round(height)),
+        @"clientLeft": @(std::round(borders.left.value())),
+        @"clientTop": @(std::round(borders.top.value())),
+        @"scrollWidth": @(std::round(std::max(width, content.width.value() + padding.width().value()))),
+        @"scrollHeight": @(std::round(std::max(height, content.height.value() + padding.height().value()))),
+    };
 }
 
 - (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value

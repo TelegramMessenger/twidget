@@ -8,6 +8,7 @@
 #include "render_inline_context.h"
 #include "types.h"
 #include <algorithm>
+#include <climits>
 
 litehtml::rendered_width litehtml::render_item_block::place_float(const std::shared_ptr<render_item>& el, pixel_t top,
                                                                   const containing_block_context& self_size,
@@ -292,6 +293,16 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
     pixel_t content_height = m_pos.height;
     if(size_contained)
         m_pos.height = 0_px;
+
+    if(src_el()->tag() == _textarea_ && self_size.height.type == containing_block_context::cbc_value_type_auto && !size_contained)
+    {
+        const char* attribute = src_el()->get_attr("rows", "2");
+        char* end = nullptr;
+        long rows = std::strtol(attribute, &end, 10);
+        if(end == attribute || rows <= 0 || rows > INT_MAX)
+            rows = 2;
+        m_pos.height = css().line_height().computed_value * pixel_t(static_cast<float>(rows));
+    }
 
     // Set block height
     if(self_size.height.type != containing_block_context::cbc_value_type_auto &&

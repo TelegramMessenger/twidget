@@ -98,6 +98,7 @@ final class FormValueTests: XCTestCase {
                     fresh.layout(maxWidth: width, preferredWidth: width)
                     XCTAssertEqual(doc.html, html, "\(initial.debugDescription) → \(value.debugDescription)")
                     XCTAssertEqual(doc.layoutSignature, fresh.layoutSignature, value.debugDescription)
+                    XCTAssertEqual(doc.textareaMetrics(attribute: WidgetDOM.idAttribute, value: "10"), fresh.textareaMetrics(attribute: WidgetDOM.idAttribute, value: "10"), value.debugDescription)
                     let rect = CGRect(x: 0, y: 0, width: width, height: max(doc.size.height, fresh.size.height))
                     let a = try XCTUnwrap(doc.copyImage(maxWidth: width, rect: rect, scale: 1)?.dataProvider?.data)
                     let b = try XCTUnwrap(fresh.copyImage(maxWidth: width, rect: rect, scale: 1)?.dataProvider?.data)

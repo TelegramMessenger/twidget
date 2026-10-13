@@ -3,6 +3,28 @@
 #include "iterators.h"
 #include "types.h"
 
+litehtml::size litehtml::render_item_inline_context::text_content_size() const
+{
+    pixel_t width = m_rendered_width.natural_width;
+    pixel_t height = m_line_boxes.empty() ? 0_px : m_line_boxes.back()->bottom();
+    if(src_el()->tag() == _textarea_)
+    {
+        const pixel_t line = css().line_height().computed_value;
+        height = pixel_t(static_cast<float>(m_line_boxes.size())) * line;
+        if(!m_children.empty() && m_children.back()->src_el()->is_break())
+            height += line;
+        height = std::max(height, line);
+        if(css().get_white_space() == white_space_pre_wrap)
+        {
+            width = 0_px;
+            for(const auto& child : m_children)
+                if(!child->src_el()->is_space())
+                    width = std::max(width, child->right());
+        }
+    }
+    return size(width, height);
+}
+
 litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     pixel_t /*x*/, pixel_t /*y*/, bool /*second_pass*/, const containing_block_context& self_size,
     formatting_context* fmt_ctx)

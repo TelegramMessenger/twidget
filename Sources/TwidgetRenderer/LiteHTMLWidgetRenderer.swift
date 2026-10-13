@@ -1980,6 +1980,17 @@ public final class LiteHTMLWidgetRenderer {
             return [LiteHTMLWidgetRenderer.rectResult(rect ?? .zero)]
         case "box":
             let r = rect ?? .zero
+            if let id = (q["id"] as? NSNumber)?.intValue, dom.node(id)?.tag.lowercased() == "textarea", let metrics = document?.textareaMetrics(attribute: WidgetDOM.idAttribute, value: String(id)) {
+                var box = metrics.mapValues { $0.doubleValue }
+                box["offsetWidth"] = Double(r.width.rounded())
+                box["offsetHeight"] = Double(r.height.rounded())
+                box["offsetTop"] = Double(r.minY.rounded())
+                box["offsetLeft"] = Double(r.minX.rounded())
+                box["offsetParent"] = 0
+                box["scrollTop"] = Double(scrolling.offset(id).y)
+                box["scrollLeft"] = Double(scrolling.offset(id).x)
+                return box
+            }
             if let id = (q["id"] as? NSNumber)?.intValue, let geometry = scrolling.geometries[id] {
                 let offset = scrolling.offset(id)
                 var box: [String: Double] = ["offsetWidth": Double(r.width), "offsetHeight": Double(r.height), "offsetTop": Double(r.minY), "offsetLeft": Double(r.minX), "offsetParent": 0]
