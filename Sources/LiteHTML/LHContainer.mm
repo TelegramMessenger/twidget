@@ -2,6 +2,7 @@
 #import <ImageIO/ImageIO.h>
 
 #include "LHContainer.h"
+#include "render_item.h"
 #include "LHFilters.h"
 #include "LHSimpleText.h"
 #include "twidget_assets.h"
@@ -1708,6 +1709,8 @@ void LHContainer::flush_text()
 void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFont, lh::web_color color,
                             const lh::position& pos)
 {
+    if(lh::g_paint_trace)
+        return;
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2457,6 +2460,8 @@ void LHContainer::for_each_tile(const lh::background_layer& layer, CGSize tile,
 
 void LHContainer::draw_solid_fill(lh::uint_ptr hdc, const lh::background_layer& layer, const lh::web_color& color)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -2595,6 +2600,8 @@ static void AppendColorPoints(std::string& key, const std::vector<lh::background
 void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::linear_gradient& gradient)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -2662,6 +2669,8 @@ void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::radial_gradient& gradient)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -2732,6 +2741,8 @@ void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_conic_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                       const lh::background_layer::conic_gradient& gradient)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -2816,6 +2827,8 @@ void LHContainer::get_image_size(const char* src, const char* baseurl, lh::size&
 void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer, const std::string& url,
                              const std::string& base_url)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -2866,6 +2879,8 @@ void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer
 
 void LHContainer::draw_list_marker(lh::uint_ptr hdc, const lh::list_marker& marker)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -2957,6 +2972,8 @@ static lh::web_color ShadeBorder(lh::web_color color, bool topLeft, bool inset)
 
 void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, const lh::position& draw_pos, bool root)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -3167,6 +3184,8 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
 
 bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_t key, const std::function<void(lh::uint_ptr)>& paint)
 {
+    if(lh::g_paint_trace)
+        return false;
     flush_text();
     if(m_hidden_depth > 0 && !m_painter)
         return true;
@@ -3198,6 +3217,11 @@ bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_
 
 void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const std::function<void(lh::uint_ptr)>& paint)
 {
+    if(lh::g_paint_trace)
+    {
+        paint(hdc);
+        return;
+    }
     flush_text();
     if(m_shapes)
     {
@@ -3226,6 +3250,8 @@ void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const
 void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, const lh::border_radiuses& radius,
                                   const lh::shadow_paint& shadow)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {
@@ -3462,6 +3488,8 @@ void LHContainer::capture_shape(const lh::vector_path& path)
 
 void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_painter)
     {
@@ -3762,6 +3790,11 @@ static CGColorSpaceRef FilterSpace(CGContextRef ctx)
 
 void LHContainer::draw_filtered(lh::uint_ptr hdc, const lh::filter_paint& filter, const std::function<void(lh::uint_ptr)>& paint)
 {
+    if(lh::g_paint_trace)
+    {
+        paint(hdc);
+        return;
+    }
     flush_text();
     if(m_shapes)
     {
@@ -3887,6 +3920,8 @@ bool LHContainer::backdrop_allowed(const void* owner)
 
 void LHContainer::draw_backdrop(lh::uint_ptr hdc, const lh::filter_paint& filter)
 {
+    if(lh::g_paint_trace)
+        return;
     flush_text();
     if(m_shapes)
     {

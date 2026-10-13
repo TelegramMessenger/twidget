@@ -11,6 +11,7 @@
 #include "el_svg.h"
 #include "el_image.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -556,6 +557,15 @@ static bool LHPaintTraceUncached()
     return uncached;
 }
 
+static uint64_t LHPackSize(CGSize size)
+{
+    const float w = static_cast<float>(size.width), h = static_cast<float>(size.height);
+    uint32_t    lo, hi;
+    std::memcpy(&lo, &w, sizeof(lo));
+    std::memcpy(&hi, &h, sizeof(hi));
+    return static_cast<uint64_t>(lo) | (static_cast<uint64_t>(hi) << 32);
+}
+
 @implementation LHDocument
 {
     std::mutex                   _lock;
@@ -569,10 +579,12 @@ static bool LHPaintTraceUncached()
     CGFloat                      _lastMaxWidth;
     CGFloat                      _preferredWidth;
     CGSize                       _size;
+    std::atomic<uint64_t>        _sizeMirror;
     BOOL                         _paintOnly;
     BOOL                         _pointerRestyled;
     NSString                    *_cursor;
     CGColorSpaceRef              _colorSpace;
+    std::mutex                   _spaceLock;
     BOOL                         _noSubtreeCulling;
     BOOL                         _controlsActive;
     std::string                  _master;
@@ -746,6 +758,7 @@ static std::string MasterWithCSS(NSString *css)
                 {
                     _lastMaxWidth = previous->_lastMaxWidth;
                     _size         = previous->_size;
+                    _sizeMirror.store(LHPackSize(_size), std::memory_order_relaxed);
                     _paintOnly    = YES;
                 }
             }
@@ -896,6 +909,7 @@ static std::string MasterWithCSS(NSString *css)
     {
         _lastMaxWidth = previous->_lastMaxWidth;
         _size         = previous->_size;
+        _sizeMirror.store(LHPackSize(_size), std::memory_order_relaxed);
         _paintOnly    = YES;
     }
     [self bindContainerLocked];
@@ -1078,13 +1092,19 @@ static std::string MasterWithCSS(NSString *css)
 
 - (CGColorSpaceRef)colorSpace
 {
-    std::lock_guard<std::mutex> guard(_lock);
+    std::lock_guard<std::mutex> guard(_spaceLock);
     return _colorSpace;
+}
+
+- (CGColorSpaceRef)copyDrawingSpace CF_RETURNS_RETAINED
+{
+    std::lock_guard<std::mutex> guard(_spaceLock);
+    return _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
 }
 
 - (void)setColorSpace:(CGColorSpaceRef)colorSpace
 {
-    std::lock_guard<std::mutex> guard(_lock);
+    std::lock_guard<std::mutex> guard(_spaceLock);
     if(colorSpace == _colorSpace)
         return;
     if(_colorSpace)
@@ -1094,8 +1114,18 @@ static std::string MasterWithCSS(NSString *css)
 
 - (CGSize)size
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    return _size;
+    if(_lock.try_lock())
+    {
+        CGSize size = _size;
+        _lock.unlock();
+        return size;
+    }
+    const uint64_t packed = _sizeMirror.load(std::memory_order_relaxed);
+    float          w, h;
+    const uint32_t lo = static_cast<uint32_t>(packed), hi = static_cast<uint32_t>(packed >> 32);
+    std::memcpy(&w, &lo, sizeof(w));
+    std::memcpy(&h, &hi, sizeof(h));
+    return CGSizeMake(w, h);
 }
 
 - (BOOL)clipCulling
@@ -1177,6 +1207,7 @@ static std::string MasterWithCSS(NSString *css)
             _lastMaxWidth       = maxWidth;
             _layoutMilliseconds = NowMs() - t0;
             _size = CGSizeMake(std::max(std::ceil(vw), extent), std::ceil(_doc->height().value()));
+            _sizeMirror.store(LHPackSize(_size), std::memory_order_relaxed);
             return _size;
         }
     }
@@ -1220,6 +1251,7 @@ static std::string MasterWithCSS(NSString *css)
     [self fitViewportHeightLockedWithWidth:width];
     _layoutMilliseconds = NowMs() - t0;
     _size               = CGSizeMake(std::max(std::ceil(width), extent), std::ceil(_doc->height().value()));
+    _sizeMirror.store(LHPackSize(_size), std::memory_order_relaxed);
     return _size;
 }
 
@@ -1819,6 +1851,13 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         }
         if(descendant || std::dynamic_pointer_cast<lh::el_space>(item->src_el()))
             continue;
+        if(item->src_el()->css().get_visibility() != lh::visibility_visible)
+            continue;
+        bool transparent = false;
+        for(const lh::render_item *walk = item; walk && !transparent; walk = walk->parent().get())
+            transparent = walk->src_el()->css().get_opacity() <= 0;
+        if(transparent)
+            continue;
         if(!ignored.empty())
         {
             bool skipped = false;
@@ -1940,7 +1979,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (CGContextRef)createContextWithWidth:(size_t)pw height:(size_t)ph CF_RETURNS_RETAINED
 {
-    CGColorSpaceRef space = _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGColorSpaceRef space = [self copyDrawingSpace];
     CGContextRef    ctx   = CGBitmapContextCreate(nullptr, pw, ph, 8, 0, space,
                                                   kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(space);
@@ -2576,7 +2615,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGSize                size = [self layoutLockedWithMaxWidth:maxWidth];
     std::vector<LHDrawOp> ops;
     LHGPURecorder         recorder;
-    CGColorSpaceRef       space = _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGColorSpaceRef       space = [self copyDrawingSpace];
     [renderer beginRecordingWithScale:scale space:space recorder:&recorder];
     [self recordLockedSize:size ops:ops recorder:recorder];
     CGColorSpaceRelease(space);
@@ -2792,7 +2831,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGColorSpaceRef       given = recorder.space;
     std::vector<LHDrawOp> ops;
     if(!given)
-        recorder.space = _colorSpace ? CGColorSpaceRetain(_colorSpace) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        recorder.space = [self copyDrawingSpace];
     [self recordLockedSize:size ops:ops recorder:recorder];
     if(!given)
     {
