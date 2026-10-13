@@ -2239,6 +2239,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return LHContainer::s_shadow_line_batches.load(std::memory_order_relaxed);
 }
 
++ (void)setExactGroupBoundsEnabled:(BOOL)enabled
+{
+    LHContainer::s_exact_group_bounds.store(enabled, std::memory_order_relaxed);
+}
+
 + (void)setTextBatchingEnabled:(BOOL)enabled
 {
     LHContainer::s_text_batching.store(enabled, std::memory_order_relaxed);

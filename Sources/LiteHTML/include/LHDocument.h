@@ -40,6 +40,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
 /// Groups glyph drawing of non-overlapping text runs into one call per font and colour while drawing tiles.
 + (void)setTextBatchingEnabled:(BOOL)enabled;
++ (void)setExactGroupBoundsEnabled:(BOOL)enabled;
 + (long)shadowLineBatches;
 + (long)sourceFilterCacheHits;
 + (void)setSourceFilterCacheEnabled:(BOOL)enabled;

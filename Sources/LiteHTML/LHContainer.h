@@ -87,6 +87,7 @@ class LHContainer : public litehtml::document_container
     void capture_shape(const litehtml::vector_path& path);
     void set_clip_culling(bool enabled) { m_clip_culling = enabled; }
     static std::atomic<bool> s_text_batching;
+    static std::atomic<bool> s_exact_group_bounds;
     static std::atomic<long> s_shadow_line_batches;
     static std::atomic<long> s_source_filter_hits;
     static std::atomic<bool> s_source_filter_cache;

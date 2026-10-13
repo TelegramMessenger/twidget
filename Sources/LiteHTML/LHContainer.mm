@@ -1578,6 +1578,8 @@ void LHContainer::end_source_filters()
     m_source_filter_scope = false;
 }
 
+std::atomic<bool> LHContainer::s_exact_group_bounds{getenv("LH_NO_EXACT_GROUP_BOUNDS") == nullptr};
+
 std::atomic<bool> LHContainer::s_text_batching{getenv("LH_NO_TEXT_BATCH") == nullptr};
 
 void LHContainer::begin_text_batching(CGContextRef ctx)
@@ -3615,7 +3617,7 @@ void LHContainer::begin_group(lh::uint_ptr hdc, const lh::paint_group& group)
         if(group.opacity < 1 && !g.hidden && m_hidden_depth == 0)
         {
             CGContextSetAlpha(ctx, group.opacity);
-            const CGFloat margin    = group.exact_bounds ? 2 : 64;
+            const CGFloat margin    = group.exact_bounds && s_exact_group_bounds.load(std::memory_order_relaxed) ? 2 : 64;
             CGRect        layerRect = CGRectIntersection(CGRectInset(R(group.bounds), -margin, -margin), CGContextGetClipBoundingBox(ctx));
             CGContextBeginTransparencyLayerWithRect(ctx, CGRectIsNull(layerRect) ? CGRectZero : layerRect, nullptr);
             g.layer = true;
