@@ -108,7 +108,8 @@ final class WidgetShimmers {
             let layer = CALayer()
             layer.contents = tile.image
             layer.contentsScale = scale
-            layer.frame = tile.tile.offsetBy(dx: -tile.clip.minX, dy: -tile.clip.minY)
+            let pixels = CGSize(width: CGFloat(tile.image.width) / scale, height: CGFloat(tile.image.height) / scale)
+            layer.frame = CGRect(origin: CGPoint(x: tile.tile.minX - tile.clip.minX, y: tile.tile.minY - tile.clip.minY), size: pixels)
             container.addSublayer(layer)
             host?.twAddSublayer(container)
             var item = Item(container: container, tile: layer, tileRect: tile.tile, snap: max(scale, 1), area: tile.area, clip: tile.clip, radius: radii[0], x: tile.tile.minX)
