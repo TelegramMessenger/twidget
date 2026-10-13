@@ -11,6 +11,26 @@ struct WidgetScrollGeometry: Equatable {
         return CGPoint(x: max(0, content.width - viewport.width), y: max(0, content.height - viewport.height))
     }
 
+    func offsetToReveal(_ target: CGRect, from offset: CGPoint, block: Int, inline: Int) -> CGPoint {
+        func delta(_ start: CGFloat, _ end: CGFloat, _ viewStart: CGFloat, _ viewEnd: CGFloat, _ alignment: Int) -> CGFloat {
+            switch alignment {
+            case 1:
+                return (start + end - viewStart - viewEnd) / 2
+            case 2:
+                return end - viewEnd
+            case 3:
+                if start < viewStart && end > viewEnd { return 0 }
+                let smaller = end - start <= viewEnd - viewStart
+                if start < viewStart && smaller || end > viewEnd && !smaller { return start - viewStart }
+                if end > viewEnd && smaller || start < viewStart && !smaller { return end - viewEnd }
+                return 0
+            default:
+                return start - viewStart
+            }
+        }
+        return clamp(CGPoint(x: offset.x + delta(target.minX, target.maxX, viewport.minX, viewport.maxX, inline), y: offset.y + delta(target.minY, target.maxY, viewport.minY, viewport.maxY, block)))
+    }
+
     func clamp(_ offset: CGPoint) -> CGPoint {
         let limit = maxOffset
         return CGPoint(x: min(max(0, offset.x), limit.x), y: min(max(0, offset.y), limit.y))
@@ -38,6 +58,7 @@ final class WidgetScrollLayer {
     private(set) var geometry: WidgetScrollGeometry
     private var tiles: [Int: (layer: CALayer, signature: Int)] = [:]
     private var pending: Set<Int> = []
+    private var rasterSource: (document: LHDocument, scale: CGFloat, attribute: String)?
     private var signature = 0
     private var generation = 0
     static let tileSize = CGSize(width: 512, height: 256)
@@ -163,6 +184,7 @@ final class WidgetScrollLayer {
     }
 
     func ensureTiles(document: LHDocument, scale: CGFloat, attribute: String, velocity: CGFloat = 0) {
+        rasterSource = (document, scale, attribute)
         let columns = self.columns()
         let size = WidgetScrollLayer.tileSize
         let visible = CGRect(origin: geometry.clamp(offset), size: geometry.viewport.size)
@@ -209,6 +231,9 @@ final class WidgetScrollLayer {
                     }
                     self.pending.remove(index)
                     guard generation == self.generation, let tile = self.tiles[index], tile.layer === layer else {
+                        if let source = self.rasterSource {
+                            self.ensureTiles(document: source.document, scale: source.scale, attribute: source.attribute)
+                        }
                         return
                     }
                     CATransaction.begin()
@@ -257,6 +282,7 @@ final class WidgetScrolling {
     private(set) var layers: [Int: WidgetScrollLayer] = [:]
     private(set) var offsets: [Int: CGPoint] = [:]
     private(set) var geometries: [Int: WidgetScrollGeometry] = [:]
+    private var depths: [Int: Int] = [:]
     private weak var host: CALayer?
     static let enabled = ProcessInfo.processInfo.environment["TW_NO_SCROLL_LAYERS"] == nil
 
@@ -303,6 +329,16 @@ final class WidgetScrolling {
             found[id] = WidgetScrollGeometry(viewport: viewport, content: content, radii: radii.count == 8 ? radii : [CGFloat](repeating: 0, count: 8))
         }
         geometries = found
+        depths.removeAll(keepingCapacity: true)
+        for id in found.keys {
+            var depth = 0
+            var walk = dom.node(id)?.parent
+            while let parent = walk {
+                if found[dom.publicId(parent)] != nil { depth += 1 }
+                walk = parent.parent
+            }
+            depths[id] = depth
+        }
         for (id, offset) in offsets {
             if found[id] == nil {
                 offsets[id] = nil
@@ -362,6 +398,23 @@ final class WidgetScrolling {
         return changed
     }
 
+    func didScroll(_ id: Int, dom: WidgetDOM, document: LHDocument, scale: CGFloat) -> Bool {
+        for (ancestor, layer) in layers {
+            if let node = dom.node(ancestor), Self.isDescendant(id, of: node, dom: dom) {
+                layer.invalidate()
+                layer.ensureTiles(document: document, scale: scale, attribute: WidgetDOM.idAttribute)
+            }
+        }
+        guard let node = dom.node(id), geometries.keys.contains(where: { Self.isDescendant($0, of: node, dom: dom) }) else { return false }
+        let info = document.scrollers(byAttribute: WidgetDOM.idAttribute)
+        for descendant in Array(geometries.keys) where Self.isDescendant(descendant, of: node, dom: dom) {
+            if let viewport = (info[String(descendant)]?["viewport"] as? NSValue)?.rectValue {
+                geometries[descendant]?.viewport = viewport
+            }
+        }
+        return true
+    }
+
     private static func isDescendant(_ id: Int, of node: WidgetNode, dom: WidgetDOM) -> Bool {
         guard var walk = dom.node(id) else {
             return false
@@ -377,7 +430,11 @@ final class WidgetScrolling {
 
     func scroller(at point: CGPoint, delta: CGPoint) -> Int? {
         let candidates = geometries.filter { $0.value.viewport.contains(point) && ($0.value.maxOffset.y > 0.5 || $0.value.maxOffset.x > 0.5) }
-        for (id, geometry) in candidates.sorted(by: { $0.value.viewport.width * $0.value.viewport.height < $1.value.viewport.width * $1.value.viewport.height }) {
+        for (id, geometry) in candidates.sorted(by: {
+            let leftDepth = depths[$0.key] ?? 0, rightDepth = depths[$1.key] ?? 0
+            if leftDepth != rightDepth { return leftDepth > rightDepth }
+            return $0.value.viewport.width * $0.value.viewport.height < $1.value.viewport.width * $1.value.viewport.height
+        }) {
             let offset = offsets[id] ?? .zero
             let vertical = abs(delta.y) >= abs(delta.x)
             if vertical {

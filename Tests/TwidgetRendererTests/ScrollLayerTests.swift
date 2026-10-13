@@ -4,6 +4,179 @@ import LiteHTML
 @testable import TwidgetRenderer
 
 final class ScrollLayerTests: XCTestCase {
+    func testRevealAlignmentAndNearestEdges() {
+        let geometry = WidgetScrollGeometry(viewport: CGRect(x: 10, y: 20, width: 100, height: 100), content: CGSize(width: 500, height: 600), radii: [])
+        let current = CGPoint(x: 150, y: 150)
+        let target = CGRect(x: 130, y: 150, width: 20, height: 30)
+        XCTAssertEqual(geometry.offsetToReveal(target, from: current, block: 0, inline: 0), CGPoint(x: 270, y: 280))
+        XCTAssertEqual(geometry.offsetToReveal(target, from: current, block: 1, inline: 1), CGPoint(x: 230, y: 245))
+        XCTAssertEqual(geometry.offsetToReveal(target, from: current, block: 2, inline: 2), CGPoint(x: 190, y: 210))
+        XCTAssertEqual(geometry.offsetToReveal(target, from: current, block: 3, inline: 3), CGPoint(x: 190, y: 210))
+        for target in [CGRect(x: 30, y: 40, width: 20, height: 20), CGRect(x: 0, y: 0, width: 150, height: 150)] {
+            XCTAssertEqual(geometry.offsetToReveal(target, from: current, block: 3, inline: 3), current)
+        }
+        XCTAssertEqual(geometry.offsetToReveal(CGRect(x: 0, y: 0, width: 20, height: 30), from: current, block: 3, inline: 3), CGPoint(x: 140, y: 130))
+        XCTAssertEqual(geometry.offsetToReveal(CGRect(x: 0, y: 0, width: 100, height: 110), from: current, block: 3, inline: 3), CGPoint(x: 140, y: 140))
+        XCTAssertEqual(geometry.offsetToReveal(CGRect(x: 30, y: 40, width: 140, height: 150), from: current, block: 3, inline: 3), CGPoint(x: 170, y: 170))
+    }
+
+    func testRevealNewTargetInNestedScrollers() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 200)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 200, height: 180)
+        var scheduled: [() -> Void] = []
+        renderer.schedule = { scheduled.append($0) }
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+        }
+        renderer.load()
+        try send([
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 2, "tag": "style", "attrs": []],
+            ["op": "css", "id": 2, "text": "body{margin:0}#outer{width:120px;height:100px;overflow:auto}#space{width:500px;height:500px;padding-top:200px;box-sizing:border-box}#inner{margin-left:200px;width:180px;height:140px;overflow:auto}#content{position:relative;width:600px;height:500px}#target{position:absolute;left:260px;top:220px;width:40px;height:30px}"],
+            ["op": "ins", "id": 2, "parent": 1],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["id", "outer"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["id", "space"]]], ["op": "ins", "id": 4, "parent": 3],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["id", "inner"]]], ["op": "ins", "id": 5, "parent": 4],
+            ["op": "el", "id": 6, "tag": "div", "attrs": [["id", "content"]]], ["op": "ins", "id": 6, "parent": 5],
+        ])
+        try send([
+            ["op": "el", "id": 7, "tag": "div", "attrs": [["id", "target"]]], ["op": "ins", "id": 7, "parent": 6],
+            ["op": "call", "id": 7, "method": "scrollIntoView", "args": [1, 1, 1, 1]],
+        ])
+        XCTAssertEqual(renderer.scrolling.offset(5), CGPoint(x: 190, y: 165))
+        XCTAssertEqual(renderer.scrolling.offset(3), .zero)
+        try send([["op": "call", "id": 7, "method": "scrollIntoView", "args": [1, 1, 1, 0]]])
+        XCTAssertEqual(renderer.scrolling.offset(5), CGPoint(x: 190, y: 165))
+        XCTAssertEqual(renderer.scrolling.offset(3), CGPoint(x: 230, y: 220))
+        try send([["op": "call", "id": 7, "method": "scrollIntoView", "args": [3, 3, 1, 0]]])
+        XCTAssertEqual(renderer.scrolling.offset(5), CGPoint(x: 190, y: 165))
+        XCTAssertEqual(renderer.scrolling.offset(3), CGPoint(x: 230, y: 220))
+    }
+
+    func testSmoothRevealMovesDocumentAndCanBeInterrupted() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 180), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 200)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 200, height: 180)
+        window.contentView?.addSubview(renderer.view)
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+        }
+        renderer.load()
+        var ops: [[String: Any]] = [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 2, "tag": "style", "attrs": []],
+            ["op": "css", "id": 2, "text": "body{margin:0}#list{width:120px;height:100px;overflow:auto}.row{height:20px}"],
+            ["op": "ins", "id": 2, "parent": 1],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["id", "list"]]], ["op": "ins", "id": 3, "parent": 1],
+        ]
+        for row in 0..<30 {
+            ops.append(["op": "el", "id": 10 + row, "tag": "div", "attrs": [["class", "row"]]])
+            ops.append(["op": "ins", "id": 10 + row, "parent": 3])
+        }
+        try send(ops)
+        pump(1, until: { renderer.scrolling.geometries[3] != nil })
+        func reveal(_ behavior: Int) throws {
+            try send([["op": "call", "id": 39, "method": "scrollIntoView", "args": [3, 3, behavior, 0]]])
+        }
+        try reveal(2)
+        pump(1, until: { renderer.scrolling.offset(3).y > 0 })
+        XCTAssertGreaterThan(renderer.scrolling.offset(3).y, 0)
+        XCTAssertLessThan(renderer.scrolling.offset(3).y, 500)
+        XCTAssertEqual(renderer.elementBounds()[39]?.minY ?? -1, 580 - renderer.scrolling.offset(3).y, accuracy: 1)
+        pump(1, until: { renderer.scrolling.offset(3).y == 500 })
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 500)
+        try send([["op": "prop", "id": 3, "name": "scrollTop", "value": 0]])
+        pump(1, until: { renderer.scrolling.offset(3).y == 0 })
+        try reveal(2)
+        pump(1, until: { renderer.scrolling.offset(3).y > 20 })
+        XCTAssertTrue(renderer.handleScroll(CGPoint(x: 50, y: 50), event: wheel(10)))
+        let interrupted = renderer.scrolling.offset(3)
+        pump(0.4)
+        XCTAssertEqual(renderer.scrolling.offset(3), interrupted)
+        try reveal(2)
+        pump(1, until: { renderer.scrolling.offset(3).y > interrupted.y + 5 })
+        try send([["op": "prop", "id": 3, "name": "scrollTop", "value": 75]])
+        pump(0.4)
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 75)
+        try reveal(1)
+        pump(1, until: { renderer.scrolling.offset(3).y == 500 })
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 500)
+    }
+
+    func testNestedScrollRefreshesCachedAncestorAndHitRegion() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 200)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 200, height: 180)
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+        }
+        renderer.load()
+        var ops: [[String: Any]] = [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 2, "tag": "style", "attrs": []],
+            ["op": "css", "id": 2, "text": "body{margin:0}#outer{width:120px;height:100px;overflow:auto}#inner{height:100px;overflow:auto}.space{height:200px}.row{height:20px}"],
+            ["op": "ins", "id": 2, "parent": 1],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["id", "outer"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["class", "space"]]], ["op": "ins", "id": 4, "parent": 3],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["id", "inner"]]], ["op": "ins", "id": 5, "parent": 3],
+            ["op": "el", "id": 6, "tag": "div", "attrs": [["class", "space"]]], ["op": "ins", "id": 6, "parent": 3],
+        ]
+        for row in 0..<30 {
+            ops.append(["op": "el", "id": 10 + row, "tag": "div", "attrs": [["class", "row"], ["style", "background:\(row % 2 == 0 ? "#f00" : "#00f")"]]])
+            ops.append(["op": "ins", "id": 10 + row, "parent": 5])
+        }
+        try send(ops)
+        pump(1, until: { renderer.scrolling.layers[3]?.rasterCount ?? 0 > 0 })
+        let layer = try XCTUnwrap(renderer.scrolling.layers[3])
+        XCTAssertNil(renderer.scrolling.layers[5])
+        try send([["op": "prop", "id": 3, "name": "scrollTop", "value": 200]])
+        pump(1, until: { renderer.scrolling.offset(3).y == 200 })
+        renderer.viewResized()
+        XCTAssertEqual(renderer.scrolling.geometries[5]?.viewport.minY, 0)
+        func tileRed() -> Int? {
+            guard let tile = layer.content.sublayers?.first(where: { $0.frame.contains(CGPoint(x: 100, y: 250)) }), let image = tile.contents else { return nil }
+            return red(image as! CGImage, 250 - Int(tile.frame.minY), scale: Int(tile.contentsScale))
+        }
+        pump(1, until: { tileRed() == 255 })
+        XCTAssertEqual(tileRed(), 255)
+        XCTAssertTrue(renderer.handleScroll(CGPoint(x: 50, y: 50), event: wheel(-20)))
+        XCTAssertEqual(renderer.scrolling.offset(5).y, 20)
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 200)
+        pump(1, until: { tileRed() == 0 })
+        XCTAssertEqual(tileRed(), 0)
+    }
+
+    func testInvalidatedPendingScrollTileRetriesWithLatestDocument() throws {
+        let before = LHDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:red'></div></div></body>", css: nil)
+        let after = LHDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:blue'></div></div></body>", css: nil)
+        for document in [before, after] { _ = document.layout(maxWidth: 120, preferredWidth: 120) }
+        let geometry = WidgetScrollGeometry(viewport: CGRect(x: 0, y: 0, width: 120, height: 100), content: CGSize(width: 120, height: 500), radii: [])
+        let layer = WidgetScrollLayer(id: 3, geometry: geometry)
+        let gate = DispatchSemaphore(value: 0)
+        WidgetScrollLayer.queue.async { gate.wait() }
+        layer.update(signature: 1)
+        layer.ensureTiles(document: before, scale: 1, attribute: "id")
+        layer.update(signature: 2)
+        layer.ensureTiles(document: after, scale: 1, attribute: "id")
+        gate.signal()
+        pump(2, until: { layer.rasterCount >= layer.tileCount })
+        XCTAssertGreaterThan(layer.tileCount, 0)
+        XCTAssertEqual(layer.rasterCount, layer.tileCount)
+        for tile in layer.content.sublayers ?? [] {
+            let image = try XCTUnwrap(tile.contents) as! CGImage
+            XCTAssertEqual(red(image, 10, scale: 1), 0)
+        }
+    }
+
     private func list(rows: Int = 100) -> LHDocument {
         let items = (0..<rows).map { "<div style='height:20px;background:\($0 % 2 == 0 ? "#f00" : "#00f")'>\($0)</div>" }.joined()
         let document = LHDocument(html: "<body style='margin:0;background:#fff'><div style='height:10px'></div><div id='list' style='height:100px;overflow:auto'>\(items)</div></body>", css: nil)

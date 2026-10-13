@@ -285,6 +285,8 @@ public final class LiteHTMLWidgetRenderer {
 
     public func destroy() {
         destroyed = true
+        smoothScrolls.removeAll()
+        pendingScrollRequests.removeAll()
         pointerCaptureId = 0
         pressId = 0
         form.rangeId = 0
@@ -1000,6 +1002,7 @@ public final class LiteHTMLWidgetRenderer {
             overrides = rest
             layout(overrides)
         }
+        revealPendingScrollTargets()
         scheduleDrivenEnds(now: now)
         updateCanvasPresentation()
         if needsFrames && !frozen {
@@ -1928,19 +1931,7 @@ public final class LiteHTMLWidgetRenderer {
             let base = method == "scrollBy" ? scrolling.offset(id) : .zero
             scrollProgrammatically(id, CGPoint(x: base.x + CGFloat(left), y: base.y + CGFloat(top)))
         case "scrollIntoView":
-            guard let box = elementBounds()[id] else {
-                return
-            }
-            var walk = node.parent
-            while let parent = walk {
-                let scroller = dom.publicId(parent)
-                if let geometry = scrolling.geometries[scroller] {
-                    let offset = scrolling.offset(scroller)
-                    scrollProgrammatically(scroller, CGPoint(x: offset.x, y: offset.y + box.minY - geometry.viewport.minY))
-                    return
-                }
-                walk = parent.parent
-            }
+            pendingScrollRequests.append((id, args))
         case "observeResize":
             observedResize.insert(id)
             lastResize[id] = nil
@@ -2170,6 +2161,8 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         frozen = true
+        smoothScrolls.removeAll()
+        pendingScrollRequests.removeAll()
         pointerCaptureId = 0
         pressId = 0
         form.rangeId = 0
@@ -2330,7 +2323,7 @@ public final class LiteHTMLWidgetRenderer {
         } else if !compositor.ids.isEmpty && animator.isActive && !frozen {
             setNeedsRender()
         }
-        if isOnScreen && (needsFrames || frameRequested || !pendingMoves.isEmpty) && !frozen {
+        if isOnScreen && (needsFrames || frameRequested || !pendingMoves.isEmpty || !smoothScrolls.isEmpty) && !frozen {
             if needsFrames {
                 renderAnimationFrame()
             }
@@ -2374,6 +2367,7 @@ public final class LiteHTMLWidgetRenderer {
             clock?.stop()
             return
         }
+        if !frozen { advanceSmoothScrolls() }
         if !pendingMoves.isEmpty {
             let moves = pendingMoves.values
             pendingMoves.removeAll()
@@ -2387,7 +2381,7 @@ public final class LiteHTMLWidgetRenderer {
         } else if needsFrames && !frozen && isOnScreen {
             renderAnimationFrame()
         }
-        var worked = needsFrames
+        var worked = needsFrames || !smoothScrolls.isEmpty
         if frameRequested {
             worked = true
             let now = CACurrentMediaTime()
@@ -2402,7 +2396,7 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         idleTicks = worked ? 0 : idleTicks + 1
-        if !frameRequested && pendingMoves.isEmpty && !needsFrames && idleTicks > 8 {
+        if !frameRequested && pendingMoves.isEmpty && !needsFrames && smoothScrolls.isEmpty && idleTicks > 8 {
             releaseTickRender()
             clock?.stop()
         }
@@ -2477,8 +2471,10 @@ public final class LiteHTMLWidgetRenderer {
         case .ignored:
             return false
         case .unchanged:
+            smoothScrolls.removeAll()
             return true
         case let .moved(id):
+            smoothScrolls.removeAll()
             scrolled(id)
             return true
         }
@@ -2486,6 +2482,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private func scrolled(_ id: Int) {
         boundsValid = false
+        if let document = document, scrolling.didScroll(id, dom: dom, document: document, scale: documentView.scale) {
+            documentView.publishScrollRegions(scrolling.geometries.values.map { $0.viewport })
+        }
         if compositor.invalidateScroll(id, dom: dom) {
             setNeedsRender()
         }
@@ -2521,7 +2520,71 @@ public final class LiteHTMLWidgetRenderer {
         scrollProgrammatically(id, offset)
     }
 
-    private func scrollProgrammatically(_ id: Int, _ offset: CGPoint) {
+    private var pendingScrollRequests: [(Int, [Any])] = []
+    private struct SmoothScroll {
+        var from: CGPoint
+        var to: CGPoint
+        var start: CFTimeInterval
+    }
+    private var smoothScrolls: [Int: SmoothScroll] = [:]
+
+    private func revealPendingScrollTargets() {
+        guard !pendingScrollRequests.isEmpty, let document = document else { return }
+        let requests = pendingScrollRequests
+        pendingScrollRequests.removeAll()
+        for (id, args) in requests {
+            guard let node = dom.node(id), dom.isAttached(node), var target = elementBounds()[id] else { continue }
+            let info = document.scrollers(byAttribute: WidgetDOM.idAttribute)
+            let block = (args.first as? NSNumber)?.intValue ?? 0
+            let inline = (args.count > 1 ? args[1] as? NSNumber : nil)?.intValue ?? 3
+            let smooth = (args.count > 2 ? args[2] as? NSNumber : nil)?.intValue == 2
+            let nearest = (args.count > 3 ? args[3] as? NSNumber : nil)?.intValue == 1
+            var walk = node.parent
+            while let parent = walk {
+                let scroller = dom.publicId(parent)
+                if var geometry = scrolling.geometries[scroller], let viewport = (info[String(scroller)]?["viewport"] as? NSValue)?.rectValue {
+                    geometry.viewport = viewport
+                    let current = scrolling.offset(scroller)
+                    let next = geometry.offsetToReveal(target, from: current, block: block, inline: inline)
+                    scrollProgrammatically(scroller, next, smooth: smooth)
+                    target = target.offsetBy(dx: current.x - next.x, dy: current.y - next.y)
+                    if nearest { break }
+                }
+                walk = parent.parent
+            }
+        }
+    }
+
+    private func advanceSmoothScrolls() {
+        let now = CACurrentMediaTime()
+        for (id, animation) in smoothScrolls {
+            guard scrolling.geometries[id] != nil else {
+                smoothScrolls[id] = nil
+                continue
+            }
+            let progress = min(1, max(0, (now - animation.start) / 0.3))
+            let eased = CGFloat(progress * progress * (3 - 2 * progress))
+            let next = CGPoint(x: animation.from.x + (animation.to.x - animation.from.x) * eased, y: animation.from.y + (animation.to.y - animation.from.y) * eased)
+            applyScrollOffset(id, next)
+            if progress == 1 { smoothScrolls[id] = nil }
+        }
+    }
+
+    private func scrollProgrammatically(_ id: Int, _ offset: CGPoint, smooth: Bool = false) {
+        smoothScrolls[id] = nil
+        if smooth, !frozen, let geometry = scrolling.geometries[id] {
+            let from = scrolling.offset(id)
+            let to = geometry.clamp(offset)
+            if from != to {
+                smoothScrolls[id] = SmoothScroll(from: from, to: to, start: CACurrentMediaTime())
+                startClock()
+            }
+        } else {
+            applyScrollOffset(id, offset)
+        }
+    }
+
+    private func applyScrollOffset(_ id: Int, _ offset: CGPoint) {
         if scrolling.setOffset(id, offset, document: document) {
             if let layer = scrolling.layers[id], let document = document {
                 layer.ensureTiles(document: document, scale: documentView.scale, attribute: WidgetDOM.idAttribute)
