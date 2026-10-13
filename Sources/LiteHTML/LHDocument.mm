@@ -1974,7 +1974,13 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         }
         return true;
     };
-    for(lh::element::ptr el = _doc->root_render()->get_element_by_point(x, y, x, y, hittable); el; el = el->parent())
+    lh::element::ptr hit = _doc->root_render()->get_element_by_point(x, y, x, y, hittable);
+    if(auto svg = std::dynamic_pointer_cast<lh::el_svg>(hit))
+    {
+        if(lh::element::ptr inner = svg->element_at(svg->get_placement(), x, y))
+            hit = inner;
+    }
+    for(lh::element::ptr el = hit; el; el = el->parent())
     {
         if(const char* value = el->get_attr(key))
             return @(value);

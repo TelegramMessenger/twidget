@@ -33,4 +33,20 @@ static NSString *Hit(NSString *html, CGPoint point)
     XCTAssertNotEqualObjects(Hit(html, CGPointMake(40, 90)), @"outer");
 }
 
+- (void)testSVGAnchorShapesAreHitTargets
+{
+    NSString *html = @"<svg data-id='svg' width='400' height='150' viewBox='0 0 200 75'><rect data-id='bg' width='200' height='75' fill='#eee'/><a href='https://example.com' data-id='link'><g transform='translate(100,0)'><rect data-id='shape' x='10' y='10' width='50' height='30' fill='blue'/></g></a></svg>";
+    XCTAssertEqualObjects(Hit(html, CGPointMake(230, 40)), @"shape");
+    XCTAssertEqualObjects(Hit(html, CGPointMake(20, 20)), @"bg");
+    XCTAssertEqualObjects(Hit(html, CGPointMake(380, 140)), @"bg");
+}
+
+- (void)testSVGLaterShapesWinAndEmptyAreasHitTheSVG
+{
+    NSString *html = @"<svg data-id='svg' width='300' height='100'><circle data-id='under' cx='50' cy='50' r='40'/><a href='https://example.com' data-id='link'><circle data-id='over' cx='60' cy='50' r='20'/></a></svg>";
+    XCTAssertEqualObjects(Hit(html, CGPointMake(60, 50)), @"over");
+    XCTAssertEqualObjects(Hit(html, CGPointMake(20, 50)), @"under");
+    XCTAssertEqualObjects(Hit(html, CGPointMake(250, 50)), @"svg");
+}
+
 @end

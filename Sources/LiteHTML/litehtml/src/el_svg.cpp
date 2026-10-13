@@ -700,11 +700,61 @@ namespace litehtml
             document_container* m_container;
             uint_ptr            m_hdc;
             float               m_view[4];
+            bool                m_hit_mode = false;
+            float               m_px       = 0;
+            float               m_py       = 0;
+            transform_matrix    m_matrix;
+            element::ptr        m_hit;
+
+            bool hits(float x0, float y0, float x1, float y1, float slop) const
+            {
+                float min_x = 1e30f, min_y = 1e30f, max_x = -1e30f, max_y = -1e30f;
+                for(float x : {x0, x1})
+                {
+                    for(float y : {y0, y1})
+                    {
+                        const float tx = m_matrix.a * x + m_matrix.c * y + m_matrix.tx;
+                        const float ty = m_matrix.b * x + m_matrix.d * y + m_matrix.ty;
+                        min_x          = std::min(min_x, tx);
+                        min_y          = std::min(min_y, ty);
+                        max_x          = std::max(max_x, tx);
+                        max_y          = std::max(max_y, ty);
+                    }
+                }
+                return m_px >= min_x - slop && m_px <= max_x + slop && m_py >= min_y - slop && m_py <= max_y + slop;
+            }
+
+            void hit_path(const element::ptr& el, const vector_path& path)
+            {
+                if(path.points.size() < 2)
+                {
+                    return;
+                }
+                float min_x = path.points[0], min_y = path.points[1], max_x = min_x, max_y = min_y;
+                for(size_t i = 0; i + 1 < path.points.size(); i += 2)
+                {
+                    min_x = std::min(min_x, path.points[i]);
+                    max_x = std::max(max_x, path.points[i]);
+                    min_y = std::min(min_y, path.points[i + 1]);
+                    max_y = std::max(max_y, path.points[i + 1]);
+                }
+                const float scale = std::sqrt(std::abs(m_matrix.a * m_matrix.d - m_matrix.b * m_matrix.c));
+                const float slop  = std::max(0.f, svg_number(el, _stroke_width_, 1)) * scale / 2;
+                if(hits(min_x, min_y, max_x, max_y, slop))
+                {
+                    m_hit = el;
+                }
+            }
 
             void paint(const element::ptr& el, vector_path& path)
             {
                 if(path.ops.empty())
                 {
+                    return;
+                }
+                if(m_hit_mode)
+                {
+                    hit_path(el, path);
                     return;
                 }
                 path.fill   = svg_paint(el, _fill_, web_color::black, true, path.fill_color, m_container);
@@ -805,6 +855,14 @@ namespace litehtml
                 }
                 const auto& fm = el->css().get_font_metrics();
                 position    pos(pixel_t(x), pixel_t(y) - fm.ascent, width, fm.height);
+                if(m_hit_mode)
+                {
+                    if(hits(pos.left().value(), pos.top().value(), pos.right().value(), pos.bottom().value(), 0))
+                    {
+                        m_hit = el;
+                    }
+                    return;
+                }
                 m_container->draw_text(m_hdc, collapsed.c_str(), font, color, pos);
             }
 
@@ -814,6 +872,22 @@ namespace litehtml
                 m_hdc(hdc)
             {
                 std::copy(view, view + 4, m_view);
+            }
+
+            svg_painter(document_container* container, const float view[4], const transform_matrix& matrix, float x, float y) :
+                m_container(container),
+                m_hdc(0),
+                m_hit_mode(true),
+                m_px(x),
+                m_py(y),
+                m_matrix(matrix)
+            {
+                std::copy(view, view + 4, m_view);
+            }
+
+            element::ptr hit() const
+            {
+                return m_hit;
             }
 
             static int attribute_visibility(const element::ptr& el)
@@ -871,6 +945,12 @@ namespace litehtml
                     group.opacity = opacity;
                     group.bounds  = position(-100000, -100000, 200000, 200000);
                     bool grouped  = opacity < 1 || !group.matrix.is_identity();
+                    const transform_matrix saved = m_matrix;
+                    if(m_hit_mode)
+                    {
+                        m_matrix = group.matrix.then(m_matrix);
+                        grouped  = false;
+                    }
                     if(grouped)
                     {
                         m_container->begin_group(m_hdc, group);
@@ -952,6 +1032,7 @@ namespace litehtml
                     {
                         m_container->end_group(m_hdc);
                     }
+                    m_matrix = saved;
                 }
             }
         };
@@ -1050,6 +1131,18 @@ namespace litehtml
         }
         group.matrix = {sx, 0, 0, sy, tx - view[0] * sx, ty - view[1] * sy};
         group.bounds = position(pixel_t(view[0]), pixel_t(view[1]), pixel_t(view[2]), pixel_t(view[3]));
+    }
+
+    element::ptr el_svg::element_at(const position& pos, pixel_t x, pixel_t y)
+    {
+        if(pos.width <= 0_px || pos.height <= 0_px || !pos.is_point_inside(x, y))
+            return nullptr;
+        paint_group group;
+        float       view[4];
+        view_group(pos, view, group);
+        svg_painter painter(doc_ptr()->container(), view, group.matrix, x.value(), y.value());
+        painter.draw_children(shared_from_this());
+        return painter.hit();
     }
 
     bool el_svg::paint_shapes(uint_ptr hdc, const position& pos)
