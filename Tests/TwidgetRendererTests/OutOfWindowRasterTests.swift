@@ -90,8 +90,21 @@ final class OutOfWindowRasterTests: XCTestCase {
     }
 
     func testPartialTilesAcrossFractionalEdgesMatchFullRasters() {
+        _ = assertPartialTilesMatchFullRasters(tileHeight: 127.3, frames: 50, pause: 0.03) { frame in
+            (127.1 + Double((frame * 7) % 15) / 100, 107.1 + Double((frame * 17) % 150) / 10)
+        }
+    }
+
+    func testSpareRastersOfBoxCrossingTileEdgeMatchFullRasters() {
+        let reused = assertPartialTilesMatchFullRasters(tileHeight: 128, frames: 80, pause: 0.01) { frame in
+            (20 + Double((frame * 13) % 40) / 10, 105.2 + Double((frame * 29) % 70) / 10)
+        }
+        XCTAssertGreaterThan(reused, 0)
+    }
+
+    private func assertPartialTilesMatchFullRasters(tileHeight: CGFloat, frames: Int, pause: TimeInterval, box: (Int) -> (left: Double, width: Double)) -> Int {
         let previousTileHeight = WidgetDocumentView.tileHeight
-        WidgetDocumentView.tileHeight = 127.3
+        WidgetDocumentView.tileHeight = tileHeight
         defer { WidgetDocumentView.tileHeight = previousTileHeight }
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 280), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -111,14 +124,15 @@ final class OutOfWindowRasterTests: XCTestCase {
         defer { renderer.destroy() }
         renderer.send(ops("{\"op\":\"el\",\"id\":7,\"tag\":\"body\",\"attrs\":[[\"style\",\"margin:0;height:270px\"]],\"adopt\":\"body\"},{\"op\":\"el\",\"id\":9,\"tag\":\"div\",\"attrs\":[[\"style\",\"height:130px;width:250px;margin:20px;background:#d33;border-radius:8px\"]]},{\"op\":\"ins\",\"parent\":7,\"id\":9,\"before\":null}"))
         pump(5, queue: queue, until: { renderer.tileLayerCount > 0 && !renderer.tilesPreparing && queue.count == 0 })
-        for frame in 0..<50 {
-            let width = 107.1 + Double((frame * 17) % 150) / 10
-            let left = 127.1 + Double((frame * 7) % 15) / 100
+        let reusedBefore = WidgetTileSpares.reused
+        for frame in 0..<frames {
+            let (left, width) = box(frame)
             renderer.send(ops("{\"op\":\"attr\",\"id\":9,\"name\":\"style\",\"value\":\"height:130px;width:\(width)px;margin:20px 0 0 \(left)px;background:#d33;border-radius:8px\"}"))
-            pump(0.03, queue: queue, until: { false })
+            pump(pause, queue: queue, until: { false })
             pump(3, queue: queue, until: { !renderer.tilesPreparing && queue.count == 0 })
-            XCTAssertEqual(renderer.staleTileCount, 0, "frame \(frame)")
+            XCTAssertEqual(renderer.staleTileCount, 0, "tile \(tileHeight) frame \(frame)")
         }
+        return WidgetTileSpares.reused - reusedBefore
     }
 
 }
