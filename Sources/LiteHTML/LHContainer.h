@@ -225,6 +225,22 @@ class LHContainer : public litehtml::document_container
         std::vector<CGRect>  inks;
     };
     std::vector<TextBatch>   m_text_batches;
+    struct ShadowRun
+    {
+        std::string text;
+        CGFloat     x = 0, baseline = 0;
+    };
+    struct ShadowBatch
+    {
+        CGContextRef           ctx  = nullptr;
+        const void*            font = nullptr;
+        litehtml::web_color    color;
+        CGFloat                baseline = 0;
+        CGRect                 box      = CGRectNull;
+        std::vector<ShadowRun> runs;
+    };
+    ShadowBatch              m_shadow_batch;
+    void                     flush_shadow_batch();
     CGContextRef             m_batch_ctx = nullptr;
     bool                     clips_needed(CGRect bounds) const;
     bool                     m_shapes_bad = false;

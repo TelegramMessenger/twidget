@@ -1571,8 +1571,97 @@ void LHContainer::end_text_batching()
     m_batch_ctx = nullptr;
 }
 
+static bool SameColor(const lh::web_color& a, const lh::web_color& b)
+{
+    return a.red == b.red && a.green == b.green && a.blue == b.blue && a.alpha == b.alpha && a.is_current_color == b.is_current_color;
+}
+
+void LHContainer::flush_shadow_batch()
+{
+    auto& batch = m_shadow_batch;
+    if(batch.runs.empty())
+        return;
+    auto*        f   = reinterpret_cast<Font*>(const_cast<void*>(batch.font));
+    CGContextRef ctx = batch.ctx;
+    CGFloat      reach = 0;
+    for(const auto& shadow : f->shadows)
+        reach = std::max<CGFloat>(reach, shadow.blur * 1.5 + std::max(std::fabs(shadow.x), std::fabs(shadow.y)));
+    const CGRect ink = CGRectInset(batch.box, -(reach + 4), -(reach + 4));
+    auto glyphsAt = [&](CGContextRef target, const ShadowRun& run, CGFloat dx) {
+        SimpleRun simple;
+        if(ShapeSimple(*f->shared, run.text.c_str(), simple))
+        {
+            CGPoint points[LHSimpleShaper::kMaxLength];
+            for(size_t i = 0; i < simple.count; i++)
+                points[i] = CGPointMake(simple.xs[i], 0);
+            CGContextSetTextPosition(target, run.x + dx, run.baseline);
+            CTFontDrawGlyphs(f->shared->font, simple.glyphs, points, simple.count, target);
+            return;
+        }
+        CTLineRef line = CopyLine(*f->shared, run.text.c_str());
+        if(!line)
+            return;
+        CGContextSetTextPosition(target, run.x + dx, run.baseline);
+        CTLineDraw(line, target);
+        CFRelease(line);
+    };
+    CGContextSaveGState(ctx);
+    CGContextSetAllowsFontSmoothing(ctx, true);
+    CGContextSetShouldSmoothFonts(ctx, f->smoothing == lh::font_smoothing_auto || f->smoothing == lh::font_smoothing_subpixel_antialiased);
+    if(f->smoothing == lh::font_smoothing_none)
+        CGContextSetShouldAntialias(ctx, false);
+    CGAffineTransform ctm   = CGContextGetCTM(ctx);
+    CGFloat           scale = std::sqrt(std::fabs(ctm.a * ctm.d - ctm.b * ctm.c));
+    for(auto it = f->shadows.rbegin(); it != f->shadows.rend(); ++it)
+    {
+        const LHTextShadow& shadow = *it;
+        if(shadow.color.alpha == 0)
+            continue;
+        auto paint = [&](CGContextRef target) {
+            CGFloat           far = ink.size.width + reach * 4 + 1000;
+            CGAffineTransform m   = CGContextGetCTM(target);
+            CGFloat           ms  = std::sqrt(std::fabs(m.a * m.d - m.b * m.c));
+            CGColorRef        sc  = CreateColor(shadow.color);
+            CGContextSaveGState(target);
+            CGContextSetShadowWithColor(target, CGSizeApplyAffineTransform(CGSizeMake(shadow.x - far, shadow.y), m), shadow.blur * ms, sc);
+            CGColorRelease(sc);
+            CGContextSetRGBFillColor(target, 0, 0, 0, 1);
+            CGContextSetTextMatrix(target, CGAffineTransformMakeScale(1, -1));
+            for(const auto& run : batch.runs)
+                glyphsAt(target, run, far);
+            CGContextRestoreGState(target);
+        };
+        if(shadow.blur * scale > 24)
+        {
+            std::string key = "tshadowline:";
+            for(const auto& run : batch.runs)
+            {
+                key.append(run.text);
+                key.push_back('\x1f');
+                AppendNumber(key, run.x - ink.origin.x);
+                AppendNumber(key, run.baseline - ink.origin.y);
+            }
+            AppendInteger(key, reinterpret_cast<intptr_t>(f->shared.get()));
+            for(CGFloat v : {shadow.x, shadow.y, shadow.blur, ink.size.width, ink.size.height})
+                AppendNumber(key, v);
+            AppendInteger(key, (shadow.color.red << 24) | (shadow.color.green << 16) | (shadow.color.blue << 8) | shadow.color.alpha);
+            if(DrawDownsampled(ctx, ink, key, shadow.blur, paint))
+                continue;
+        }
+        paint(ctx);
+    }
+    SetFill(ctx, batch.color);
+    CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
+    for(const auto& run : batch.runs)
+        glyphsAt(ctx, run, 0);
+    CGContextRestoreGState(ctx);
+    batch.runs.clear();
+    batch.box = CGRectNull;
+}
+
 void LHContainer::flush_text()
 {
+    flush_shadow_batch();
     for(auto& batch : m_text_batches)
     {
         if(batch.glyphs.empty())
@@ -1669,10 +1758,32 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
         ctx = m_capture;
     }
 
+    if(ctx == m_batch_ctx && !m_capture && !f->shadows.empty() && !f->underline && !f->overline && !f->strike && !clips_needed(ink))
+    {
+        if(!m_text_batches.empty())
+            flush_text();
+        const CGFloat baseline = F(pos.y) + f->shared->ascent;
+        auto&         batch    = m_shadow_batch;
+        if(!batch.runs.empty() && (batch.ctx != ctx || batch.font != f || !SameColor(batch.color, color) || std::fabs(batch.baseline - baseline) > 0.5 || batch.runs.size() >= 256))
+            flush_shadow_batch();
+        if(batch.runs.empty())
+        {
+            batch.ctx      = ctx;
+            batch.font     = f;
+            batch.color    = color;
+            batch.baseline = baseline;
+            batch.box      = CGRectNull;
+        }
+        batch.runs.push_back({text, F(pos.x), baseline});
+        batch.box = CGRectUnion(batch.box, box);
+        return;
+    }
     SimpleRun simple;
     const bool simpleRun = ShapeSimple(*f->shared, text, simple);
     if(simpleRun && ctx == m_batch_ctx && !m_capture && f->shadows.empty() && !f->underline && !f->overline && !f->strike && !clips_needed(ink))
     {
+        if(!m_shadow_batch.runs.empty())
+            flush_shadow_batch();
         const CGRect glyphBox = CGRectInset(CGRectMake(F(pos.x), F(pos.y), std::max<CGFloat>(simple.width, 0), box.size.height), -2, -2);
         TextBatch* target = nullptr;
         bool       overlap = false;
