@@ -380,6 +380,10 @@ public final class LiteHTMLWidgetRenderer {
         return documentView.preparedMilliseconds
     }
 
+    public static var colorSpaceChanges: Int {
+        return WidgetCompositor.totalSpaceChanges
+    }
+
     public static var totalPromotions: Int {
         return WidgetCompositor.totalPromotions
     }

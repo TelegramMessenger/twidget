@@ -374,6 +374,13 @@ final class WidgetCompositor {
     private(set) var promotions = 0
     private static let promotionLock = NSLock()
     private static var promotionTotal = 0
+    private static var spaceChanges = 0
+
+    static var totalSpaceChanges: Int {
+        promotionLock.lock()
+        defer { promotionLock.unlock() }
+        return spaceChanges
+    }
 
     static func countPromotion() {
         promotionLock.lock()
@@ -965,6 +972,9 @@ final class WidgetCompositor {
     func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
         if let previous = displaySpace, !CFEqual(previous, space) {
             spaceGeneration += 1
+            WidgetCompositor.promotionLock.lock()
+            WidgetCompositor.spaceChanges += 1
+            WidgetCompositor.promotionLock.unlock()
         }
         displaySpace = space
         guard let host = host else {
