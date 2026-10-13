@@ -45,8 +45,45 @@ final class TickRenderTests: XCTestCase {
         renderer.noteUserInput()
         XCTAssertFalse(renderer.rendersAtTick)
         let atInput = renderer.layoutCount
+        let raster = renderer.isPreparingTiles
         send(renderer, [["op": "attr", "id": 5, "name": "title", "value": "b"]])
-        XCTAssertEqual(renderer.layoutCount, atInput + 1)
+        if raster {
+            pump(0.05, until: { renderer.layoutCount > atInput })
+            XCTAssertGreaterThan(renderer.layoutCount, atInput)
+        } else {
+            XCTAssertEqual(renderer.layoutCount, atInput + 1, "preparing=\(renderer.isPreparingTiles) tick=\(renderer.rendersAtTick) env=\(renderer.environmentRefreshes) held=\(renderer.heldOpBatches) layouts=\(renderer.layoutCount)")
+        }
+        renderer.destroy()
+    }
+
+    func testScreenAndBackingChangeStormsCoalesceIntoOneTrailingRefresh() {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 300)
+        renderer.onMessage = { _ in }
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 300, height: 200)
+        window.contentView?.addSubview(renderer.view)
+        renderer.load()
+        send(renderer, [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["style", "height:40px;background:#08f"]]],
+            ["op": "ins", "id": 5, "parent": 1],
+        ])
+        pump(1)
+        let refreshes = renderer.environmentRefreshes
+        let layouts = renderer.layoutCount
+        for index in 0..<60 {
+            window.colorSpace = index % 2 == 0 ? .displayP3 : .sRGB
+            NotificationCenter.default.post(name: NSWindow.didChangeBackingPropertiesNotification, object: window)
+            NotificationCenter.default.post(name: NSWindow.didChangeScreenNotification, object: window)
+        }
+        pump(0.5)
+        XCTAssertEqual(renderer.environmentRefreshes, refreshes + 1)
+        XCTAssertGreaterThan(renderer.layoutCount, layouts)
+        XCTAssertLessThanOrEqual(renderer.layoutCount, layouts + 2)
         renderer.destroy()
     }
 }

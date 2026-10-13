@@ -685,6 +685,10 @@ public final class LiteHTMLWidgetRenderer {
     static var inputImmediateWindow: CFTimeInterval = 0.25
     private var lastInputAt: CFTimeInterval = -1
 
+    var heldOpBatches: Int {
+        return held.count
+    }
+
     var isPreparingTiles: Bool {
         return documentView.preparing
     }
@@ -1974,6 +1978,27 @@ public final class LiteHTMLWidgetRenderer {
 
     func backingPropertiesChanged() {
         setNeedsRender()
+    }
+
+    static var environmentCoalesce: TimeInterval = ProcessInfo.processInfo.environment["TW_ENV_COALESCE"].flatMap { Double($0) } ?? 0.1
+    private var environmentPending = false
+    public private(set) var environmentRefreshes = 0
+
+    func environmentChanged() {
+        guard !environmentPending else {
+            return
+        }
+        environmentPending = true
+        scheduleAfter(LiteHTMLWidgetRenderer.environmentCoalesce) { [weak self] in
+            guard let self = self, !self.destroyed else {
+                return
+            }
+            self.environmentPending = false
+            self.environmentRefreshes += 1
+            self.screenChanged()
+            self.documentView.scaleChanged()
+            self.setNeedsRender()
+        }
     }
 
     private var display: CGDirectDisplayID?
@@ -3321,7 +3346,7 @@ class WidgetDocumentView: NSView {
         captureWindowState()
         if detached {
             toOwner { owner in
-                owner.documentViewScaleChanged()
+                owner.environmentChanged()
             }
             return
         }
@@ -3329,7 +3354,7 @@ class WidgetDocumentView: NSView {
             removeTiles()
         }
         markNeedsDisplay()
-        owner?.backingPropertiesChanged()
+        owner?.environmentChanged()
     }
 
     func retire() -> [AnyObject] {
@@ -3717,11 +3742,11 @@ class WidgetDocumentView: NSView {
             }
             keyObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.didChangeBackingPropertiesNotification, object: window, queue: .main) { [weak self] _ in
                 self?.captureWindowState()
-                self?.toOwner { $0.backingPropertiesChanged() }
+                self?.toOwner { $0.environmentChanged() }
             })
             screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) { [weak self] _ in
                 self?.captureWindowState()
-                self?.toOwner { $0.screenChanged() }
+                self?.toOwner { $0.environmentChanged() }
             }
             occlusionObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
                 self?.occlusionTrusted = true
