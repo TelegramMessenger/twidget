@@ -1028,17 +1028,27 @@ namespace litehtml
         {
             html_hole& hole   = m_holes[changes[entry.first].first];
             int        region = 0;
-            if(!apply_retag(hole.owner, entry.second, true, &region))
+            auto       tag    = std::static_pointer_cast<html_tag>(hole.owner);
+            const bool fast   = tag->flip_class(hole.value, changes[entry.first].second, m_match_epoch, &region);
+            if(!fast)
             {
-                keep_tree  = false;
-                paint_only = false;
+                if(!apply_retag(hole.owner, entry.second, true, &region))
+                {
+                    keep_tree  = false;
+                    paint_only = false;
+                    tag->forget_flips();
+                } else
+                {
+                    tag->note_flip(hole.value, changes[entry.first].second, region);
+                }
             }
             if(m_patch_confined && region == 1)
                 m_patch_regions.push_back(hole.owner);
             else if(!m_patch_confined || region != 3 || outermost_svg(hole.owner) || !push_text_owner_region(hole.owner, m_patch_regions))
                 m_patch_confined = false;
             hole.value       = changes[entry.first].second;
-            restyle.push_back(hole.owner);
+            if(!fast)
+                restyle.push_back(hole.owner);
         }
         static const bool                               resize_only = getenv("LH_NO_SAME_SIZE_TEXT") != nullptr;
         std::vector<std::pair<element::ptr, size>>      measured;

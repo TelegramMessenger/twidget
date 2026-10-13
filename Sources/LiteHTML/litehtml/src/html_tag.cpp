@@ -242,6 +242,106 @@ namespace litehtml
         }
     }
 
+    bool litehtml::html_tag::flip_class(const std::string& from, const std::string& to, uint64_t epoch, int* region)
+    {
+        static const bool disabled = getenv("LH_NO_CLASS_FLIP") != nullptr;
+        if(disabled)
+            return false;
+        for(const auto& child : m_children)
+        {
+            if(child->tag() == __tag_before_ || child->tag() == __tag_after_ || !child->children().empty())
+                return false;
+        }
+        const int parent_id = parent() ? parent()->css().get_shared_id() : 0;
+        auto      others    = [this]() {
+            string_map result = m_attrs;
+            result.erase("class");
+            return result;
+        };
+        flip_state* saved = nullptr;
+        for(auto& state : m_flips)
+        {
+            if(state.value == from)
+                saved = &state;
+        }
+        if(!saved)
+        {
+            if(m_flips.size() >= 3)
+                m_flips.erase(m_flips.begin());
+            m_flips.emplace_back();
+            saved        = &m_flips.back();
+            saved->value = from;
+        }
+        if(saved->epoch != 0 && saved->epoch != epoch)
+            saved->regions.clear();
+        saved->epoch       = epoch;
+        saved->parent_id   = parent_id;
+        saved->others      = others();
+        saved->str_classes = m_str_classes;
+        saved->classes     = m_classes;
+        saved->st          = m_style;
+        saved->st_base     = m_style_base;
+        saved->has_base    = m_has_style_base;
+        saved->used.clear();
+        for(const auto& us : m_used_styles)
+            saved->used.emplace_back(us->m_selector, us->m_used);
+        saved->css = m_css;
+        saved->kids.clear();
+        for(const auto& child : m_children)
+            saved->kids.push_back(child->css());
+        const std::string from_value = saved->value;
+        for(auto& state : m_flips)
+        {
+            if(state.value != to || state.epoch != epoch || state.parent_id != parent_id || state.kids.size() != m_children.size())
+                continue;
+            auto known = state.regions.find(from_value);
+            if(known == state.regions.end() || state.others != saved->others)
+                return false;
+            *region         = known->second;
+            m_attrs["class"] = to;
+            m_str_classes   = state.str_classes;
+            m_classes       = state.classes;
+            m_style         = state.st;
+            m_style_base    = state.st_base;
+            m_has_style_base = state.has_base;
+            m_used_styles.clear();
+            for(const auto& used : state.used)
+                m_used_styles.push_back(std::make_unique<used_selector>(used.first, used.second));
+            m_css  = state.css;
+            size_t i = 0;
+            for(const auto& child : m_children)
+                child->css_w() = state.kids[i++];
+            return true;
+        }
+        return false;
+    }
+
+    void litehtml::html_tag::note_flip(const std::string& from, const std::string& to, int region)
+    {
+        bool known = false;
+        for(auto& state : m_flips)
+        {
+            if(state.value == to)
+            {
+                state.regions[from] = region;
+                known               = true;
+            }
+        }
+        if(!known)
+        {
+            if(m_flips.size() >= 3)
+                m_flips.erase(m_flips.begin());
+            m_flips.emplace_back();
+            m_flips.back().value         = to;
+            m_flips.back().regions[from] = region;
+        }
+        for(auto& state : m_flips)
+        {
+            if(state.value == from)
+                state.regions[to] = region;
+        }
+    }
+
     void litehtml::html_tag::apply_matching(const litehtml::css* sheets[3], uint64_t epoch)
     {
         static const bool disabled = getenv("LH_NO_MATCH_MEMO") != nullptr;

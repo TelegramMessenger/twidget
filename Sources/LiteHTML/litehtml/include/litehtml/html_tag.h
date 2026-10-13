@@ -43,6 +43,24 @@ namespace litehtml
         };
         std::vector<match_memo> m_match_memos;
 
+        struct flip_state
+        {
+            std::string                                 value;
+            uint64_t                                    epoch     = 0;
+            int                                         parent_id = -1;
+            string_map                                  others;
+            string_vector                               str_classes;
+            std::vector<string_id>                      classes;
+            style                                       st;
+            style                                       st_base;
+            bool                                        has_base = false;
+            std::vector<std::pair<css_selector::ptr, bool>> used;
+            css_properties                              css;
+            std::vector<css_properties>                 kids;
+            std::map<std::string, int>                  regions;
+        };
+        std::vector<flip_state> m_flips;
+
         void select_all(const css_selector& selector, elements_list& res) override;
 
       public:
@@ -71,6 +89,9 @@ namespace litehtml
         const char* get_attr(const char* name, const char* def = nullptr) const override;
         void        apply_stylesheet(const litehtml::css& stylesheet) override;
         void        apply_matching(const litehtml::css* sheets[3], uint64_t epoch);
+        bool        flip_class(const std::string& from, const std::string& to, uint64_t epoch, int* region);
+        void        note_flip(const std::string& from, const std::string& to, int region);
+        void        forget_flips() { m_flips.clear(); }
         void        apply_selector(const std::shared_ptr<css_selector>& sel);
         void        refresh_styles() override;
         // Puts back the style the element had before its inline `style` attribute was applied, so a changed
