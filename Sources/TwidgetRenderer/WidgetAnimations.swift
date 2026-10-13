@@ -917,6 +917,23 @@ final class WidgetAnimator {
         return ids
     }
 
+    func animatesOnly(_ id: Int, _ properties: Set<String>) -> Bool {
+        if cssOverrides[id] != nil || transitions[id] != nil || !web.animations(id).isEmpty {
+            return false
+        }
+        var any = false
+        for item in running[id] ?? [] where !item.ended {
+            guard let frames = keyframes[item.spec.name] else {
+                continue
+            }
+            for frame in frames where frame.declarations.contains(where: { !properties.contains($0.name) }) {
+                return false
+            }
+            any = true
+        }
+        return any
+    }
+
     func isCompositable(_ id: Int) -> Bool {
         if cssOverrides[id] != nil {
             return false

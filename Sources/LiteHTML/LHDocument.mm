@@ -2479,6 +2479,16 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return image;
 }
 
+- (CGImageRef)copyTileImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self layoutLockedWithMaxWidth:maxWidth];
+    _snapshotDepth--;
+    CGImageRef image = [self copyImageLockedWithRect:rect scale:scale];
+    _snapshotDepth++;
+    return image;
+}
+
 - (CGImageRef)copyImageLockedWithRect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED
 {
     size_t pw = (size_t)std::ceil(rect.size.width * scale);

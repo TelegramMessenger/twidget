@@ -112,6 +112,7 @@ public final class LiteHTMLWidgetRenderer {
     private let animator = WidgetAnimator()
     private lazy var compositor = WidgetCompositor(host: documentView.contentLayer)
     private let svgLayers = WidgetSVGLayers()
+    private let shimmers = WidgetShimmers()
     let scrolling = WidgetScrolling()
     private var lastScrollExclusions: Set<Int> = []
     private lazy var magic: WidgetMagicMove = {
@@ -752,7 +753,9 @@ public final class LiteHTMLWidgetRenderer {
         stageMilliseconds["sheets", default: 0] += (CACurrentMediaTime() - sheetsStart) * 1000
         compositor.styleKey = (key + "\u{2}" + theme + "\u{2}\(hoverId)\u{2}\(pressId)").hashValue
         if LiteHTMLWidgetRenderer.presamples, animator.isActive, !frozen {
-            overrides = compositor.apply(animator.sample(now: now), bases: { [animator] in animator.base($0) })
+            var presampled = compositor.apply(animator.sample(now: now), bases: { [animator] in animator.base($0) })
+            shimmers.apply(&presampled)
+            overrides = presampled
         }
         layout(overrides)
         let scanStart = CACurrentMediaTime()
@@ -803,7 +806,8 @@ public final class LiteHTMLWidgetRenderer {
             statsLock.unlock()
         }
         compositor.drive(animator: animator, now: now, mediaOffset: hiddenTotal, enabled: canDrive)
-        let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        var rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        shimmers.apply(&rest)
         _ = compositor.applyScripted(compositor.scriptedIDs, dom: dom, document: document)
         if !LiteHTMLWidgetRenderer.same(rest, overrides) || before != compositor.ids || scrollersChanged {
             overrides = rest
@@ -1020,7 +1024,8 @@ public final class LiteHTMLWidgetRenderer {
             handoffWorst = (max(handoffWorst.geometry, error.geometry), max(handoffWorst.alpha, error.alpha))
             handoffOffsets.append(error.offset)
         }
-        let rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        var rest = compositor.apply(sampled, bases: { [animator] in animator.base($0) })
+        shimmers.apply(&rest)
         defer {
             compositeCheck(sampled)
         }
@@ -1187,7 +1192,8 @@ public final class LiteHTMLWidgetRenderer {
         lastLayoutOverrides = overrides
         let layered = magic.isActive ? Set<Int>() : svgLayers.ids
         svgLayers.setSuspended(magic.isActive)
-        let excluded = compositor.ids.union(magic.excluded).union(layered)
+        let shimmered = magic.isActive ? Set<Int>() : shimmers.ids
+        let excluded = compositor.ids.union(magic.excluded).union(layered).union(shimmered.map { -$0 - 1 })
         let scrollExcluded = scrolling.promotedIDs
         let exclusionsChanged = excluded != lastExclusions || scrollExcluded != lastScrollExclusions
         lastExclusions = excluded
@@ -1200,6 +1206,7 @@ public final class LiteHTMLWidgetRenderer {
             next.setPaintExclusions(Set(painted.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
         next.setLayerExclusions(Set(layered.map { String($0) }), attribute: WidgetDOM.idAttribute)
+        next.setBackgroundImageExclusions(Set(shimmered.map { String($0) }), attribute: WidgetDOM.idAttribute)
         stage("document")
         if next.reusedPrevious {
             stageMilliseconds["reused", default: 0] += 1
@@ -1225,6 +1232,7 @@ public final class LiteHTMLWidgetRenderer {
                 fresh.setPaintExclusions(Set(painted.map { String($0) }), attribute: WidgetDOM.idAttribute)
             }
             fresh.setLayerExclusions(Set(layered.map { String($0) }), attribute: WidgetDOM.idAttribute)
+            fresh.setBackgroundImageExclusions(Set(shimmered.map { String($0) }), attribute: WidgetDOM.idAttribute)
             if !scrollExcluded.isEmpty {
                 fresh.setScrollContentExclusions(Set(scrollExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
             }
@@ -1296,6 +1304,12 @@ public final class LiteHTMLWidgetRenderer {
             stage("diff")
         }
         document = next
+        let shimmerBefore = shimmers.ids
+        if shimmers.update(document: next, animator: animator, width: width, host: documentView.contentLayer, scale: documentView.scale, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs).union(svgLayers.ids), suspended: magic.isActive) || shimmers.dropped || shimmerBefore != shimmers.ids {
+            shimmers.dropped = false
+            next.setBackgroundImageExclusions(Set((magic.isActive ? [] : shimmers.ids).map { String($0) }), attribute: WidgetDOM.idAttribute)
+            documentView.invalidate(nil)
+        }
         if !svgLayers.ids.isEmpty, !magic.isActive, svgLayers.render(document: next, width: width, host: documentView.contentLayer, scale: documentView.scale, dom: dom, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs)) {
             next.setLayerExclusions(Set(svgLayers.ids.map { String($0) }), attribute: WidgetDOM.idAttribute)
             documentView.invalidate(nil)
@@ -2442,7 +2456,7 @@ class WidgetDocumentView: NSView {
     private(set) var mismatchedFrames = 0
 
     private func verifyFrame(_ surface: Surface, document: LHDocument, rect: CGRect, scale: CGFloat, space: CGColorSpace) {
-        guard let fresh = document.copyImage(maxWidth: bounds.width, rect: rect, scale: scale, excluding: document.layerExclusions, attribute: WidgetDOM.idAttribute), fresh.width == surface.width, fresh.height == surface.height,
+        guard let fresh = document.copyTileImage(maxWidth: bounds.width, rect: rect, scale: scale), fresh.width == surface.width, fresh.height == surface.height,
               let context = CGContext(data: nil, width: surface.width, height: surface.height, bitsPerComponent: 8, bytesPerRow: surface.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
             return
         }
