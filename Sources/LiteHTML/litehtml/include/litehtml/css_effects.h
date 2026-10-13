@@ -109,6 +109,7 @@ namespace litehtml
         transform_matrix matrix;
         bool             backface_hidden = false;
         position         bounds;
+        bool             exact_bounds = false;
     };
 
     struct svg_gradient

@@ -3615,7 +3615,8 @@ void LHContainer::begin_group(lh::uint_ptr hdc, const lh::paint_group& group)
         if(group.opacity < 1 && !g.hidden && m_hidden_depth == 0)
         {
             CGContextSetAlpha(ctx, group.opacity);
-            CGRect layerRect = CGRectIntersection(CGRectInset(R(group.bounds), -64, -64), CGContextGetClipBoundingBox(ctx));
+            const CGFloat margin    = group.exact_bounds ? 2 : 64;
+            CGRect        layerRect = CGRectIntersection(CGRectInset(R(group.bounds), -margin, -margin), CGContextGetClipBoundingBox(ctx));
             CGContextBeginTransparencyLayerWithRect(ctx, CGRectIsNull(layerRect) ? CGRectZero : layerRect, nullptr);
             g.layer = true;
         }

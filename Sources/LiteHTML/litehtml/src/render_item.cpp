@@ -1281,6 +1281,19 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
     group.backface_hidden = el_css.get_backface_hidden();
     group.bounds          = border_box;
     el->get_redraw_box(group.bounds, x, y);
+    if(group.opacity < 1)
+    {
+        const auto& groupInk = el->ink(src_el()->doc_ptr()->paint_generation(), false);
+        if(!groupInk.empty && !groupInk.unbounded)
+        {
+            const float l = std::min(float(group.bounds.left()), groupInk.l + float(x));
+            const float t = std::min(float(group.bounds.top()), groupInk.t + float(y));
+            const float r = std::max(float(group.bounds.right()), groupInk.r + float(x));
+            const float b = std::max(float(group.bounds.bottom()), groupInk.b + float(y));
+            group.bounds       = position(pixel_t(l), pixel_t(t), pixel_t(r - l), pixel_t(b - t));
+            group.exact_bounds = true;
+        }
+    }
 
     if(!el_css.get_transform().empty())
     {
