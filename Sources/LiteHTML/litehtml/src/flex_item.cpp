@@ -1,3 +1,9 @@
+#include <cstdlib>
+static bool LHReuseColumnMeasure()
+{
+    static const bool enabled = getenv("LH_NO_COLUMN_REUSE") == nullptr;
+    return enabled;
+}
 #include <algorithm>
 #include <cmath>
 #include "flex_item.h"
@@ -343,10 +349,12 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
     {
         auto_margin_cross_end = true;
     }
+    def_value<pixel_t> content_height(0_px);
     if(el->css().get_min_height().is_predefined())
     {
         el->render(0_px, 0_px, self_size.new_width(self_size.render_width, containing_block_context::size_mode_content),
                    fmt_ctx);
+        content_height = el->height();
         min_size = el->css().get_overflow() != overflow_visible &&
                            self_size.height.type != containing_block_context::cbc_value_type_auto
                        ? el->render_offset_height()
@@ -386,8 +394,14 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
             break;
         case flex_basis_max_content:
         case flex_basis_fit_content:
-            el->render(0_px, 0_px, self_size, fmt_ctx);
-            base_size = el->height();
+            if(!content_height.is_default() && LHReuseColumnMeasure())
+            {
+                base_size = content_height;
+            } else
+            {
+                el->render(0_px, 0_px, self_size, fmt_ctx);
+                base_size = el->height();
+            }
             break;
         case flex_basis_min_content:
             base_size = min_size;
