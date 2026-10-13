@@ -2,7 +2,7 @@ import QuartzCore
 import Foundation
 
 public enum WidgetLayerCommit {
-    public static var enabled = ProcessInfo.processInfo.environment["TW_DEFERRED_STRUCTURE"] != "0"
+    public static var enabled = ProcessInfo.processInfo.environment["TW_DEFERRED_STRUCTURE"] == "1"
     private static let lock = NSLock()
     private static var pending: [() -> Void] = []
     private static var scheduled = false
@@ -67,5 +67,13 @@ extension CALayer {
 
     func twRemoveFromSuperlayer() {
         WidgetLayerCommit.perform { self.removeFromSuperlayer() }
+    }
+}
+
+extension CALayer {
+    var twSublayers: [CALayer]? {
+        CATransaction.lock()
+        defer { CATransaction.unlock() }
+        return sublayers
     }
 }

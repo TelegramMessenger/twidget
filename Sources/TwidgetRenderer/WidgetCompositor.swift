@@ -1384,7 +1384,7 @@ final class WidgetCompositor {
         for container in containers.values {
             WidgetCompositor.orderSublayers(of: container, members: members)
         }
-        for item in promoted.values where item.layer.sublayers?.isEmpty == false {
+        for item in promoted.values where item.layer.twSublayers?.isEmpty == false {
             WidgetCompositor.orderSublayers(of: item.layer, members: members)
         }
         CATransaction.commit()
@@ -1400,17 +1400,17 @@ final class WidgetCompositor {
         if layer.filters?.isEmpty == false || layer.backgroundFilters?.isEmpty == false {
             return true
         }
-        return layer.sublayers?.contains { $0.backgroundFilters?.isEmpty == false || $0.filters?.isEmpty == false } == true
+        return layer.twSublayers?.contains { $0.backgroundFilters?.isEmpty == false || $0.filters?.isEmpty == false } == true
     }
 
     static func setOrder(_ layer: CALayer, _ value: CGFloat) {
         layer.setValue(value, forKey: orderKey)
-        let flat = layer.superlayer?.sublayers?.contains { ($0.value(forKey: orderKey) as? CGFloat) != nil && flattens($0) } ?? false
+        let flat = layer.superlayer?.twSublayers?.contains { ($0.value(forKey: orderKey) as? CGFloat) != nil && flattens($0) } ?? false
         layer.zPosition = flat || flattens(layer) ? 0 : value
     }
 
     static func orderSublayers(of parent: CALayer, members: Set<ObjectIdentifier>) {
-        let children = (parent.sublayers ?? []).filter { members.contains(ObjectIdentifier($0)) }
+        let children = (parent.twSublayers ?? []).filter { members.contains(ObjectIdentifier($0)) }
         let flat = children.contains { flattens($0) }
         for child in children {
             let z = flat ? 0 : order(child)
@@ -1641,22 +1641,22 @@ final class WidgetCompositor {
         let backdrops = Dictionary(promoted.values.compactMap { item in item.effects?.backdropLayer.map { (ObjectIdentifier(item.layer), $0) } }, uniquingKeysWith: { a, _ in a })
         func body(_ model: CALayer, _ layer: CALayer, _ target: CGContext) {
             let size = layer.bounds.size
-            for shadow in (model.sublayers ?? []) where shadow.name == WidgetEffectLayers.shadowName {
+            for shadow in (model.twSublayers ?? []) where shadow.name == WidgetEffectLayers.shadowName {
                 WidgetEffectLayers.paintShadow(shadow.presentation() ?? shadow, in: target)
             }
-            if let contents = model.contents ?? model.sublayers?.first(where: { $0.name == "tw.content" })?.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+            if let contents = model.contents ?? model.twSublayers?.first(where: { $0.name == "tw.content" })?.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
                 target.saveGState()
                 target.translateBy(x: 0, y: size.height)
                 target.scaleBy(x: 1, y: -1)
                 target.draw(contents as! CGImage, in: CGRect(origin: .zero, size: size))
                 target.restoreGState()
             }
-            for child in (model.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
+            for child in (model.twSublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
                 paint(child, into: target)
             }
         }
         func paint(_ model: CALayer, into target: CGContext) {
-            let layer = (model.animationKeys()?.isEmpty == false || model.sublayers?.contains { $0.animationKeys()?.isEmpty == false } == true ? model.presentation() : nil) ?? model
+            let layer = (model.animationKeys()?.isEmpty == false || model.twSublayers?.contains { $0.animationKeys()?.isEmpty == false } == true ? model.presentation() : nil) ?? model
             let size = layer.bounds.size
             if let backdrop = backdrops[ObjectIdentifier(model)], backdrop.superlayer != nil {
                 WidgetEffectLayers.paintBackdrop(backdrop.presentation() ?? backdrop, in: target)
@@ -1687,7 +1687,7 @@ final class WidgetCompositor {
             let clip = clipOf.values.first { $0.rect == container.frame }
             ctx.addPath(WidgetCompositor.roundedPath(CGRect(origin: .zero, size: container.bounds.size), clip?.radii ?? [CGFloat](repeating: 0, count: 8)))
             ctx.clip()
-            for child in (container.sublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
+            for child in (container.twSublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
                 paint(child, into: ctx)
             }
             ctx.restoreGState()
