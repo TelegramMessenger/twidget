@@ -468,11 +468,19 @@ void litehtml::flex_line::init(pixel_t container_main_size, bool fit_container, 
         for(auto& item : items)
         {
             pixel_t el_ret_width = item->el->render(0_px, 0_px, self_size, fmt_ctx, false).natural_width;
+            const auto& css = item->el->css();
+            if(!css.get_width().is_predefined())
+                el_ret_width = item->el->width();
+            if(!css.get_max_width().is_predefined())
+                el_ret_width = std::min(el_ret_width, css.get_max_width().calc_percent(self_size.render_width) + item->el->render_offset_width());
+            if(!css.get_min_width().is_predefined())
+                el_ret_width = std::max(el_ret_width, css.get_min_width().calc_percent(self_size.render_width) + item->el->render_offset_width());
             item->el->render(0_px, 0_px,
                              self_size.new_width_height(el_ret_width - item->el->render_offset_width(),
                                                         item->main_size - item->el->render_offset_height(),
                                                         containing_block_context::size_mode_exact_width |
-                                                            containing_block_context::size_mode_exact_height),
+                                                            containing_block_context::size_mode_exact_height |
+                                                            containing_block_context::size_mode_resolved_width),
                              fmt_ctx, false);
             main_size  += item->el->height();
             cross_size  = std::max(cross_size, item->el->width());

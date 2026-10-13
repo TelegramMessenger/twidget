@@ -2,6 +2,57 @@ import XCTest
 import LiteHTML
 
 final class DashboardLayoutTests: XCTestCase {
+    func testRightAlignedMessageKeepsItsMeasuredWidthAndHeight() {
+        let doc = document("""
+        <style>*{box-sizing:border-box}.thread{display:flex;flex-direction:column;gap:2px}.msg{display:flex;align-self:flex-end;flex-direction:row-reverse;max-width:86%;margin-top:6px}.bubble{display:flex;flex-wrap:wrap;align-items:flex-end;column-gap:8px;padding:7px 11px 6px;background:red}.txt{width:210px;height:20px}.time{width:50px;height:12px;margin-left:auto}</style>
+        <div class=thread><div class=msg id=a><div class=bubble id=ab><span class=txt></span><span class=time></span></div></div><div class=msg id=b><div class=bubble id=bb><span class=txt></span><span class=time></span></div></div></div>
+        """, width: 388)
+        let first = doc.bounds(matching: "#a")
+        let bubble = doc.bounds(matching: "#ab")
+        let second = doc.bounds(matching: "#bb")
+        XCTAssertEqual(first.width, 290, accuracy: 0.1)
+        XCTAssertEqual(bubble.width, 290, accuracy: 0.1)
+        XCTAssertEqual(bubble.height, 33, accuracy: 0.1)
+        XCTAssertEqual(first.height, bubble.height, accuracy: 0.1)
+        XCTAssertGreaterThanOrEqual(second.minY, bubble.maxY + 8)
+    }
+
+    func testColumnItemConstraintsResolveAgainstTheColumn() {
+        let cases: [(String, CGFloat)] = [
+            ("min-width:60%;max-width:80%", 240),
+            ("width:75%;max-width:80%", 300),
+            ("width:100px;min-width:60%", 240),
+            ("min-width:60%;max-width:20%", 240),
+            ("max-width:20%", 80)
+        ]
+        for align in ["flex-start", "center", "flex-end"] {
+            for (constraints, width) in cases {
+                let doc = document("""
+                <div style='display:flex;flex-direction:column;width:400px'><div id=item style='align-self:\(align);\(constraints);height:20px;background:red'><div style='width:120px;height:10px'></div></div></div>
+                """)
+                let box = doc.bounds(matching: "#item")
+                XCTAssertEqual(box.width, width, accuracy: 0.1, "\(align) \(constraints)")
+                XCTAssertEqual(box.minX, align == "flex-start" ? 0 : align == "center" ? (400 - width) / 2 : 400 - width, accuracy: 0.1)
+            }
+        }
+    }
+
+    func testOwnDiscussionMessagesDoNotOverlapAcrossColumnWidths() {
+        for width: CGFloat in [260, 320, 388, 480] {
+            let doc = document("""
+            <style>*{box-sizing:border-box}body{font:15px/1.35 ui-rounded,-apple-system}.thread{display:flex;flex-direction:column;gap:2px}.msg{display:flex;align-items:flex-end;align-self:flex-end;flex-direction:row-reverse;max-width:86%;margin-top:6px}.msg.cont{margin-top:2px}.bubble{display:flex;flex-wrap:wrap;align-items:flex-end;column-gap:8px;padding:7px 11px 6px;min-width:60px}.txt{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.3}.time{font-size:11px;margin-left:auto}</style>
+            <div class=thread><div class=msg id=a><div class=bubble id=ab><span class=txt>On it, looks like a keychain race.</span><span class=time>01:03 AM</span></div></div><div class='msg cont' id=b><div class=bubble id=bb><span class=txt>Fix is in review.</span><span class=time>01:05 AM</span></div></div></div>
+            """, width: width)
+            let first = doc.bounds(matching: "#a")
+            let firstBubble = doc.bounds(matching: "#ab")
+            let secondBubble = doc.bounds(matching: "#bb")
+            XCTAssertEqual(first.height, firstBubble.height, accuracy: 0.1, "\(width)")
+            XCTAssertGreaterThanOrEqual(firstBubble.minY, first.minY - 0.1, "\(width)")
+            XCTAssertGreaterThanOrEqual(secondBubble.minY, firstBubble.maxY + 3.9, "\(width)")
+            XCTAssertLessThanOrEqual(first.width, width * 0.86 + 0.1)
+        }
+    }
+
     func testFlexMessagesRespectExplicitAndVisibleMinimumWidths() {
         for style in ["overflow:visible", "overflow:hidden;min-width:300px"] {
             let doc = document("""

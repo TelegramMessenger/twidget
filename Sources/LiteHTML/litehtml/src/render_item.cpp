@@ -2232,9 +2232,10 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
     if((cb_context.size_mode & containing_block_context::size_mode_exact_width) != 0)
     {
         auto par = parent();
-        if(par && (par->css().get_display() == display_flex || par->css().get_display() == display_inline_flex) &&
+        if((cb_context.size_mode & containing_block_context::size_mode_resolved_width) != 0 ||
+           (par && (par->css().get_display() == display_flex || par->css().get_display() == display_inline_flex) &&
            (par->css().get_flex_direction() == flex_direction_row ||
-            par->css().get_flex_direction() == flex_direction_row_reverse))
+            par->css().get_flex_direction() == flex_direction_row_reverse)))
         {
             ret.min_width.type = containing_block_context::cbc_value_type_none;
             ret.max_width.type = containing_block_context::cbc_value_type_none;
