@@ -348,14 +348,10 @@ namespace litehtml
         m_css              = std::move(target->css);
         saved->has_base    = m_has_style_base;
         m_has_style_base   = target->has_base;
-        saved->kids.resize(m_children.size());
+        std::swap(saved->kids, target->kids);
         size_t i = 0;
         for(const auto& child : m_children)
-        {
-            saved->kids[i] = std::move(child->css_w());
-            child->css_w() = std::move(target->kids[i]);
-            i++;
-        }
+            std::swap(saved->kids[i++], child->css_w());
         target->kids.clear();
         m_attrs["class"] = to;
         return true;
