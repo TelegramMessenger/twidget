@@ -3426,7 +3426,28 @@ struct FilterTarget
     size_t  pw, ph;
     CGFloat sx, sy;
     bool    flipped;
+    bool    reduced = false;
 };
+
+static void ReduceForBlur(FilterTarget& t, const lh::filter_vector& steps)
+{
+    CGFloat radius = 0;
+    for(const auto& fn : steps)
+    {
+        if(fn.kind == lh::filter_function::blur || fn.kind == lh::filter_function::drop_shadow)
+            radius = std::max<CGFloat>(radius, fn.radius.val());
+    }
+    const CGFloat device = radius * std::max(t.sx, t.sy);
+    const CGFloat limit  = 4;
+    if(device <= limit)
+        return;
+    const CGFloat k = std::max<CGFloat>(limit / device, 1.0 / 32);
+    t.sx *= k;
+    t.sy *= k;
+    t.pw      = (size_t)std::max<double>(1, std::ceil(t.user.size.width * t.sx));
+    t.ph      = (size_t)std::max<double>(1, std::ceil(t.user.size.height * t.sy));
+    t.reduced = true;
+}
 
 static bool FilterTargetFor(CGContextRef ctx, CGRect r, FilterTarget& out)
 {
@@ -3463,7 +3484,7 @@ static CGContextRef CreateFilterBitmap(const FilterTarget& t, CGColorSpaceRef sp
 static void DrawFilterResult(CGContextRef ctx, const FilterTarget& t, CGImageRef image)
 {
     CGContextSaveGState(ctx);
-    CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+    CGContextSetInterpolationQuality(ctx, t.reduced ? kCGInterpolationMedium : kCGInterpolationNone);
     if(t.flipped)
     {
         CGContextTranslateCTM(ctx, t.user.origin.x, t.user.origin.y + t.user.size.height);
@@ -3510,6 +3531,7 @@ void LHContainer::draw_filtered(lh::uint_ptr hdc, const lh::filter_paint& filter
         paint(hdc);
         return;
     }
+    ReduceForBlur(target, *filter.steps);
     CGColorSpaceRef space  = FilterSpace(ctx);
     CGContextRef    bitmap = CreateFilterBitmap(target, space);
     if(!bitmap)
@@ -3574,6 +3596,7 @@ void LHContainer::draw_backdrop(lh::uint_ptr hdc, const lh::filter_paint& filter
     FilterTarget target;
     if(!ctx || m_hidden_depth > 0 || !backdrop_source || !FilterTargetFor(ctx, box, target))
         return;
+    ReduceForBlur(target, *filter.steps);
     const CGAffineTransform placed = group_matrix();
     if(std::fabs(placed.a - 1) > 1e-6 || std::fabs(placed.d - 1) > 1e-6 || std::fabs(placed.b) > 1e-6 || std::fabs(placed.c) > 1e-6)
         return;
