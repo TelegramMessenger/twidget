@@ -3434,7 +3434,7 @@ static void ReduceForBlur(FilterTarget& t, const lh::filter_vector& steps)
     CGFloat radius = 0;
     for(const auto& fn : steps)
     {
-        if(fn.kind == lh::filter_function::blur || fn.kind == lh::filter_function::drop_shadow)
+        if(fn.kind == lh::filter_function::blur)
             radius = std::max<CGFloat>(radius, fn.radius.val());
     }
     const CGFloat device = radius * std::max(t.sx, t.sy);
