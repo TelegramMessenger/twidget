@@ -597,6 +597,8 @@ static uint64_t LHPackSize(CGSize size)
     CGFloat                      _consumedMaxWidth;
     NSString                    *_exclusionAttribute;
     NSSet<NSString *>           *_exclusions;
+    NSSet<NSString *>           *_textExclusions;
+    NSString                    *_textExclusionAttribute;
     NSSet<NSString *>           *_layerExclusions;
     NSString                    *_layerAttribute;
     NSSet<NSString *>           *_backgroundExclusions;
@@ -1291,6 +1293,18 @@ static std::string MasterWithCSS(NSString *css)
     _doc->skip_paint.clear();
     _doc->skip_scroll_content.clear();
     _doc->skip_background_images.clear();
+    for(NSString *value in _textExclusions)
+    {
+        auto item = [self renderItemLockedWithAttribute:_textExclusionAttribute value:value];
+        if(item)
+        {
+            for(const auto &child : item->src_el()->children())
+            {
+                if(child->is_text())
+                    _doc->skip_paint.insert(child.get());
+            }
+        }
+    }
     if(_snapshotDepth == 0 && _backgroundExclusions.count > 0 && _doc->root())
     {
         std::unordered_set<std::string> images;
@@ -1538,6 +1552,14 @@ static std::string MasterWithCSS(NSString *css)
     std::lock_guard<std::mutex> guard(_lock);
     _exclusions         = [values copy];
     _exclusionAttribute = [attribute copy];
+}
+
+- (void)setTextPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _textExclusions = [values copy];
+    _textExclusionAttribute = [attribute copy];
+    _paintTraceValid = NO;
 }
 
 - (std::shared_ptr<lh::render_item>)renderItemLockedWithAttribute:(NSString *)attribute value:(NSString *)value

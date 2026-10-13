@@ -1321,6 +1321,7 @@ public final class LiteHTMLWidgetRenderer {
     private var lastLayoutTheme = ""
     private var lastLayoutOverrides: [Int: [(String, String)]]?
     private var lastExclusions: Set<Int> = []
+    private var lastTextExclusions: Set<Int> = []
     public private(set) var styleFastMismatches = 0
     static let styleFastPath = ProcessInfo.processInfo.environment["TW_NO_STYLE_FAST"] == nil
     static let holePatches = ProcessInfo.processInfo.environment["TW_NO_HOLE_PATCH"] == nil
@@ -1385,9 +1386,17 @@ public final class LiteHTMLWidgetRenderer {
         let shimmered = magic.isActive ? Set<Int>() : shimmers.ids
         let excluded = compositor.ids.union(magic.excluded).union(layered).union(shimmered.map { -$0 - 1 })
         let scrollExcluded = scrolling.promotedIDs
-        let exclusionsChanged = excluded != lastExclusions || scrollExcluded != lastScrollExclusions
+        var textExcluded: Set<Int> = []
+        if form.focusedId != 0, let node = dom.node(form.focusedId), WidgetDOM.hidesText(node) {
+            textExcluded.insert(form.focusedId)
+        }
+        let exclusionsChanged = excluded != lastExclusions || scrollExcluded != lastScrollExclusions || textExcluded != lastTextExclusions
         lastExclusions = excluded
         lastScrollExclusions = scrollExcluded
+        lastTextExclusions = textExcluded
+        if !textExcluded.isEmpty {
+            next.setTextPaintExclusions(Set(textExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+        }
         if !scrollExcluded.isEmpty {
             next.setScrollContentExclusions(Set(scrollExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
@@ -1416,6 +1425,9 @@ public final class LiteHTMLWidgetRenderer {
             patchChecks += 1
             let fresh = LHDocument(html: html, css: nil, previous: nil, viewportSize: layoutViewport)
             fresh.controlsActive = controlsActive
+            if !textExcluded.isEmpty {
+                fresh.setTextPaintExclusions(Set(textExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+            }
             _ = fresh.layout(maxWidth: width, preferredWidth: width)
             let size = CGSize(width: width, height: max(1, ceil(max(next.size.height, fresh.size.height))))
             if !painted.isEmpty {

@@ -82,7 +82,6 @@ struct WidgetFormState {
     var lastActivation: CFTimeInterval = -.infinity
     var menuOpen = false
     var focusedSelect = 0
-    var editColor: NSColor?
 }
 
 struct WidgetEditorSpec {
@@ -576,9 +575,7 @@ extension LiteHTMLWidgetRenderer {
         default:
             alignment = .left
         }
-        let parsed = WidgetCSSColor.parse(style["color"] ?? "")
-        let color = (parsed?.alphaComponent ?? 1) < 0.01 ? (form.editColor ?? .textColor) : (parsed ?? .textColor)
-        form.editColor = color
+        let color = WidgetCSSColor.parse(style["color"] ?? "") ?? .textColor
         return WidgetEditorSpec(generation: form.generation, multiline: multiline, frame: content.integral.width > 0 ? content : box, clip: clip, font: font, lineHeight: lineHeight, baseline: baseline, color: color, alignment: alignment, text: currentValue(node), placeholder: node.attribute("placeholder") ?? "", maxLength: Int(node.attribute("maxlength") ?? "") ?? 0, readOnly: node.attribute("readonly") != nil, numeric: type == "number" || ["numeric", "decimal"].contains((node.attribute("inputmode") ?? "").lowercased()))
     }
 }

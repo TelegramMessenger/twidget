@@ -1075,7 +1075,7 @@ final class WidgetDOM {
         if formOption, node.formChecked == true {
             put(" selected")
         }
-        if !node.declarations.isEmpty || animated != nil || WidgetDOM.hidesText(node) {
+        if !node.declarations.isEmpty || animated != nil {
             put(" style=\"")
             WidgetDOM.writeStyle(node, animated: animated, theme: theme, into: &out)
             put("\"")
@@ -1084,7 +1084,7 @@ final class WidgetDOM {
     }
 
     static func styleValue(_ node: WidgetNode, animated: [(String, String)]?, theme: String) -> String? {
-        if node.isText || node.declarations.isEmpty && animated == nil && !hidesText(node) {
+        if node.isText || node.declarations.isEmpty && animated == nil {
             return nil
         }
         var out: [UInt8] = []
@@ -1113,9 +1113,6 @@ final class WidgetDOM {
                 WidgetDOM.escape(CSSTheme.resolve(value, theme: theme), into: &out, attribute: true)
                 put(";")
             }
-        }
-        if hidesText(node) {
-            put("color:transparent !important;")
         }
     }
 

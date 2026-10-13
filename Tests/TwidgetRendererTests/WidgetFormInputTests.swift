@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import LiteHTML
 @testable import TwidgetRenderer
 
 final class WidgetFormInputTests: XCTestCase {
@@ -232,7 +233,9 @@ final class WidgetFormInputTests: XCTestCase {
         let second = layout.lineFragmentRect(forGlyphAt: 4, effectiveRange: nil)
         XCTAssertEqual(second.minY - first.minY, 24, accuracy: 0.01)
         func assertBaseline(file: StaticString = #filePath, line: UInt = #line) throws {
-            let fragment = try XCTUnwrap(renderer.document?.textFragments(maxWidth: 400).first { $0.text == "one" })
+            let raster = LHDocument(html: renderer.dom.serialize(theme: "light"), css: nil)
+            raster.layout(maxWidth: 400, preferredWidth: 400)
+            let fragment = try XCTUnwrap(raster.textFragments(maxWidth: 400).first { $0.text == "one" })
             let font = try XCTUnwrap(editor.font)
             let expected = fragment.frame.maxY - (-font.descender).rounded() - font.leading.rounded()
             let actual = editor.convert(.zero, to: view).y + layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil).minY + layout.location(forGlyphAt: 0).y
@@ -280,6 +283,43 @@ final class WidgetFormInputTests: XCTestCase {
         }
     }
 
+    func testFocusedTextareaFollowsColorChangesWithoutLosingSelection() throws {
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "width:250px;height:100px;color:rgb(220,230,240)"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": "Color changes"]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor?.textView != nil })
+        let editor = try XCTUnwrap(view.formEditor?.textView)
+        editor.setSelectedRange(NSRange(location: 6, length: 7))
+        for (css, expected) in [("rgb(20,180,80)", NSColor(srgbRed: 20 / 255.0, green: 180 / 255.0, blue: 80 / 255.0, alpha: 1)), ("rgba(80,100,220,0.4)", NSColor(srgbRed: 80 / 255.0, green: 100 / 255.0, blue: 220 / 255.0, alpha: 0.4)), ("transparent", NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0))] {
+            let data = try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": [["op": "style", "id": 10, "name": "color", "value": css]]])
+            renderer.send(String(data: data, encoding: .utf8)!)
+            pump(1, until: { editor.textColor?.usingColorSpace(.sRGB) == expected })
+            XCTAssertEqual(editor.textColor?.usingColorSpace(.sRGB), expected)
+            XCTAssertEqual(editor.insertionPointColor.usingColorSpace(.sRGB), expected)
+            XCTAssertEqual(editor.selectedRange(), NSRange(location: 6, length: 7))
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertFalse(renderer.document?.textFragments(maxWidth: 400).contains { $0.text == "Color" } ?? true)
+        }
+        let inherited = try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": [
+            ["op": "style", "id": 7, "name": "color", "value": "rgb(40,80,160)"],
+            ["op": "style", "id": 10, "name": "color", "value": "inherit"]
+        ]])
+        renderer.send(String(data: inherited, encoding: .utf8)!)
+        let inheritedColor = NSColor(srgbRed: 40 / 255.0, green: 80 / 255.0, blue: 160 / 255.0, alpha: 1)
+        pump(1, until: { editor.textColor?.usingColorSpace(.sRGB) == inheritedColor })
+        XCTAssertEqual(editor.textColor?.usingColorSpace(.sRGB), inheritedColor)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 6, length: 7))
+        XCTAssertTrue(window.firstResponder === editor)
+        renderer.endEditing()
+        pump(1, until: { view.formEditor == nil && renderer.document?.textFragments(maxWidth: 400).contains { $0.text == "Color" } == true })
+        XCTAssertTrue(renderer.document?.textFragments(maxWidth: 400).contains { $0.text == "Color" } ?? false)
+    }
+
     func testTextareaBaselinesMatchRasterAcrossFonts() throws {
         for fontCSS in ["16px/normal system-ui", "600 15px/1.35 ui-rounded,-apple-system", "italic 20px/32px serif", "12px/10px monospace"] {
             let (renderer, window, _) = make([
@@ -295,7 +335,9 @@ final class WidgetFormInputTests: XCTestCase {
             let font = try XCTUnwrap(editor.font)
             let layout = try XCTUnwrap(editor.layoutManager)
             layout.ensureLayout(for: try XCTUnwrap(editor.textContainer))
-            let fragments = try XCTUnwrap(renderer.document?.textFragments(maxWidth: 400))
+            let raster = LHDocument(html: renderer.dom.serialize(theme: "light"), css: nil)
+            raster.layout(maxWidth: 400, preferredWidth: 400)
+            let fragments = raster.textFragments(maxWidth: 400)
             let first = try XCTUnwrap(fragments.first { $0.text == "one" })
             let second = try XCTUnwrap(fragments.first { $0.text == "two" })
             let expected = first.frame.maxY - (-font.descender).rounded() - font.leading.rounded()
