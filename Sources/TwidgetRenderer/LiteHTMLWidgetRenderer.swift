@@ -582,9 +582,22 @@ public final class LiteHTMLWidgetRenderer {
     static let coalescesHeld = ProcessInfo.processInfo.environment["TW_HELD_RENDER_NOW"] == nil
     private var deferringRender = false
 
+    static let coalescesFrames = ProcessInfo.processInfo.environment["TW_OPS_RENDER_NOW"] == nil
+    private var renderAtTick = false
+    public private(set) var tickRenders = 0
+
+    private func releaseTickRender() {
+        if renderAtTick {
+            renderAtTick = false
+            setNeedsRender()
+        }
+    }
+
     private func renderOrDefer() {
         if deferringRender {
             setNeedsRender()
+        } else if rendersAtTick {
+            renderAtTick = true
         } else {
             render()
         }
@@ -659,8 +672,16 @@ public final class LiteHTMLWidgetRenderer {
         queued.forEach(onMessage)
     }
 
+    private var rendersAtTick: Bool {
+        return LiteHTMLWidgetRenderer.coalescesFrames && !frozen && clock?.isRunning == true && needsFrames && isOnScreen
+    }
+
     private func setNeedsRender() {
         if needsRender {
+            return
+        }
+        if rendersAtTick {
+            renderAtTick = true
             return
         }
         needsRender = true
@@ -698,6 +719,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func render() {
+        renderAtTick = false
         metered { renderBody() }
     }
 
@@ -1697,7 +1719,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func query(_ q: [String: Any]) -> Any {
-        if needsRender {
+        if needsRender || renderAtTick {
             render()
         }
         let kind = (q["q"] as? String) ?? ""
@@ -1768,7 +1790,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func binaryQuery(_ q: [String: Any]) -> (result: [String: Any], data: Data)? {
-        if needsRender {
+        if needsRender || renderAtTick {
             render()
         }
         guard (q["q"] as? String) == "imageData", let id = (q["id"] as? NSNumber)?.intValue, let node = dom.node(id), node.tag == "canvas" else {
@@ -1872,6 +1894,7 @@ public final class LiteHTMLWidgetRenderer {
             magic.cancel()
             applyExclusions()
         }
+        releaseTickRender()
         clock?.stop()
         frameRequested = false
         pendingMoves.removeAll()
@@ -2032,9 +2055,13 @@ public final class LiteHTMLWidgetRenderer {
         clock?.start()
     }
 
+    public private(set) var ticks = 0
+
     private func tick() {
+        ticks += 1
         updateAnimationClock()
         if !isOnScreen {
+            releaseTickRender()
             clock?.stop()
             return
         }
@@ -2045,7 +2072,10 @@ public final class LiteHTMLWidgetRenderer {
                 post(["type": "event", "ev": event])
             }
         }
-        if needsFrames && !frozen && isOnScreen {
+        if renderAtTick && !frozen {
+            tickRenders += 1
+            render()
+        } else if needsFrames && !frozen && isOnScreen {
             renderAnimationFrame()
         }
         var worked = needsFrames
@@ -2064,6 +2094,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         idleTicks = worked ? 0 : idleTicks + 1
         if !frameRequested && pendingMoves.isEmpty && !needsFrames && idleTicks > 8 {
+            releaseTickRender()
             clock?.stop()
         }
     }
@@ -3856,6 +3887,10 @@ final class WidgetFrameClock {
         if let link = link {
             CVDisplayLinkStart(link)
         }
+    }
+
+    var isRunning: Bool {
+        return running
     }
 
     func stop() {
