@@ -35,6 +35,7 @@
 #include "types.h"
 
 #include <cstdlib>
+#include <iterator>
 #include <mutex>
 #include <typeinfo>
 #include <string>
@@ -247,7 +248,7 @@ namespace litehtml
         {
             for(size_t i = 0; i + 7 <= text.size(); i++)
             {
-                if((text[i] | 0x20) != 'c' || strncasecmp(text.data() + i, "counter", 7) != 0)
+                if((text[i] | 0x20) != 'c' || t_strncasecmp(text.data() + i, "counter", 7) != 0)
                     continue;
                 const size_t next = i + 7;
                 if(next < text.size() && (text[next] == '-' || text[next] == '(' || ((text[next] | 0x20) == 's')))
@@ -2029,7 +2030,7 @@ namespace litehtml
             {
                 for(const auto& attr : sel->m_right.m_attrs)
                 {
-                    if(attr.type == select_id || (attr.type == select_attr && strcasecmp(_s(attr.name).c_str(), "id") == 0))
+                    if(attr.type == select_id || (attr.type == select_attr && t_strcasecmp(_s(attr.name).c_str(), "id") == 0))
                         return true;
                     for(const auto& inner : attr.selector_list)
                     {
