@@ -2739,6 +2739,7 @@ class WidgetDocumentView: NSView {
         if detached {
             for job in jobs {
                 asyncDirty[job.index] = nil
+                tiles[job.index].note("prepare-start clears dirty")
             }
         }
         preparing = true
@@ -2801,6 +2802,7 @@ class WidgetDocumentView: NSView {
                         self.dropSpare(tile)
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
+                        tile.note("prepare-install")
                         if let previous = previous, WidgetDocumentView.recycleSurfaces {
                             WidgetSurfacePool.shared.recycle(previous)
                         }
@@ -2895,6 +2897,7 @@ class WidgetDocumentView: NSView {
     }
 
     private func unprepare(_ tile: Tile) {
+        tile.note("unprepare detached=\(detached)")
         syncInvalidations += 1
         dropSpare(tile)
         tile.prepared = false
@@ -2972,13 +2975,15 @@ class WidgetDocumentView: NSView {
 
     private func invalidateDetached(_ rects: [CGRect]?) {
         invalidations += 1
-        for (index, tile) in tiles.enumerated() where tile.prepared {
+        for (index, tile) in tiles.enumerated() where tile.prepared || preparing {
             if let rects = rects {
                 for rect in rects where rect.intersects(tile.rect) {
                     asyncDirty[index] = (asyncDirty[index] ?? .null).union(rect.intersection(tile.rect))
+                    tile.note("detached-dirty \(rect.intersection(tile.rect)) prepared=\(tile.prepared)")
                 }
             } else {
                 asyncDirty[index] = tile.rect
+                tile.note("detached-dirty all")
             }
         }
         scheduleFlush()
@@ -2989,7 +2994,59 @@ class WidgetDocumentView: NSView {
     }
     static var layerTiles = ProcessInfo.processInfo.environment["TW_SURFACE_TILES"] == nil && ProcessInfo.processInfo.environment["TW_VERIFY"] == nil
 
+    static let damageTrace = ProcessInfo.processInfo.environment["TW_DAMAGE_TRACE"] != nil
+    static var damageMisses = 0
+
+    private static func checkBase(_ surface: IOSurfaceRef, document: LHDocument, rect: CGRect, dirty: CGRect, scale: CGFloat, history: [String], label: String) {
+        let w = IOSurfaceGetWidth(surface), h = IOSurfaceGetHeight(surface)
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: surfaceSpace, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            return
+        }
+        context.translateBy(x: 0, y: CGFloat(h))
+        context.scaleBy(x: scale, y: -scale)
+        context.translateBy(x: -rect.minX, y: -rect.minY)
+        context.setAllowsFontSmoothing(false)
+        context.setShouldAntialias(true)
+        document.draw(in: context, origin: .zero, clip: rect.insetBy(dx: -cullMargin, dy: -cullMargin))
+        IOSurfaceLock(surface, .readOnly, nil)
+        defer { IOSurfaceUnlock(surface, .readOnly, nil) }
+        guard let a = context.data, let b = IOSurfaceGetBaseAddress(surface) as UnsafeMutableRawPointer? else {
+            return
+        }
+        let local = dirty.isNull ? CGRect.null : dirty.intersection(rect).offsetBy(dx: -rect.minX, dy: -rect.minY)
+        let x0 = local.isNull ? 0 : Int(floor(local.minX * scale)), x1 = local.isNull ? 0 : Int(ceil(local.maxX * scale))
+        let y0 = local.isNull ? 0 : Int(floor(local.minY * scale)), y1 = local.isNull ? 0 : Int(ceil(local.maxY * scale))
+        let rowA = context.bytesPerRow, rowB = IOSurfaceGetBytesPerRow(surface)
+        var box = (x0: Int.max, y0: Int.max, x1: -1, y1: -1)
+        for y in 0..<h {
+            let pa = a.advanced(by: y * rowA).assumingMemoryBound(to: UInt8.self)
+            let pb = b.advanced(by: y * rowB).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<w where !(x >= x0 && x < x1 && y >= y0 && y < y1) {
+                for c in 0..<4 where abs(Int(pa[x * 4 + c]) - Int(pb[x * 4 + c])) > 2 {
+                    box = (min(box.x0, x), min(box.y0, y), max(box.x1, x), max(box.y1, y))
+                }
+            }
+        }
+        if box.x1 >= 0 {
+            damageMisses += 1
+            print("DAMAGE MISS \(damageMisses) \(label) tile=\(rect) dirty=\(dirty) outside=\(box)")
+            for line in history.suffix(12) {
+                print("  | \(line)")
+            }
+        }
+    }
+
     private final class Tile {
+        var history: [String] = []
+        func note(_ text: @autoclosure () -> String) {
+            guard WidgetDocumentView.damageTrace else {
+                return
+            }
+            history.append(String(format: "%.3f ", CACurrentMediaTime().truncatingRemainder(dividingBy: 1000)) + text())
+            if history.count > 40 {
+                history.removeFirst(history.count - 40)
+            }
+        }
         let layer = CALayer()
         var surfaces: [Surface] = []
         var shown: Surface?
@@ -3132,6 +3189,7 @@ class WidgetDocumentView: NSView {
         for rect in rects {
             for (index, tile) in tiles.enumerated() where rect.intersects(tile.rect) {
                 asyncDirty[index] = (asyncDirty[index] ?? .null).union(rect.intersection(tile.rect))
+                tile.note("async-dirty \(rect.intersection(tile.rect)) prepared=\(tile.prepared)")
             }
         }
         if !asyncDirty.isEmpty {
@@ -3151,20 +3209,33 @@ class WidgetDocumentView: NSView {
         for (index, dirty) in asyncDirty where index < tiles.count {
             let tile = tiles[index]
             if detached ? !tile.prepared : tile.layer.needsDisplay() {
+                if !detached, !dirty.isNull {
+                    tile.layer.setNeedsDisplay(dirty.intersection(tile.rect).offsetBy(dx: -tile.rect.minX, dy: -tile.rect.minY))
+                }
                 continue
             }
             if tile.spare != nil && tile.spareEpoch != epoch {
                 dropSpare(tile)
             }
             let base = tile.prepared && !WidgetDocumentView.asyncFullTiles ? WidgetDocumentView.surface(of: tile.layer) : nil
+            if WidgetDocumentView.damageTrace, let base = base {
+                WidgetDocumentView.checkBase(base, document: document, rect: tile.rect, dirty: dirty, scale: scale, history: tile.history, label: owner?.debugName ?? "?")
+            }
+            tile.note("job dirty=\(dirty) base=\(base != nil)")
             let spare = base == nil ? nil : tile.spare
             if spare != nil {
                 tile.spare = nil
             }
             jobs.append((index, tile.rect, base == nil ? tile.rect : dirty, base, spare, tile.spareStale))
         }
-        let pending = asyncDirty
-        asyncDirty.removeAll()
+        var kept: [Int: CGRect] = [:]
+        if detached {
+            for (index, dirty) in asyncDirty where index < tiles.count && !tiles[index].prepared {
+                kept[index] = dirty
+            }
+        }
+        let pending = asyncDirty.filter { kept[$0.key] == nil }
+        asyncDirty = kept
         if jobs.isEmpty {
             return
         }
@@ -3263,10 +3334,8 @@ class WidgetDocumentView: NSView {
                     return
                 }
                 self.preparing = false
+                var installed = Set<Int>()
                 if aborted || self.syncInvalidations != syncEpoch {
-                    for (index, dirty) in pending {
-                        self.asyncDirty[index] = (self.asyncDirty[index] ?? .null).union(dirty)
-                    }
                 } else if self.windowState.inWindow && !self.tilesTrimmed && self.tileScale == scale {
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
@@ -3281,16 +3350,25 @@ class WidgetDocumentView: NSView {
                         let previous = WidgetDocumentView.surface(of: tile.layer)
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
+                        tile.note("async-install partial=\(item.partial) dirty=\(item.dirty)")
                         if item.usedSpare {
                             settled.insert(item.index)
                         }
                         self.settleSpare(tile, previous: previous, item: (item.partial, item.dirty, item.usedSpare))
                         tile.prepared = true
+                        installed.insert(item.index)
                         self.drawStatsLock.lock()
                         self.asyncCounts.installed += 1
                         self.drawStatsLock.unlock()
                     }
                     CATransaction.commit()
+                }
+                for (index, dirty) in pending where !installed.contains(index) {
+                    self.asyncDirty[index] = (self.asyncDirty[index] ?? .null).union(dirty)
+                    if WidgetDocumentView.damageTrace, index < self.tiles.count {
+                        let tile = self.tiles[index]
+                        print("DAMAGE RESTORE aborted=\(aborted) sync=\(self.syncInvalidations != syncEpoch) inWindow=\(self.windowState.inWindow) trimmed=\(self.tilesTrimmed) scale=\(self.tileScale == scale) made=\(made.contains { $0.index == index }) prepared=\(tile.prepared) detached=\(self.detached)")
+                    }
                 }
                 self.owner?.rasterFinished()
                 if self.detached {
@@ -3339,6 +3417,7 @@ class WidgetDocumentView: NSView {
                     continue
                 }
                 tile.layer.setNeedsDisplay(pieces[index].offsetBy(dx: -tile.rect.minX, dy: -tile.rect.minY))
+                tile.note("sync-dirty \(pieces[index])")
             } else {
                 tile.pending = true
             }
@@ -3379,6 +3458,7 @@ class WidgetDocumentView: NSView {
                     unprepare(tile)
                 } else if let rect = rect {
                     tile.layer.setNeedsDisplay(rect.intersection(tile.rect).offsetBy(dx: -tile.rect.minX, dy: -tile.rect.minY))
+                    tile.note("sync-dirty \(rect.intersection(tile.rect))")
                 } else {
                     tile.layer.setNeedsDisplay()
                 }
@@ -3583,6 +3663,7 @@ class WidgetDocumentView: NSView {
                 tile.layer.needsDisplayOnBoundsChange = !detached
             }
             if tile.layer.frame != rect || tile.layer.contentsScale != scale {
+                tile.note("frame \(tile.layer.frame) -> \(rect)")
                 syncInvalidations += 1
                 tile.layer.frame = rect
                 tile.layer.contentsScale = scale
