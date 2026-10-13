@@ -18,6 +18,7 @@ let package = Package(
     products: [
         .library(name: "LiteHTML", targets: ["LiteHTML"]),
         .library(name: "TwidgetAssets", targets: ["TwidgetAssets"]),
+        .library(name: "TwidgetIcons", targets: ["TwidgetIcons"]),
         .library(name: "HTMLScript", targets: ["HTMLScript"]),
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
         .library(name: "HTML3D", targets: ["HTML3D"]),
@@ -33,6 +34,10 @@ let package = Package(
             exclude: ["icons", "icons.json", "twa_icon_data.inc"],
             sources: ["twa_icons.cpp"],
             publicHeadersPath: "include"),
+        .target(
+            name: "TwidgetIcons",
+            dependencies: ["TwidgetAssets"],
+            path: "Sources/TwidgetIcons"),
         .target(
             name: "LiteHTML",
             dependencies: ["TwidgetAssets"],
@@ -99,6 +104,10 @@ let package = Package(
             name: "Twidget3DSandboxTests",
             dependencies: ["Twidget3DSandbox", "Twidget3D", "TwidgetRenderer", .product(name: "WidgetSandbox", package: "WidgetSandbox"), widgetProtocol],
             path: "Tests/Twidget3DSandboxTests"),
+        .testTarget(
+            name: "TwidgetIconsTests",
+            dependencies: ["TwidgetIcons"],
+            path: "Tests/TwidgetIconsTests"),
         .testTarget(
             name: "Twidget3DTests",
             dependencies: ["Twidget3D"],
