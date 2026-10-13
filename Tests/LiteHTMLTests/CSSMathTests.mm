@@ -16,12 +16,12 @@ namespace
         const uint8_t* at(size_t x, size_t y) const { return &rgba[(y * width + x) * 4]; }
     };
 
-    Bitmap Draw(NSString* html, CGFloat width)
+    Bitmap Draw(NSString* html, CGFloat width, CGFloat minHeight = 1)
     {
         LHDocument* doc  = [[LHDocument alloc] initWithHTML:[@"<!doctype html><style>body{margin:0}</style>" stringByAppendingString:html] css:nil];
         CGSize      size = [doc layoutWithMaxWidth:width preferredWidth:width];
         Bitmap      out;
-        CGImageRef  image = [doc copyImageWithMaxWidth:width rect:CGRectMake(0, 0, width, std::max<CGFloat>(1, size.height)) scale:1];
+        CGImageRef  image = [doc copyImageWithMaxWidth:width rect:CGRectMake(0, 0, width, std::max<CGFloat>(minHeight, size.height)) scale:1];
         if(!image)
             return out;
         out.width  = CGImageGetWidth(image);
@@ -115,6 +115,30 @@ namespace
 {
     Bitmap b = Draw(@"<div style=\"width:30px;width:calc(100% - 10px);height:10px;background:#f00\"></div>", 100);
     XCTAssertGreaterThanOrEqual(b.height, 10u);
+}
+
+@end
+
+@interface FixedClipTests : XCTestCase
+@end
+
+@implementation FixedClipTests
+
+- (void)testFixedElementsEscapeAncestorOverflowClips
+{
+    Bitmap b = Draw(@"<style>body{height:20px;overflow:hidden}</style><div style='height:100px'><div style='position:fixed;left:0;top:40px;width:20px;height:20px;background:#f00'></div>"
+                    @"<div style='position:fixed;left:30px;top:40px;width:20px;height:20px;background:#00f;z-index:2'></div></div>", 60, 100);
+    XCTAssertGreaterThanOrEqual(b.height, 60u);
+    XCTAssertEqual(b.at(10, 50)[0], 255);
+    XCTAssertEqual(b.at(10, 50)[3], 255);
+    XCTAssertEqual(b.at(40, 50)[2], 255);
+    XCTAssertEqual(b.at(40, 50)[3], 255);
+}
+
+- (void)testFixedElementsInsideTransformsStayClipped
+{
+    Bitmap b = Draw(@"<div style='height:100px'><div style='height:20px;overflow:hidden'><div style='transform:translateX(0)'><div style='position:fixed;left:0;top:40px;width:20px;height:20px;background:#f00'></div></div></div></div>", 60, 100);
+    XCTAssertEqual(b.at(10, 50)[3], 0);
 }
 
 @end

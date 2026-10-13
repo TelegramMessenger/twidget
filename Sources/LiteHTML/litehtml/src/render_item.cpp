@@ -1475,7 +1475,12 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
                 if(own_pass)
                 {
                     bool fixed = el_css.get_position() == element_position_fixed;
+                    const bool escape = fixed && !inside_paint_group(el);
+                    if(escape)
+                        doc->container()->suspend_clips();
                     draw_group(hdc, fixed ? 0_px : pos.x, fixed ? 0_px : pos.y, clip, el);
+                    if(escape)
+                        doc->container()->resume_clips();
                 }
                 // The group draws its positioned descendants itself, inside its opacity, filter and transform.
                 continue;
@@ -1490,8 +1495,13 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
                     {
                         // Fixed elements position is always relative to the (0,0)
                         if(g_paint_trace) g_paint_trace->push_back(el.get());
+                        const bool escape = !inside_paint_group(el);
+                        if(escape)
+                            doc->container()->suspend_clips();
                         el->src_el()->draw(hdc, 0_px, 0_px, clip, el);
                         el->draw_stacking_context(hdc, 0_px, 0_px, clip, true);
+                        if(escape)
+                            doc->container()->resume_clips();
                     } else
                     {
                         if(g_paint_trace) g_paint_trace->push_back(el.get());
@@ -1561,6 +1571,16 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
     {
         doc->container()->del_clip();
     }
+}
+
+bool litehtml::render_item::inside_paint_group(const std::shared_ptr<render_item>& el)
+{
+    for(auto p = el->parent(); p; p = p->parent())
+    {
+        if(p->src_el()->css().is_paint_group())
+            return true;
+    }
+    return false;
 }
 
 std::shared_ptr<litehtml::element> litehtml::render_item::get_child_by_point(

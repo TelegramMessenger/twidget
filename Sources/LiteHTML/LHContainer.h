@@ -147,6 +147,8 @@ class LHContainer : public litehtml::document_container
                          const litehtml::shadow_paint& shadow) override;
     void begin_group(litehtml::uint_ptr hdc, const litehtml::paint_group& group) override;
     void draw_path(litehtml::uint_ptr hdc, const litehtml::vector_path& path) override;
+    void suspend_clips() override;
+    void resume_clips() override;
     void end_group(litehtml::uint_ptr hdc) override;
     void draw_filtered(litehtml::uint_ptr hdc, const litehtml::filter_paint& filter, const std::function<void(litehtml::uint_ptr)>& paint) override;
     void draw_backdrop(litehtml::uint_ptr hdc, const litehtml::filter_paint& filter) override;
@@ -261,6 +263,7 @@ class LHContainer : public litehtml::document_container
     bool                     clips_needed(CGRect bounds) const;
     bool                     m_shapes_bad = false;
     std::vector<Clip>        m_clips;
+    std::vector<std::vector<Clip>> m_suspended_clips;
     std::vector<Group>       m_groups;
     struct Effect
     {

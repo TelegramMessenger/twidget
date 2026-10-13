@@ -614,6 +614,7 @@ namespace litehtml
         {
             return 0_px;
         }
+        static bool inside_paint_group(const std::shared_ptr<render_item>& el);
         virtual std::shared_ptr<element> get_child_by_point(
             pixel_t x, pixel_t y, pixel_t client_x, pixel_t client_y, draw_flag flag, int zindex,
             const std::function<bool(const std::shared_ptr<render_item>&)>& check);

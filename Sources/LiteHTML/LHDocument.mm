@@ -1769,9 +1769,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     if(!ri)
         return NO;
     std::shared_ptr<lh::render_item> clip;
+    bool escaped = ri->src_el()->css().get_position() == lh::element_position_fixed;
     for(auto p = ri->parent(); p; p = p->parent())
     {
-        if(p->src_el()->css().clips_contents())
+        const bool viewportClip = escaped || !p->parent();
+        escaped = escaped || p->src_el()->css().get_position() == lh::element_position_fixed;
+        if(p->src_el()->css().clips_contents() && !viewportClip)
         {
             if(clip)
                 return NO;
@@ -1809,11 +1812,14 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
     if(!ri || (ri->src_el()->is_inline() && !ri->src_el()->is_inline_box()) || CGRectIsNull(rect) || CGRectIsEmpty(rect))
         return nil;
+    bool escaped = ri->src_el()->css().get_position() == lh::element_position_fixed;
     for(auto p = ri->parent(); p; p = p->parent())
     {
         if(p->src_el()->css().is_paint_group())
             return nil;
-        if(p->src_el()->css().clips_contents() && !clipped)
+        const bool viewportClip = escaped || !p->parent();
+        escaped = escaped || p->src_el()->css().get_position() == lh::element_position_fixed;
+        if(p->src_el()->css().clips_contents() && !clipped && !viewportClip)
         {
             CGRect border = BorderBox(p);
             CGFloat bl = p->border_left().value(), bt = p->border_top().value(), br = p->border_right().value(), bb = p->border_bottom().value();

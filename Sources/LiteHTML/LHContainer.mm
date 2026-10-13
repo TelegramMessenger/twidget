@@ -1997,6 +1997,37 @@ void LHContainer::set_clip(const lh::position& pos, const lh::border_radiuses& b
     m_clips.push_back({pos, bdr_radius, group_matrix()});
 }
 
+void LHContainer::suspend_clips()
+{
+    flush_text();
+    if(m_painter)
+    {
+        for(size_t i = 0; i < m_clips.size(); i++)
+            m_painter->popClip();
+    }
+    m_suspended_clips.push_back(std::move(m_clips));
+    m_clips.clear();
+}
+
+void LHContainer::resume_clips()
+{
+    flush_text();
+    if(m_suspended_clips.empty())
+        return;
+    if(m_painter)
+    {
+        for(size_t i = 0; i < m_clips.size(); i++)
+            m_painter->popClip();
+    }
+    m_clips = std::move(m_suspended_clips.back());
+    m_suspended_clips.pop_back();
+    if(m_painter)
+    {
+        for(const auto& c : m_clips)
+            m_painter->pushClip(c.box, c.radius);
+    }
+}
+
 void LHContainer::del_clip()
 {
     flush_text();
