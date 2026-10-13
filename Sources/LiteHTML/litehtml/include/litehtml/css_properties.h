@@ -122,6 +122,7 @@ namespace litehtml
         box_shadow_vector m_box_shadows;
         filter_vector     m_filter;
         filter_vector     m_backdrop_filter;
+        clip_path_shape   m_clip_path;
         transform_vector  m_transform;
         css_length        m_transform_origin_x = css_length(50, css_units_percentage);
         css_length        m_transform_origin_y = css_length(50, css_units_percentage);
@@ -317,6 +318,7 @@ namespace litehtml
         const filter_vector&     get_filter() const { return m_filter; }
         const filter_vector&     get_backdrop_filter() const { return m_backdrop_filter; }
         const box_shadow_vector& get_text_shadows() const { return m_text_shadows; }
+        const clip_path_shape& get_clip_path() const { return m_clip_path; }
         const transform_vector&  get_transform() const { return m_transform; }
         const css_length&        get_transform_origin_x() const { return m_transform_origin_x; }
         const css_length&        get_transform_origin_y() const { return m_transform_origin_y; }
@@ -330,7 +332,7 @@ namespace litehtml
         bool                     get_dark_scheme() const { return m_dark_scheme != 0; }
         bool                     is_paint_group() const
         {
-            return m_opacity < 1 || !m_transform.empty() || m_backface_hidden || !m_filter.empty() || !m_backdrop_filter.empty();
+            return !m_clip_path.empty() || m_el_position == element_position_sticky || m_opacity < 1 || !m_transform.empty() || m_backface_hidden || !m_filter.empty() || !m_backdrop_filter.empty();
         }
 
         int                   get_text_decoration_line() const;

@@ -291,9 +291,13 @@ final class WidgetScrolling {
 
     func update(document: LHDocument, dom: WidgetDOM, animated: Set<Int>, promoted: Set<Int>, styleKey: Int, scale: CGFloat) -> Bool {
         var found: [Int: WidgetScrollGeometry] = [:]
+        var sticky = Set<Int>()
         for (key, info) in document.scrollers(byAttribute: WidgetDOM.idAttribute) {
             guard let id = Int(key), let viewport = (info["viewport"] as? NSValue)?.rectValue, let content = (info["content"] as? NSValue)?.sizeValue else {
                 continue
+            }
+            if (info["sticky"] as? NSNumber)?.boolValue == true {
+                sticky.insert(id)
             }
             let radii = ((info["radii"] as? [NSNumber]) ?? []).map { CGFloat($0.doubleValue) }
             found[id] = WidgetScrollGeometry(viewport: viewport, content: content, radii: radii.count == 8 ? radii : [CGFloat](repeating: 0, count: 8))
@@ -310,7 +314,7 @@ final class WidgetScrolling {
         if WidgetScrolling.enabled, let host = host {
             _ = host
             for (id, geometry) in found where geometry.maxOffset.y > 0.5 || geometry.maxOffset.x > 0.5 {
-                guard let node = dom.node(id), geometry.viewport.width > 0, geometry.viewport.height > 0, geometry.viewport.width * geometry.viewport.height < 4_000_000 else {
+                guard !sticky.contains(id), let node = dom.node(id), geometry.viewport.width > 0, geometry.viewport.height > 0, geometry.viewport.width * geometry.viewport.height < 4_000_000 else {
                     continue
                 }
                 var walk = node.parent

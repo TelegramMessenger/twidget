@@ -2810,7 +2810,7 @@ class WidgetDocumentView: NSView {
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
             for job in jobs {
                 let rect = job.rect
-                let width = max(1, Int(ceil(rect.maxX * scale)) - Int(floor(rect.minX * scale)))
+                let width = max(1, Int(ceil(rect.width * scale)))
                 let height = max(1, Int(ceil(rect.height * scale)))
                 guard let surface = Surface(width: width, height: height, space: space) else {
                     made.removeAll()
@@ -3231,7 +3231,7 @@ class WidgetDocumentView: NSView {
 
     static let backingStore = ProcessInfo.processInfo.environment["TW_BACKING"] != nil
     static let eightBitTiles = ProcessInfo.processInfo.environment["TW_DEEP_TILES"] == nil
-    static let tileHeight: CGFloat = ProcessInfo.processInfo.environment["TW_TILE"].flatMap { Double($0) }.map { CGFloat($0) } ?? 128
+    static var tileHeight: CGFloat = ProcessInfo.processInfo.environment["TW_TILE"].flatMap { Double($0) }.map { CGFloat($0) } ?? 128
 
     override var wantsUpdateLayer: Bool {
         return !WidgetDocumentView.backingStore
@@ -3271,6 +3271,14 @@ class WidgetDocumentView: NSView {
                 self?.rasterDirtyTiles()
             }
         }
+    }
+
+    static func rasterDamage(_ dirty: CGRect, tile: CGRect, scale: CGFloat) -> CGRect {
+        let local = dirty.intersection(tile).offsetBy(dx: -tile.minX, dy: -tile.minY)
+        guard !local.isNull, !local.isEmpty else { return .null }
+        let x0 = floor(local.minX * scale) / scale, y0 = floor(local.minY * scale) / scale
+        let x1 = ceil(local.maxX * scale) / scale, y1 = ceil(local.maxY * scale) / scale
+        return CGRect(x: tile.minX + x0, y: tile.minY + y0, width: x1 - x0, height: y1 - y0)
     }
 
     private func rasterDirtyTiles() {
@@ -3329,10 +3337,10 @@ class WidgetDocumentView: NSView {
             for job in jobs {
                 var mark = WidgetTileStats.threadMilliseconds()
                 let rect = job.rect
-                let width = max(1, Int(ceil(rect.maxX * scale)) - Int(floor(rect.minX * scale)))
+                let width = max(1, Int(ceil(rect.width * scale)))
                 let height = max(1, Int(ceil(rect.height * scale)))
                 var dirty = job.dirty.intersection(rect)
-                let changed = dirty
+                let changed = WidgetDocumentView.rasterDamage(dirty, tile: rect, scale: scale)
                 var usedSpare = false
                 var target: (surface: IOSurfaceRef, context: CGContext)?
                 if let spare = job.spare, IOSurfaceGetWidth(spare) == width, IOSurfaceGetHeight(spare) == height, !IOSurfaceIsInUse(spare), let base = job.base, IOSurfaceGetWidth(base) == width, IOSurfaceGetHeight(base) == height, let context = CGContext(data: IOSurfaceGetBaseAddress(spare), width: width, height: height, bitsPerComponent: 8, bytesPerRow: IOSurfaceGetBytesPerRow(spare), space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
@@ -3368,9 +3376,7 @@ class WidgetDocumentView: NSView {
                 mark = now
                 stats.jobs += 1
                 stats.area += Double(dirty.width * dirty.height)
-                let x0 = floor(dirty.minX * scale) / scale, y0 = floor(dirty.minY * scale) / scale
-                let x1 = ceil(dirty.maxX * scale) / scale, y1 = ceil(dirty.maxY * scale) / scale
-                let aligned = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+                let aligned = WidgetDocumentView.rasterDamage(dirty, tile: rect, scale: scale)
                 ctx.saveGState()
                 ctx.translateBy(x: 0, y: CGFloat(height))
                 ctx.scaleBy(x: scale, y: -scale)
@@ -3691,7 +3697,7 @@ class WidgetDocumentView: NSView {
             surfaceSpace = space
             surfaceWidth = pixelWidth
         }
-        let tileSize = WidgetDocumentView.tileHeight
+        let tileSize = max(1, (WidgetDocumentView.tileHeight * scale).rounded()) / scale
         let columns = max(1, Int(ceil(size.width / tileSize)))
         let count = columns * Int(ceil(height / tileSize))
         while tiles.count > count {
@@ -3816,9 +3822,7 @@ class WidgetDocumentView: NSView {
             }
             let dirty = surface.stale.intersection(rect)
             if !dirty.isNull && !dirty.isEmpty {
-                let x0 = floor(dirty.minX * scale) / scale, y0 = floor(dirty.minY * scale) / scale
-                let x1 = ceil(dirty.maxX * scale) / scale, y1 = ceil(dirty.maxY * scale) / scale
-                let aligned = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+                let aligned = WidgetDocumentView.rasterDamage(dirty, tile: rect, scale: scale)
                 let ctx = surface.context
                 IOSurfaceLock(surface.surface, [], nil)
                 ctx.saveGState()

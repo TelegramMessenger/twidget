@@ -611,6 +611,11 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
             cell.max_content = measured.natural_width;
             cell.min_content = measured.min_width;
         }
+        const auto& minimum = cell.el->css().get_min_width();
+        if(!minimum.is_predefined())
+        {
+            cell.min_content = std::max(0_px, minimum.calc_percent(available) - cell.el->box_sizing_width()) + cell.el->content_offset_width();
+        }
     }
 
     flex_justify_content justify = css().get_flex_justify_content();

@@ -1552,7 +1552,7 @@ bool LHContainer::clips_needed(CGRect bounds) const
     CGAffineTransform matrix = group_matrix();
     for(const auto& c : m_clips)
     {
-        if(!CGAffineTransformEqualToTransform(c.matrix, matrix) || !m_clip_culling || !InsideRoundedRect(R(c.box), c.radius, ink))
+        if(c.path || !CGAffineTransformEqualToTransform(c.matrix, matrix) || !m_clip_culling || !InsideRoundedRect(R(c.box), c.radius, ink))
             return true;
     }
     return false;
@@ -1989,6 +1989,29 @@ void LHContainer::transform_text(std::string& text, lh::text_transform tt)
     text = s.UTF8String;
 }
 
+static CGPathRef CreateVectorPath(const lh::vector_path& path);
+
+void LHContainer::set_clip_path(const lh::vector_path& path)
+{
+    flush_text();
+    if(m_painter) m_painter->pushClipPath(path);
+    CGPathRef cgpath = CreateVectorPath(path);
+    CGRect box = CGPathGetPathBoundingBox(cgpath);
+    CGPathRelease(cgpath);
+    if(CGRectIsNull(box)) box = CGRectZero;
+    lh::position bounds(lh::pixel_t(static_cast<float>(box.origin.x)), lh::pixel_t(static_cast<float>(box.origin.y)),
+                        lh::pixel_t(static_cast<float>(box.size.width)), lh::pixel_t(static_cast<float>(box.size.height)));
+    m_clips.push_back({bounds, {}, group_matrix(), std::make_shared<lh::vector_path>(path)});
+}
+
+bool LHContainer::point_in_clip_path(const lh::vector_path& path, lh::pixel_t x, lh::pixel_t y)
+{
+    CGPathRef cgpath = CreateVectorPath(path);
+    bool inside = CGPathContainsPoint(cgpath, nullptr, CGPointMake(x.value(), y.value()), path.evenodd);
+    CGPathRelease(cgpath);
+    return inside;
+}
+
 void LHContainer::set_clip(const lh::position& pos, const lh::border_radiuses& bdr_radius)
 {
     flush_text();
@@ -2024,7 +2047,10 @@ void LHContainer::resume_clips()
     if(m_painter)
     {
         for(const auto& c : m_clips)
-            m_painter->pushClip(c.box, c.radius);
+        {
+            if(c.path) m_painter->pushClipPath(*c.path);
+            else m_painter->pushClip(c.box, c.radius);
+        }
     }
 }
 
@@ -2211,7 +2237,7 @@ bool LHContainer::record_solid(const lh::background_layer& layer, const lh::web_
         bool         inside = true;
         for(const auto& c : m_clips)
         {
-            if(!CGAffineTransformIsIdentity(c.matrix) || !InsideRoundedRect(R(c.box), c.radius, CGRectInset(rect, -1, -1)))
+            if(c.path || !CGAffineTransformIsIdentity(c.matrix) || !InsideRoundedRect(R(c.box), c.radius, CGRectInset(rect, -1, -1)))
                 inside = false;
         }
         if(inside && record_rounded(rect, layer.border_radius, color))
@@ -2222,7 +2248,7 @@ bool LHContainer::record_solid(const lh::background_layer& layer, const lh::web_
     CGRect rect = CGRectIntersection(R(layer.clip_box), R(layer.border_box));
     for(const auto& c : m_clips)
     {
-        if(!CGAffineTransformIsIdentity(c.matrix))
+        if(c.path || !CGAffineTransformIsIdentity(c.matrix))
             return false;
         if(HasRadius(c.radius) && !InsideRoundedRect(R(c.box), c.radius, CGRectInset(rect, -1, -1)))
             return false;
@@ -2248,7 +2274,7 @@ bool LHContainer::record_glyphs(const char* text, Font* f, const lh::web_color& 
         return false;
     for(const auto& c : m_clips)
     {
-        if(!CGAffineTransformIsIdentity(c.matrix) || !InsideRoundedRect(R(c.box), c.radius, ink))
+        if(c.path || !CGAffineTransformIsIdentity(c.matrix) || !InsideRoundedRect(R(c.box), c.radius, ink))
             return false;
     }
     SimpleRun simple;
@@ -2378,8 +2404,15 @@ void LHContainer::record_op(OpHash& hash, CGRect ink, bool capture)
                 if(F(v) != 0)
                     hash.stretch = 0;
             }
-            if(!CGAffineTransformIsIdentity(c.matrix))
+            if(c.path || !CGAffineTransformIsIdentity(c.matrix))
                 hash.stretch = 0;
+        }
+        if(c.path)
+        {
+            hash.stretch = 0;
+            hash.integer(c.path->evenodd);
+            for(auto op : c.path->ops) hash.integer(op);
+            for(float v : c.path->points) hash.number(v);
         }
         hash.clip(c.box, c.radius, drawn);
         HashMatrix(hash, c.matrix);
@@ -2441,6 +2474,18 @@ void LHContainer::apply_clips(CGContextRef ctx, CGRect bounds) const
     for(const auto& c : m_clips)
     {
         CGRect box = R(c.box);
+        if(c.path)
+        {
+            CGAffineTransform t = CGAffineTransformConcat(c.matrix, CGAffineTransformInvert(matrix));
+            CGPathRef path = CreateVectorPath(*c.path);
+            CGPathRef transformed = CGPathCreateCopyByTransformingPath(path, &t);
+            CGContextAddPath(ctx, transformed);
+            if(c.path->evenodd) CGContextEOClip(ctx);
+            else CGContextClip(ctx);
+            CGPathRelease(transformed);
+            CGPathRelease(path);
+            continue;
+        }
         if(CGAffineTransformEqualToTransform(c.matrix, matrix))
         {
             if(m_clip_culling && InsideRoundedRect(box, c.radius, ink))

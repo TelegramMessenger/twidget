@@ -1346,6 +1346,12 @@ static std::string MasterWithCSS(NSString *css)
     if(!_doc || !_doc->root_render())
         return result;
     const char *key = attribute.UTF8String;
+    std::function<bool(const std::shared_ptr<lh::render_item>&)> hasSticky = [&](const std::shared_ptr<lh::render_item>& item) {
+        if(item->css().get_position() == lh::element_position_sticky) return true;
+        for(const auto& child : item->children())
+            if(hasSticky(child)) return true;
+        return false;
+    };
     std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
         const lh::scroll_view *view = ri->get_scroll_view();
         const char            *v    = ri->src_el()->get_attr(key);
@@ -1362,6 +1368,7 @@ static std::string MasterWithCSS(NSString *css)
             result[@(v)] = @{
                 @"viewport": [NSValue valueWithRect:NSMakeRect(placement.x.value(), placement.y.value(), placement.width.value(), placement.height.value())],
                 @"content": [NSValue valueWithSize:NSMakeSize(content.width.value(), content.height.value())],
+                @"sticky": @(hasSticky(ri)),
                 @"offset": [NSValue valueWithPoint:NSMakePoint(ri->get_scroll_left().value(), ri->get_scroll_top().value())],
                 @"radii": @[@(radius.top_left_x.value()), @(radius.top_left_y.value()), @(radius.top_right_x.value()), @(radius.top_right_y.value()),
                             @(radius.bottom_right_x.value()), @(radius.bottom_right_y.value()), @(radius.bottom_left_x.value()), @(radius.bottom_left_y.value())],
@@ -1811,6 +1818,8 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
     if(!ri || (ri->src_el()->is_inline() && !ri->src_el()->is_inline_box()) || CGRectIsNull(rect) || CGRectIsEmpty(rect))
         return nil;
+    for(auto p = ri; p; p = p->parent())
+        if(!p->css().get_clip_path().empty() || p->css().get_position() == lh::element_position_sticky) return nil;
     bool escaped = ri->src_el()->css().get_position() == lh::element_position_fixed;
     for(auto p = ri->parent(); p; p = p->parent())
     {

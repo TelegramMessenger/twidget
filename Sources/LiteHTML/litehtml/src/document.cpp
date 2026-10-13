@@ -2821,8 +2821,14 @@ namespace litehtml
         {
             const bool saved = m_cull_paint;
             m_cull_paint     = cull && clip && !g_paint_trace;
-            m_root->draw(hdc, x, y, clip, m_root_render);
-            m_root_render->draw_stacking_context(hdc, x, y, clip, true);
+            if(!m_root->css().get_clip_path().empty())
+            {
+                m_root_render->draw_group(hdc, x, y, clip, m_root_render);
+            } else
+            {
+                m_root->draw(hdc, x, y, clip, m_root_render);
+                m_root_render->draw_stacking_context(hdc, x, y, clip, true);
+            }
             m_cull_paint = saved;
         }
     }

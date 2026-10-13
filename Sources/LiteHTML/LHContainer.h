@@ -181,6 +181,8 @@ class LHContainer : public litehtml::document_container
     void set_cursor(const char* cursor) override;
     void transform_text(std::string& text, litehtml::text_transform tt) override;
     void import_css(std::string& text, const std::string& url, std::string& baseurl) override {}
+    void set_clip_path(const litehtml::vector_path& path) override;
+    bool point_in_clip_path(const litehtml::vector_path& path, litehtml::pixel_t x, litehtml::pixel_t y) override;
     void set_clip(const litehtml::position& pos, const litehtml::border_radiuses& bdr_radius) override;
     void del_clip() override;
     void get_viewport(litehtml::position& viewport) const override;
@@ -199,6 +201,7 @@ class LHContainer : public litehtml::document_container
         litehtml::position        box;
         litehtml::border_radiuses radius;
         CGAffineTransform         matrix;
+        std::shared_ptr<litehtml::vector_path> path;
     };
 
     struct Group

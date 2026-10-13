@@ -8,6 +8,143 @@
 
 namespace litehtml
 {
+    bool parse_clip_path(const css_token_vector& tokens, clip_path_shape& out)
+    {
+        out = clip_path_shape();
+        if(tokens.size() != 1 || tokens[0].type != CV_FUNCTION) return false;
+        const auto& fn = tokens[0];
+        clip_path_shape shape;
+        if(lowcase(fn.name()) == "polygon") shape.kind = clip_path_shape::polygon;
+        else if(lowcase(fn.name()) == "inset") shape.kind = clip_path_shape::inset;
+        else if(lowcase(fn.name()) == "circle") shape.kind = clip_path_shape::circle;
+        else if(lowcase(fn.name()) == "ellipse") shape.kind = clip_path_shape::ellipse;
+        else return false;
+        size_t at = 0;
+        const auto& args = fn.value;
+        if(shape.kind == clip_path_shape::polygon)
+        {
+            if(!args.empty() && (args[0].ident() == "evenodd" || args[0].ident() == "nonzero"))
+            {
+                shape.evenodd = args[0].ident() == "evenodd";
+                if(args.size() < 2 || args[1].ch != ',') return false;
+                at = 2;
+            }
+            while(at < args.size())
+            {
+                for(int axis = 0; axis < 2; axis++)
+                {
+                    css_length len;
+                    if(at >= args.size() || !len.from_token(args[at++], f_length | f_percentage)) return false;
+                    shape.values.push_back(len);
+                }
+                if(at < args.size() && (args[at++].ch != ',' || at == args.size())) return false;
+            }
+            if(shape.values.size() < 6) return false;
+        } else if(shape.kind == clip_path_shape::inset)
+        {
+            while(at < args.size() && args[at].ident() != "round")
+            {
+                css_length len;
+                if(shape.values.size() == 4 || !len.from_token(args[at++], f_length | f_percentage)) return false;
+                shape.values.push_back(len);
+            }
+            if(shape.values.empty()) return false;
+            auto v = shape.values;
+            shape.values = {v[0], v.size() > 1 ? v[1] : v[0], v.size() > 2 ? v[2] : v[0], v.size() > 3 ? v[3] : v.size() > 1 ? v[1] : v[0]};
+            if(at < args.size())
+            {
+                at++;
+                css_length radius;
+                if(at + 1 != args.size() || !radius.from_token(args[at], f_length | f_percentage)) return false;
+                if(radius.val() < 0) return false;
+                shape.values.push_back(radius);
+            }
+        } else
+        {
+            const size_t radii = shape.kind == clip_path_shape::circle ? 1 : 2;
+            for(size_t i = 0; i < radii; i++)
+            {
+                css_length len;
+                if(at >= args.size() || !len.from_token(args[at++], f_length | f_percentage)) return false;
+                if(len.val() < 0) return false;
+                shape.values.push_back(len);
+            }
+            if(at == args.size())
+            {
+                shape.values.push_back(css_length(50, css_units_percentage));
+                shape.values.push_back(css_length(50, css_units_percentage));
+            } else
+            {
+                if(args[at++].ident() != "at" || at + 2 != args.size()) return false;
+                for(int i = 0; i < 2; i++)
+                {
+                    css_length len;
+                    const auto& tok = args[at++];
+                    if(tok.ident() == "center") len = css_length(50, css_units_percentage);
+                    else if(tok.ident() == (i == 0 ? "left" : "top")) len = 0;
+                    else if(tok.ident() == (i == 0 ? "right" : "bottom")) len = css_length(100, css_units_percentage);
+                    else if(!len.from_token(tok, f_length | f_percentage)) return false;
+                    shape.values.push_back(len);
+                }
+            }
+        }
+        out = std::move(shape);
+        return true;
+    }
+
+    vector_path clip_path_shape::resolve(const position& box) const
+    {
+        vector_path path;
+        path.evenodd = evenodd;
+        auto add = [&](vector_path::op_t op, std::initializer_list<float> points) {
+            path.ops.push_back(op);
+            path.points.insert(path.points.end(), points);
+        };
+        const float x = box.x, y = box.y, w = box.width, h = box.height;
+        if(kind == polygon)
+        {
+            for(size_t i = 0; i + 1 < values.size(); i += 2)
+                add(i == 0 ? vector_path::move : vector_path::line,
+                    {x + float(values[i].calc_percent(box.width)), y + float(values[i + 1].calc_percent(box.height))});
+        } else if(kind != none)
+        {
+            float l, t, r, b, rx, ry;
+            if(kind == inset)
+            {
+                l = x + float(values[3].calc_percent(box.width));
+                t = y + float(values[0].calc_percent(box.height));
+                r = x + w - float(values[1].calc_percent(box.width));
+                b = y + h - float(values[2].calc_percent(box.height));
+                if(r < l) l = r = (l + r) / 2;
+                if(b < t) t = b = (t + b) / 2;
+                rx = values.size() > 4 ? float(values[4].calc_percent(box.width)) : 0;
+                ry = values.size() > 4 ? float(values[4].calc_percent(box.height)) : 0;
+                rx = std::min(rx, (r - l) / 2);
+                ry = std::min(ry, (b - t) / 2);
+            } else
+            {
+                size_t radii = kind == circle ? 1 : 2;
+                float cx = x + float(values[radii].calc_percent(box.width));
+                float cy = y + float(values[radii + 1].calc_percent(box.height));
+                rx = float(values[0].calc_percent(kind == circle ? pixel_t(std::hypot(w, h) / std::sqrt(2.f)) : box.width));
+                ry = kind == circle ? rx : float(values[1].calc_percent(box.height));
+                l = cx - rx; r = cx + rx; t = cy - ry; b = cy + ry;
+            }
+            const float k = 0.5522847498f;
+            add(vector_path::move, {l + rx, t});
+            add(vector_path::line, {r - rx, t});
+            add(vector_path::cubic, {r - rx + rx * k, t, r, t + ry - ry * k, r, t + ry});
+            add(vector_path::line, {r, b - ry});
+            add(vector_path::cubic, {r, b - ry + ry * k, r - rx + rx * k, b, r - rx, b});
+            add(vector_path::line, {l + rx, b});
+            add(vector_path::cubic, {l + rx - rx * k, b, l, b - ry + ry * k, l, b - ry});
+            add(vector_path::line, {l, t + ry});
+            add(vector_path::cubic, {l, t + ry - ry * k, l + rx - rx * k, t, l + rx, t});
+        }
+        if(!path.ops.empty()) add(vector_path::close, {});
+        return path;
+    }
+
     static bool parse_shadow_length(const css_token& tok, css_length& len)
     {
         return len.from_token(tok, f_length);

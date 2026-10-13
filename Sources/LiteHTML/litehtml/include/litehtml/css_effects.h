@@ -147,6 +147,18 @@ namespace litehtml
         svg_gradient       fill_gradient;
     };
 
+    struct clip_path_shape
+    {
+        enum kind_t { none, inset, circle, ellipse, polygon };
+        kind_t kind = none;
+        std::vector<css_length> values;
+        bool evenodd = false;
+        bool empty() const { return kind == none; }
+        vector_path resolve(const position& box) const;
+    };
+
+    bool parse_clip_path(const css_token_vector& tokens, clip_path_shape& shape);
+
     struct grid_track_size
     {
         enum type_t

@@ -374,7 +374,7 @@ namespace litehtml
     // ==========================================================
     // CSS Property: position
     // ==========================================================
-    inline constexpr auto element_position_strings = split_css_values<4>("static;relative;absolute;fixed");
+    inline constexpr auto element_position_strings = split_css_values<5>("static;relative;absolute;fixed;sticky");
 
     enum element_position
     {
@@ -382,6 +382,7 @@ namespace litehtml
         element_position_relative,
         element_position_absolute,
         element_position_fixed,
+        element_position_sticky,
     };
 
     // ==========================================================

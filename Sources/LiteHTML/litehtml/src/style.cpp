@@ -983,6 +983,7 @@ namespace litehtml
         case _backdrop_filter_:
         case _transform_:
         case _transform_origin_:
+        case _clip_path_:
         case _grid_template_columns_:
         case _grid_template_rows_:
         case _grid_auto_rows_:

@@ -79,4 +79,46 @@ final class OutOfWindowRasterTests: XCTestCase {
         XCTAssertEqual(renderer.staleTileCount, 0)
         renderer.destroy()
     }
+    func testDamageRoundsInTileCoordinates() {
+        let tile = CGRect(x: 127.3, y: 127.3, width: 127.3, height: 127.3)
+        let dirty = CGRect(x: 128.1, y: 128.1, width: 1, height: 1)
+        let result = WidgetDocumentView.rasterDamage(dirty, tile: tile, scale: 2)
+        XCTAssertEqual(result.minX - tile.minX, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(result.minY - tile.minY, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(result.width, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(result.height, 1.5, accuracy: 0.0001)
+    }
+
+    func testPartialTilesAcrossFractionalEdgesMatchFullRasters() {
+        let previousTileHeight = WidgetDocumentView.tileHeight
+        WidgetDocumentView.tileHeight = 127.3
+        defer { WidgetDocumentView.tileHeight = previousTileHeight }
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 280), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let queue = Queue()
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        renderer.isOnExecutor = { Thread.isMainThread }
+        renderer.executorIsMain = { false }
+        renderer.schedule = { queue.add($0) }
+        renderer.scheduleAfter = { delay, block in DispatchQueue.main.asyncAfter(deadline: .now() + delay) { queue.add(block) } }
+        renderer.onMessage = { _ in }
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 400, height: 280)
+        window.contentView?.addSubview(renderer.view)
+        renderer.load()
+        defer { renderer.destroy() }
+        renderer.send(ops("{\"op\":\"el\",\"id\":7,\"tag\":\"body\",\"attrs\":[[\"style\",\"margin:0;height:270px\"]],\"adopt\":\"body\"},{\"op\":\"el\",\"id\":9,\"tag\":\"div\",\"attrs\":[[\"style\",\"height:130px;width:250px;margin:20px;background:#d33;border-radius:8px\"]]},{\"op\":\"ins\",\"parent\":7,\"id\":9,\"before\":null}"))
+        pump(5, queue: queue, until: { renderer.tileLayerCount > 0 && !renderer.tilesPreparing && queue.count == 0 })
+        for frame in 0..<50 {
+            let width = 107.1 + Double((frame * 17) % 150) / 10
+            let left = 127.1 + Double((frame * 7) % 15) / 100
+            renderer.send(ops("{\"op\":\"attr\",\"id\":9,\"name\":\"style\",\"value\":\"height:130px;width:\(width)px;margin:20px 0 0 \(left)px;background:#d33;border-radius:8px\"}"))
+            pump(0.03, queue: queue, until: { false })
+            pump(3, queue: queue, until: { !renderer.tilesPreparing && queue.count == 0 })
+            XCTAssertEqual(renderer.staleTileCount, 0, "frame \(frame)")
+        }
+    }
+
 }

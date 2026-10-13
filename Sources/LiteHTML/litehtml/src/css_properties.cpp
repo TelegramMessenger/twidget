@@ -876,6 +876,16 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
         doc->has_backdrop = true;
     }
 
+    m_clip_path = clip_path_shape();
+    if(const auto* tokens = el->get_token_property(_clip_path_))
+    {
+        if(parse_clip_path(*tokens, m_clip_path))
+        {
+            for(auto& len : m_clip_path.values)
+                doc->cvt_units(len, m_font_metrics, 0_px);
+        }
+    }
+
     m_transform.clear();
     if(const auto* tokens = el->get_token_property(_transform_))
     {

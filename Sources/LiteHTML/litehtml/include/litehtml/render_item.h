@@ -205,8 +205,9 @@ namespace litehtml
         position calc_placement(int x = 0, int y = 0) const
         {
             position pos  = m_pos;
-            pos.x        += pixel_t(x) - get_scroll_left();
-            pos.y        += pixel_t(y) - get_scroll_top();
+            const auto sticky = sticky_offset();
+            pos.x        += pixel_t(x) - get_scroll_left() + sticky.x;
+            pos.y        += pixel_t(y) - get_scroll_top() + sticky.y;
             return pos;
         }
 
@@ -624,6 +625,7 @@ namespace litehtml
         virtual bool is_point_inside(pixel_t x, pixel_t y) const;
         void         dump(litehtml::dumper& cout);
         position     get_placement() const;
+        position     sticky_offset() const;
         virtual void y_shift(pixel_t delta);
         /**
          * Returns the boxes of rendering element. All coordinates are absolute

@@ -90,6 +90,8 @@ namespace litehtml
                                      const border_radiuses& /*radius*/, const shadow_paint& /*shadow*/)
         {
         }
+        virtual void set_clip_path(const vector_path& path) {}
+        virtual bool point_in_clip_path(const vector_path& path, pixel_t x, pixel_t y) { return true; }
         virtual void begin_group(litehtml::uint_ptr /*hdc*/, const paint_group& /*group*/) {}
         virtual void draw_filtered(litehtml::uint_ptr hdc, const filter_paint& /*filter*/,
                                    const std::function<void(litehtml::uint_ptr)>& paint)

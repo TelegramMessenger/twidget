@@ -1241,7 +1241,7 @@ const litehtml::paint_ink& litehtml::render_item::ink(uint32_t generation, bool 
             const float reach = filter_reach(el_css.get_filter());
             m_ink.add(m_ink.l - reach, m_ink.t - reach, m_ink.r + reach, m_ink.b + reach);
         }
-        if(el_css.get_position() == element_position_fixed)
+        if(el_css.get_position() == element_position_fixed || el_css.get_position() == element_position_sticky)
         {
             m_ink.unbounded = true;
         }
@@ -1326,6 +1326,9 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
                                        const std::shared_ptr<render_item>& el)
 {
     const auto& el_css     = el->src_el()->css();
+    const auto sticky = el->sticky_offset();
+    x += sticky.x;
+    y += sticky.y;
     position    border_box = el->pos();
     border_box.x          += x;
     border_box.y          += y;
@@ -1370,6 +1373,8 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
 
     auto container = src_el()->doc_ptr()->container();
     container->begin_group(hdc, group);
+    const bool shaped = !el_css.get_clip_path().empty();
+    if(shaped) container->set_clip_path(el_css.get_clip_path().resolve(border_box));
     const position* inner_clip = group.matrix.is_identity() ? clip : nullptr;
     if(g_paint_trace) g_paint_trace->push_back(el.get());
     if(!backdrop.empty() && !bare)
@@ -1404,6 +1409,7 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
         el->src_el()->draw(hdc, x, y, inner_clip, el);
         draw_group_contents(el, hdc, x, y, inner_clip);
     }
+    if(shaped) container->del_clip();
     container->end_group(hdc);
 }
 
@@ -1589,6 +1595,13 @@ std::shared_ptr<litehtml::element> litehtml::render_item::get_child_by_point(
     pixel_t x, pixel_t y, pixel_t client_x, pixel_t client_y, draw_flag flag, int zindex,
     const std::function<bool(const std::shared_ptr<render_item>&)>& check)
 {
+    if(!css().get_clip_path().empty())
+    {
+        position box = m_pos;
+        box += m_padding;
+        box += m_borders;
+        if(!src_el()->doc_ptr()->container()->point_in_clip_path(css().get_clip_path().resolve(box), x, y)) return nullptr;
+    }
     if(src_el()->css().clips_contents())
     {
         if(!m_pos.is_point_inside(x, y))
@@ -1761,6 +1774,16 @@ std::shared_ptr<litehtml::element> litehtml::render_item::get_element_by_point(
         return nullptr;
     }
 
+    const auto sticky = sticky_offset();
+    x -= sticky.x;
+    y -= sticky.y;
+    if(!css().get_clip_path().empty())
+    {
+        position box = m_pos;
+        box += m_padding;
+        box += m_borders;
+        if(!src_el()->doc_ptr()->container()->point_in_clip_path(css().get_clip_path().resolve(box), x, y)) return nullptr;
+    }
     element::ptr ret;
 
     std::map<int, bool> z_indexes;
@@ -1835,7 +1858,7 @@ std::shared_ptr<litehtml::element> litehtml::render_item::get_element_by_point(
         }
     } else
     {
-        if(is_point_inside(x, y))
+        if(is_point_inside(x + sticky.x, y + sticky.y))
         {
             if(!check || check(this->shared_from_this()))
             {
@@ -1847,19 +1870,69 @@ std::shared_ptr<litehtml::element> litehtml::render_item::get_element_by_point(
     return ret;
 }
 
+litehtml::position litehtml::render_item::sticky_offset() const
+{
+    position shift;
+    if(css().get_position() != element_position_sticky) return shift;
+    auto parent_item = parent();
+    if(!parent_item) return shift;
+    auto scroller = parent_item;
+    pixel_t local_x = m_pos.x, local_y = m_pos.y;
+    while(scroller && scroller->css().get_overflow() == overflow_visible)
+    {
+        local_x += scroller->m_pos.x;
+        local_y += scroller->m_pos.y;
+        scroller = scroller->parent();
+    }
+    if(!scroller) return shift;
+    position viewport = scroller->m_pos;
+    viewport += scroller->m_padding;
+    const auto& offsets = css().get_offsets();
+    auto axis = [](pixel_t start, pixel_t size, pixel_t scroll, pixel_t viewport_start, pixel_t viewport_size,
+                   pixel_t parent_start, pixel_t parent_size, const css_length& before, const css_length& after) {
+        if(before.is_predefined() && after.is_predefined()) return 0_px;
+        pixel_t delta = 0_px;
+        if(!after.is_predefined())
+            delta = std::min(delta, scroll + viewport_start + viewport_size - after.calc_percent(viewport_size) - start - size);
+        if(!before.is_predefined())
+            delta = std::max(delta, scroll + viewport_start + before.calc_percent(viewport_size) - start);
+        return std::max(std::min(0_px, -parent_start), std::min(delta, std::max(0_px, parent_size - parent_start - size)));
+    };
+    const pixel_t left = m_pos.x - m_padding.left - m_borders.left;
+    const pixel_t top = m_pos.y - m_padding.top - m_borders.top;
+    pixel_t parent_width = parent_item->m_pos.width;
+    pixel_t parent_height = parent_item->m_pos.height;
+    if(const auto* view = parent_item->get_scroll_view())
+    {
+        parent_width = std::max(parent_width, view->get_scroll_size().width - parent_item->m_padding.width());
+        parent_height = std::max(parent_height, view->get_scroll_size().height - parent_item->m_padding.height());
+    }
+    shift.x = axis(local_x - m_padding.left - m_borders.left, m_pos.width + m_padding.width() + m_borders.width(),
+                   scroller->get_scroll_left(), -scroller->m_padding.left, viewport.width,
+                   left, parent_width, offsets.left, offsets.right);
+    shift.y = axis(local_y - m_padding.top - m_borders.top, m_pos.height + m_padding.height() + m_borders.height(),
+                   scroller->get_scroll_top(), -scroller->m_padding.top, viewport.height,
+                   top, parent_height, offsets.top, offsets.bottom);
+    return shift;
+}
+
 bool litehtml::render_item::is_point_inside(pixel_t x, pixel_t y) const
 {
     position pos = m_pos;
-
+    const auto sticky = sticky_offset();
+    x -= sticky.x;
+    y -= sticky.y;
     pos += m_padding;
     pos += m_borders;
+    if(!css().get_clip_path().empty() && !src_el()->doc_ptr()->container()->point_in_clip_path(css().get_clip_path().resolve(pos), x, y)) return false;
     return pos.is_point_inside(x, y);
 }
 
 void litehtml::render_item::get_rendering_boxes(const std::function<void(const position&)>& redraw_box) const
 {
-    pixel_t add_x = 0_px;
-    pixel_t add_y = 0_px;
+    const auto sticky = sticky_offset();
+    pixel_t add_x = sticky.x;
+    pixel_t add_y = sticky.y;
 
     if(src_el()->css().get_position() != element_position_fixed)
     {
@@ -1875,8 +1948,9 @@ void litehtml::render_item::get_rendering_boxes(const std::function<void(const p
                 add_y += cur_el->m_pos.y + view_port.top() - cur_el->get_scroll_top();
                 break;
             }
-            add_x  += cur_el->m_pos.x - cur_el->get_scroll_left();
-            add_y  += cur_el->m_pos.y - cur_el->get_scroll_top();
+            const auto parent_sticky = cur_el->sticky_offset();
+            add_x  += cur_el->m_pos.x - cur_el->get_scroll_left() + parent_sticky.x;
+            add_y  += cur_el->m_pos.y - cur_el->get_scroll_top() + parent_sticky.y;
             cur_el  = cur_el->parent();
         }
     } else
@@ -1938,6 +2012,9 @@ void litehtml::render_item::dump(litehtml::dumper& cout)
 litehtml::position litehtml::render_item::get_placement() const
 {
     litehtml::position pos = m_pos;
+    const auto sticky = sticky_offset();
+    pos.x += sticky.x;
+    pos.y += sticky.y;
     if(css().get_position() == element_position_fixed)
     {
         position view_port;

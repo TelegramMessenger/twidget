@@ -28,6 +28,7 @@ class Painter
   public:
     virtual ~Painter() = default;
 
+    virtual void pushClipPath(const litehtml::vector_path& path) {}
     virtual void pushClip(const litehtml::position& box, const litehtml::border_radiuses& radius) {}
     virtual void popClip() {}
     virtual void beginGroup(const litehtml::paint_group& group) {}
