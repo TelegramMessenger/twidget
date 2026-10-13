@@ -2339,7 +2339,11 @@ void LHContainer::record_op(OpHash& hash, CGRect ink, bool capture)
                 hash.stretch_number(v);
             const auto& r = c.radius;
             for(lh::pixel_t v : {r.top_left_x, r.top_left_y, r.top_right_x, r.top_right_y, r.bottom_right_x, r.bottom_right_y, r.bottom_left_x, r.bottom_left_y})
+            {
                 hash.stretch_number(F(v));
+                if(F(v) != 0)
+                    hash.stretch = 0;
+            }
             if(!CGAffineTransformIsIdentity(c.matrix))
                 hash.stretch = 0;
         }
@@ -2473,7 +2477,10 @@ void LHContainer::draw_solid_fill(lh::uint_ptr hdc, const lh::background_layer& 
         hash.layer(layer);
         hash.color(color);
         static const bool edgeBands = getenv("LH_NO_EDGE_BANDS") == nullptr;
-        if(edgeBands)
+        const auto&       corners   = layer.border_radius;
+        const bool        square    = F(corners.top_left_x) == 0 && F(corners.top_left_y) == 0 && F(corners.top_right_x) == 0 && F(corners.top_right_y) == 0 &&
+                                      F(corners.bottom_right_x) == 0 && F(corners.bottom_right_y) == 0 && F(corners.bottom_left_x) == 0 && F(corners.bottom_left_y) == 0;
+        if(edgeBands && square)
         {
             hash.stretch = 0x84222325cbf29ce4ULL;
             for(const lh::position* p : {&layer.border_box, &layer.clip_box, &layer.origin_box})
