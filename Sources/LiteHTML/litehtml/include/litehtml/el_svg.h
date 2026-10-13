@@ -6,8 +6,12 @@
 
 namespace litehtml
 {
+    bool  svg_geometry(const element::ptr& el, vector_path& path);
+    float svg_path_length(const vector_path& path, float at, float* x, float* y);
+
     class el_svg : public html_tag
     {
+        friend bool svg_geometry(const element::ptr& el, vector_path& path);
         bool view_box(float box[4]) const;
         uint64_t m_last_paint_key = 0;
         int      m_stable_draws   = 0;

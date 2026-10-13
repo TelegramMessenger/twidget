@@ -1054,6 +1054,165 @@ namespace litehtml
         };
     } // namespace
 
+    bool svg_geometry(const element::ptr& el, vector_path& path)
+    {
+        if(!el || !el->get_tagName())
+        {
+            return false;
+        }
+        const std::string name = lowcase(el->get_tagName());
+        float             vw = 0, vh = 0;
+        for(element::ptr p = el->parent(); p; p = p->parent())
+        {
+            if(const auto* svg = dynamic_cast<const el_svg*>(p.get()))
+            {
+                float box[4];
+                if(svg->view_box(box))
+                {
+                    vw = box[2];
+                    vh = box[3];
+                } else
+                {
+                    vw = numbers(svg->get_attr("width")).empty() ? 0 : numbers(svg->get_attr("width"))[0];
+                    vh = numbers(svg->get_attr("height")).empty() ? 0 : numbers(svg->get_attr("height"))[0];
+                }
+                break;
+            }
+        }
+        const float  diag = std::sqrt((vw * vw + vh * vh) / 2);
+        path_builder builder(path);
+        if(name == "circle")
+        {
+            float r = attr_length(el, "r", diag, 0);
+            if(r > 0)
+                builder.ellipse(attr_length(el, "cx", vw, 0), attr_length(el, "cy", vh, 0), r, r);
+        } else if(name == "ellipse")
+        {
+            float rx = attr_length(el, "rx", vw, 0), ry = attr_length(el, "ry", vh, 0);
+            if(rx > 0 && ry > 0)
+                builder.ellipse(attr_length(el, "cx", vw, 0), attr_length(el, "cy", vh, 0), rx, ry);
+        } else if(name == "rect")
+        {
+            float w = attr_length(el, "width", vw, 0), h = attr_length(el, "height", vh, 0);
+            float rx = attr_length(el, "rx", vw, -1), ry = attr_length(el, "ry", vh, -1);
+            if(rx < 0)
+                rx = ry < 0 ? 0 : ry;
+            if(ry < 0)
+                ry = rx;
+            if(w > 0 && h > 0)
+                builder.rect(attr_length(el, "x", vw, 0), attr_length(el, "y", vh, 0), w, h, rx, ry);
+        } else if(name == "line")
+        {
+            builder.move(attr_length(el, "x1", vw, 0), attr_length(el, "y1", vh, 0));
+            builder.line(attr_length(el, "x2", vw, 0), attr_length(el, "y2", vh, 0));
+        } else if(name == "polyline" || name == "polygon")
+        {
+            std::vector<float> pts = numbers(el->get_attr("points", ""));
+            for(size_t i = 0; i + 1 < pts.size(); i += 2)
+            {
+                if(i == 0)
+                    builder.move(pts[i], pts[i + 1]);
+                else
+                    builder.line(pts[i], pts[i + 1]);
+            }
+            if(name == "polygon" && pts.size() >= 4)
+                builder.close();
+        } else if(name == "path")
+        {
+            builder.parse(el->get_attr("d", ""));
+        } else
+        {
+            return false;
+        }
+        return !path.ops.empty();
+    }
+
+    float svg_path_length(const vector_path& path, float at, float* outx, float* outy)
+    {
+        float  total = 0, cx = 0, cy = 0, sx = 0, sy = 0;
+        bool   found = false;
+        size_t k     = 0;
+        auto   seg   = [&](float x0, float y0, float x1, float y1) {
+            float d = std::hypot(x1 - x0, y1 - y0);
+            if(!found && at >= 0 && total + d >= at)
+            {
+                float t = d > 0 ? (at - total) / d : 0;
+                if(outx)
+                    *outx = x0 + (x1 - x0) * t;
+                if(outy)
+                    *outy = y0 + (y1 - y0) * t;
+                found = true;
+            }
+            total += d;
+        };
+        for(auto op : path.ops)
+        {
+            switch(op)
+            {
+            case vector_path::move:
+                cx = sx = path.points[k];
+                cy = sy = path.points[k + 1];
+                k += 2;
+                if(!found && at >= 0 && total >= at)
+                {
+                    if(outx)
+                        *outx = cx;
+                    if(outy)
+                        *outy = cy;
+                    found = true;
+                }
+                break;
+            case vector_path::line:
+                seg(cx, cy, path.points[k], path.points[k + 1]);
+                cx = path.points[k];
+                cy = path.points[k + 1];
+                k += 2;
+                break;
+            case vector_path::quad:
+            case vector_path::cubic:
+                {
+                    const bool cubic = op == vector_path::cubic;
+                    const float* p   = &path.points[k];
+                    float        px = cx, py = cy;
+                    const int    steps = 64;
+                    for(int i = 1; i <= steps; i++)
+                    {
+                        float t = float(i) / steps, u = 1 - t, x, y;
+                        if(cubic)
+                        {
+                            x = u * u * u * cx + 3 * u * u * t * p[0] + 3 * u * t * t * p[2] + t * t * t * p[4];
+                            y = u * u * u * cy + 3 * u * u * t * p[1] + 3 * u * t * t * p[3] + t * t * t * p[5];
+                        } else
+                        {
+                            x = u * u * cx + 2 * u * t * p[0] + t * t * p[2];
+                            y = u * u * cy + 2 * u * t * p[1] + t * t * p[3];
+                        }
+                        seg(px, py, x, y);
+                        px = x;
+                        py = y;
+                    }
+                    cx = cubic ? p[4] : p[2];
+                    cy = cubic ? p[5] : p[3];
+                    k += cubic ? 6 : 4;
+                }
+                break;
+            case vector_path::close:
+                seg(cx, cy, sx, sy);
+                cx = sx;
+                cy = sy;
+                break;
+            }
+        }
+        if(!found && at >= 0)
+        {
+            if(outx)
+                *outx = cx;
+            if(outy)
+                *outy = cy;
+        }
+        return total;
+    }
+
     el_svg::el_svg(const document::ptr& doc) :
         html_tag(doc)
     {

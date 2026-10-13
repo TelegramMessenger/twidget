@@ -134,6 +134,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly, copy) NSString *layoutSignature;
 - (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name NS_SWIFT_NAME(parents(byAttribute:));
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(computedStyle(attribute:value:));
+- (nullable NSDictionary<NSString *, NSNumber *> *)svgGeometry:(NSString *)method at:(double)distance attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(svgGeometry(_:at:attribute:value:));
 /// Skips elements that are not rendered (display: none on them or an ancestor): CSS animations and transitions do not
 /// run there, and restart when the element is displayed again.
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute NS_SWIFT_NAME(declarations(_:byAttribute:));

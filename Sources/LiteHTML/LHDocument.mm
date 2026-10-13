@@ -2065,6 +2065,58 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return _declarations;
 }
 
+- (nullable NSDictionary<NSString *, NSNumber *> *)svgGeometry:(NSString *)method at:(double)distance attribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || !_doc->root())
+        return nil;
+    const char       *key    = attribute.UTF8String;
+    const std::string wanted = value.UTF8String;
+    std::function<lh::element::ptr(const lh::element::ptr &, int)> search = [&](const lh::element::ptr &e, int depth) -> lh::element::ptr {
+        const char *v = e->get_attr(key);
+        if(v && wanted == v)
+            return e;
+        if(depth > 512)
+            return nullptr;
+        for(const auto &child : e->children())
+            if(auto hit = search(child, depth + 1))
+                return hit;
+        return nullptr;
+    };
+    lh::element::ptr el = search(_doc->root(), 0);
+    lh::vector_path  path;
+    if(!el || !lh::svg_geometry(el, path))
+        return nil;
+    if([method isEqualToString:@"getTotalLength"])
+        return @{@"length" : @(lh::svg_path_length(path, -1, nullptr, nullptr))};
+    if([method isEqualToString:@"getPointAtLength"])
+    {
+        float x = 0, y = 0;
+        lh::svg_path_length(path, std::isfinite(distance) ? std::max(0.0, distance) : 0, &x, &y);
+        return @{@"x" : @(x), @"y" : @(y)};
+    }
+    if([method isEqualToString:@"getBBox"])
+    {
+        float minX = INFINITY, minY = INFINITY, maxX = -INFINITY, maxY = -INFINITY;
+        const int steps = 512;
+        float     total = lh::svg_path_length(path, -1, nullptr, nullptr);
+        for(int i = 0; i <= steps; i++)
+        {
+            float x = 0, y = 0;
+            lh::svg_path_length(path, total * i / steps, &x, &y);
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+        }
+        if(!std::isfinite(minX))
+            return nil;
+        return @{@"x" : @(minX), @"y" : @(minY), @"width" : @(maxX - minX), @"height" : @(maxY - minY)};
+    }
+    return nil;
+}
+
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value
 {
     std::lock_guard<std::mutex> guard(_lock);

@@ -1938,6 +1938,15 @@ public final class LiteHTMLWidgetRenderer {
             }
             updateAnimationClock()
             return ["list": animator.cssAnimations(ids, now: animationNow)]
+        case "svg":
+            guard let id = (q["id"] as? NSNumber)?.intValue, let method = q["method"] as? String,
+                  let geometry = document?.svgGeometry(method, at: ((q["args"] as? [Any])?.first as? NSNumber)?.doubleValue ?? 0, attribute: WidgetDOM.idAttribute, value: String(id)) else {
+                return ["error": "unsupported"]
+            }
+            if method == "getTotalLength" {
+                return geometry["length"]?.doubleValue ?? 0
+            }
+            return geometry.mapValues { $0.doubleValue }
         case "cs":
             let id = (q["id"] as? NSNumber)?.intValue ?? 0
             let style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id)) ?? [:]
