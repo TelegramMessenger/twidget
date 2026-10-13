@@ -2450,6 +2450,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private func scrolled(_ id: Int) {
         boundsValid = false
+        if compositor.invalidateScroll(id, dom: dom) {
+            setNeedsRender()
+        }
         if form.focusedId != 0 {
             syncEditor()
         }

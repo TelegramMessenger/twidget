@@ -556,6 +556,14 @@ final class WidgetCompositor {
         return Set(promoted.keys)
     }
 
+    func invalidateScroll(_ id: Int, dom: WidgetDOM) -> Bool {
+        let affected = promoted.keys.filter { $0 == id || isAncestor($0, of: id, dom: dom) || isAncestor(id, of: $0, dom: dom) }
+        for item in affected {
+            rasterSignatures[item] = nil
+        }
+        return !affected.isEmpty
+    }
+
     init(host: CALayer?) {
         self.host = host
     }

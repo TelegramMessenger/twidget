@@ -134,4 +134,67 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertTrue(messages.contains { $0.contains("\"scroll\"") && $0.contains("\"targetId\":3") })
         renderer.destroy()
     }
+
+    func testScrollingInsidePromotedModalRefreshesItsPixels() throws {
+        try checkScrolling(promotedID: 3)
+    }
+
+    func testScrollingMovesPromotedDescendantsWithTheirContents() throws {
+        try checkScrolling(promotedID: 12)
+    }
+
+    private func checkScrolling(promotedID: Int) throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 180), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 200)
+        var scheduled: [() -> Void] = []
+        renderer.schedule = { scheduled.append($0) }
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 200, height: 180)
+        window.contentView?.addSubview(renderer.view)
+        defer { renderer.destroy() }
+        func drain() {
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+        }
+        func send(_ ops: [[String: Any]]) throws {
+            let data = try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops])
+            renderer.send(String(data: data, encoding: .utf8)!)
+            drain()
+        }
+        func redAtMiddle() throws -> Int {
+            let image = try XCTUnwrap(renderer.snapshot())
+            let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+            return red(cgImage, 50, scale: cgImage.width / 200)
+        }
+        renderer.load()
+        var ops: [[String: Any]] = [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 2, "tag": "style", "attrs": []],
+            ["op": "css", "id": 2, "text": "body{margin:0}.modal{width:120px;height:100px;overflow:hidden}.list{height:100px;overflow:auto}.row{height:20px}.moving{animation:slide 1000s linear infinite}@keyframes slide{from{transform:translateX(0px)}to{transform:translateX(1px)}}"],
+            ["op": "ins", "id": 2, "parent": 1],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["class", "modal"]]],
+            ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["class", "list"]]],
+            ["op": "ins", "id": 4, "parent": 3],
+        ]
+        for row in 0..<20 {
+            let spacing = row == 2 ? ";height:12px;width:100px;margin:4px 10px" : ""
+            let classes = promotedID == 12 && row == 2 ? "row moving" : "row"
+            ops.append(["op": "el", "id": 10 + row, "tag": "div", "attrs": [["class", classes], ["style", "background:\(row % 2 == 0 ? "#f00" : "#00f")\(spacing)"]]])
+            ops.append(["op": "ins", "id": 10 + row, "parent": 4])
+        }
+        try send(ops)
+        for x in promotedID == 3 ? [1, 2, 3, 4, 0] : [] {
+            try send([["op": "style", "id": promotedID, "name": "transform", "value": "translate(\(x)px,0px)"]])
+        }
+        XCTAssertEqual(renderer.compositedCount, 1)
+        XCTAssertNil(renderer.scrolling.layers[4])
+        XCTAssertGreaterThan(try redAtMiddle(), 250)
+        XCTAssertTrue(renderer.handleScroll(CGPoint(x: 50, y: 50), event: wheel(-20)))
+        drain()
+        XCTAssertEqual(renderer.scrolling.offset(4).y, 20)
+        XCTAssertLessThan(try redAtMiddle(), 5)
+        try send([["op": "prop", "id": 4, "name": "scrollTop", "value": 40]])
+        XCTAssertGreaterThan(try redAtMiddle(), 250)
+    }
 }
