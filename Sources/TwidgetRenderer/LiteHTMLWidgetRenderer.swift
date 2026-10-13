@@ -134,6 +134,14 @@ public final class LiteHTMLWidgetRenderer {
     public var tileLayerCount: Int {
         return documentView.tileCount
     }
+
+    var staleTileCount: Int {
+        return documentView.staleTileCount
+    }
+
+    var tilesPreparing: Bool {
+        return documentView.preparing
+    }
     private let statsLock = NSLock()
     private var publishedComposited = 0
 
@@ -2997,10 +3005,33 @@ class WidgetDocumentView: NSView {
     static let damageTrace = ProcessInfo.processInfo.environment["TW_DAMAGE_TRACE"] != nil
     static var damageMisses = 0
 
+    var staleTileCount: Int {
+        guard let document = document else {
+            return 0
+        }
+        var count = 0
+        for tile in tiles where tile.prepared {
+            if let surface = WidgetDocumentView.surface(of: tile.layer), WidgetDocumentView.differs(surface, document: document, rect: tile.rect, dirty: .null, scale: scale) != nil {
+                count += 1
+            }
+        }
+        return count
+    }
+
     private static func checkBase(_ surface: IOSurfaceRef, document: LHDocument, rect: CGRect, dirty: CGRect, scale: CGFloat, history: [String], label: String) {
+        if let box = differs(surface, document: document, rect: rect, dirty: dirty, scale: scale) {
+            damageMisses += 1
+            print("DAMAGE MISS \(damageMisses) \(label) tile=\(rect) dirty=\(dirty) outside=\(box)")
+            for line in history.suffix(12) {
+                print("  | \(line)")
+            }
+        }
+    }
+
+    private static func differs(_ surface: IOSurfaceRef, document: LHDocument, rect: CGRect, dirty: CGRect, scale: CGFloat) -> (x0: Int, y0: Int, x1: Int, y1: Int)? {
         let w = IOSurfaceGetWidth(surface), h = IOSurfaceGetHeight(surface)
         guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: surfaceSpace, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
-            return
+            return nil
         }
         context.translateBy(x: 0, y: CGFloat(h))
         context.scaleBy(x: scale, y: -scale)
@@ -3011,7 +3042,7 @@ class WidgetDocumentView: NSView {
         IOSurfaceLock(surface, .readOnly, nil)
         defer { IOSurfaceUnlock(surface, .readOnly, nil) }
         guard let a = context.data, let b = IOSurfaceGetBaseAddress(surface) as UnsafeMutableRawPointer? else {
-            return
+            return nil
         }
         let local = dirty.isNull ? CGRect.null : dirty.intersection(rect).offsetBy(dx: -rect.minX, dy: -rect.minY)
         let x0 = local.isNull ? 0 : Int(floor(local.minX * scale)), x1 = local.isNull ? 0 : Int(ceil(local.maxX * scale))
@@ -3027,13 +3058,7 @@ class WidgetDocumentView: NSView {
                 }
             }
         }
-        if box.x1 >= 0 {
-            damageMisses += 1
-            print("DAMAGE MISS \(damageMisses) \(label) tile=\(rect) dirty=\(dirty) outside=\(box)")
-            for line in history.suffix(12) {
-                print("  | \(line)")
-            }
-        }
+        return box.x1 >= 0 ? box : nil
     }
 
     private final class Tile {
