@@ -6,3 +6,4 @@ Lab/traces/
 Lab/results/
 Lab/out/
 *.profraw
+/build/

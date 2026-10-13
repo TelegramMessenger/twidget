@@ -19,6 +19,9 @@ This repository is the Apple renderer. Validated operations come in, events and 
 
 macOS 10.13+, Swift 5.5+, C++17.
 
+Other platforms use TwidgetCore, the same renderer in portable C++20, built with CMake from the
+repository root: see [docs/TWIDGET_CORE.md](docs/TWIDGET_CORE.md).
+
 ```swift
 .package(url: "https://github.com/TelegramMessenger/twidget.git", branch: "main")
 ```
