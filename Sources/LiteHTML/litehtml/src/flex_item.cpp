@@ -472,14 +472,14 @@ void litehtml::flex_item_column_direction::align_stretch(flex_line& ln, const co
     {
         el->render(ln.cross_start, el->pos().y - el->content_offset_top(),
                    self_size.new_width_height(ln.cross_size - el->content_offset_width() + el->box_sizing_width(),
-                                              main_size - el->content_offset_height() + el->box_sizing_height(),
+                                              el->pos().height + el->box_sizing_height(),
                                               containing_block_context::size_mode_exact_height),
                    fmt_ctx, false);
     } else
     {
         el->render(ln.cross_start, el->pos().y - el->content_offset_top(),
                    self_size.new_width_height(ln.cross_size - el->content_offset_width() + el->box_sizing_width(),
-                                              main_size - el->content_offset_height() + el->box_sizing_height(),
+                                              el->pos().height + el->box_sizing_height(),
                                               containing_block_context::size_mode_exact_width |
                                                   containing_block_context::size_mode_exact_height),
                    fmt_ctx, false);

@@ -167,3 +167,59 @@ namespace
 }
 
 @end
+
+@interface FlexAutoMarginTests : XCTestCase
+@end
+
+@implementation FlexAutoMarginTests
+
+- (NSDictionary<NSString*, NSValue*>*)bounds:(NSString*)html
+{
+    LHDocument* document = [[LHDocument alloc] initWithHTML:[@"<!doctype html><style>body{margin:0}.b{height:20px;flex:none}</style>" stringByAppendingString:html] css:nil];
+    [document layoutWithMaxWidth:200 preferredWidth:200];
+    return [document boundsByAttribute:@"data-t"];
+}
+
+- (void)testMarginTopAutoPushesAColumnItemToTheEnd
+{
+    for(NSString* extra in @[@"", @";overflow-y:auto", @";padding-top:4px"])
+    {
+        NSDictionary* b = [self bounds:[NSString stringWithFormat:@"<div style='display:flex;flex-direction:column;height:120px%@'><div class=b data-t=a></div><div class=b data-t=z style='margin-top:auto'></div></div>", extra]];
+        CGFloat top = [extra containsString:@"padding"] ? 4 : 0;
+        XCTAssertEqualWithAccuracy([b[@"a"] rectValue].origin.y, top, 0.01, @"%@", extra);
+        XCTAssertEqualWithAccuracy([b[@"z"] rectValue].origin.y, 100 + top, 0.01, @"%@", extra);
+        XCTAssertEqualWithAccuracy([b[@"z"] rectValue].size.height, 20, 0.01, @"%@", extra);
+    }
+}
+
+- (void)testGrowingColumnItemsKeepTheirGrownSizeWhenStretched
+{
+    NSDictionary* b = [self bounds:@"<div style='display:flex;flex-direction:column;height:120px'><div class=b data-t=a></div><div data-t=g style='flex:1;padding:5px'></div><div data-t=z class=b style='margin-top:auto'></div></div>"];
+    XCTAssertEqualWithAccuracy([b[@"g"] rectValue].size.height, 80, 0.01);
+    XCTAssertEqualWithAccuracy([b[@"z"] rectValue].origin.y, 100, 0.01);
+}
+
+- (void)testAutoMarginsOnBothSidesCenterAColumnItem
+{
+    NSDictionary* b = [self bounds:@"<div style='display:flex;flex-direction:column;height:120px'><div class=b data-t=z style='margin:auto 0'></div></div>"];
+    XCTAssertEqualWithAccuracy([b[@"z"] rectValue].origin.y, 50, 0.01);
+    XCTAssertEqualWithAccuracy([b[@"z"] rectValue].size.height, 20, 0.01);
+}
+
+@end
+
+@interface FlexAutoMarginPaintTests : XCTestCase
+@end
+
+@implementation FlexAutoMarginPaintTests
+
+- (void)testMarginTopAutoItemIsPaintedAtItsLayoutPosition
+{
+    Bitmap b = Draw(@"<div style='display:flex;flex-direction:column;height:120px;width:50px'><div style='height:20px;flex:none;background:#00f'></div><div style='height:20px;flex:none;margin-top:auto;background:#f00'></div></div>", 60);
+    XCTAssertGreaterThanOrEqual(b.height, 120u);
+    XCTAssertEqual(b.at(25, 110)[0], 255);
+    XCTAssertEqual(b.at(25, 110)[3], 255);
+    XCTAssertEqual(b.at(25, 60)[3], 0);
+}
+
+@end
