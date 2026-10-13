@@ -394,6 +394,10 @@ public final class LiteHTMLWidgetRenderer {
         return WidgetCompositor.totalPromotions
     }
 
+    public static var tileSpareReport: String {
+        return "spares granted=\(WidgetTileSpares.granted) reused=\(WidgetTileSpares.reused) bytes=\(WidgetTileSpares.currentBytes >> 10)KB peak=\(WidgetTileSpares.peakBytes >> 10)KB"
+    }
+
     public static func quiesceRaster() {
         WidgetDocumentView.prepareQueue.sync(flags: .barrier) {}
     }
@@ -2048,6 +2052,9 @@ public final class LiteHTMLWidgetRenderer {
             return scheduleUrgent { [weak self] in self?.setVisible(visible) }
         }
         hostVisible = visible
+        if !visible {
+            documentView.dropSpares()
+        }
         updateAnimationClock()
         updateTileTrim()
         schedulePrepare()
@@ -2653,6 +2660,7 @@ class WidgetDocumentView: NSView {
                             WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.size.width, scale: scale)
                         }
                         let previous = WidgetDocumentView.surface(of: tile.layer)
+                        self.dropSpare(tile)
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
                         if let previous = previous, WidgetDocumentView.recycleSurfaces {
@@ -2750,6 +2758,7 @@ class WidgetDocumentView: NSView {
 
     private func unprepare(_ tile: Tile) {
         syncInvalidations += 1
+        dropSpare(tile)
         tile.prepared = false
         if detached {
             return
@@ -2849,6 +2858,101 @@ class WidgetDocumentView: NSView {
         var rect = CGRect.null
         var pending = true
         var prepared = false
+        var spare: IOSurfaceRef?
+        var spareStale = CGRect.null
+        var spareEpoch = 0
+        var partialStreak = 0
+        var lastPartial: CFTimeInterval = 0
+    }
+
+    private func dropSpare(_ tile: Tile) {
+        tile.partialStreak = 0
+        guard let spare = tile.spare else {
+            return
+        }
+        tile.spare = nil
+        tile.spareStale = .null
+        WidgetTileSpares.release(spare)
+        if WidgetDocumentView.recycleSurfaces {
+            WidgetSurfacePool.shared.recycle(spare)
+        }
+    }
+
+    private func settleSpare(_ tile: Tile, previous: IOSurfaceRef?, item: (partial: Bool, dirty: CGRect, usedSpare: Bool)) {
+        if item.usedSpare {
+            WidgetTileSpares.noteReuse()
+            if let previous = previous {
+                tile.spare = previous
+                tile.spareStale = item.dirty
+                tile.spareEpoch = WidgetTileSpares.epoch
+            } else {
+                tile.spare = nil
+                tile.spareStale = .null
+            }
+            tile.lastPartial = CACurrentMediaTime()
+            scheduleSpareSweep()
+            return
+        }
+        if !item.partial || !WidgetTileSpares.enabled {
+            dropSpare(tile)
+            if let previous = previous, WidgetDocumentView.recycleSurfaces {
+                WidgetSurfacePool.shared.recycle(previous)
+            }
+            return
+        }
+        tile.partialStreak += 1
+        tile.lastPartial = CACurrentMediaTime()
+        if let old = tile.spare {
+            tile.spare = nil
+            WidgetTileSpares.release(old)
+            if WidgetDocumentView.recycleSurfaces {
+                WidgetSurfacePool.shared.recycle(old)
+            }
+        }
+        guard let previous = previous else {
+            return
+        }
+        if tile.partialStreak >= WidgetTileSpares.streakNeeded, WidgetTileSpares.reserve(previous) {
+            tile.spare = previous
+            tile.spareStale = item.dirty
+            tile.spareEpoch = WidgetTileSpares.epoch
+            scheduleSpareSweep()
+        } else if WidgetDocumentView.recycleSurfaces {
+            WidgetSurfacePool.shared.recycle(previous)
+        }
+    }
+
+    func dropSpares() {
+        for tile in tiles {
+            dropSpare(tile)
+        }
+    }
+
+    private var spareSweepScheduled = false
+
+    private func scheduleSpareSweep() {
+        guard !spareSweepScheduled, let owner = owner else {
+            return
+        }
+        spareSweepScheduled = true
+        owner.scheduleAfter(WidgetTileSpares.idleSeconds) { [weak self] in
+            guard let self = self else {
+                return
+            }
+            self.spareSweepScheduled = false
+            let now = CACurrentMediaTime()
+            var remaining = false
+            for tile in self.tiles where tile.spare != nil {
+                if now - tile.lastPartial > WidgetTileSpares.idleSeconds || tile.spareEpoch != WidgetTileSpares.epoch {
+                    self.dropSpare(tile)
+                } else {
+                    remaining = true
+                }
+            }
+            if remaining {
+                self.scheduleSpareSweep()
+            }
+        }
     }
 
     private var tiles: [Tile] = []
@@ -2904,14 +3008,22 @@ class WidgetDocumentView: NSView {
             return
         }
         let scale = self.scale
-        var jobs: [(index: Int, rect: CGRect, dirty: CGRect, base: IOSurfaceRef?)] = []
+        var jobs: [(index: Int, rect: CGRect, dirty: CGRect, base: IOSurfaceRef?, spare: IOSurfaceRef?, spareStale: CGRect)] = []
+        let epoch = WidgetTileSpares.epoch
         for (index, dirty) in asyncDirty where index < tiles.count {
             let tile = tiles[index]
             if detached ? !tile.prepared : tile.layer.needsDisplay() {
                 continue
             }
+            if tile.spare != nil && tile.spareEpoch != epoch {
+                dropSpare(tile)
+            }
             let base = tile.prepared && !WidgetDocumentView.asyncFullTiles ? WidgetDocumentView.surface(of: tile.layer) : nil
-            jobs.append((index, tile.rect, base == nil ? tile.rect : dirty, base))
+            let spare = base == nil ? nil : tile.spare
+            if spare != nil {
+                tile.spare = nil
+            }
+            jobs.append((index, tile.rect, base == nil ? tile.rect : dirty, base, spare, tile.spareStale))
         }
         let pending = asyncDirty
         asyncDirty.removeAll()
@@ -2927,7 +3039,7 @@ class WidgetDocumentView: NSView {
         let margin = WidgetDocumentView.cullMargin
         let schedule = owner?.scheduleUrgent
         WidgetDocumentView.prepareQueue.async { [weak self] in
-            var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
+            var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef, partial: Bool, dirty: CGRect, usedSpare: Bool)] = []
             var aborted = false
             var stats = WidgetTileStats.Snapshot()
             stats.batches = 1
@@ -2936,20 +3048,30 @@ class WidgetDocumentView: NSView {
                 let rect = job.rect
                 let width = max(1, Int(ceil(rect.maxX * scale)) - Int(floor(rect.minX * scale)))
                 let height = max(1, Int(ceil(rect.height * scale)))
-                guard let surface = Surface(width: width, height: height, space: space) else {
+                var dirty = job.dirty.intersection(rect)
+                let changed = dirty
+                var usedSpare = false
+                var target: (surface: IOSurfaceRef, context: CGContext)?
+                if let spare = job.spare, IOSurfaceGetWidth(spare) == width, IOSurfaceGetHeight(spare) == height, !IOSurfaceIsInUse(spare), let base = job.base, IOSurfaceGetWidth(base) == width, IOSurfaceGetHeight(base) == height, let context = CGContext(data: IOSurfaceGetBaseAddress(spare), width: width, height: height, bitsPerComponent: 8, bytesPerRow: IOSurfaceGetBytesPerRow(spare), space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
+                    target = (spare, context)
+                    usedSpare = true
+                } else if let surface = Surface(width: width, height: height, space: space) {
+                    target = (surface.surface, surface.context)
+                }
+                guard let (targetSurface, ctx) = target else {
                     aborted = true
                     break
                 }
-                let ctx = surface.context
-                IOSurfaceLock(surface.surface, [], nil)
-                var dirty = job.dirty.intersection(rect)
+                IOSurfaceLock(targetSurface, [], nil)
                 var now = WidgetTileStats.threadMilliseconds()
                 stats.setup += now - mark
                 mark = now
-                if let base = job.base, IOSurfaceGetWidth(base) == width, IOSurfaceGetHeight(base) == height {
+                if usedSpare {
+                    dirty = dirty.union(job.spareStale.intersection(rect))
+                } else if let base = job.base, IOSurfaceGetWidth(base) == width, IOSurfaceGetHeight(base) == height {
                     IOSurfaceLock(base, .readOnly, nil)
-                    let from = IOSurfaceGetBaseAddress(base), to = IOSurfaceGetBaseAddress(surface.surface)
-                    let fromRow = IOSurfaceGetBytesPerRow(base), toRow = IOSurfaceGetBytesPerRow(surface.surface)
+                    let from = IOSurfaceGetBaseAddress(base), to = IOSurfaceGetBaseAddress(targetSurface)
+                    let fromRow = IOSurfaceGetBytesPerRow(base), toRow = IOSurfaceGetBytesPerRow(targetSurface)
                     for y in 0..<height {
                         memcpy(to.advanced(by: y * toRow), from.advanced(by: y * fromRow), width * 4)
                     }
@@ -2977,16 +3099,26 @@ class WidgetDocumentView: NSView {
                 let drawn = document.drawIfCurrent(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -margin, dy: -margin))
                 ctx.restoreGState()
                 ctx.flush()
-                IOSurfaceUnlock(surface.surface, [], nil)
+                IOSurfaceUnlock(targetSurface, [], nil)
                 stats.draw += WidgetTileStats.threadMilliseconds() - mark
                 guard drawn else {
                     aborted = true
                     break
                 }
-                made.append((job.index, rect, surface.surface))
+                made.append((job.index, rect, targetSurface, job.base != nil && (usedSpare || dirty != rect), changed, usedSpare))
             }
             WidgetTileStats.add(stats)
             let finish = {
+                let lent = jobs.compactMap { job in job.spare.map { (job.index, $0) } }
+                var settled = Set<Int>()
+                defer {
+                    for (index, spare) in lent where !settled.contains(index) {
+                        WidgetTileSpares.release(spare)
+                        if WidgetDocumentView.recycleSurfaces {
+                            WidgetSurfacePool.shared.recycle(spare)
+                        }
+                    }
+                }
                 guard let self = self else {
                     return
                 }
@@ -3009,9 +3141,10 @@ class WidgetDocumentView: NSView {
                         let previous = WidgetDocumentView.surface(of: tile.layer)
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
-                        if let previous = previous, WidgetDocumentView.recycleSurfaces {
-                            WidgetSurfacePool.shared.recycle(previous)
+                        if item.usedSpare {
+                            settled.insert(item.index)
                         }
+                        self.settleSpare(tile, previous: previous, item: (item.partial, item.dirty, item.usedSpare))
                         tile.prepared = true
                         self.drawStatsLock.lock()
                         self.asyncCounts.installed += 1
@@ -3216,6 +3349,7 @@ class WidgetDocumentView: NSView {
     private func removeTiles() {
         syncInvalidations += 1
         for tile in tiles {
+            dropSpare(tile)
             tile.layer.twRemoveFromSuperlayer()
         }
         tiles.removeAll()
@@ -3264,6 +3398,7 @@ class WidgetDocumentView: NSView {
         let columns = max(1, Int(ceil(size.width / tileSize)))
         let count = columns * Int(ceil(height / tileSize))
         while tiles.count > count {
+            dropSpare(tiles[tiles.count - 1])
             tiles.removeLast().layer.twRemoveFromSuperlayer()
         }
         while tiles.count < count {
@@ -3295,6 +3430,7 @@ class WidgetDocumentView: NSView {
             let left = CGFloat(index % grid.columns) * grid.tileSize
             let rect = CGRect(x: left, y: top, width: min(grid.tileSize, size.width - left), height: min(grid.tileSize, grid.height - top))
             if rect != tile.rect {
+                dropSpare(tile)
                 tile.rect = rect
                 tile.surfaces.removeAll()
                 tile.shown = nil
@@ -3356,6 +3492,7 @@ class WidgetDocumentView: NSView {
             let left = CGFloat(index % columns) * tileSize
             let rect = CGRect(x: left, y: top, width: min(tileSize, bounds.width - left), height: min(tileSize, height - top))
             if rect != tile.rect {
+                dropSpare(tile)
                 tile.rect = rect
                 tile.surfaces.removeAll()
                 tile.shown = nil
