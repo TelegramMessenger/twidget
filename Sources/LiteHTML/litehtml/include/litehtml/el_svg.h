@@ -25,6 +25,7 @@ namespace litehtml
         explicit el_svg(const document::ptr& doc);
 
         bool is_replaced() const override;
+        bool has_external_intrinsic_size() const override;
         void parse_attributes() override;
         void get_content_size(size& sz, pixel_t max_width) override;
         void draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,

@@ -1277,6 +1277,11 @@ namespace litehtml
         return true;
     }
 
+    bool el_svg::has_external_intrinsic_size() const
+    {
+        return false;
+    }
+
     bool el_svg::view_box(float box[4]) const
     {
         std::vector<float> values = numbers(get_attr("viewbox"));

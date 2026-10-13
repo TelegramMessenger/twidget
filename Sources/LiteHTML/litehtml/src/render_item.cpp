@@ -396,7 +396,7 @@ bool litehtml::render_item::fetch_positioned()
 
     for(auto& el : m_children)
     {
-        replaced = replaced || el->src_el()->is_replaced();
+        replaced = replaced || el->src_el()->has_external_intrinsic_size();
         litehtml::element_position el_pos = el->src_el()->css().get_position();
         if(el_pos != element_position_static)
         {
@@ -412,7 +412,7 @@ bool litehtml::render_item::fetch_positioned()
         }
         replaced = replaced || el->m_out_of_flow;
     }
-    m_out_of_flow = ret || replaced || src_el()->is_replaced() ||
+    m_out_of_flow = ret || replaced || src_el()->has_external_intrinsic_size() ||
                     (css().get_display() == display_list_item && !css().get_list_style_image().empty());
     return ret;
 }

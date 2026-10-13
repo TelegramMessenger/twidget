@@ -47,6 +47,11 @@ static long Hits()
     return [LHDocument.layoutCacheStats[@"hits"] longValue];
 }
 
+static bool CacheFastPathEnabled()
+{
+    return !getenv("LH_NO_LAYOUT_CACHE") && !getenv("LH_LAYOUT_CACHE_CHECK");
+}
+
 - (void)testNestedFlexMeasurementsAcrossEditsAndViewportChanges
 {
     LHDocument *document = nil;
@@ -79,6 +84,51 @@ static long Hits()
     }
 }
 
+- (void)testNestedSVGFlexMeasurementsAcrossEditsAndViewportChanges
+{
+    LHDocument *document = nil;
+    const long hits = Hits();
+    const long mismatches = [LHDocument.layoutCacheStats[@"mismatches"] longValue];
+    const NSUInteger measures = LHDocument.textMeasureCount;
+    for(int frame = 0; frame < 8; frame++)
+    {
+        std::string body = "<div style='display:flex;flex-direction:column'>";
+        int id = 10;
+        for(int row = 0; row < 6; row++)
+        {
+            body += "<div data-lh-id='" + std::to_string(id++) + "' class='row card'>";
+            for(int column = 0; column < 3; column++)
+            {
+                body += "<div data-lh-id='" + std::to_string(id++) + "' style='display:flex;flex:1;align-items:center;gap:3px'>";
+                body += "<svg data-lh-id='" + std::to_string(id++) + "' viewBox='0 0 24 " + std::to_string(24 + (row == frame % 6 ? frame * 3 : 0)) + "' ";
+                if(column == 0)
+                    body += "width='" + std::to_string(18 + frame % 4 * 3) + "' height='24' ";
+                body += column == 1 ? "style='width:30%;height:1.5em;flex:none'>" : "style='max-width:40px;max-height:30px;flex:none'>";
+                body += "<circle data-lh-id='" + std::to_string(id++) + "' cx='12' cy='12' r='" + std::to_string(4 + frame % 7) + "' fill='" + (frame % 2 ? "#c00" : "#00c") + "'/></svg>";
+                body += "<span data-lh-id='" + std::to_string(id++) + "'>";
+                body += row == frame % 6 ? "Changed label with several wrapping words" : "Card label";
+                body += "</span></div>";
+            }
+            body += "</div>";
+        }
+        body += "</div>";
+        NSString *html = Page(body);
+        LHDocument *patch = [[LHDocument alloc] initWithHTML:html css:nil previous:document];
+        if(document)
+            XCTAssertTrue(patch.reusedPrevious);
+        for(NSNumber *width in @[@420, @260, @420])
+        {
+            LHDocument *fresh = [[LHDocument alloc] initWithHTML:html css:nil];
+            [self expect:patch like:fresh width:width.doubleValue label:[NSString stringWithFormat:@"svg flex %d %@", frame, width]];
+        }
+        document = patch;
+    }
+    printf("svg flex: %ld cache hits, %lu text measurements\n", Hits() - hits, (unsigned long)(LHDocument.textMeasureCount - measures));
+    if(CacheFastPathEnabled())
+        XCTAssertGreaterThan(Hits(), hits);
+    XCTAssertEqual([LHDocument.layoutCacheStats[@"mismatches"] longValue], mismatches);
+}
+
 - (void)testOneCellEditReusesTheOtherCells
 {
     auto body = [](int frame) {
@@ -102,7 +152,7 @@ static long Hits()
         LHDocument *fresh  = [[LHDocument alloc] initWithHTML:html css:nil];
         XCTAssertTrue(patch.reusedPrevious);
         [self expect:patch like:fresh width:260 label:[NSString stringWithFormat:@"frame %d", frame]];
-        if(frame > 1)
+        if(frame > 1 && CacheFastPathEnabled())
             XCTAssertGreaterThan(Hits() - before, 100, @"frame %d", frame);
         document = patch;
     }
@@ -183,7 +233,8 @@ static long Hits()
             }
         }
     }
-    XCTAssertGreaterThan(Hits() - hits, 1000);
+    if(CacheFastPathEnabled())
+        XCTAssertGreaterThan(Hits() - hits, 1000);
 }
 
 static NSData *Raw(LHDocument *document, CGFloat width, size_t *stride)
@@ -254,7 +305,8 @@ static NSData *Raw(LHDocument *document, CGFloat width, size_t *stride)
         }
         document = patch;
     }
-    XCTAssertGreaterThan(confined, 10);
+    if(!getenv("LH_NO_LAYOUT_CACHE"))
+        XCTAssertGreaterThan(confined, 10);
 }
 
 - (void)testRegionsCoverUnrenderedOrigins
