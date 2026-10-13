@@ -33,7 +33,7 @@ final class WidgetShimmers {
 
     func reset() {
         for item in items.values {
-            item.container.removeFromSuperlayer()
+            item.container.twRemoveFromSuperlayer()
         }
         items.removeAll()
     }
@@ -54,11 +54,11 @@ final class WidgetShimmers {
         if self.host !== host {
             self.host = host
             for item in items.values {
-                host?.addSublayer(item.container)
+                host?.twAddSublayer(item.container)
             }
         }
         for id in Set(items.keys).subtracting(wanted) {
-            items.removeValue(forKey: id)?.container.removeFromSuperlayer()
+            items.removeValue(forKey: id)?.container.twRemoveFromSuperlayer()
             changed = true
         }
         for id in wanted where items[id] == nil {
@@ -80,7 +80,7 @@ final class WidgetShimmers {
             layer.contentsScale = scale
             layer.frame = tile.tile.offsetBy(dx: -tile.clip.minX, dy: -tile.clip.minY)
             container.addSublayer(layer)
-            host?.addSublayer(container)
+            host?.twAddSublayer(container)
             items[id] = Item(container: container, tile: layer, tileRect: tile.tile, snap: max(scale, 1), area: tile.area, clip: tile.clip, x: tile.tile.minX)
             changed = true
         }
@@ -138,7 +138,7 @@ final class WidgetShimmers {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             for id in failed {
-                items.removeValue(forKey: id)?.container.removeFromSuperlayer()
+                items.removeValue(forKey: id)?.container.twRemoveFromSuperlayer()
                 refused.insert(id)
             }
             CATransaction.commit()
