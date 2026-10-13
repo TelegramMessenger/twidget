@@ -39,6 +39,34 @@ final class WidgetFormInputTests: XCTestCase {
         renderer.handleMouseDown(point, event: event)
     }
 
+    func testNumberInputKeepsItsColorsAndEditorWhileTyping() throws {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "input", "attrs": [["type", "number"], ["placeholder", "Calories"], ["style", "color:rgb(220,230,240);background:#292929;padding:12px;border:0;border-radius:12px"]]],
+            ["op": "ins", "parent": 7, "id": 10, "before": NSNull()],
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        window.appearance = NSAppearance(named: .darkAqua)
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor?.field?.currentEditor() != nil })
+        let editor = try XCTUnwrap(view.formEditor?.field?.currentEditor() as? NSTextView)
+        let color = NSColor(srgbRed: 220 / 255.0, green: 230 / 255.0, blue: 240 / 255.0, alpha: 1)
+        XCTAssertFalse(editor.drawsBackground)
+        XCTAssertEqual(editor.backgroundColor.alphaComponent, 0)
+        XCTAssertFalse(editor.usesAdaptiveColorMappingForDarkAppearance)
+        if let clip = editor.superview as? NSClipView {
+            XCTAssertFalse(clip.drawsBackground)
+        }
+        XCTAssertEqual(editor.textColor?.usingColorSpace(.sRGB), color)
+        XCTAssertEqual(editor.insertionPointColor.usingColorSpace(.sRGB), color)
+        editor.insertText("1", replacementRange: NSRange(location: NSNotFound, length: 0))
+        pump(1, until: { events().contains { $0["type"] as? String == "input" } })
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "1")
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertFalse(editor.drawsBackground)
+        XCTAssertEqual(editor.textColor?.usingColorSpace(.sRGB), color)
+    }
+
     func testChoosingFromTheSelectMenuSetsTheValueAndDispatchesInputAndChange() {
         let previous = WidgetRendererEnvironment.presentMenu
         defer { WidgetRendererEnvironment.presentMenu = previous }
@@ -71,7 +99,7 @@ final class WidgetFormInputTests: XCTestCase {
         XCTAssertTrue(renderer.dom.serialize(theme: "light").contains("value=\"b\" selected"))
         shown = []
         let space = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)!
-        renderer.handleKey("keydown", event: space)
+        renderer.handleKey("keydown", event: WidgetKeyEvent(space))
         pump(1, until: { !shown.isEmpty })
         XCTAssertEqual(shown.first { $0.selected }?.title, "Blue")
     }

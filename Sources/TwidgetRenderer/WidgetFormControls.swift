@@ -232,14 +232,14 @@ extension LiteHTMLWidgetRenderer {
         return form.focusedSelect
     }
 
-    func selectKey(_ type: String, key: String, event: NSEvent) {
+    func selectKey(_ type: String, key: String, event: WidgetKeyEvent) {
         guard type == "keydown", key == " " || key == "Enter", !event.isARepeat, let id = keyTarget(), let node = dom.node(id), !frozen, !destroyed else {
             return
         }
         if prevented.contains("\(id):keydown:\(key)") {
             return
         }
-        openSelect(node, event: event)
+        openSelect(node, event: event.menuEvent)
     }
 
     func chooseOption(selectId id: Int, index: Int) {
@@ -526,6 +526,21 @@ enum WidgetCSSColor {
     }
 }
 
+final class WidgetTextFieldCell: NSTextFieldCell {
+    override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
+        let editor = super.setUpFieldEditorAttributes(textObj)
+        editor.drawsBackground = false
+        editor.backgroundColor = .clear
+        if let textView = editor as? NSTextView {
+            textView.insertionPointColor = textColor ?? .textColor
+            if #available(macOS 10.14, *) {
+                textView.usesAdaptiveColorMappingForDarkAppearance = false
+            }
+        }
+        return editor
+    }
+}
+
 final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate {
     let generation: Int
     let view: NSView
@@ -553,6 +568,10 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
             scroll.borderType = .noBorder
             let text = NSTextView(frame: CGRect(origin: .zero, size: spec.frame.size))
             text.drawsBackground = false
+            text.backgroundColor = .clear
+            if #available(macOS 10.14, *) {
+                text.usesAdaptiveColorMappingForDarkAppearance = false
+            }
             text.isRichText = false
             text.allowsUndo = true
             text.font = spec.font
@@ -574,9 +593,11 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
             view = scroll
         } else {
             let input = NSTextField(frame: spec.frame)
+            input.cell = WidgetTextFieldCell(textCell: "")
             input.isBordered = false
             input.isBezeled = false
             input.drawsBackground = false
+            input.backgroundColor = .clear
             input.focusRingType = .none
             input.font = spec.font
             input.textColor = spec.color

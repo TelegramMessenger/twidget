@@ -339,7 +339,9 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
         m_pos.height = std::min<pixel_t>(m_pos.height, self_size.max_height);
     }
 
-    if(css().get_center_content() && m_pos.height > content_height + 0.5_px)
+    if(css().get_center_content() &&
+       !is_one_of(css().get_display(), display_flex, display_inline_flex, display_grid, display_inline_grid) &&
+       m_pos.height > content_height + 0.5_px)
     {
         shift_content((m_pos.height - content_height) / 2_px);
     }

@@ -2543,16 +2543,16 @@ public final class LiteHTMLWidgetRenderer {
         hoverId = 0
     }
 
-    func handleKey(_ type: String, event: NSEvent) {
+    func handleKey(_ type: String, event: WidgetKeyEvent) {
         noteUserInput()
         form.lastActivation = CACurrentMediaTime()
         if frozen {
             return
         }
         let id = keyTarget() ?? dom.publicId(dom.body)
-        let key = WidgetKeys.key(event)
+        let key = event.key
         if LiteHTMLWidgetRenderer.alwaysSent.contains(type) || listened.contains(type) {
-            post(["type": "event", "ev": ["type": type, "targetId": id, "key": key, "code": WidgetKeys.code(event), "repeat": event.isARepeat, "modifiers": modifiers(event.modifierFlags)]])
+            post(["type": "event", "ev": ["type": type, "targetId": id, "key": key, "code": event.code, "repeat": event.isARepeat, "modifiers": modifiers(event.modifierFlags)]])
         }
         selectKey(type, key: key, event: event)
     }
@@ -4141,16 +4141,33 @@ class WidgetDocumentView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        toOwner { $0.handleKey("keydown", event: event) }
+        let key = WidgetKeyEvent(event)
+        toOwner { $0.handleKey("keydown", event: key) }
     }
 
     override func keyUp(with event: NSEvent) {
-        toOwner { $0.handleKey("keyup", event: event) }
+        let key = WidgetKeyEvent(event)
+        toOwner { $0.handleKey("keyup", event: key) }
     }
 }
 
-enum WidgetKeys {
-    static func key(_ event: NSEvent) -> String {
+struct WidgetKeyEvent {
+    let key: String
+    let code: String
+    let isARepeat: Bool
+    let modifierFlags: NSEvent.ModifierFlags
+    let menuEvent: NSEvent
+
+    init(_ event: NSEvent) {
+        precondition(Thread.isMainThread)
+        key = Self.key(event)
+        code = Self.code(event)
+        isARepeat = event.isARepeat
+        modifierFlags = event.modifierFlags
+        menuEvent = event
+    }
+
+    private static func key(_ event: NSEvent) -> String {
         switch event.keyCode {
         case 36, 76: return "Enter"
         case 48: return "Tab"
@@ -4170,7 +4187,7 @@ enum WidgetKeys {
         }
     }
 
-    static func code(_ event: NSEvent) -> String {
+    private static func code(_ event: NSEvent) -> String {
         switch event.keyCode {
         case 36, 76: return "Enter"
         case 48: return "Tab"

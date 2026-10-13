@@ -15,6 +15,22 @@ final class DashboardLayoutTests: XCTestCase {
         return bytes
     }
 
+    func testColorSelectorButtonCentersItsLabelAndArrow() {
+        for display in ["flex", "inline-flex", "grid", "inline-grid"] {
+            let doc = document("""
+            <style>
+            .dd{display:\(display);align-items:center;grid-template-columns:1fr auto;width:100%;height:36px;box-sizing:border-box;border:0;border-radius:10px;background:#292929;color:#fff;padding:0 14px;font:600 15px -apple-system}
+            .dd span{flex:1 1 0;text-align:left;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+            </style>
+            <button class=dd id=dd type=button><span id=dl>Red</span><svg id=arrow width=12 height=8 viewBox='0 0 12 8'><path d='M1 1.5l5 5 5-5' fill=none stroke='#8a9199' stroke-width=2 /></svg></button>
+            """)
+            let button = doc.bounds(matching: "#dd")
+            XCTAssertEqual(button.height, 36, accuracy: 0.1)
+            XCTAssertEqual(doc.bounds(matching: "#dl").midY, button.midY, accuracy: 0.5, display)
+            XCTAssertEqual(doc.bounds(matching: "#arrow").midY, button.midY, accuracy: 0.5, display)
+        }
+    }
+
     func testGridCardsFillAColumnFlexSheet() {
         for sizing in ["content-box", "border-box"] {
             for columns in ["1fr 1fr", "repeat(2,minmax(0,1fr))", "repeat(auto-fit,minmax(100px,1fr))"] {
