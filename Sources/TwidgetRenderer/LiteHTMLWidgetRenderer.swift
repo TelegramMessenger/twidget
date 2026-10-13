@@ -15,6 +15,7 @@ public final class LiteHTMLWidgetRenderer {
     public var schedule: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     public var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }
     public var isOnExecutor: () -> Bool = { Thread.isMainThread }
+    public var debugName: String?
     public lazy var scheduleUrgent: (@escaping () -> Void) -> Void = { [weak self] block in self?.schedule(block) }
     public var executorIsMain: () -> Bool = { true }
 
@@ -3176,7 +3177,7 @@ class WidgetDocumentView: NSView {
                             continue
                         }
                         if WidgetDocumentView.verifyPrepared, self.document === document {
-                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.size.width, scale: scale, label: "async")
+                            WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.size.width, scale: scale, label: "async:" + (self.owner?.debugName ?? "?") + (item.usedSpare ? ":spare" : (item.partial ? ":partial" : ":full")))
                         }
                         let previous = WidgetDocumentView.surface(of: tile.layer)
                         tile.layer.contents = item.surface
