@@ -48,4 +48,39 @@ static NSData *Pixels(CGImageRef image)
     CGImageRelease(after);
 }
 
+- (void)testTileOverExcludedRenderMatchesFullRender
+{
+    NSString *html = @"<style>body{margin:0}.sk{width:200px;height:20px;margin:7px 3px;padding:2px;border-radius:6px;background-color:#ccc;background-image:linear-gradient(90deg,rgba(0,0,0,0),rgba(0,0,0,.5),rgba(0,0,0,0));background-size:40% 100%;background-repeat:no-repeat;background-position:30% 0}</style><div class=\"sk\" data-twid=\"5\"></div>";
+    LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+    [document layoutWithMaxWidth:220 preferredWidth:220];
+    NSData *full = Tile(document, 220, 40);
+    LHBackgroundTile *tile = [document backgroundTileWithAttribute:@"data-twid" value:@"5" maxWidth:220 scale:2];
+    XCTAssertNotNil(tile);
+    XCTAssertEqualWithAccuracy(tile.tile.size.width, 0.4 * 204, 0.01);
+    XCTAssertEqualWithAccuracy(tile.tile.origin.x, tile.area.origin.x + 0.3 * (tile.area.size.width - tile.tile.size.width), 0.01);
+    [document setBackgroundImageExclusions:[NSSet setWithObject:@"5"] attribute:@"data-twid"];
+    size_t pw = 440, ph = 80;
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(nullptr, pw, ph, 8, pw * 4, space, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(space);
+    CGContextTranslateCTM(ctx, 0, ph);
+    CGContextScaleCTM(ctx, 2, -2);
+    [document drawInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, 220, 40)];
+    CGContextSaveGState(ctx);
+    CGPathRef path = CGPathCreateWithRoundedRect(tile.clip, [tile radius:0], [tile radius:1], nullptr);
+    CGContextAddPath(ctx, path);
+    CGContextClip(ctx);
+    CGPathRelease(path);
+    CGContextTranslateCTM(ctx, tile.tile.origin.x, tile.tile.origin.y + tile.tile.size.height);
+    CGContextScaleCTM(ctx, 1, -1);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, tile.tile.size.width, tile.tile.size.height), tile.image);
+    CGContextRestoreGState(ctx);
+    const uint8_t *a = (const uint8_t *)full.bytes, *b = (const uint8_t *)CGBitmapContextGetData(ctx);
+    int worst = 0;
+    for(size_t i = 0; i < pw * ph * 4; i++)
+        worst = MAX(worst, abs((int)a[i] - (int)b[i]));
+    CGContextRelease(ctx);
+    XCTAssertLessThanOrEqual(worst, 24);
+}
+
 @end

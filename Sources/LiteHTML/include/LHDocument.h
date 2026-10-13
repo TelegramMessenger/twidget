@@ -35,6 +35,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSArray<LHSVGShape *> *shapes;
 @end
 
+@interface LHBackgroundTile : NSObject
+@property (nonatomic, readonly) CGImageRef image;
+@property (nonatomic, readonly) CGRect tile;
+@property (nonatomic, readonly) CGRect area;
+@property (nonatomic, readonly) CGRect clip;
+- (CGFloat)radius:(NSInteger)index;
+@end
+
 @interface LHDocument : NSObject
 
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
@@ -103,6 +111,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setLayerExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setLayerExclusions(_:attribute:));
 @property (readonly) NSSet<NSString *> *layerExclusions;
 - (void)setBackgroundImageExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setBackgroundImageExclusions(_:attribute:));
+- (nullable LHBackgroundTile *)backgroundTileWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth scale:(CGFloat)scale NS_SWIFT_NAME(backgroundTile(attribute:value:maxWidth:scale:));
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setScrollContentExclusions(_:attribute:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute NS_SWIFT_NAME(scrollers(byAttribute:));
 - (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(setScrollOffset(_:attribute:value:));

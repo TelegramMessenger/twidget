@@ -281,6 +281,23 @@ using OpIdentitySet = std::unordered_set<std::pair<uint64_t, size_t>, OpIdentity
 - (NSArray<LHSVGShape *> *)shapes { return _shapes; }
 @end
 
+@implementation LHBackgroundTile
+{
+@public
+    CGImageRef _image;
+    CGRect     _tile;
+    CGRect     _area;
+    CGRect     _clip;
+    CGFloat    _radii[8];
+}
+- (CGImageRef)image { return _image; }
+- (CGRect)tile { return _tile; }
+- (CGRect)area { return _area; }
+- (CGRect)clip { return _clip; }
+- (CGFloat)radius:(NSInteger)index { return index >= 0 && index < 8 ? _radii[index] : 0; }
+- (void)dealloc { CGImageRelease(_image); }
+@end
+
 @implementation LHDisplayList
 {
     std::vector<LHDrawOp>                    _ops;
@@ -2272,6 +2289,69 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 + (void)setTextBatchingEnabled:(BOOL)enabled
 {
     LHContainer::s_text_batching.store(enabled, std::memory_order_relaxed);
+}
+
+- (LHBackgroundTile *)backgroundTileWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth scale:(CGFloat)scale
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self layoutLockedWithMaxWidth:maxWidth];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri)
+        return nil;
+    auto el = ri->src_el();
+    const lh::background* bg = el->get_background();
+    if(!bg || el->is_root() || bg->m_image.size() != 1 || ri->src_el()->is_inline())
+        return nil;
+    const auto type = bg->get_layer_type(0);
+    if(type != lh::background::type_linear_gradient && type != lh::background::type_radial_gradient && type != lh::background::type_conic_gradient)
+        return nil;
+    if(!bg->m_repeat.empty() && bg->m_repeat[0] != lh::background_repeat_no_repeat)
+        return nil;
+    if(bg->m_repeat.empty())
+        return nil;
+    if(!bg->m_origin.empty() && bg->m_origin[0] != lh::background_box_padding)
+        return nil;
+    if(!bg->m_attachment.empty() && bg->m_attachment[0] != lh::background_attachment_scroll)
+        return nil;
+    lh::position content = ri->get_placement();
+    lh::background_layer layer;
+    if(!bg->get_layer(0, content, el.get(), ri, layer))
+        return nil;
+    lh::position padding = content;
+    padding += ri->get_paddings();
+    const CGFloat tw = layer.origin_box.width.value(), th = layer.origin_box.height.value();
+    if(tw <= 0 || th <= 0 || scale <= 0)
+        return nil;
+    const size_t pw = (size_t)std::ceil(tw * scale), ph = (size_t)std::ceil(th * scale);
+    if(pw == 0 || ph == 0 || pw * ph > (4u << 20))
+        return nil;
+    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    if(!ctx)
+        return nil;
+    CGContextTranslateCTM(ctx, 0, ph);
+    CGContextScaleCTM(ctx, scale, -scale);
+    CGContextTranslateCTM(ctx, -layer.origin_box.x.value(), -layer.origin_box.y.value());
+    CGContextSetAllowsFontSmoothing(ctx, false);
+    CGContextSetShouldAntialias(ctx, true);
+    lh::background_layer tile = layer;
+    tile.clip_box      = layer.origin_box;
+    tile.border_box    = layer.origin_box;
+    tile.border_radius = lh::border_radiuses();
+    bg->draw_layer(reinterpret_cast<lh::uint_ptr>(ctx), 0, tile, _doc->container());
+    CGImageRef image = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if(!image)
+        return nil;
+    LHBackgroundTile *result = [LHBackgroundTile new];
+    result->_image = image;
+    result->_tile  = CGRectMake(layer.origin_box.x.value(), layer.origin_box.y.value(), tw, th);
+    result->_area  = CGRectMake(padding.x.value(), padding.y.value(), padding.width.value(), padding.height.value());
+    result->_clip  = CGRectMake(layer.clip_box.x.value(), layer.clip_box.y.value(), layer.clip_box.width.value(), layer.clip_box.height.value());
+    const auto& r = layer.border_radius;
+    const lh::pixel_t radii[8] = {r.top_left_x, r.top_left_y, r.top_right_x, r.top_right_y, r.bottom_right_x, r.bottom_right_y, r.bottom_left_x, r.bottom_left_y};
+    for(int i = 0; i < 8; i++)
+        result->_radii[i] = radii[i].value();
+    return result;
 }
 
 - (LHSVGShapes *)svgShapesWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth
