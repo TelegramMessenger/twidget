@@ -1309,17 +1309,17 @@ public final class LiteHTMLWidgetRenderer {
             stage("diff")
         }
         document = next
-        if WidgetDocumentView.verify, !shimmers.ids.isEmpty {
-            shimmerVerifyTick += 1
-            if shimmerVerifyTick % 1 == 0 {
-                shimmers.verify(document: next, width: width)
-            }
-        }
         let shimmerBefore = shimmers.ids
         if shimmers.update(document: next, animator: animator, width: width, host: documentView.contentLayer, scale: documentView.scale, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs).union(svgLayers.ids), suspended: magic.isActive) || shimmers.dropped || shimmerBefore != shimmers.ids {
             shimmers.dropped = false
             next.setBackgroundImageExclusions(Set((magic.isActive ? [] : shimmers.ids).map { String($0) }), attribute: WidgetDOM.idAttribute)
             documentView.invalidate(nil)
+        }
+        if WidgetDocumentView.verify, !shimmers.ids.isEmpty {
+            shimmerVerifyTick += 1
+            if shimmerVerifyTick % 1 == 0 {
+                shimmers.verify(document: next, width: width)
+            }
         }
         if !svgLayers.ids.isEmpty, !magic.isActive, svgLayers.render(document: next, width: width, host: documentView.contentLayer, scale: documentView.scale, dom: dom, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs)) {
             next.setLayerExclusions(Set(svgLayers.ids.map { String($0) }), attribute: WidgetDOM.idAttribute)

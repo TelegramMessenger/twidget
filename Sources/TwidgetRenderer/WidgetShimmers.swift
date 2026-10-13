@@ -14,11 +14,15 @@ final class WidgetShimmers {
         let snap: CGFloat
         let area: CGRect
         let clip: CGRect
+        let radius: CGFloat
         var x: CGFloat
     }
 
     private var items: [Int: Item] = [:]
     private var refused: Set<Int> = []
+    private var rebuilds: [Int: [CFTimeInterval]] = [:]
+    static let maxItems = 64
+    static let maxRebuildsPerSecond = 4
     private weak var host: CALayer?
     private(set) var updates = 0
     private var values: [Int: String] = [:]
@@ -57,11 +61,37 @@ final class WidgetShimmers {
                 host?.twAddSublayer(item.container)
             }
         }
+        let now = CACurrentMediaTime()
         for id in Set(items.keys).subtracting(wanted) {
             items.removeValue(forKey: id)?.container.twRemoveFromSuperlayer()
+            values.removeValue(forKey: id)
             changed = true
+            var recent = (rebuilds[id] ?? []).filter { now - $0 < 1 }
+            recent.append(now)
+            rebuilds[id] = recent
+            if recent.count > WidgetShimmers.maxRebuildsPerSecond {
+                refused.insert(id)
+            }
         }
-        for id in wanted where items[id] == nil {
+        for (id, item) in items {
+            let geometry = document.backgroundTile(attribute: WidgetDOM.idAttribute, value: String(id), maxWidth: width, scale: 0)
+            if let geometry = geometry, geometry.area == item.area, geometry.clip == item.clip, geometry.tile.size == item.tileRect.size, geometry.tile.minY == item.tileRect.minY, (0..<8).allSatisfy({ abs(geometry.radius($0) - item.radius) < 0.01 }) {
+                continue
+            }
+            items.removeValue(forKey: id)?.container.twRemoveFromSuperlayer()
+            changed = true
+            var recent = (rebuilds[id] ?? []).filter { now - $0 < 1 }
+            recent.append(now)
+            rebuilds[id] = recent
+            if geometry == nil || recent.count > WidgetShimmers.maxRebuildsPerSecond {
+                refused.insert(id)
+                wanted.remove(id)
+            }
+        }
+        for id in wanted.sorted() where items[id] == nil {
+            guard items.count < WidgetShimmers.maxItems else {
+                break
+            }
             guard let tile = document.backgroundTile(attribute: WidgetDOM.idAttribute, value: String(id), maxWidth: width, scale: scale) else {
                 refused.insert(id)
                 continue
@@ -81,7 +111,12 @@ final class WidgetShimmers {
             layer.frame = tile.tile.offsetBy(dx: -tile.clip.minX, dy: -tile.clip.minY)
             container.addSublayer(layer)
             host?.twAddSublayer(container)
-            items[id] = Item(container: container, tile: layer, tileRect: tile.tile, snap: max(scale, 1), area: tile.area, clip: tile.clip, x: tile.tile.minX)
+            var item = Item(container: container, tile: layer, tileRect: tile.tile, snap: max(scale, 1), area: tile.area, clip: tile.clip, radius: radii[0], x: tile.tile.minX)
+            if let value = values[id], let x = position(value, item: item) {
+                layer.frame.origin.x = x - tile.clip.minX
+                item.x = x
+            }
+            items[id] = item
             changed = true
         }
         CATransaction.commit()

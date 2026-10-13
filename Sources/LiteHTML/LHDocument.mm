@@ -2374,15 +2374,49 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         return nil;
     if(!bg->m_attachment.empty() && bg->m_attachment[0] != lh::background_attachment_scroll)
         return nil;
+    if(!el->children().empty() || el->css().is_paint_group())
+        return nil;
     lh::position content = ri->get_placement();
     lh::background_layer layer;
     if(!bg->get_layer(0, content, el.get(), ri, layer))
         return nil;
+    const CGRect clipRect = CGRectMake(layer.clip_box.x.value(), layer.clip_box.y.value(), layer.clip_box.width.value(), layer.clip_box.height.value());
+    for(auto p = ri->parent(); p; p = p->parent())
+    {
+        const auto& css = p->src_el()->css();
+        if(css.is_paint_group() || css.get_position() == lh::element_position_fixed)
+            return nil;
+        if(css.clips_contents())
+        {
+            CGRect border = BorderBox(p);
+            CGFloat bl = p->border_left().value(), bt = p->border_top().value(), br = p->border_right().value(), bb = p->border_bottom().value();
+            CGRect inner  = CGRectMake(border.origin.x + bl, border.origin.y + bt, border.size.width - bl - br, border.size.height - bt - bb);
+            const auto& radius = css.get_borders().radius.calc_percents(lh::pixel_t(static_cast<float>(border.size.width)), lh::pixel_t(static_cast<float>(border.size.height)));
+            CGFloat corner = std::max({radius.top_left_x.value(), radius.top_left_y.value(), radius.top_right_x.value(), radius.top_right_y.value(),
+                                       radius.bottom_left_x.value(), radius.bottom_left_y.value(), radius.bottom_right_x.value(), radius.bottom_right_y.value()});
+            if(!CGRectContainsRect(CGRectInset(inner, corner, corner), clipRect))
+                return nil;
+        }
+    }
     lh::position padding = content;
     padding += ri->get_paddings();
     const CGFloat tw = layer.origin_box.width.value(), th = layer.origin_box.height.value();
-    if(tw <= 0 || th <= 0 || scale <= 0)
+    if(tw <= 0 || th <= 0 || scale < 0)
         return nil;
+    if(scale == 0)
+    {
+        LHBackgroundTile *geometry = [LHBackgroundTile new];
+        geometry->_tile = CGRectMake(layer.origin_box.x.value(), layer.origin_box.y.value(), tw, th);
+        lh::position area = content;
+        area += ri->get_paddings();
+        geometry->_area = CGRectMake(area.x.value(), area.y.value(), area.width.value(), area.height.value());
+        geometry->_clip = clipRect;
+        const auto& r = layer.border_radius;
+        const lh::pixel_t radii[8] = {r.top_left_x, r.top_left_y, r.top_right_x, r.top_right_y, r.bottom_right_x, r.bottom_right_y, r.bottom_left_x, r.bottom_left_y};
+        for(int i = 0; i < 8; i++)
+            geometry->_radii[i] = radii[i].value();
+        return geometry;
+    }
     const size_t pw = (size_t)std::ceil(tw * scale), ph = (size_t)std::ceil(th * scale);
     if(pw == 0 || ph == 0 || pw * ph > (4u << 20))
         return nil;
