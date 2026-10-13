@@ -99,6 +99,19 @@ static void CheckClips(XCTestCase *test, LHDocument *document, CGSize size, std:
     }
 }
 
+- (void)testClippedRasterDoesNotPopulateCache
+{
+    LHDocument *document = [[LHDocument alloc] initWithHTML:@"<style>body{margin:0;width:280px;height:280px}div{position:absolute;left:180px;top:180px;width:40px;height:40px;box-shadow:0 0 12px red}</style><div></div>" css:nil];
+    [document layoutWithMaxWidth:280 preferredWidth:280];
+    [LHDocument purgeCaches];
+    NSData *clipped = Render(document, CGRectMake(0, 0, 24, 24), 2, 300, NO);
+    XCTAssertEqualObjects(clipped, [NSMutableData dataWithLength:clipped.length]);
+    XCTAssertEqual([LHDocument rasterCacheBytes], 0u);
+    NSData *visible = Render(document, CGRectMake(160, 160, 80, 80), 2, 300, NO);
+    XCTAssertNotEqualObjects(visible, [NSMutableData dataWithLength:visible.length]);
+    XCTAssertGreaterThan([LHDocument rasterCacheBytes], 0u);
+}
+
 - (void)testCulledDrawsMatchFullTraversal
 {
     std::mt19937 rng(20261012);

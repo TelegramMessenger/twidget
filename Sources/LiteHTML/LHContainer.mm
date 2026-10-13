@@ -740,6 +740,8 @@ static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const st
     size_t pw = (size_t)std::llround(device.size.width), ph = (size_t)std::llround(device.size.height);
     if(pw == 0 || ph == 0 || pw * ph > (4 << 20))
         return false;
+    if(!CGRectIntersectsRect(r, CGContextGetClipBoundingBox(ctx)))
+        return true;
     CGFloat sx = std::fabs(m.a), sy = std::fabs(m.d);
     AppendNumber(key, (double)pw);
     AppendNumber(key, (double)ph);
