@@ -728,10 +728,26 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
+    private var pendingGeometry = true
+
+    private func notePendingGeometry(_ ops: [WidgetOp]) {
+        if pendingGeometry {
+            return
+        }
+        for op in ops where !(op.kind == .style && LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased())) {
+            pendingGeometry = true
+            return
+        }
+    }
+
     private func apply(_ ops: [WidgetOp]) {
+        let outer = applyingOps
+        applyingOps = true
         defer {
+            applyingOps = outer
             pacer.answered(CACurrentMediaTime())
         }
+        notePendingGeometry(ops)
         if LiteHTMLWidgetRenderer.canvasFastPath, !ops.isEmpty, ops.allSatisfy({ $0.kind == .canvas && $0.canvas != nil }) {
             sendCanvas(ops.map { ($0.id, CanvasStream(batch: $0.canvas!)) })
             return
@@ -823,7 +839,12 @@ public final class LiteHTMLWidgetRenderer {
         return LiteHTMLWidgetRenderer.coalescesFrames && !frozen && clock?.isRunning == true && needsFrames && isOnScreen && !answersInput
     }
 
+    private var applyingOps = false
+
     private func setNeedsRender() {
+        if !applyingOps {
+            pendingGeometry = true
+        }
         if needsRender {
             return
         }
@@ -876,6 +897,7 @@ public final class LiteHTMLWidgetRenderer {
             renderDeferred = true
             return
         }
+        pendingGeometry = false
         updateAnimationClock()
         let now = animationNow
         let sheetsStart = CACurrentMediaTime()
@@ -1886,10 +1908,12 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func query(_ q: [String: Any]) -> Any {
-        if needsRender || renderAtTick {
-            render()
-        }
         let kind = (q["q"] as? String) ?? ""
+        if needsRender || renderAtTick {
+            if !(kind == "box" && !pendingGeometry && document != nil) {
+                render()
+            }
+        }
         var rect: CGRect?
         if let id = (q["id"] as? NSNumber)?.intValue {
             guard let node = dom.node(id), !node.isText else {
