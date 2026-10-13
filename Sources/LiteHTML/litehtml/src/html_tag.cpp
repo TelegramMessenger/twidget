@@ -334,10 +334,29 @@ namespace litehtml
             return false;
         }
         *region = target->regions[from];
-        store(*saved, true);
-        const bool has_base = target->has_base;
-        store(*target, true);
-        m_has_style_base = has_base;
+        saved->str_classes = std::move(m_str_classes);
+        m_str_classes      = std::move(target->str_classes);
+        saved->classes     = std::move(m_classes);
+        m_classes          = std::move(target->classes);
+        saved->st          = std::move(m_style);
+        m_style            = std::move(target->st);
+        saved->st_base     = std::move(m_style_base);
+        m_style_base       = std::move(target->st_base);
+        saved->used        = std::move(m_used_styles);
+        m_used_styles      = std::move(target->used);
+        saved->css         = std::move(m_css);
+        m_css              = std::move(target->css);
+        saved->has_base    = m_has_style_base;
+        m_has_style_base   = target->has_base;
+        saved->kids.resize(m_children.size());
+        size_t i = 0;
+        for(const auto& child : m_children)
+        {
+            saved->kids[i] = std::move(child->css_w());
+            child->css_w() = std::move(target->kids[i]);
+            i++;
+        }
+        target->kids.clear();
         m_attrs["class"] = to;
         return true;
     }
