@@ -19,6 +19,7 @@ final class WidgetNode {
     var attributes: [(name: String, value: String)] = []
     var formValue: String?
     var formChecked: Bool?
+    var editing = false
     var declarations: [(name: String, value: String, important: Bool)] = []
     var children: [WidgetNode] = []
     weak var parent: WidgetNode?
@@ -311,7 +312,7 @@ final class WidgetDOM {
         patchLog = PatchLog()
     }
 
-    private func isAttached(_ node: WidgetNode) -> Bool {
+    func isAttached(_ node: WidgetNode) -> Bool {
         var current: WidgetNode? = node
         while let next = current {
             if next === html {
@@ -731,17 +732,7 @@ final class WidgetDOM {
                 changed = true
             }
         } else if tag == "select", name == "value" || name == "selectedIndex" {
-            var options: [WidgetNode] = []
-            func collect(_ parent: WidgetNode) {
-                for child in parent.children where !child.isText {
-                    if child.tag.lowercased() == "option" {
-                        options.append(child)
-                    } else if child.tag.lowercased() == "optgroup" {
-                        collect(child)
-                    }
-                }
-            }
-            collect(node)
+            let options = WidgetDOM.options(of: node)
             var chosen: Int?
             if name == "selectedIndex" {
                 chosen = (value as? NSNumber)?.intValue
@@ -773,11 +764,53 @@ final class WidgetDOM {
         guard changed else {
             return
         }
+        invalidateForm(node)
+    }
+
+    func setFormProperty(_ node: WidgetNode, _ name: String, _ value: Any?) {
+        applyFormProperty(node, name, value)
+    }
+
+    func setEditing(_ node: WidgetNode, _ editing: Bool) {
+        guard node.editing != editing else {
+            return
+        }
+        node.editing = editing
+        invalidateForm(node)
+    }
+
+    private func invalidateForm(_ node: WidgetNode) {
         node.cache = nil
         WidgetDOM.bumpRevision()
         if patchLog.valid, isAttached(node) {
             patchLog.valid = false
         }
+    }
+
+    static func options(of node: WidgetNode) -> [WidgetNode] {
+        var options: [WidgetNode] = []
+        func collect(_ parent: WidgetNode) {
+            for child in parent.children where !child.isText {
+                if child.tag.lowercased() == "option" {
+                    options.append(child)
+                } else if child.tag.lowercased() == "optgroup" {
+                    collect(child)
+                }
+            }
+        }
+        collect(node)
+        return options
+    }
+
+    static func selectedIndex(of node: WidgetNode) -> Int {
+        let options = WidgetDOM.options(of: node)
+        if let index = options.lastIndex(where: { $0.formChecked == true }) {
+            return index
+        }
+        if options.contains(where: { $0.formChecked != nil }) == false, let index = options.lastIndex(where: { $0.attribute("selected") != nil }) {
+            return index
+        }
+        return options.isEmpty ? -1 : 0
     }
 
     static func textContent(_ node: WidgetNode) -> String {
@@ -967,7 +1000,8 @@ final class WidgetDOM {
         if !node.svg && WidgetDOM.voidElements.contains(node.tag) {
             return
         }
-        if !node.svg, let value = node.formValue, node.tag.lowercased() == "textarea" {
+        if !node.svg, node.editing, node.tag.lowercased() == "textarea" {
+        } else if !node.svg, let value = node.formValue, node.tag.lowercased() == "textarea" {
             if value.hasPrefix("\n") {
                 out.append(10)
             }
@@ -999,6 +1033,9 @@ final class WidgetDOM {
         let formInput = !node.svg && node.tag.lowercased() == "input"
         let formOption = !node.svg && node.tag.lowercased() == "option"
         for attribute in node.attributes where (canvas == nil || attribute.name.lowercased() != "src") && WidgetNames.isAttribute(attribute.name) {
+            if node.editing, attribute.name.lowercased() == "placeholder" || attribute.name.lowercased() == "value" {
+                continue
+            }
             if formInput, (node.formValue != nil && attribute.name.lowercased() == "value") || (node.formChecked != nil && attribute.name.lowercased() == "checked") {
                 continue
             }
@@ -1011,7 +1048,9 @@ final class WidgetDOM {
             WidgetDOM.escape(attribute.value, into: &out, attribute: true)
             put("\"")
         }
-        if formInput, let value = node.formValue {
+        if formInput, node.editing {
+            put(" value=\"\"")
+        } else if formInput, let value = node.formValue {
             put(" value=\"")
             WidgetDOM.escape(value, into: &out, attribute: true)
             put("\"")

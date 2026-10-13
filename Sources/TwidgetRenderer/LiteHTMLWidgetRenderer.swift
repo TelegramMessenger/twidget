@@ -65,17 +65,17 @@ public final class LiteHTMLWidgetRenderer {
         return (documentView.verifiedFrames, documentView.mismatchedFrames)
     }
 
-    private let documentView: WidgetDocumentView
+    let documentView: WidgetDocumentView
     let dom = WidgetDOM()
     private var theme: String
     private(set) var document: LHDocument?
     private var buffered: [String] = []
-    private var listened: Set<String> = []
-    private var prevented: Set<String> = []
+    var listened: Set<String> = []
+    var prevented: Set<String> = []
     private var lastSize = ""
     private var sizeTransition = false
-    private var frozen = false
-    private var destroyed = false
+    var frozen = false
+    var destroyed = false
     private var needsRender = false
     private var frameRequested = false
     private var idleTicks = 0
@@ -104,6 +104,7 @@ public final class LiteHTMLWidgetRenderer {
     private var bounds: [Int: CGRect] = [:]
     private var boundsValid = false
     private var hoverId = 0
+    var form = WidgetFormState()
     private var pressId = 0
     private var lastPointer: CGPoint?
     private var clickCount = 0
@@ -282,6 +283,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public func destroy() {
+        endEditing()
         destroyed = true
         magic.cancel()
         for (id, url) in canvasURLs {
@@ -800,7 +802,7 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
-    private func post(_ message: [String: Any]) {
+    func post(_ message: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: message), let json = String(data: data, encoding: .utf8) else {
             return
         }
@@ -848,7 +850,7 @@ public final class LiteHTMLWidgetRenderer {
 
     private var applyingOps = false
 
-    private func setNeedsRender() {
+    func setNeedsRender() {
         if !applyingOps {
             pendingGeometry = true
         }
@@ -896,6 +898,9 @@ public final class LiteHTMLWidgetRenderer {
     private func render() {
         renderAtTick = false
         metered { renderBody() }
+        if form.focusedId != 0 {
+            syncEditor()
+        }
     }
 
     private func renderBody() {
@@ -1760,7 +1765,7 @@ public final class LiteHTMLWidgetRenderer {
         render()
     }
 
-    private func elementBounds() -> [Int: CGRect] {
+    func elementBounds() -> [Int: CGRect] {
         if boundsValid {
             return bounds
         }
@@ -1904,6 +1909,12 @@ public final class LiteHTMLWidgetRenderer {
         case "unobserveResize":
             observedResize.remove(id)
             lastResize[id] = nil
+        case "focus":
+            scriptFocus(id)
+        case "blur":
+            if form.focusedId == id {
+                endEditing()
+            }
         default:
             break
         }
@@ -2100,6 +2111,7 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         frozen = true
+        endEditing()
         if magic.isActive {
             magic.cancel()
             applyExclusions()
@@ -2244,6 +2256,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         hostVisible = visible
         if !visible {
+            endEditing()
             documentView.dropSpares()
         }
         updateAnimationClock()
@@ -2266,7 +2279,7 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
-    private var isOnScreen: Bool {
+    var isOnScreen: Bool {
         guard hostVisible else {
             return false
         }
@@ -2408,6 +2421,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private func scrolled(_ id: Int) {
         boundsValid = false
+        if form.focusedId != 0 {
+            syncEditor()
+        }
         if scrolling.layers[id] == nil, let geometry = scrolling.geometries[id] {
             documentView.invalidate(geometry.viewport.insetBy(dx: -1, dy: -1))
         }
@@ -2418,6 +2434,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func setProperty(_ node: WidgetNode, _ name: String, _ value: Any) {
+        if name == "value" {
+            formValueSet(node)
+        }
         guard name == "scrollTop" || name == "scrollLeft", let number = (value as? NSNumber)?.doubleValue, number.isFinite else {
             return
         }
@@ -2462,6 +2481,7 @@ public final class LiteHTMLWidgetRenderer {
         dispatch("pointerdown", target: id, point: point, event: event, buttons: 1)
         dispatch("mousedown", target: id, point: point, event: event, buttons: 1)
         lastPointer = point
+        formMouseDown(id, event: event)
     }
 
     func handleMouseDragged(_ point: CGPoint, event: NSEvent) {
@@ -2525,6 +2545,7 @@ public final class LiteHTMLWidgetRenderer {
 
     func handleKey(_ type: String, event: NSEvent) {
         noteUserInput()
+        form.lastActivation = CACurrentMediaTime()
         if frozen {
             return
         }
@@ -2552,6 +2573,7 @@ public final class LiteHTMLWidgetRenderer {
 
 class WidgetDocumentView: NSView {
     weak var owner: LiteHTMLWidgetRenderer?
+    var formEditor: WidgetTextEditor?
     var document: LHDocument?
     private var tracking: NSTrackingArea?
 
@@ -3969,7 +3991,7 @@ class WidgetDocumentView: NSView {
         return !(owner?.executorIsMain() ?? true)
     }
 
-    private func toOwner(_ block: @escaping (LiteHTMLWidgetRenderer) -> Void) {
+    func toOwner(_ block: @escaping (LiteHTMLWidgetRenderer) -> Void) {
         guard let owner = owner else {
             return
         }

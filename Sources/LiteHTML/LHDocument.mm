@@ -2258,6 +2258,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"color"]       = c.alpha == 255 ? [NSString stringWithFormat:@"rgb(%d, %d, %d)", c.red, c.green, c.blue]
                                          : [NSString stringWithFormat:@"rgba(%d, %d, %d, %g)", c.red, c.green, c.blue, c.alpha / 255.0];
     out[@"opacity"]     = [NSString stringWithFormat:@"%g", css.get_opacity()];
+    out[@"text-align"]  = @(std::string(lh::text_align_strings[css.get_text_align()]).c_str());
     out[@"visibility"]  = css.get_visibility() == lh::visibility_visible ? @"visible" : @"hidden";
     return out;
 }
