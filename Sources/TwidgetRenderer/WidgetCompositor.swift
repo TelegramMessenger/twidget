@@ -1116,7 +1116,7 @@ final class WidgetCompositor {
         }
         for id in wanted.keys {
             var dx: CGFloat = 0, dy: CGFloat = 0
-            for other in wanted.keys where other != id && isAncestor(other, of: id, dom: dom) {
+            for other in ancestors(of: id, dom: dom) where other != id && wanted[other] != nil {
                 if let box = wanted[other]?.box, let reach = reaches[other]?.first {
                     dx += max(box.minX - reach.minX, reach.maxX - box.maxX, 0)
                     dy += max(box.minY - reach.minY, reach.maxY - box.maxY, 0)
@@ -1144,18 +1144,26 @@ final class WidgetCompositor {
             }
         }
         for id in wanted.keys {
-            for other in wanted.keys where other != id && isAncestor(other, of: id, dom: dom) && clips[other] != clips[id] {
+            for other in ancestors(of: id, dom: dom) where other != id && wanted[other] != nil && clips[other] != clips[id] {
                 wanted[id] = nil
             }
         }
         struct UnobscuredKey: Hashable {
             let id: Int
             let x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat
-            let ignoring: Set<String>
+            let tag: Int
         }
         var unobscuredMemo: [UnobscuredKey: Bool] = [:]
-        func unobscured(_ id: Int, _ reach: CGRect, _ ignoring: Set<String>) -> Bool {
-            let key = UnobscuredKey(id: id, x: reach.minX, y: reach.minY, width: reach.width, height: reach.height, ignoring: ignoring)
+        var ignoringTags: [(set: Set<String>, tag: Int)] = []
+        func tag(for ignoring: Set<String>) -> Int {
+            if let known = ignoringTags.first(where: { $0.set == ignoring }) {
+                return known.tag
+            }
+            ignoringTags.append((ignoring, ignoringTags.count + 1))
+            return ignoringTags.count
+        }
+        func unobscured(_ id: Int, _ reach: CGRect, _ ignoring: Set<String>, tag: Int) -> Bool {
+            let key = UnobscuredKey(id: id, x: reach.minX, y: reach.minY, width: reach.width, height: reach.height, tag: tag)
             if let known = unobscuredMemo[key] {
                 return known
             }
@@ -1189,7 +1197,7 @@ final class WidgetCompositor {
             var queue = Array(wanted.keys)
             var budget = WidgetCompositor.overlapBudget
             while let id = queue.popLast(), budget > 0 {
-                guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll) else {
+                guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll, tag: -1) else {
                     continue
                 }
                 let clipped = clips[id].map { reach.intersection($0.rect) } ?? reach
@@ -1232,15 +1240,16 @@ final class WidgetCompositor {
         var chosenReach: [Int: CGRect] = [:]
         for _ in 0..<4 {
             let ignoring = Set(accepted.keys.map { String($0) })
+            let ignoringTag = tag(for: ignoring)
             var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
             for (id, want) in accepted {
-                if animated.contains(where: { accepted[$0] == nil && isAncestor($0, of: id, dom: dom) }) {
+                if ancestors(of: id, dom: dom).contains(where: { accepted[$0] == nil && animated.contains($0) }) {
                     continue
                 }
-                if log, !(reaches[id]?.contains(where: { unobscured(id, $0, ignoring) }) ?? false) {
+                if log, !(reaches[id]?.contains(where: { unobscured(id, $0, ignoring, tag: ignoringTag) }) ?? false) {
                     print("COMPOSITE \(id) obscured box=\(want.box) reach=\(reaches[id]?.first ?? .null) clip=\(clips[id].map { "\($0.rect)" } ?? "none")")
                 }
-                if let reach = reaches[id]?.first(where: { unobscured(id, $0, ignoring) }) {
+                if let reach = reaches[id]?.first(where: { unobscured(id, $0, ignoring, tag: ignoringTag) }) {
                     next[id] = want
                     chosenReach[id] = reach
                     if scriptedWanted[id] != nil {
@@ -1266,13 +1275,14 @@ final class WidgetCompositor {
                 break
             }
         }
-        while let orphan = accepted.keys.first(where: { id in animated.contains(where: { accepted[$0] == nil && isAncestor($0, of: id, dom: dom) }) }) {
+        while let orphan = accepted.keys.first(where: { id in ancestors(of: id, dom: dom).contains(where: { accepted[$0] == nil && animated.contains($0) }) }) {
             accepted[orphan] = nil
         }
         if accepted.count > 1 {
             let ignoring = Set(accepted.keys.map { String($0) })
-            accepted = accepted.filter { entry in reaches[entry.key]?.contains(where: { unobscured(entry.key, $0, ignoring) }) ?? false }
-        } else if let only = accepted.first, !(reaches[only.key]?.contains(where: { unobscured(only.key, $0, []) }) ?? false) {
+            let finalTag = tag(for: ignoring)
+            accepted = accepted.filter { entry in reaches[entry.key]?.contains(where: { unobscured(entry.key, $0, ignoring, tag: finalTag) }) ?? false }
+        } else if let only = accepted.first, !(reaches[only.key]?.contains(where: { unobscured(only.key, $0, [], tag: 0) }) ?? false) {
             accepted = [:]
         }
         wanted = accepted
@@ -1609,7 +1619,31 @@ final class WidgetCompositor {
         guard let resolved = resolved(text, id: id) else {
             return nil
         }
-        return CSSTransform.parse(resolved, box: box)
+        return cachedTransform(resolved, box: box)
+    }
+
+    private struct TransformKey: Hashable {
+        let text: String
+        let width: CGFloat
+        let height: CGFloat
+    }
+
+    private var transformCache: [TransformKey: CGAffineTransform?] = [:]
+
+    private func cachedTransform(_ text: String?, box: CGSize) -> CGAffineTransform? {
+        guard let text = text else {
+            return CSSTransform.parse(nil, box: box)
+        }
+        let key = TransformKey(text: text, width: box.width, height: box.height)
+        if let known = transformCache[key] {
+            return known
+        }
+        let parsed = CSSTransform.parse(text, box: box)
+        if transformCache.count > 512 {
+            transformCache.removeAll(keepingCapacity: true)
+        }
+        transformCache[key] = parsed
+        return parsed
     }
 
     private var rasterSignatures: [Int: Int] = [:]
@@ -1774,6 +1808,14 @@ final class WidgetCompositor {
     }
 
     private var ancestorCache: [Int: Set<Int>] = [:]
+
+    private func ancestors(of id: Int, dom: WidgetDOM) -> Set<Int> {
+        if let known = ancestorCache[id] {
+            return known
+        }
+        _ = isAncestor(-1, of: id, dom: dom)
+        return ancestorCache[id] ?? []
+    }
 
     private func isAncestor(_ ancestor: Int, of id: Int, dom: WidgetDOM) -> Bool {
         if let known = ancestorCache[id] {
