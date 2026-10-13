@@ -26,9 +26,22 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
     public var onSerialized: ((String, Bool) -> Void)?
-    public private(set) var layoutCount = 0
-    public private(set) var layoutMilliseconds = 0.0
-    public private(set) var layoutMaxMilliseconds = 0.0
+    private var layoutStats = (count: 0, total: 0.0, worst: 0.0)
+    public var layoutCount: Int {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return layoutStats.count
+    }
+    public var layoutMilliseconds: Double {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return layoutStats.total
+    }
+    public var layoutMaxMilliseconds: Double {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return layoutStats.worst
+    }
     public private(set) var stageMilliseconds: [String: Double] = [:]
     public var drawMilliseconds: Double {
         return documentView.drawMilliseconds
@@ -1056,10 +1069,12 @@ public final class LiteHTMLWidgetRenderer {
         let start = CACurrentMediaTime()
         var stages: [(String, Double)] = []
         defer {
-            layoutCount += 1
             let spent = (CACurrentMediaTime() - start) * 1000
-            layoutMilliseconds += spent
-            layoutMaxMilliseconds = max(layoutMaxMilliseconds, spent)
+            statsLock.lock()
+            layoutStats.count += 1
+            layoutStats.total += spent
+            layoutStats.worst = max(layoutStats.worst, spent)
+            statsLock.unlock()
             if let slow = LiteHTMLWidgetRenderer.slowLayoutMilliseconds, spent >= slow {
                 print(String(format: "SLOW layout %.2f ms t=%.3f ", spent, CACurrentMediaTime() - timeOrigin) + stages.map { String(format: "%@ %.2f", $0.0, $0.1) }.joined(separator: "  "))
             }
@@ -2245,9 +2260,31 @@ final class WidgetDocumentView: NSView {
         }
     }
 
-    private(set) var drawMilliseconds = 0.0
-    private(set) var drawCount = 0
-    private(set) var drawMaxMilliseconds = 0.0
+    private let drawStatsLock = NSLock()
+    private var drawStats = (count: 0, total: 0.0, worst: 0.0)
+    var drawMilliseconds: Double {
+        drawStatsLock.lock()
+        defer { drawStatsLock.unlock() }
+        return drawStats.total
+    }
+    var drawCount: Int {
+        drawStatsLock.lock()
+        defer { drawStatsLock.unlock() }
+        return drawStats.count
+    }
+    var drawMaxMilliseconds: Double {
+        drawStatsLock.lock()
+        defer { drawStatsLock.unlock() }
+        return drawStats.worst
+    }
+
+    func recordDraw(_ spent: Double) {
+        drawStatsLock.lock()
+        drawStats.count += 1
+        drawStats.total += spent
+        drawStats.worst = max(drawStats.worst, spent)
+        drawStatsLock.unlock()
+    }
     private final class Surface {
         let surface: IOSurfaceRef
         let context: CGContext
@@ -2338,9 +2375,7 @@ final class WidgetDocumentView: NSView {
             document.draw(in: ctx, origin: .zero, clip: dirty.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
             ctx.restoreGState()
             let spent = (CACurrentMediaTime() - start) * 1000
-            view.drawMilliseconds += spent
-            view.drawCount += 1
-            view.drawMaxMilliseconds = max(view.drawMaxMilliseconds, spent)
+            view.recordDraw(spent)
         }
 
         func action(for layer: CALayer, forKey event: String) -> CAAction? {
@@ -2688,10 +2723,7 @@ final class WidgetDocumentView: NSView {
         }
         let start = CACurrentMediaTime()
         defer {
-            drawCount += 1
-            let spent = (CACurrentMediaTime() - start) * 1000
-            drawMilliseconds += spent
-            drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
+            recordDraw((CACurrentMediaTime() - start) * 1000)
         }
         ctx.saveGState()
         ctx.setAllowsFontSmoothing(false)
@@ -3165,10 +3197,7 @@ final class WidgetDocumentView: NSView {
         }
         let start = CACurrentMediaTime()
         defer {
-            drawCount += 1
-            let spent = (CACurrentMediaTime() - start) * 1000
-            drawMilliseconds += spent
-            drawMaxMilliseconds = max(drawMaxMilliseconds, spent)
+            recordDraw((CACurrentMediaTime() - start) * 1000)
         }
         guard let (columns, tileSize, height, space) = syncGrid(layer: layer, document: document, scale: scale) else {
             return
