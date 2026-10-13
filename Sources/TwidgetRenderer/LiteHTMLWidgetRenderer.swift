@@ -271,6 +271,59 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private var held: [Held] = []
+    private var throttledUntil: CFTimeInterval = 0
+    private var throttleFlushScheduled = false
+    private var lastThrottleDiag: CFTimeInterval = -.infinity
+    public private(set) var throttledUpdates = 0
+    static let throttleFactor = ProcessInfo.processInfo.environment["TW_THROTTLE_FACTOR"].flatMap { Double($0) } ?? 3
+    static let throttleFreeSeconds: CFTimeInterval = 0.004
+
+    private var meterDepth = 0
+
+    private func metered<T>(_ body: () -> T) -> T {
+        meterDepth += 1
+        let start = CACurrentMediaTime()
+        defer {
+            meterDepth -= 1
+            if meterDepth == 0 {
+                charge(CACurrentMediaTime() - start)
+            }
+        }
+        return body()
+    }
+
+    private func charge(_ spent: CFTimeInterval) {
+        guard spent > LiteHTMLWidgetRenderer.throttleFreeSeconds, LiteHTMLWidgetRenderer.throttleFactor > 0 else {
+            return
+        }
+        let now = CACurrentMediaTime()
+        throttledUntil = max(throttledUntil, now) + spent * LiteHTMLWidgetRenderer.throttleFactor
+    }
+
+    private var throttled: Bool {
+        return CACurrentMediaTime() < throttledUntil
+    }
+
+    private func holdThrottled(_ item: Held) {
+        held.append(item)
+        throttledUpdates += 1
+        let now = CACurrentMediaTime()
+        if now - lastThrottleDiag > 1 {
+            lastThrottleDiag = now
+            onDiag?("renderer-throttled", String(format: "widget updates cost %.0f ms of rendering ahead of budget; coalescing them", (throttledUntil - now) * 1000))
+        }
+        guard !throttleFlushScheduled else {
+            return
+        }
+        throttleFlushScheduled = true
+        scheduleAfter(max(0, throttledUntil - now)) { [weak self] in
+            guard let self = self else {
+                return
+            }
+            self.throttleFlushScheduled = false
+            self.prepared()
+        }
+    }
     private var prepareScheduled = false
 
     private var preparesOffscreenValue = false
@@ -356,6 +409,10 @@ public final class LiteHTMLWidgetRenderer {
     public static var slowApply: ((_ ops: Int, _ milliseconds: Double, _ held: Bool, _ stages: [String: Double]) -> Void)?
 
     private func applyMeasured(_ ops: [WidgetOp], held: Bool) {
+        metered { applyMeasuredBody(ops, held: held) }
+    }
+
+    private func applyMeasuredBody(_ ops: [WidgetOp], held: Bool) {
         guard let report = LiteHTMLWidgetRenderer.slowApply else {
             return apply(ops)
         }
@@ -378,7 +435,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         let start = CACurrentMediaTime()
         flushingHeld = true
-        while !held.isEmpty && !documentView.preparing {
+        while !held.isEmpty && !documentView.preparing && !throttled {
             var ops: [WidgetOp] = []
             while case .ops(let batch)? = held.first {
                 ops += batch
@@ -396,8 +453,18 @@ public final class LiteHTMLWidgetRenderer {
         }
         flushingHeld = false
         if !held.isEmpty && !documentView.preparing {
-            schedule { [weak self] in
-                self?.prepared()
+            if throttled {
+                if !throttleFlushScheduled {
+                    throttleFlushScheduled = true
+                    scheduleAfter(max(0, throttledUntil - CACurrentMediaTime())) { [weak self] in
+                        self?.throttleFlushScheduled = false
+                        self?.prepared()
+                    }
+                }
+            } else {
+                schedule { [weak self] in
+                    self?.prepared()
+                }
             }
         }
         schedulePrepare()
@@ -406,6 +473,10 @@ public final class LiteHTMLWidgetRenderer {
     public func send(_ json: String) {
         if (documentView.preparing || (!held.isEmpty && !flushingHeld)) && !destroyed {
             held.append(.json(json))
+            return
+        }
+        if !destroyed, !flushingHeld, throttled, json.hasPrefix("{\"type\":\"ops\"") {
+            holdThrottled(.json(json))
             return
         }
         if !destroyed, LiteHTMLWidgetRenderer.canvasFastPath, json.hasPrefix("{\"type\":\"ops\",\"ops\":[{\"op\":\"canvas\""), let list = CanvasStream.canvasOps(json: json) {
@@ -420,7 +491,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         switch type {
         case "ops":
-            apply(((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map(WidgetOp.init) })
+            applyMeasured(((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map(WidgetOp.init) }, held: false)
         case "query":
             let qid = message["qid"] ?? NSNull()
             let q = (message["query"] as? [String: Any]) ?? [:]
@@ -464,6 +535,10 @@ public final class LiteHTMLWidgetRenderer {
         }
         if documentView.preparing || !held.isEmpty {
             held.append(.ops(ops))
+            return
+        }
+        if throttled {
+            holdThrottled(.ops(ops))
             return
         }
         applyMeasured(ops, held: false)
@@ -573,6 +648,10 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func render() {
+        metered { renderBody() }
+    }
+
+    private func renderBody() {
         needsRender = false
         if documentView.preparing && documentView.windowState.inWindow {
             renderDeferred = true
