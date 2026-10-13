@@ -99,6 +99,18 @@ namespace
     XCTAssertEqual(b.at(10, 5)[3], 255);
 }
 
+- (void)testMainAndSearchAreBlocksWithPadding
+{
+    for(NSString* tag in @[@"main", @"search"])
+    {
+        Bitmap b = Draw([NSString stringWithFormat:@"<%@ style=\"padding:0 16px\"><div style=\"height:10px;background:#f00\"></div></%@>", tag, tag], 100);
+        XCTAssertGreaterThanOrEqual(b.height, 10u, @"%@", tag);
+        XCTAssertEqual(b.at(14, 5)[3], 0, @"%@", tag);
+        XCTAssertEqual(b.at(18, 5)[3], 255, @"%@", tag);
+        XCTAssertEqual(b.at(86, 5)[3], 0, @"%@", tag);
+    }
+}
+
 - (void)testMixedUnitCalcIsLeftUnresolved
 {
     Bitmap b = Draw(@"<div style=\"width:30px;width:calc(100% - 10px);height:10px;background:#f00\"></div>", 100);

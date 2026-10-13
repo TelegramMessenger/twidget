@@ -341,7 +341,7 @@ input[type="hidden"] {
 }
 
 
-article, aside, footer, header, hgroup, nav, section
+article, aside, footer, header, hgroup, main, nav, search, section
 {
 	display: block;
 }
