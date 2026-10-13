@@ -1955,7 +1955,26 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         return nil;
     const lh::pixel_t x  = static_cast<float>(p.x), y = static_cast<float>(p.y);
     const char*       key = name.UTF8String;
-    for(lh::element::ptr el = _doc->root_render()->get_element_by_point(x, y, x, y, nullptr); el; el = el->parent())
+    static const lh::string_id pointerEvents = lh::raw_declaration_id(lh::_id("pointer-events"));
+    const auto hittable = [](const std::shared_ptr<lh::render_item>& item) -> bool {
+        for(lh::element::ptr el = item->src_el(); el; el = el->parent())
+        {
+            auto tag = std::dynamic_pointer_cast<lh::html_tag>(el);
+            if(!tag)
+                continue;
+            const lh::css_token_vector* tokens = tag->get_token_property(pointerEvents);
+            if(!tokens)
+                continue;
+            std::string value = lh::get_repr(*tokens, 0, -1, true);
+            if(value.empty())
+                continue;
+            for(auto& c : value)
+                c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            return value != "none";
+        }
+        return true;
+    };
+    for(lh::element::ptr el = _doc->root_render()->get_element_by_point(x, y, x, y, hittable); el; el = el->parent())
     {
         if(const char* value = el->get_attr(key))
             return @(value);
