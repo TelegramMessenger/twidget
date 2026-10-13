@@ -372,6 +372,20 @@ final class WidgetCompositor {
     private var promoted: [Int: Promoted] = [:]
     private weak var host: CALayer?
     private(set) var promotions = 0
+    private static let promotionLock = NSLock()
+    private static var promotionTotal = 0
+
+    static func countPromotion() {
+        promotionLock.lock()
+        promotionTotal += 1
+        promotionLock.unlock()
+    }
+
+    static var totalPromotions: Int {
+        promotionLock.lock()
+        defer { promotionLock.unlock() }
+        return promotionTotal
+    }
     private var driven: [Int: String] = [:]
     private(set) var overlapIDs: Set<Int> = []
 
@@ -949,6 +963,9 @@ final class WidgetCompositor {
     }
 
     func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
+        if let previous = displaySpace, !CFEqual(previous, space) {
+            spaceGeneration += 1
+        }
         displaySpace = space
         guard let host = host else {
             reset()
@@ -1259,6 +1276,7 @@ final class WidgetCompositor {
             effectKey.combine(backdrop.map { $0.parameters })
             effectKey.combine(effectOwners[id] ?? 0)
             effectKey.combine(effectTemplates[id]?.parameters ?? [])
+            effectKey.combine(spaceGeneration)
             let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: WidgetCompositor.rasterScale(scale, want.maxScale), styleKey: styleKey ^ inner.hashValue ^ effectKey.finalize())
             if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer != nil {
                 if let index = order[String(id)] {
@@ -1277,6 +1295,7 @@ final class WidgetCompositor {
                 promoted[id] = nil
                 continue
             }
+            WidgetCompositor.countPromotion()
             let layer = promoted[id]?.layer ?? CALayer()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -1394,6 +1413,7 @@ final class WidgetCompositor {
     }
 
     private var displaySpace: CGColorSpace?
+    private(set) var spaceGeneration = 0
 
     static let orderKey = "twOrder"
 

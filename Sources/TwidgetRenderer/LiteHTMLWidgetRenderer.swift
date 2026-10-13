@@ -380,6 +380,10 @@ public final class LiteHTMLWidgetRenderer {
         return documentView.preparedMilliseconds
     }
 
+    public static var totalPromotions: Int {
+        return WidgetCompositor.totalPromotions
+    }
+
     public static func quiesceRaster() {
         WidgetDocumentView.prepareQueue.sync(flags: .barrier) {}
     }
@@ -1501,6 +1505,7 @@ public final class LiteHTMLWidgetRenderer {
 
     func documentViewScaleChanged() {
         documentView.scaleChanged()
+        setNeedsRender()
     }
 
     func viewResized() {
@@ -1870,6 +1875,11 @@ public final class LiteHTMLWidgetRenderer {
         }
         reportSize()
         placeSurfaces()
+        setNeedsRender()
+    }
+
+    func backingPropertiesChanged() {
+        setNeedsRender()
     }
 
     private var display: CGDirectDisplayID?
@@ -3083,6 +3093,7 @@ class WidgetDocumentView: NSView {
             removeTiles()
         }
         markNeedsDisplay()
+        owner?.backingPropertiesChanged()
     }
 
     func retire() -> [AnyObject] {
@@ -3464,6 +3475,10 @@ class WidgetDocumentView: NSView {
                     self?.toOwner { $0.keyChanged() }
                 })
             }
+            keyObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.didChangeBackingPropertiesNotification, object: window, queue: .main) { [weak self] _ in
+                self?.captureWindowState()
+                self?.toOwner { $0.backingPropertiesChanged() }
+            })
             screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) { [weak self] _ in
                 self?.captureWindowState()
                 self?.toOwner { $0.screenChanged() }
