@@ -2,6 +2,47 @@ import XCTest
 import LiteHTML
 
 final class DashboardLayoutTests: XCTestCase {
+    func testFlexMessagesRespectExplicitAndVisibleMinimumWidths() {
+        for style in ["overflow:visible", "overflow:hidden;min-width:300px"] {
+            let doc = document("""
+            <div style='display:flex;width:200px'><span style='width:54px;flex-shrink:0'>3.2s</span><span id=msg style='white-space:nowrap;\(style)'>1 flaky retry: feed.spec.ts &gt; snapshot-and-drop</span></div>
+            """)
+            let message = doc.bounds(matching: "#msg")
+            XCTAssertGreaterThan(message.maxX, 200)
+            if style.contains("min-width") {
+                XCTAssertEqual(message.width, 300, accuracy: 0.1)
+            }
+        }
+    }
+
+    func testDeployLogClipsShrinkingFlexMessages() throws {
+        for width: CGFloat in [280, 392] {
+            for overflow in ["hidden", "auto", "scroll"] {
+                let doc = document("""
+                <style>
+                .card{width:392px;max-width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid black;background:white}
+                .log{padding:10px 12px;background:#0f1117;font:11.5px monospace;line-height:1.5}
+                .ln{display:flex}.ts{width:54px;flex-shrink:0}.msg{white-space:nowrap;overflow:\(overflow);color:red}
+                </style>
+                <div class=card><div class=log><div class=ln><span class=ts>3.2s</span><span class=msg>1 flaky retry: feed.spec.ts &gt; snapshot-and-drop</span></div></div></div>
+                """, width: width)
+                let row = doc.bounds(matching: ".ln")
+                let timestamp = doc.bounds(matching: ".ts")
+                let message = doc.bounds(matching: ".msg")
+                XCTAssertEqual(timestamp.width, 54, accuracy: 0.1)
+                XCTAssertEqual(message.minX, timestamp.maxX, accuracy: 0.1)
+                XCTAssertEqual(message.maxX, row.maxX, accuracy: 0.1, "\(width) \(overflow)")
+                let image = try XCTUnwrap(doc.copyImage(maxWidth: width, rect: CGRect(x: 0, y: 0, width: width + 80, height: 60), scale: 1))
+                for y in Int(message.minY)..<Int(message.maxY) {
+                    for x in Int(ceil(row.maxX))..<image.width {
+                        let color = pixel(image, x: x, y: y)
+                        XCTAssertFalse(Int(color[0]) > Int(color[1]) + 30 && Int(color[0]) > Int(color[2]) + 30, "Text escaped at \(x),\(y): \(overflow)")
+                    }
+                }
+            }
+        }
+    }
+
     private func document(_ html: String, width: CGFloat = 400) -> LHDocument {
         let doc = LHDocument(html: "<style>body{margin:0}</style>" + html, css: nil)
         _ = doc.layout(maxWidth: width, preferredWidth: width)
