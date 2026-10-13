@@ -112,6 +112,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) NSSet<NSString *> *layerExclusions;
 - (void)setBackgroundImageExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setBackgroundImageExclusions(_:attribute:));
 - (nullable CGImageRef)copyTileImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyTileImage(maxWidth:rect:scale:));
+- (nullable CGImageRef)copyImageWithBackgroundPositionX:(double)number percent:(BOOL)percent attribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(backgroundPositionX:percent:attribute:value:maxWidth:rect:scale:));
+@property (readonly) NSInteger restoreMismatches;
 - (nullable LHBackgroundTile *)backgroundTileWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth scale:(CGFloat)scale NS_SWIFT_NAME(backgroundTile(attribute:value:maxWidth:scale:));
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setScrollContentExclusions(_:attribute:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute NS_SWIFT_NAME(scrollers(byAttribute:));

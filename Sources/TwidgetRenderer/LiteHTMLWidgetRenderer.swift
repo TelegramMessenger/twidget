@@ -113,6 +113,11 @@ public final class LiteHTMLWidgetRenderer {
     private lazy var compositor = WidgetCompositor(host: documentView.contentLayer)
     private let svgLayers = WidgetSVGLayers()
     private let shimmers = WidgetShimmers()
+    private var shimmerVerifyTick = 0
+
+    public var shimmerCheckReport: String {
+        return shimmers.report
+    }
     let scrolling = WidgetScrolling()
     private var lastScrollExclusions: Set<Int> = []
     private lazy var magic: WidgetMagicMove = {
@@ -1304,6 +1309,12 @@ public final class LiteHTMLWidgetRenderer {
             stage("diff")
         }
         document = next
+        if WidgetDocumentView.verify, !shimmers.ids.isEmpty {
+            shimmerVerifyTick += 1
+            if shimmerVerifyTick % 1 == 0 {
+                shimmers.verify(document: next, width: width)
+            }
+        }
         let shimmerBefore = shimmers.ids
         if shimmers.update(document: next, animator: animator, width: width, host: documentView.contentLayer, scale: documentView.scale, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs).union(svgLayers.ids), suspended: magic.isActive) || shimmers.dropped || shimmerBefore != shimmers.ids {
             shimmers.dropped = false

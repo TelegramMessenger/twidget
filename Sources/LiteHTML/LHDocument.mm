@@ -587,6 +587,7 @@ static bool LHPaintTraceUncached()
     NSString                    *_layerAttribute;
     NSSet<NSString *>           *_backgroundExclusions;
     NSString                    *_backgroundAttribute;
+    NSInteger                    _restoreMismatches;
     int                          _snapshotDepth;
     NSSet<NSString *>           *_scrollExclusions;
     std::unordered_map<std::string, std::weak_ptr<lh::render_item>> _scrollItems;
@@ -1433,6 +1434,11 @@ static std::string MasterWithCSS(NSString *css)
     std::lock_guard<std::mutex> guard(_lock);
     _backgroundExclusions = [values copy];
     _backgroundAttribute  = [attribute copy];
+}
+
+- (NSInteger)restoreMismatches
+{
+    return _restoreMismatches;
 }
 
 - (NSSet<NSString *> *)layerExclusions
@@ -2289,6 +2295,42 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 + (void)setTextBatchingEnabled:(BOOL)enabled
 {
     LHContainer::s_text_batching.store(enabled, std::memory_order_relaxed);
+}
+
+- (nullable CGImageRef)copyImageWithBackgroundPositionX:(double)number percent:(BOOL)percent attribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale 
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self layoutLockedWithMaxWidth:maxWidth];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri)
+        return nullptr;
+    auto* bg = const_cast<lh::background*>(ri->src_el()->get_background());
+    if(!bg || bg->m_image.size() != 1)
+        return nullptr;
+    CGImageRef before = [self copyImageLockedWithRect:rect scale:scale];
+    const lh::length_vector saved = bg->m_position_x;
+    bg->m_position_x = {lh::css_length(static_cast<float>(number), percent ? lh::css_units_percentage : lh::css_units_px)};
+    CGImageRef image = [self copyImageLockedWithRect:rect scale:scale];
+    bg->m_position_x = saved;
+    CGImageRef after = [self copyImageLockedWithRect:rect scale:scale];
+    {
+        BOOL same = before && after;
+        if(same)
+        {
+            NSData *a = CFBridgingRelease(CGDataProviderCopyData(CGImageGetDataProvider(before)));
+            NSData *b = CFBridgingRelease(CGDataProviderCopyData(CGImageGetDataProvider(after)));
+            const size_t rowA = CGImageGetBytesPerRow(before), rowB = CGImageGetBytesPerRow(after);
+            const size_t w = CGImageGetWidth(before) * 4, h = CGImageGetHeight(before);
+            same = CGImageGetWidth(before) == CGImageGetWidth(after) && h == CGImageGetHeight(after) && a.length >= rowA * h && b.length >= rowB * h;
+            for(size_t y = 0; same && y < h; y++)
+                same = memcmp((const uint8_t *)a.bytes + y * rowA, (const uint8_t *)b.bytes + y * rowB, w) == 0;
+        }
+        if(!same)
+            _restoreMismatches++;
+    }
+    CGImageRelease(before);
+    CGImageRelease(after);
+    return image;
 }
 
 - (LHBackgroundTile *)backgroundTileWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth scale:(CGFloat)scale

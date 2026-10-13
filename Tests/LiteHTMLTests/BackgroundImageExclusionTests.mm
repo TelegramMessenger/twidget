@@ -83,4 +83,24 @@ static NSData *Pixels(CGImageRef image)
     XCTAssertLessThanOrEqual(worst, 24);
 }
 
+- (void)testSnapshotsOfAnUnchangedDocumentAreIdentical
+{
+    LHDocument *document = [[LHDocument alloc] initWithHTML:@"<style>body{margin:0}.sk{width:200px;height:20px;border-radius:6px;background-color:#ccc;background-image:linear-gradient(90deg,rgba(0,0,0,0),rgba(0,0,0,.5),rgba(0,0,0,0));background-size:40% 100%;background-repeat:no-repeat}</style><div class=\"sk\" data-twid=\"5\">text</div><p>more text</p>" css:nil];
+    [document layoutWithMaxWidth:220 preferredWidth:220];
+    CGRect rect = CGRectMake(0, 0, 220, 60);
+    CGImageRef a = [document copyImageWithMaxWidth:220 rect:rect scale:2];
+    CGImageRef b = [document copyImageWithMaxWidth:220 rect:rect scale:2];
+    CGImageRef c = [document copyImageWithBackgroundPositionX:70 percent:YES attribute:@"data-twid" value:@"5" maxWidth:220 rect:rect scale:2];
+    CGImageRef d = [document copyImageWithMaxWidth:220 rect:rect scale:2];
+    XCTAssertTrue(a && b && c && d);
+    XCTAssertEqualObjects(Pixels(a), Pixels(b));
+    XCTAssertEqualObjects(Pixels(a), Pixels(d));
+    XCTAssertNotEqualObjects(Pixels(a), Pixels(c));
+    XCTAssertEqual(document.restoreMismatches, 0);
+    CGImageRelease(a);
+    CGImageRelease(b);
+    CGImageRelease(c);
+    CGImageRelease(d);
+}
+
 @end
