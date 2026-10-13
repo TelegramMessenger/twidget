@@ -102,6 +102,8 @@ namespace litehtml
     };
 
     float filter_reach(const filter_vector& filters);
+    bool  fold_math(css_token_vector& tokens, document_container* container, int depth = 0);
+    bool  has_foldable_math(const css_token_vector& tokens);
 
     struct paint_group
     {

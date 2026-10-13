@@ -370,6 +370,15 @@ namespace litehtml
             return add_parsed_property(name, property_value(value, important, true));
         }
 
+        if(_s(name).substr(0, 2) != "--" && has_foldable_math(value))
+        {
+            css_token_vector folded = value;
+            if(fold_math(folded, container))
+            {
+                return add_property(name, folded, baseurl, important, container);
+            }
+        }
+
         // valid only if value contains a single token
         css_token val = value.size() == 1 ? value[0] : css_token();
         // nonempty if value is a single identifier

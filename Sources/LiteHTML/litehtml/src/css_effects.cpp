@@ -4,6 +4,7 @@
 #include "css_effects.h"
 #include "style.h"
 #include "web_color.h"
+#include "css_parser.h"
 
 namespace litehtml
 {
@@ -143,6 +144,43 @@ namespace litehtml
             out = {tok.n.number, lowcase(tok.unit())};
             return true;
         }
+        if(tok.type == CV_FUNCTION && is_one_of(lowcase(tok.name()), "min", "max", "clamp"))
+        {
+            const std::string name = lowcase(tok.name());
+            std::vector<calc_value> args;
+            size_t inner = 0;
+            while(true)
+            {
+                calc_value arg;
+                if(!calc_sum(tok.value, inner, arg, depth + 1))
+                    return false;
+                args.push_back(arg);
+                while(inner < tok.value.size() && tok.value[inner].type == WHITESPACE)
+                    inner++;
+                if(inner == tok.value.size())
+                    break;
+                if(tok.value[inner].ch != ',')
+                    return false;
+                inner++;
+            }
+            if(args.size() > 32 || (name == "clamp" && args.size() != 3))
+                return false;
+            std::string unit;
+            for(const auto& arg : args)
+                if(!arg.unit.empty())
+                    unit = arg.unit;
+            for(const auto& arg : args)
+                if(arg.unit != unit && !(arg.unit.empty() && arg.number == 0))
+                    return false;
+            double value = args[0].number;
+            if(name == "clamp")
+                value = std::max(args[0].number, std::min(args[1].number, args[2].number));
+            else
+                for(const auto& arg : args)
+                    value = name == "min" ? std::min(value, arg.number) : std::max(value, arg.number);
+            out = {value, unit};
+            return std::isfinite(value);
+        }
         if(tok.type == ROUND_BLOCK || (tok.type == CV_FUNCTION && lowcase(tok.name()) == "calc"))
         {
             size_t inner = 0;
@@ -228,6 +266,134 @@ namespace litehtml
         else
             tok = css_token(DIMENSION, float(value.number), css_number_number, value.unit);
         return true;
+    }
+
+    static bool fold_env(css_token& tok)
+    {
+        if(tok.value.empty() || tok.value[0].type != IDENT)
+            return false;
+        const std::string name = lowcase(tok.value[0].name());
+        if(tok.value.size() > 2 && tok.value[1].ch == ',')
+        {
+            css_token_vector fallback(tok.value.begin() + 2, tok.value.end());
+            if(fallback.size() != 1)
+                return false;
+            tok = fallback[0];
+            return true;
+        }
+        if(tok.value.size() == 1 && (name.rfind("safe-area-inset-", 0) == 0 || name.rfind("keyboard-inset-", 0) == 0 ||
+                                     name.rfind("safe-area-max-inset-", 0) == 0))
+        {
+            tok = css_token(DIMENSION, 0, css_number_integer, "px");
+            return true;
+        }
+        return false;
+    }
+
+    static bool mix_part(const css_token_vector& part, web_color& color, float& percent, document_container* container)
+    {
+        percent = -1;
+        bool have_color = false;
+        for(const auto& tok : part)
+        {
+            if(tok.type == PERCENTAGE && percent < 0)
+                percent = tok.n.number;
+            else if(!have_color && parse_color(tok, color, container) && !(color == web_color::current_color))
+                have_color = true;
+            else
+                return false;
+        }
+        return have_color && (percent < 0 || (percent >= 0 && percent <= 100));
+    }
+
+    static bool fold_color_mix(css_token& tok, document_container* container)
+    {
+        auto parts = parse_comma_separated_list(tok.value);
+        if(parts.size() != 3 || parts[0].size() != 2 || parts[0][0].ident() != "in" || parts[0][1].ident() != "srgb")
+            return false;
+        web_color a, b;
+        float     pa, pb;
+        if(!mix_part(parts[1], a, pa, container) || !mix_part(parts[2], b, pb, container))
+            return false;
+        if(pa < 0 && pb < 0)
+            pa = pb = 50;
+        else if(pa < 0)
+            pa = 100 - pb;
+        else if(pb < 0)
+            pb = 100 - pa;
+        const float sum = pa + pb;
+        if(sum <= 0)
+            return false;
+        const float multiplier = sum < 100 ? sum / 100 : 1;
+        const float wa = pa / sum, wb = pb / sum;
+        const float aa = a.alpha / 255.f, ab = b.alpha / 255.f;
+        const float alpha = aa * wa + ab * wb;
+        auto channel = [&](float ca, float cb) {
+            if(alpha <= 0)
+                return 0.f;
+            return std::round(std::min(255.f, std::max(0.f, (ca * aa * wa + cb * ab * wb) / alpha)));
+        };
+        char hex[10];
+        snprintf(hex, sizeof(hex), "%02x%02x%02x%02x", int(channel(a.red, b.red)), int(channel(a.green, b.green)),
+                 int(channel(a.blue, b.blue)), int(std::round(std::min(1.f, std::max(0.f, alpha * multiplier)) * 255)));
+        css_token folded(HASH, std::string(hex));
+        folded.hash_type = css_hash_unrestricted;
+        tok = folded;
+        return true;
+    }
+
+    bool fold_math(css_token_vector& tokens, document_container* container, int depth)
+    {
+        if(depth > 16)
+            return false;
+        bool changed = false;
+        for(auto& tok : tokens)
+        {
+            if(!tok.is_component_value())
+                continue;
+            if(tok.type == CV_FUNCTION && lowcase(tok.name()) == "env" && fold_env(tok))
+            {
+                changed = true;
+                if(!tok.is_component_value())
+                    continue;
+            }
+            if(fold_math(tok.value, container, depth + 1))
+                changed = true;
+            if(tok.type != CV_FUNCTION)
+                continue;
+            const std::string name = lowcase(tok.name());
+            if(is_one_of(name, "calc", "min", "max", "clamp"))
+            {
+                css_token_vector single = {tok};
+                calc_value value;
+                size_t index = 0;
+                if(!calc_atom(single, index, value, 0))
+                    continue;
+                if(value.unit.empty())
+                    tok = css_token(NUMBER, float(value.number), css_number_number);
+                else if(value.unit == "%")
+                    tok = css_token(PERCENTAGE, float(value.number), css_number_number);
+                else
+                    tok = css_token(DIMENSION, float(value.number), css_number_number, value.unit);
+                changed = true;
+            } else if(name == "color-mix" && fold_color_mix(tok, container))
+            {
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    bool has_foldable_math(const css_token_vector& tokens)
+    {
+        for(const auto& tok : tokens)
+        {
+            if(tok.type == CV_FUNCTION && is_one_of(lowcase(tok.name()), "calc", "min", "max", "clamp", "env", "color-mix"))
+                return true;
+            if(tok.is_component_value() && has_foldable_math(tok.value))
+                return true;
+        }
+        return false;
     }
 
     float filter_reach(const filter_vector& filters)
