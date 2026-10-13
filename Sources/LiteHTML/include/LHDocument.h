@@ -40,6 +40,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
 /// Groups glyph drawing of non-overlapping text runs into one call per font and colour while drawing tiles.
 + (void)setTextBatchingEnabled:(BOOL)enabled;
++ (long)shadowLineBatches;
 /// Vector shapes of the <svg> whose `attribute` equals `value`, in document coordinates, or nil when the SVG uses
 /// anything beyond solid or axis linear-gradient fills and plain strokes.
 - (nullable LHSVGShapes *)svgShapesWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(svgShapes(attribute:value:maxWidth:));

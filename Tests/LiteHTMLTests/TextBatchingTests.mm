@@ -67,8 +67,13 @@ static NSData *Render(NSString *html, BOOL batching)
 - (void)testBatchedGlowsMatchPerWordGlows
 {
     NSString *seed = @"<style>body{margin:0;background:#123;color:#fff;font:bold 30px -apple-system}</style><p style=\"text-shadow:0 0 40px #f0f\">Glow words that wrap across a couple of lines here</p><p style=\"text-shadow:0 0 14px #0ff, 6px 6px 0 #f80\">Two shadows on these words</p>";
+    long before     = [LHDocument shadowLineBatches];
     NSData *plain   = Render(seed, NO);
+    long afterPlain = [LHDocument shadowLineBatches];
     NSData *batched = Render(seed, YES);
+    long afterBatch = [LHDocument shadowLineBatches];
+    XCTAssertEqual(afterPlain, before);
+    XCTAssertGreaterThan(afterBatch, afterPlain);
     XCTAssertEqual(plain.length, batched.length);
     const uint8_t *a = (const uint8_t *)plain.bytes, *b = (const uint8_t *)batched.bytes;
     size_t pixels = plain.length / 4, off = 0;
@@ -80,6 +85,10 @@ static NSData *Render(NSString *html, BOOL batching)
         if(d > 24)
             off++;
     }
+    size_t any = 0;
+    for(size_t i = 0; i < plain.length; i++)
+        any += a[i] != b[i];
+    NSLog(@"GLOWDIFF line batches %ld, %zu of %zu pixels differ by more than 24 (%.4f%%), %zu bytes differ at all", afterBatch - afterPlain, off, pixels, 100.0 * off / pixels, any);
     XCTAssertLessThan((double)off / (double)pixels, 0.005, @"%zu of %zu pixels differ", off, pixels);
     [LHDocument setTextBatchingEnabled:YES];
 }

@@ -1557,6 +1557,8 @@ bool LHContainer::clips_needed(CGRect bounds) const
     return false;
 }
 
+std::atomic<long> LHContainer::s_shadow_line_batches{0};
+
 std::atomic<bool> LHContainer::s_text_batching{getenv("LH_NO_TEXT_BATCH") == nullptr};
 
 void LHContainer::begin_text_batching(CGContextRef ctx)
@@ -1581,6 +1583,7 @@ void LHContainer::flush_shadow_batch()
     auto& batch = m_shadow_batch;
     if(batch.runs.empty())
         return;
+    s_shadow_line_batches.fetch_add(1, std::memory_order_relaxed);
     auto*        f   = reinterpret_cast<Font*>(const_cast<void*>(batch.font));
     CGContextRef ctx = batch.ctx;
     CGFloat      reach = 0;

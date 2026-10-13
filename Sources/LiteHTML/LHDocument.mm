@@ -2219,6 +2219,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextRelease(ctx);
 }
 
++ (long)shadowLineBatches
+{
+    return LHContainer::s_shadow_line_batches.load(std::memory_order_relaxed);
+}
+
 + (void)setTextBatchingEnabled:(BOOL)enabled
 {
     LHContainer::s_text_batching.store(enabled, std::memory_order_relaxed);
