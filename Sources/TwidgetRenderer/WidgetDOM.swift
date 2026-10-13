@@ -1000,8 +1000,7 @@ final class WidgetDOM {
         if !node.svg && WidgetDOM.voidElements.contains(node.tag) {
             return
         }
-        if !node.svg, node.editing, node.tag.lowercased() == "textarea" {
-        } else if !node.svg, let value = node.formValue, node.tag.lowercased() == "textarea" {
+        if !node.svg, let value = node.formValue, node.tag.lowercased() == "textarea" {
             if value.hasPrefix("\n") {
                 out.append(10)
             }
@@ -1061,7 +1060,7 @@ final class WidgetDOM {
         if formOption, node.formChecked == true {
             put(" selected")
         }
-        if !node.declarations.isEmpty || animated != nil {
+        if !node.declarations.isEmpty || animated != nil || WidgetDOM.hidesText(node) {
             put(" style=\"")
             WidgetDOM.writeStyle(node, animated: animated, theme: theme, into: &out)
             put("\"")
@@ -1070,7 +1069,7 @@ final class WidgetDOM {
     }
 
     static func styleValue(_ node: WidgetNode, animated: [(String, String)]?, theme: String) -> String? {
-        if node.isText || node.declarations.isEmpty && animated == nil {
+        if node.isText || node.declarations.isEmpty && animated == nil && !hidesText(node) {
             return nil
         }
         var out: [UInt8] = []
@@ -1100,6 +1099,13 @@ final class WidgetDOM {
                 put(";")
             }
         }
+        if hidesText(node) {
+            put("color:transparent !important;")
+        }
+    }
+
+    static func hidesText(_ node: WidgetNode) -> Bool {
+        return node.editing && !node.svg && node.tag.lowercased() == "textarea"
     }
 
     static func append(_ text: String, to out: inout [UInt8]) {

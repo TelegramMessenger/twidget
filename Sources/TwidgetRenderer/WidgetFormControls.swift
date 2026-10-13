@@ -79,12 +79,15 @@ struct WidgetFormState {
     var initialValue = ""
     var lastActivation: CFTimeInterval = -.infinity
     var menuOpen = false
+    var focusedSelect = 0
+    var editColor: NSColor?
 }
 
 struct WidgetEditorSpec {
     let generation: Int
     let multiline: Bool
     let frame: CGRect
+    let clip: CGRect?
     let font: NSFont
     let color: NSColor
     let alignment: NSTextAlignment
@@ -128,6 +131,7 @@ extension LiteHTMLWidgetRenderer {
 
     func formMouseDown(_ id: Int, event: NSEvent) {
         form.lastActivation = CACurrentMediaTime()
+        form.focusedSelect = 0
         guard !frozen, !destroyed, let node = formControl(from: id) else {
             return
         }
@@ -136,6 +140,7 @@ extension LiteHTMLWidgetRenderer {
             return
         }
         if node.tag.lowercased() == "select" {
+            form.focusedSelect = control
             openSelect(node, event: event)
         } else if isEditable(node) {
             focusControl(node)
@@ -196,9 +201,10 @@ extension LiteHTMLWidgetRenderer {
         endEditing()
         let id = dom.publicId(node)
         let (items, options) = menuItems(for: node)
-        guard options.contains(where: { $0 >= 0 }), let anchor = elementBounds()[id] else {
+        guard options.contains(where: { $0 >= 0 }), let laid = elementBounds()[id] else {
             return
         }
+        let anchor = visualPlacement(node, laid).0
         form.menuOpen = true
         let view = documentView
         DispatchQueue.main.async { [weak view] in
@@ -216,6 +222,24 @@ extension LiteHTMLWidgetRenderer {
                 }
             }
         }
+    }
+
+    func keyTarget() -> Int? {
+        guard form.focusedSelect != 0, let node = dom.node(form.focusedSelect), dom.isAttached(node) else {
+            form.focusedSelect = 0
+            return nil
+        }
+        return form.focusedSelect
+    }
+
+    func selectKey(_ type: String, key: String, event: NSEvent) {
+        guard type == "keydown", key == " " || key == "Enter", !event.isARepeat, let id = keyTarget(), let node = dom.node(id), !frozen, !destroyed else {
+            return
+        }
+        if prevented.contains("\(id):keydown:\(key)") {
+            return
+        }
+        openSelect(node, event: event)
     }
 
     func chooseOption(selectId id: Int, index: Int) {
@@ -262,6 +286,7 @@ extension LiteHTMLWidgetRenderer {
             return
         }
         endEditing()
+        form.focusedSelect = 0
         form.generation += 1
         form.focusedId = id
         form.initialValue = currentValue(node)
@@ -280,6 +305,11 @@ extension LiteHTMLWidgetRenderer {
 
     func scriptFocus(_ id: Int) {
         guard let node = dom.node(id), CACurrentMediaTime() - form.lastActivation < LiteHTMLWidgetRenderer.scriptFocusWindow else {
+            return
+        }
+        if node.tag.lowercased() == "select", node.attribute("disabled") == nil {
+            endEditing()
+            form.focusedSelect = id
             return
         }
         focusControl(node)
@@ -323,7 +353,12 @@ extension LiteHTMLWidgetRenderer {
         guard previous != text else {
             return
         }
-        node.formValue = WidgetDOM.clip(text)
+        if node.tag.lowercased() == "textarea" {
+            dom.setFormProperty(node, "value", text)
+            setNeedsRender()
+        } else {
+            node.formValue = WidgetDOM.clip(text)
+        }
         let inserted = text.count > previous.count && text.hasPrefix(previous) ? String(text.dropFirst(previous.count)) : nil
         var extra: [String: Any] = ["value": node.formValue ?? "", "inputType": text.count < previous.count ? "deleteContentBackward" : "insertText"]
         extra["data"] = inserted ?? NSNull()
@@ -413,10 +448,33 @@ extension LiteHTMLWidgetRenderer {
         }
     }
 
+    func visualPlacement(_ node: WidgetNode, _ rect: CGRect) -> (CGRect, CGRect?) {
+        var scrollers: [Int] = []
+        var walk = node.parent
+        while let parent = walk {
+            let id = dom.publicId(parent)
+            if scrolling.geometries[id] != nil {
+                scrollers.append(id)
+            }
+            walk = parent.parent
+        }
+        guard !scrollers.isEmpty else {
+            return (rect, nil)
+        }
+        var clip: CGRect?
+        for id in scrollers {
+            if let viewport = scrolling.geometries[id]?.viewport {
+                clip = clip.map { $0.intersection(viewport) } ?? viewport
+            }
+        }
+        return (rect, clip)
+    }
+
     private func editorSpec(_ node: WidgetNode, id: Int) -> WidgetEditorSpec? {
-        guard let document = document, let box = elementBounds()[id], box.width > 0, box.height > 0 else {
+        guard let document = document, let laid = elementBounds()[id], laid.width > 0, laid.height > 0 else {
             return nil
         }
+        let (box, clip) = visualPlacement(node, laid)
         let style = document.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id))
         func px(_ name: String) -> CGFloat {
             guard let value = style[name], let number = Double(value.replacingOccurrences(of: "px", with: "")), number.isFinite else {
@@ -448,7 +506,10 @@ extension LiteHTMLWidgetRenderer {
         default:
             alignment = .left
         }
-        return WidgetEditorSpec(generation: form.generation, multiline: multiline, frame: content.integral.width > 0 ? content : box, font: font, color: WidgetCSSColor.parse(style["color"] ?? "") ?? .textColor, alignment: alignment, text: currentValue(node), placeholder: node.attribute("placeholder") ?? "", maxLength: Int(node.attribute("maxlength") ?? "") ?? 0, readOnly: node.attribute("readonly") != nil, numeric: type == "number" || ["numeric", "decimal"].contains((node.attribute("inputmode") ?? "").lowercased()))
+        let parsed = WidgetCSSColor.parse(style["color"] ?? "")
+        let color = (parsed?.alphaComponent ?? 1) < 0.01 ? (form.editColor ?? .textColor) : (parsed ?? .textColor)
+        form.editColor = color
+        return WidgetEditorSpec(generation: form.generation, multiline: multiline, frame: content.integral.width > 0 ? content : box, clip: clip, font: font, color: color, alignment: alignment, text: currentValue(node), placeholder: node.attribute("placeholder") ?? "", maxLength: Int(node.attribute("maxlength") ?? "") ?? 0, readOnly: node.attribute("readonly") != nil, numeric: type == "number" || ["numeric", "decimal"].contains((node.attribute("inputmode") ?? "").lowercased()))
     }
 }
 
@@ -468,6 +529,7 @@ enum WidgetCSSColor {
 final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate {
     let generation: Int
     let view: NSView
+    let container = WidgetEditorClip()
     let field: NSTextField?
     let textView: NSTextView?
     private let maxLength: Int
@@ -535,19 +597,24 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
         super.init()
         field?.delegate = self
         textView?.delegate = self
-        place(spec.frame)
+        container.addSubview(view)
+        place(spec.frame, clip: spec.clip)
     }
 
     var responder: NSResponder? {
         return textView ?? field
     }
 
-    func place(_ frame: CGRect) {
-        if field != nil {
-            view.frame = frame.insetBy(dx: -2, dy: 0)
+    func place(_ frame: CGRect, clip: CGRect?) {
+        let editorFrame = field != nil ? frame.insetBy(dx: -2, dy: 0) : frame
+        if let clip = clip {
+            container.frame = clip
+            container.isHidden = clip.intersection(frame).isEmpty
         } else {
-            view.frame = frame
+            container.frame = editorFrame
+            container.isHidden = false
         }
+        view.frame = editorFrame.offsetBy(dx: -container.frame.minX, dy: -container.frame.minY)
     }
 
     func setText(_ text: String) {
@@ -565,9 +632,9 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
     func remove() {
         removing = true
         if let window = view.window, let responder = window.firstResponder as? NSView, responder === textView || responder.isDescendant(of: view) || (field?.currentEditor() != nil && responder === field?.currentEditor()) {
-            window.makeFirstResponder(view.superview)
+            window.makeFirstResponder(container.superview)
         }
-        view.removeFromSuperview()
+        container.removeFromSuperview()
     }
 
     private var current: String {
@@ -598,7 +665,6 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
         let text = current
         guard accepts(text) else {
             setText(lastText)
-            NSSound.beep()
             return
         }
         guard text != lastText else {
@@ -677,7 +743,7 @@ extension WidgetDocumentView {
             }
         }
         formEditor = editor
-        addSubview(editor.view)
+        addSubview(editor.container)
         if let responder = editor.responder {
             window?.makeFirstResponder(responder)
         }
@@ -692,7 +758,7 @@ extension WidgetDocumentView {
         guard let editor = formEditor, editor.generation == spec.generation else {
             return
         }
-        editor.place(spec.frame)
+        editor.place(spec.frame, clip: spec.clip)
     }
 
     func setEditorText(_ text: String, generation: Int) {
@@ -700,5 +766,21 @@ extension WidgetDocumentView {
             return
         }
         editor.setText(text)
+    }
+}
+
+final class WidgetEditorClip: NSView {
+    override var isFlipped: Bool {
+        return true
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
     }
 }

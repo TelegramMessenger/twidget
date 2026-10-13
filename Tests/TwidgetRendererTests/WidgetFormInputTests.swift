@@ -69,6 +69,40 @@ final class WidgetFormInputTests: XCTestCase {
         XCTAssertEqual(form.last?["selectedIndex"] as? Int, 2)
         XCTAssertEqual(WidgetDOM.selectedIndex(of: renderer.dom.node(10)!), 2)
         XCTAssertTrue(renderer.dom.serialize(theme: "light").contains("value=\"b\" selected"))
+        shown = []
+        let space = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)!
+        renderer.handleKey("keydown", event: space)
+        pump(1, until: { !shown.isEmpty })
+        XCTAssertEqual(shown.first { $0.selected }?.title, "Blue")
+    }
+
+    func testAnEditorInsideAScrollerFollowsItsOffsetAndIsClippedToIt() {
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 30, "tag": "div", "attrs": [["style", "overflow:auto;height:60px;margin-top:20px"]]], ["op": "ins", "parent": 7, "id": 30, "before": NSNull()],
+            ["op": "el", "id": 31, "tag": "div", "attrs": [["style", "height:40px"]]], ["op": "ins", "parent": 30, "id": 31, "before": NSNull()],
+            ["op": "el", "id": 32, "tag": "input", "attrs": [["value", "x"]]], ["op": "ins", "parent": 30, "id": 32, "before": NSNull()],
+            ["op": "el", "id": 33, "tag": "div", "attrs": [["style", "height:200px"]]], ["op": "ins", "parent": 30, "id": 33, "before": NSNull()],
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        renderer.send("{\"type\":\"ops\",\"ops\":[{\"op\":\"prop\",\"id\":30,\"name\":\"scrollTop\",\"value\":30}]}")
+        pump(1, until: { renderer.scrolling.offset(30).y == 30 })
+        let laid = renderer.elementBounds()[32]!
+        let box = renderer.scrolling.geometries[30]!.viewport
+        let point = CGPoint(x: laid.midX, y: laid.midY)
+        let event = NSEvent.mouseEvent(with: .leftMouseDown, location: renderer.view.convert(point, to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        renderer.handleMouseDown(point, event: event)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor != nil })
+        guard let editor = view.formEditor else {
+            return XCTFail("no editor")
+        }
+        XCTAssertEqual(editor.container.frame, box)
+        XCTAssertFalse(editor.container.isHidden)
+        let field = editor.view.frame.offsetBy(dx: box.minX, dy: box.minY)
+        XCTAssertTrue(field.minY > laid.minY && field.maxY < laid.maxY && laid.minY < 60, "\(field) \(laid)")
+        renderer.send("{\"type\":\"ops\",\"ops\":[{\"op\":\"prop\",\"id\":30,\"name\":\"scrollTop\",\"value\":150}]}")
+        pump(1, until: { editor.container.isHidden })
+        XCTAssertTrue(editor.container.isHidden)
     }
 
     func testTypingIntoAnInputUpdatesTheDOMAndDispatchesInputThenSubmitAndChangeOnBlur() {
@@ -87,7 +121,7 @@ final class WidgetFormInputTests: XCTestCase {
         guard let field = view.formEditor?.field else {
             return XCTFail("no editor")
         }
-        XCTAssertTrue(field.superview === view)
+        XCTAssertTrue(field.superview?.superview === view)
         XCTAssertFalse(renderer.dom.serialize(theme: "light").contains("placeholder"))
         field.stringValue = "hello"
         view.formEditor?.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
@@ -105,7 +139,7 @@ final class WidgetFormInputTests: XCTestCase {
         renderer.editorCommand(generation: renderer.form.generation, command: "Escape")
         pump(1, until: { view.formEditor == nil })
         XCTAssertNil(view.formEditor)
-        XCTAssertNil(field.superview)
+        XCTAssertNil(field.superview?.superview)
         let tail = events().map { $0["type"] as? String ?? "" }.filter { ["change", "blur"].contains($0) }
         XCTAssertEqual(tail, ["change", "blur"])
         let html = renderer.dom.serialize(theme: "light")

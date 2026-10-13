@@ -2549,12 +2549,12 @@ public final class LiteHTMLWidgetRenderer {
         if frozen {
             return
         }
-        let id = dom.publicId(dom.body)
+        let id = keyTarget() ?? dom.publicId(dom.body)
         let key = WidgetKeys.key(event)
-        if !LiteHTMLWidgetRenderer.alwaysSent.contains(type) && !listened.contains(type) {
-            return
+        if LiteHTMLWidgetRenderer.alwaysSent.contains(type) || listened.contains(type) {
+            post(["type": "event", "ev": ["type": type, "targetId": id, "key": key, "code": WidgetKeys.code(event), "repeat": event.isARepeat, "modifiers": modifiers(event.modifierFlags)]])
         }
-        post(["type": "event", "ev": ["type": type, "targetId": id, "key": key, "code": WidgetKeys.code(event), "repeat": event.isARepeat, "modifiers": modifiers(event.modifierFlags)]])
+        selectKey(type, key: key, event: event)
     }
 
     private func isAncestor(_ ancestor: Int, of id: Int) -> Bool {
