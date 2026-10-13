@@ -568,6 +568,8 @@ static bool LHPaintTraceUncached()
     NSSet<NSString *>           *_exclusions;
     NSSet<NSString *>           *_layerExclusions;
     NSString                    *_layerAttribute;
+    NSSet<NSString *>           *_backgroundExclusions;
+    NSString                    *_backgroundAttribute;
     int                          _snapshotDepth;
     NSSet<NSString *>           *_scrollExclusions;
     std::unordered_map<std::string, std::weak_ptr<lh::render_item>> _scrollItems;
@@ -1222,6 +1224,22 @@ static std::string MasterWithCSS(NSString *css)
 {
     _doc->skip_paint.clear();
     _doc->skip_scroll_content.clear();
+    _doc->skip_background_images.clear();
+    if(_snapshotDepth == 0 && _backgroundExclusions.count > 0 && _doc->root())
+    {
+        std::unordered_set<std::string> images;
+        for(NSString *value in _backgroundExclusions)
+            images.insert(value.UTF8String);
+        const char *imageKey = _backgroundAttribute.UTF8String;
+        std::function<void(const lh::element::ptr &)> visitImages = [&](const lh::element::ptr &el) {
+            const char *value = el->get_attr(imageKey);
+            if(value && images.count(value))
+                _doc->skip_background_images.insert(el.get());
+            for(const auto &child : el->children())
+                visitImages(child);
+        };
+        visitImages(_doc->root());
+    }
     if(_scrollExclusions.count > 0 && _doc->root())
     {
         std::unordered_set<std::string> scrollers;
@@ -1391,6 +1409,13 @@ static std::string MasterWithCSS(NSString *css)
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
     return image;
+}
+
+- (void)setBackgroundImageExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _backgroundExclusions = [values copy];
+    _backgroundAttribute  = [attribute copy];
 }
 
 - (NSSet<NSString *> *)layerExclusions

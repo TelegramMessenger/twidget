@@ -1231,6 +1231,8 @@ namespace litehtml
     void litehtml::html_tag::draw_background(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                                              const std::shared_ptr<render_item>& ri)
     {
+        const auto& skipped_images = get_document()->skip_background_images;
+        const bool  skip_images    = !skipped_images.empty() && skipped_images.count(this);
         const css_border& outline_style = m_css.get_outline();
         if(!get_background() && !m_css.get_borders().is_visible() && m_css.get_box_shadows().empty() &&
            !(outline_style.width.val() > 0 && outline_style.style != border_style_none))
@@ -1325,6 +1327,10 @@ namespace litehtml
                         layer.clip_box.round();
                         layer.origin_box.round();
 
+                        if(skip_images && bg->get_layer_type(i) != background::type_color)
+                        {
+                            continue;
+                        }
                         bg->draw_layer(hdc, i, layer, doc_ptr()->container());
                     }
                 }
@@ -1416,6 +1422,10 @@ namespace litehtml
                         layer.clip_box.round();
                         layer.origin_box.round();
 
+                        if(skip_images && bg->get_layer_type(i) != background::type_color)
+                        {
+                            continue;
+                        }
                         bg->draw_layer(hdc, i, layer, doc_ptr()->container());
                     }
                 }

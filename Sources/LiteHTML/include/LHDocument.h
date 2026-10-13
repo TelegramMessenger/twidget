@@ -102,6 +102,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Elements drawn by layers instead of tiles, keyed by the paint-exclusion attribute: skipped when drawing tiles but drawn into snapshots.
 - (void)setLayerExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setLayerExclusions(_:attribute:));
 @property (readonly) NSSet<NSString *> *layerExclusions;
+- (void)setBackgroundImageExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setBackgroundImageExclusions(_:attribute:));
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setScrollContentExclusions(_:attribute:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute NS_SWIFT_NAME(scrollers(byAttribute:));
 - (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(setScrollOffset(_:attribute:value:));
