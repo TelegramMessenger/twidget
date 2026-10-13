@@ -87,6 +87,8 @@ namespace litehtml
         bool                                         m_layout_before_valid = false;
         bool                                         m_layout_after_render = false;
         std::unordered_set<const element*>           m_layout_origins;
+        std::vector<std::shared_ptr<element>>        m_restyle_regions;
+        bool                                         m_restyle_confined = true;
         void     snapshot_layout();
         void     begin_layout_patch();
         bool     layout_dirty_regions(std::vector<position>& out);

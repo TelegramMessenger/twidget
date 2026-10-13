@@ -867,6 +867,8 @@ namespace litehtml
     void document::begin_layout_patch()
     {
         m_layout_origins.clear();
+        m_restyle_regions.clear();
+        m_restyle_confined    = true;
         m_layout_before_valid = false;
         m_layout_after_render = false;
         if(m_root_render && layout_cache_enabled())
@@ -1047,6 +1049,10 @@ namespace litehtml
                     tag->note_flip(hole.value, changes[entry.first].second, region);
                 }
             }
+            if(region == 1)
+                m_restyle_regions.push_back(hole.owner);
+            else if(region != 3 || outermost_svg(hole.owner) || !push_text_owner_region(hole.owner, m_restyle_regions))
+                m_restyle_confined = false;
             if(m_patch_confined && region == 1)
                 m_patch_regions.push_back(hole.owner);
             else if(!m_patch_confined || region != 3 || outermost_svg(hole.owner) || !push_text_owner_region(hole.owner, m_patch_regions))
@@ -1062,6 +1068,16 @@ namespace litehtml
             const std::string& value   = changes[k].second;
             html_hole&         hole    = m_holes[changes[k].first];
             const bool         inplace = hole.text && retext_in_place(hole.text_elements, value.c_str(), words);
+            if(!hole.text && !hole.src)
+            {
+                const int kind = hole.attr.empty() ? style_change_region(hole.value, value) : 2;
+                if(kind == 1)
+                    m_restyle_regions.push_back(hole.owner);
+                else if(kind == 2 && outermost_svg(hole.owner))
+                    m_restyle_regions.push_back(outermost_svg(hole.owner));
+                else if(kind != 3 || outermost_svg(hole.owner) || !push_text_owner_region(hole.owner, m_restyle_regions))
+                    m_restyle_confined = false;
+            }
             if(m_patch_confined)
             {
                 element::ptr region;
@@ -2701,8 +2717,13 @@ namespace litehtml
         out.clear();
         if(!m_layout_before_valid || !m_layout_after_render || !m_root_render)
             return false;
+        if(!m_restyle_confined)
+            return false;
         std::unordered_set<const element*> origins;
-        for(const element* el : m_layout_origins)
+        std::vector<const element*>        sources(m_layout_origins.begin(), m_layout_origins.end());
+        for(const auto& region : m_restyle_regions)
+            sources.push_back(region.get());
+        for(const element* el : sources)
         {
             const element* owner = el;
             while(owner && !const_cast<element*>(owner)->get_render_item())
