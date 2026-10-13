@@ -45,6 +45,12 @@ namespace litehtml
 
         struct flip_state
         {
+            // Move-only (it holds unique_ptrs), and declared so: a vector moves an element only when it
+            // cannot copy it or the move cannot throw, and MSVC's std::map move may throw.
+            flip_state()                        = default;
+            flip_state(flip_state&&)            = default;
+            flip_state& operator=(flip_state&&) = default;
+
             std::string                                 value;
             uint64_t                                    epoch     = 0;
             int                                         parent_id = -1;
