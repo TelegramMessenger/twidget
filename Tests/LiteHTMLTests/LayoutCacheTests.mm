@@ -84,6 +84,30 @@ static bool CacheFastPathEnabled()
     }
 }
 
+- (void)testClippedFlexItemsMatchAnExplicitZeroMinimum
+{
+    for(NSString *overflow in @[@"hidden", @"auto", @"scroll"])
+    {
+        for(NSString *basis in @[@"auto", @"0px", @"35%", @"min-content", @"max-content", @"content"])
+        {
+            for(NSNumber *width in @[@180, @320])
+            {
+                NSString *body = [NSString stringWithFormat:
+                    @"<div style='display:flex;width:100%%;gap:7px;align-items:baseline'>"
+                     "<div data-lh-id='5' style='overflow:%@;flex:1 1 %@;width:140px;padding:3%%;border:2px solid;MINIMUM'>"
+                     "<div style='display:flex'><span>A long nested label with wrapping words</span><b>42</b></div>"
+                     "<textarea style='width:100%%;height:40px'>Editable contents</textarea></div>"
+                     "<div style='flex:none;width:68px'>Adjacent label</div></div>", overflow, basis];
+                NSString *automatic = Page([[body stringByReplacingOccurrencesOfString:@"MINIMUM" withString:@""] UTF8String]);
+                NSString *explicitMinimum = Page([[body stringByReplacingOccurrencesOfString:@"MINIMUM" withString:@"min-width:0"] UTF8String]);
+                LHDocument *a = [[LHDocument alloc] initWithHTML:automatic css:nil];
+                LHDocument *b = [[LHDocument alloc] initWithHTML:explicitMinimum css:nil];
+                [self expect:a like:b width:width.doubleValue label:[NSString stringWithFormat:@"clipped %@ %@ %@", overflow, basis, width]];
+            }
+        }
+    }
+}
+
 - (void)testNestedSVGFlexMeasurementsAcrossEditsAndViewportChanges
 {
     LHDocument *document = nil;

@@ -150,22 +150,25 @@ void litehtml::flex_item_row_direction::direction_specific_init(const litehtml::
     def_value<pixel_t> content_size(0_px);
     if(el->css().get_min_width().is_predefined())
     {
-        min_size =
-            el->measure(0_px, 0_px,
-                       self_size.new_width(el->content_offset_width(), containing_block_context::size_mode_content),
-                       fmt_ctx)
-                .natural_width;
-        content_size = min_size;
         if(el->css().get_overflow() != overflow_visible)
         {
             min_size = el->render_offset_width();
-        } else if(!el->css().get_width().is_predefined())
+        } else
         {
-            const pixel_t specified =
-                el->css().get_width().calc_percent(self_size.render_width) + el->render_offset_width();
-            if(specified >= 0_px && specified < min_size)
+            min_size =
+                el->measure(0_px, 0_px,
+                           self_size.new_width(el->content_offset_width(), containing_block_context::size_mode_content),
+                           fmt_ctx)
+                    .natural_width;
+            content_size = min_size;
+            if(!el->css().get_width().is_predefined())
             {
-                min_size = specified;
+                const pixel_t specified =
+                    el->css().get_width().calc_percent(self_size.render_width) + el->render_offset_width();
+                if(specified >= 0_px && specified < min_size)
+                {
+                    min_size = specified;
+                }
             }
         }
     } else
