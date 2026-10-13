@@ -1940,6 +1940,8 @@ public final class LiteHTMLWidgetRenderer {
             lastResize[id] = nil
         case "focus":
             scriptFocus(id)
+        case "completeEditorCommand":
+            completeEditorCommand(node, args)
         case "blur":
             if form.focusedId == id {
                 endEditing()

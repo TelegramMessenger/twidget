@@ -55,6 +55,81 @@ final class WidgetFormInputTests: XCTestCase {
         XCTAssertFalse(events().contains { $0["type"] as? String == "submit" })
     }
 
+    func testTextareaEnterWaitsForCancellationAndIgnoresStaleReplies() throws {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "width:200px;height:80px"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": "hello"]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        renderer.listened = ["keyup"]
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor != nil })
+        let editor = try XCTUnwrap(view.formEditor)
+        let text = try XCTUnwrap(editor.textView as? WidgetEditorTextView)
+        text.setSelectedRange(NSRange(location: 5, length: 0))
+        XCTAssertTrue(editor.textView(text, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        XCTAssertEqual(text.string, "hello")
+        XCTAssertTrue(text.waitingForCommand)
+        let request = try XCTUnwrap(events().last { $0["type"] as? String == "keydown" })
+        XCTAssertEqual(request["editorGeneration"] as? Int, editor.generation)
+        let token = try XCTUnwrap(request["editorCommand"] as? Int)
+        editor.completeEnter(token: token + 1, allowed: true)
+        XCTAssertTrue(text.waitingForCommand)
+        let node = try XCTUnwrap(renderer.dom.node(10))
+        renderer.completeEditorCommand(node, [editor.generation - 1, token, 1])
+        pump(0.03)
+        XCTAssertTrue(text.waitingForCommand)
+        renderer.completeEditorCommand(node, [editor.generation, token, 0])
+        pump(1, until: { !text.waitingForCommand })
+        XCTAssertEqual(text.string, "hello")
+        XCTAssertEqual(events().last?["type"] as? String, "keyup")
+        XCTAssertFalse(events().contains { $0["type"] as? String == "input" })
+        editor.completeEnter(token: token, allowed: true)
+        XCTAssertEqual(text.string, "hello")
+    }
+
+    func testTextareaEnterReplacesSelectionBeforeQueuedTyping() throws {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "width:200px;height:80px"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": "a😀b"]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor != nil })
+        let editor = try XCTUnwrap(view.formEditor)
+        let text = try XCTUnwrap(editor.textView as? WidgetEditorTextView)
+        text.setSelectedRange(NSRange(location: 1, length: 2))
+        XCTAssertTrue(editor.textView(text, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        let request = try XCTUnwrap(events().last { $0["type"] as? String == "keydown" })
+        let token = try XCTUnwrap(request["editorCommand"] as? Int)
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "x", charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7))
+        text.keyDown(with: key)
+        XCTAssertEqual(text.string, "a😀b")
+        editor.completeEnter(token: token, allowed: true)
+        XCTAssertEqual(text.string, "a\nxb")
+        XCTAssertEqual(text.selectedRange(), NSRange(location: 3, length: 0))
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "a\nxb")
+        XCTAssertEqual(events().filter { $0["type"] as? String == "input" }.compactMap { $0["value"] as? String }, ["a\nb", "a\nxb"])
+        XCTAssertEqual(events().filter { $0["type"] as? String == "input" }.compactMap { $0["inputType"] as? String }, ["insertLineBreak", "insertText"])
+        XCTAssertTrue(editor.textView(text, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        let pending = try XCTUnwrap(events().last?["editorCommand"] as? Int)
+        let shiftedEnter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.shift], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        text.keyDown(with: shiftedEnter)
+        editor.completeEnter(token: pending, allowed: false)
+        XCTAssertEqual(events().last?["modifiers"] as? Int, 8)
+        XCTAssertTrue(text.waitingForCommand)
+        editor.completeEnter(token: pending + 1, allowed: false)
+        XCTAssertTrue(editor.textView(text, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        let replacementCommand = try XCTUnwrap(events().last?["editorCommand"] as? Int)
+        editor.setText("replacement")
+        editor.completeEnter(token: replacementCommand, allowed: true)
+        XCTAssertEqual(text.string, "replacement\n")
+    }
+
     func testRangeDragClampsSnapsAndCommitsOnceOutsideTheControl() {
         let (renderer, window, events) = make([
             ["op": "el", "id": 10, "tag": "input", "attrs": [["type", "range"], ["min", "10"], ["max", "90"], ["step", "10"], ["value", "50"], ["style", "width:200px"]]],

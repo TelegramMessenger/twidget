@@ -388,7 +388,7 @@ extension LiteHTMLWidgetRenderer {
         }
     }
 
-    func editorChanged(generation: Int, text: String) {
+    func editorChanged(generation: Int, text: String, inputType: String? = nil) {
         guard generation == form.generation, form.focusedId != 0, let node = dom.node(form.focusedId) else {
             return
         }
@@ -404,7 +404,7 @@ extension LiteHTMLWidgetRenderer {
             node.formValue = WidgetDOM.clip(text)
         }
         let inserted = text.count > previous.count && text.hasPrefix(previous) ? String(text.dropFirst(previous.count)) : nil
-        var extra: [String: Any] = ["value": node.formValue ?? "", "inputType": text.count < previous.count ? "deleteContentBackward" : "insertText"]
+        var extra: [String: Any] = ["value": node.formValue ?? "", "inputType": inputType ?? (text.count < previous.count ? "deleteContentBackward" : "insertText")]
         extra["data"] = inserted ?? NSNull()
         postForm("input", form.focusedId, extra)
     }
@@ -453,6 +453,30 @@ extension LiteHTMLWidgetRenderer {
             focusControl(next)
         default:
             break
+        }
+    }
+
+    func editorEnter(generation: Int, token: Int, modifiers: Int) {
+        guard generation == form.generation, !frozen, !destroyed, let node = dom.node(form.focusedId), node.tag.lowercased() == "textarea" else {
+            return
+        }
+        form.lastActivation = CACurrentMediaTime()
+        post(["type": "event", "ev": ["type": "keydown", "targetId": form.focusedId, "key": "Enter", "code": "Enter", "repeat": false, "modifiers": modifiers, "value": currentValue(node), "editorGeneration": generation, "editorCommand": token]])
+    }
+
+    func editorEnterCompleted(generation: Int, modifiers: Int) {
+        guard generation == form.generation, form.focusedId != 0 else { return }
+        postForm("keyup", form.focusedId, ["key": "Enter", "code": "Enter", "repeat": false, "modifiers": modifiers])
+    }
+
+    func completeEditorCommand(_ node: WidgetNode, _ args: [Any]) {
+        guard dom.publicId(node) == form.focusedId, args.count == 3,
+              let generation = args[0] as? NSNumber, generation.intValue == form.generation,
+              let token = args[1] as? NSNumber, let allowed = args[2] as? NSNumber else { return }
+        let view = documentView
+        DispatchQueue.main.async { [weak view] in
+            guard let editor = view?.formEditor, editor.generation == generation.intValue else { return }
+            editor.completeEnter(token: token.intValue, allowed: allowed.boolValue)
         }
     }
 
@@ -585,6 +609,29 @@ final class WidgetTextFieldCell: NSTextFieldCell {
     }
 }
 
+final class WidgetEditorTextView: NSTextView {
+    var waitingForCommand = false
+    private(set) var keyModifiers: NSEvent.ModifierFlags?
+    private var queuedKeys: [NSEvent] = []
+
+    override func keyDown(with event: NSEvent) {
+        if waitingForCommand {
+            queuedKeys.append(event)
+        } else {
+            keyModifiers = event.modifierFlags
+            defer { keyModifiers = nil }
+            super.keyDown(with: event)
+        }
+    }
+
+    func resumeKeys() {
+        while !waitingForCommand, !queuedKeys.isEmpty, window != nil {
+            let event = queuedKeys.removeFirst()
+            keyDown(with: event)
+        }
+    }
+}
+
 final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate {
     let generation: Int
     let view: NSView
@@ -595,8 +642,13 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
     private let numeric: Bool
     private var lastText: String
     private var removing = false
-    var onChange: ((String) -> Void)?
+    private var nextCommand = 0
+    private var pendingEnter: (token: Int, modifiers: Int)?
+    private var insertingLineBreak = false
+    var onChange: ((String, String?) -> Void)?
     var onCommand: ((String) -> Void)?
+    var onEnter: ((Int, Int) -> Void)?
+    var onEnterCompleted: ((Int) -> Void)?
     var onEnd: (() -> Void)?
 
     init(_ spec: WidgetEditorSpec) {
@@ -610,7 +662,7 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
             scroll.hasVerticalScroller = false
             scroll.hasHorizontalScroller = false
             scroll.borderType = .noBorder
-            let text = NSTextView(frame: CGRect(origin: .zero, size: spec.frame.size))
+            let text = WidgetEditorTextView(frame: CGRect(origin: .zero, size: spec.frame.size))
             text.drawsBackground = false
             text.backgroundColor = .clear
             if #available(macOS 10.14, *) {
@@ -691,6 +743,7 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
             field.stringValue = text
         } else {
             textView?.string = text
+            textView?.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
         }
     }
 
@@ -736,7 +789,7 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
             return
         }
         lastText = text
-        onChange?(text)
+        onChange?(text, insertingLineBreak ? "insertLineBreak" : nil)
     }
 
     func controlTextDidChange(_ obj: Notification) {
@@ -761,6 +814,15 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
 
     private func command(_ selector: Selector, multiline: Bool) -> Bool {
         switch selector {
+        case #selector(NSResponder.insertNewline(_:)) where multiline:
+            guard !composing, let text = textView as? WidgetEditorTextView, let onEnter = onEnter else { return false }
+            let flags = text.keyModifiers ?? NSApp.currentEvent?.modifierFlags ?? []
+            let modifiers = (flags.contains(.option) ? 1 : 0) | (flags.contains(.control) ? 2 : 0) | (flags.contains(.command) ? 4 : 0) | (flags.contains(.shift) ? 8 : 0)
+            nextCommand += 1
+            pendingEnter = (nextCommand, modifiers)
+            text.waitingForCommand = true
+            onEnter(nextCommand, modifiers)
+            return true
         case #selector(NSResponder.insertNewline(_:)) where !multiline:
             onCommand?("Enter")
             return true
@@ -776,6 +838,19 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
         default:
             return false
         }
+    }
+
+    func completeEnter(token: Int, allowed: Bool) {
+        guard !removing, let pending = pendingEnter, pending.token == token, let text = textView as? WidgetEditorTextView else { return }
+        pendingEnter = nil
+        text.waitingForCommand = false
+        if allowed, text.isEditable {
+            insertingLineBreak = true
+            text.insertText("\n", replacementRange: text.selectedRange())
+            insertingLineBreak = false
+        }
+        onEnterCompleted?(pending.modifiers)
+        text.resumeKeys()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -796,11 +871,17 @@ extension WidgetDocumentView {
         }
         let editor = WidgetTextEditor(spec)
         let generation = spec.generation
-        editor.onChange = { [weak self] text in
-            self?.toOwner { $0.editorChanged(generation: generation, text: text) }
+        editor.onChange = { [weak self] text, inputType in
+            self?.toOwner { $0.editorChanged(generation: generation, text: text, inputType: inputType) }
         }
         editor.onCommand = { [weak self] command in
             self?.toOwner { $0.editorCommand(generation: generation, command: command) }
+        }
+        editor.onEnter = { [weak self] token, modifiers in
+            self?.toOwner { $0.editorEnter(generation: generation, token: token, modifiers: modifiers) }
+        }
+        editor.onEnterCompleted = { [weak self] modifiers in
+            self?.toOwner { $0.editorEnterCompleted(generation: generation, modifiers: modifiers) }
         }
         editor.onEnd = { [weak self] in
             DispatchQueue.main.async {
