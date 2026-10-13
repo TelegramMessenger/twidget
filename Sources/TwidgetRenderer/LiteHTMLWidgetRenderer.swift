@@ -474,7 +474,9 @@ public final class LiteHTMLWidgetRenderer {
                 held.removeFirst()
             }
             if !ops.isEmpty {
+                deferringRender = LiteHTMLWidgetRenderer.coalescesHeld
                 applyMeasured(ops, held: true)
+                deferringRender = false
             } else if case .json(let json)? = held.first {
                 held.removeFirst()
                 send(json)
@@ -576,6 +578,18 @@ public final class LiteHTMLWidgetRenderer {
         applyMeasured(ops, held: false)
     }
 
+    static let presamples = ProcessInfo.processInfo.environment["TW_NO_PRESAMPLE"] == nil
+    static let coalescesHeld = ProcessInfo.processInfo.environment["TW_HELD_RENDER_NOW"] == nil
+    private var deferringRender = false
+
+    private func renderOrDefer() {
+        if deferringRender {
+            setNeedsRender()
+        } else {
+            render()
+        }
+    }
+
     private func apply(_ ops: [WidgetOp]) {
         defer {
             pacer.answered(CACurrentMediaTime())
@@ -598,7 +612,7 @@ public final class LiteHTMLWidgetRenderer {
                 }
                 return
             }
-            render()
+            renderOrDefer()
             return
         }
         noteScriptedTransforms(ops)
@@ -614,7 +628,11 @@ public final class LiteHTMLWidgetRenderer {
             capture = pending
         }
         sizeTransition = capture != nil
-        render()
+        if capture == nil {
+            renderOrDefer()
+        } else {
+            render()
+        }
         sizeTransition = false
         if let capture = capture, let document = document, magic.run(capture, dom: dom, document: document, skip: animator.animatedIDs().union(compositor.ids), scale: documentView.scale) {
             applyExclusions()
@@ -700,6 +718,9 @@ public final class LiteHTMLWidgetRenderer {
         }
         stageMilliseconds["sheets", default: 0] += (CACurrentMediaTime() - sheetsStart) * 1000
         compositor.styleKey = (key + "\u{2}" + theme + "\u{2}\(hoverId)\u{2}\(pressId)").hashValue
+        if LiteHTMLWidgetRenderer.presamples, animator.isActive, !frozen {
+            overrides = compositor.apply(animator.sample(now: now), bases: { [animator] in animator.base($0) })
+        }
         layout(overrides)
         let scanStart = CACurrentMediaTime()
         var declarations: [Int: [String: String]] = [:]
@@ -1676,6 +1697,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func query(_ q: [String: Any]) -> Any {
+        if needsRender {
+            render()
+        }
         let kind = (q["q"] as? String) ?? ""
         var rect: CGRect?
         if let id = (q["id"] as? NSNumber)?.intValue {
@@ -1744,6 +1768,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func binaryQuery(_ q: [String: Any]) -> (result: [String: Any], data: Data)? {
+        if needsRender {
+            render()
+        }
         guard (q["q"] as? String) == "imageData", let id = (q["id"] as? NSNumber)?.intValue, let node = dom.node(id), node.tag == "canvas" else {
             return nil
         }
@@ -1906,6 +1933,7 @@ public final class LiteHTMLWidgetRenderer {
         return pacer.cost
     }
     public private(set) var scriptFramesPaced = 0
+    public private(set) var framesPosted = 0
     private lazy var pacer = ScriptFramePacer(budget: LiteHTMLWidgetRenderer.scriptFrameBudget, fallbackInterval: LiteHTMLWidgetRenderer.frameInterval)
 
     private var trimWork: DispatchWorkItem?
@@ -2029,6 +2057,7 @@ public final class LiteHTMLWidgetRenderer {
                 lastFramePost = now
                 pacer.posted(now)
                 post(["type": "frame", "time": (now - timeOrigin) * 1000])
+                framesPosted += 1
             } else {
                 scriptFramesPaced += 1
             }
