@@ -90,6 +90,7 @@ final class WidgetSVGLayers {
             let fraction = Double(off) / Double(count)
             checks += 1
             worstFraction = max(worstFraction, fraction)
+            WidgetSVGLayers.tally(checks: 1, differ: fraction > 0.002 ? 1 : 0)
             if fraction > 0.002 {
                 mismatches += 1
                 if let dir = ProcessInfo.processInfo.environment["TW_SVGCHECK_DUMP"], mismatches <= 3 {
@@ -102,6 +103,28 @@ final class WidgetSVGLayers {
                 }
             }
         }
+    }
+
+    private static let totalsLock = NSLock()
+    private static var totalChecks = 0, totalDiffer = 0, totalVerified = 0, totalMismatched = 0, totalLayered = 0, totalOffMain = 0
+
+    static func tally(checks: Int = 0, differ: Int = 0, verified: Int = 0, mismatched: Int = 0, layered: Int = 0) {
+        totalsLock.lock()
+        totalChecks += checks
+        totalDiffer += differ
+        totalVerified += verified
+        totalMismatched += mismatched
+        totalLayered += layered
+        if layered > 0 && !Thread.isMainThread {
+            totalOffMain += layered
+        }
+        totalsLock.unlock()
+    }
+
+    static var totals: String {
+        totalsLock.lock()
+        defer { totalsLock.unlock() }
+        return "totals: verify \(totalVerified) frames, \(totalMismatched) differ | svgcheck \(totalChecks) checks, \(totalDiffer) differ | svg layer renders \(totalLayered) (\(totalOffMain) off main)"
     }
 
     var report: String {
@@ -164,6 +187,7 @@ final class WidgetSVGLayers {
                 containers[id] = container
             }
             frames[id] = shapes.frame
+            WidgetSVGLayers.tally(layered: 1)
             if container.frame != shapes.frame {
                 container.frame = shapes.frame
             }

@@ -758,6 +758,10 @@ public final class LiteHTMLWidgetRenderer {
         return svgLayers.report
     }
 
+    public static var checkTotals: String {
+        return WidgetSVGLayers.totals
+    }
+
     public var canvasReport: String {
         var accelerated = 0, fallback = 0, gpuFrames = 0, gpuMilliseconds = 0.0
         #if canImport(Metal)
@@ -2369,9 +2373,11 @@ final class WidgetDocumentView: NSView {
             print("VERIFYDBG rect=\(rect) worst=\(worst) at=\(worstAt)")
         }
         verifiedFrames += 1
+        WidgetSVGLayers.tally(verified: 1, mismatched: 0)
         let tiled = rect.width < bounds.width - 0.5 || rect.height < max(1, ceil(document.size.height)) - 0.5
         if worst > (tiled ? 2 : 1) {
             mismatchedFrames += 1
+            WidgetSVGLayers.tally(verified: 0, mismatched: 1)
         }
     }
 
