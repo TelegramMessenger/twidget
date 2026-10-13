@@ -125,6 +125,7 @@ class LHContainer : public litehtml::document_container
     litehtml::uint_ptr create_font(const litehtml::font_description& descr, const litehtml::document* doc,
                                    litehtml::font_metrics* fm) override;
     void               delete_font(litehtml::uint_ptr hFont) override;
+    static CTFontRef    native_font(litehtml::uint_ptr hFont);
     litehtml::pixel_t  text_width(const char* text, litehtml::uint_ptr hFont) override;
     void draw_text(litehtml::uint_ptr hdc, const char* text, litehtml::uint_ptr hFont, litehtml::web_color color,
                    const litehtml::position& pos) override;

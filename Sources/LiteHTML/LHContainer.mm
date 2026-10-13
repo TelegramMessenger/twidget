@@ -1261,6 +1261,12 @@ void LHContainer::delete_font(lh::uint_ptr hFont)
     delete reinterpret_cast<Font*>(hFont);
 }
 
+CTFontRef LHContainer::native_font(lh::uint_ptr hFont)
+{
+    auto* font = reinterpret_cast<Font*>(hFont);
+    return font ? font->shared->font : nullptr;
+}
+
 static CTLineRef CreateLine(const char* text, CFDictionaryRef attrs)
 {
     CFStringRef str = CFStringCreateWithCString(nullptr, text, kCFStringEncodingUTF8);

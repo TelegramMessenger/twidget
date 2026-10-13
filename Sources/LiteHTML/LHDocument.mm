@@ -2239,6 +2239,21 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return nil;
 }
 
+- (nullable NSFont *)fontWithAttribute:(NSString *)attribute value:(NSString *)value lineHeight:(CGFloat *)lineHeight baseline:(CGFloat *)baseline
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    *lineHeight = ri ? ri->css().line_height().computed_value.value() : 0;
+    *baseline = 0;
+    if(ri)
+    {
+        const auto& metrics = ri->css().get_font_metrics();
+        *baseline = metrics.ascent.value() + std::trunc((*lineHeight - metrics.height.value()) / 2);
+    }
+    return ri ? (__bridge NSFont *)LHContainer::native_font(ri->css().get_font()) : nil;
+}
+
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value
 {
     std::lock_guard<std::mutex> guard(_lock);
@@ -2320,6 +2335,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"display"]     = @(std::string(lh::style_display_strings[css.get_display()]).c_str());
     out[@"position"]    = @(std::string(lh::element_position_strings[css.get_position()]).c_str());
     out[@"font-size"]   = px(css.get_font_size().value());
+    out[@"line-height"] = css.line_height().css_value.is_predefined() ? @"normal" : px(css.line_height().computed_value.value());
     out[@"font-weight"] = [NSString stringWithFormat:@"%d", (int)css.font_weight().val()];
     out[@"font-family"] = @(css.font_family().c_str());
     out[@"font-style"]  = css.font_style_value() == lh::font_style_italic ? @"italic" : @"normal";

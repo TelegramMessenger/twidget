@@ -91,6 +91,8 @@ struct WidgetEditorSpec {
     let frame: CGRect
     let clip: CGRect?
     let font: NSFont
+    let lineHeight: CGFloat
+    let baseline: CGFloat
     let color: NSColor
     let alignment: NSTextAlignment
     let text: String
@@ -551,9 +553,9 @@ extension LiteHTMLWidgetRenderer {
             return CGFloat(number)
         }
         let size = max(1, px("font-size"))
-        let family = style["font-family"].flatMap { $0.isEmpty ? nil : $0 } ?? "-apple-system"
-        let css = "\(style["font-style"] == "italic" ? "italic " : "")\(style["font-weight"] ?? "400") \(size)px \(family)"
-        let font = CSSFont.make(css) as NSFont
+        var lineHeight: CGFloat = 0
+        var baseline: CGFloat = 0
+        let font = document.font(attribute: WidgetDOM.idAttribute, value: String(id), lineHeight: &lineHeight, baseline: &baseline) ?? NSFont.systemFont(ofSize: size)
         let multiline = node.tag.lowercased() == "textarea"
         let type = (node.attribute("type") ?? "").lowercased()
         var content = CGRect(x: box.minX + px("padding-left") + px("border-left-width"), y: box.minY + px("padding-top") + px("border-top-width"), width: box.width - px("padding-left") - px("padding-right") - px("border-left-width") - px("border-right-width"), height: box.height - px("padding-top") - px("padding-bottom") - px("border-top-width") - px("border-bottom-width"))
@@ -577,7 +579,7 @@ extension LiteHTMLWidgetRenderer {
         let parsed = WidgetCSSColor.parse(style["color"] ?? "")
         let color = (parsed?.alphaComponent ?? 1) < 0.01 ? (form.editColor ?? .textColor) : (parsed ?? .textColor)
         form.editColor = color
-        return WidgetEditorSpec(generation: form.generation, multiline: multiline, frame: content.integral.width > 0 ? content : box, clip: clip, font: font, color: color, alignment: alignment, text: currentValue(node), placeholder: node.attribute("placeholder") ?? "", maxLength: Int(node.attribute("maxlength") ?? "") ?? 0, readOnly: node.attribute("readonly") != nil, numeric: type == "number" || ["numeric", "decimal"].contains((node.attribute("inputmode") ?? "").lowercased()))
+        return WidgetEditorSpec(generation: form.generation, multiline: multiline, frame: content.integral.width > 0 ? content : box, clip: clip, font: font, lineHeight: lineHeight, baseline: baseline, color: color, alignment: alignment, text: currentValue(node), placeholder: node.attribute("placeholder") ?? "", maxLength: Int(node.attribute("maxlength") ?? "") ?? 0, readOnly: node.attribute("readonly") != nil, numeric: type == "number" || ["numeric", "decimal"].contains((node.attribute("inputmode") ?? "").lowercased()))
     }
 }
 
@@ -632,7 +634,16 @@ final class WidgetEditorTextView: NSTextView {
     }
 }
 
-final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate {
+final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSLayoutManagerDelegate {
+    private struct TextStyle: Equatable {
+        let font: NSFont
+        let lineHeight: CGFloat
+        let baseline: CGFloat
+        let color: NSColor
+        let alignment: NSTextAlignment
+    }
+
+    private var textStyle: TextStyle?
     let generation: Int
     let view: NSView
     let container = WidgetEditorClip()
@@ -714,12 +725,54 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate 
         super.init()
         field?.delegate = self
         textView?.delegate = self
+        textView?.layoutManager?.delegate = self
+        applyStyle(spec)
         container.addSubview(view)
         place(spec.frame, clip: spec.clip)
     }
 
     var responder: NSResponder? {
         return textView ?? field
+    }
+
+    func applyStyle(_ spec: WidgetEditorSpec) {
+        textView?.isEditable = !spec.readOnly
+        field?.isEditable = !spec.readOnly
+        let style = TextStyle(font: spec.font, lineHeight: spec.lineHeight, baseline: spec.baseline, color: spec.color, alignment: spec.alignment)
+        guard style != textStyle else { return }
+        textStyle = style
+        if let text = textView {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = spec.alignment
+            paragraph.minimumLineHeight = spec.lineHeight
+            paragraph.maximumLineHeight = spec.lineHeight
+            text.font = spec.font
+            text.textColor = spec.color
+            text.insertionPointColor = spec.color
+            text.defaultParagraphStyle = paragraph
+            text.textStorage?.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.string.utf16.count))
+            var attributes = text.typingAttributes
+            attributes[.font] = spec.font
+            attributes[.foregroundColor] = spec.color
+            attributes[.paragraphStyle] = paragraph
+            text.typingAttributes = attributes
+        } else if let field = field {
+            field.font = spec.font
+            field.textColor = spec.color
+            field.alignment = spec.alignment
+            if let text = field.currentEditor() as? NSTextView {
+                text.font = spec.font
+                text.textColor = spec.color
+                text.insertionPointColor = spec.color
+                text.alignment = spec.alignment
+            }
+        }
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>, lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>, in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
+        guard let style = textStyle else { return false }
+        baselineOffset.pointee = style.baseline
+        return true
     }
 
     func place(_ frame: CGRect, clip: CGRect?) {
@@ -905,6 +958,7 @@ extension WidgetDocumentView {
             return
         }
         editor.place(spec.frame, clip: spec.clip)
+        editor.applyStyle(spec)
     }
 
     func setEditorText(_ text: String, generation: Int) {

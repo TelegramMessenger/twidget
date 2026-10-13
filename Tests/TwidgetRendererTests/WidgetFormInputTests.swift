@@ -213,6 +213,100 @@ final class WidgetFormInputTests: XCTestCase {
         XCTAssertEqual(editor.textColor?.usingColorSpace(.sRGB), color)
     }
 
+    func testTextareaEditorUsesRenderedFontAndLineSpacing() throws {
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "width:250px;height:150px;font:16px/24px monospace;color:rgb(220,230,240)"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": "one\ntwo\nthree"]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor?.textView != nil })
+        let editor = try XCTUnwrap(view.formEditor?.textView)
+        let layout = try XCTUnwrap(editor.layoutManager)
+        let container = try XCTUnwrap(editor.textContainer)
+        layout.ensureLayout(for: container)
+        XCTAssertEqual(editor.font?.familyName, "Courier")
+        let first = layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        let second = layout.lineFragmentRect(forGlyphAt: 4, effectiveRange: nil)
+        XCTAssertEqual(second.minY - first.minY, 24, accuracy: 0.01)
+        func assertBaseline(file: StaticString = #filePath, line: UInt = #line) throws {
+            let fragment = try XCTUnwrap(renderer.document?.textFragments(maxWidth: 400).first { $0.text == "one" })
+            let font = try XCTUnwrap(editor.font)
+            let expected = fragment.frame.maxY - (-font.descender).rounded() - font.leading.rounded()
+            let actual = editor.convert(.zero, to: view).y + layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil).minY + layout.location(forGlyphAt: 0).y
+            XCTAssertEqual(actual, expected, accuracy: 0.5, file: file, line: line)
+        }
+        try assertBaseline()
+        editor.setSelectedRange(NSRange(location: 4, length: 3))
+        let data = try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": [
+            ["op": "style", "id": 10, "name": "font-family", "value": "serif"],
+            ["op": "style", "id": 10, "name": "line-height", "value": "30px"],
+            ["op": "style", "id": 10, "name": "text-align", "value": "right"]
+        ]])
+        renderer.send(String(data: data, encoding: .utf8)!)
+        pump(1, until: { editor.font?.familyName == "Times" })
+        layout.ensureLayout(for: container)
+        XCTAssertTrue(view.formEditor?.textView === editor)
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 4, length: 3))
+        XCTAssertEqual(editor.font?.familyName, "Times")
+        XCTAssertEqual(editor.alignment, .right)
+        let updatedFirst = layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        let updatedSecond = layout.lineFragmentRect(forGlyphAt: 4, effectiveRange: nil)
+        XCTAssertEqual(updatedSecond.minY - updatedFirst.minY, 30, accuracy: 0.01)
+        try assertBaseline()
+        let replacement = try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": [["op": "prop", "id": 10, "name": "value", "value": "new\nlines"]]])
+        renderer.send(String(data: replacement, encoding: .utf8)!)
+        pump(1, until: { editor.string == "new\nlines" })
+        layout.ensureLayout(for: container)
+        let replacedFirst = layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        let replacedSecond = layout.lineFragmentRect(forGlyphAt: 4, effectiveRange: nil)
+        XCTAssertEqual(replacedSecond.minY - replacedFirst.minY, 30, accuracy: 0.01)
+        editor.insertText(" added", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(editor.string, "new\nlines added")
+        XCTAssertTrue(editor.undoManager?.canUndo == true)
+        editor.undoManager?.undo()
+        XCTAssertEqual(editor.string, "new\nlines")
+        XCTAssertEqual(editor.font?.familyName, "Times")
+        XCTAssertEqual((editor.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight, 30)
+        for readOnly in [true, false] {
+            let change = try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": [["op": readOnly ? "attr" : "rattr", "id": 10, "name": "readonly", "value": ""]]])
+            renderer.send(String(data: change, encoding: .utf8)!)
+            pump(1, until: { editor.isEditable == !readOnly })
+            XCTAssertEqual(editor.isEditable, !readOnly)
+            XCTAssertTrue(window.firstResponder === editor)
+        }
+    }
+
+    func testTextareaBaselinesMatchRasterAcrossFonts() throws {
+        for fontCSS in ["16px/normal system-ui", "600 15px/1.35 ui-rounded,-apple-system", "italic 20px/32px serif", "12px/10px monospace"] {
+            let (renderer, window, _) = make([
+                ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "width:250px;height:150px;font:\(fontCSS)"]]],
+                ["op": "ins", "parent": 7, "id": 10],
+                ["op": "prop", "id": 10, "name": "value", "value": "one\ntwo"]
+            ])
+            defer { renderer.destroy(); window.orderOut(nil) }
+            click(renderer, 10)
+            let view = renderer.view as! WidgetDocumentView
+            pump(2, until: { view.formEditor?.textView != nil })
+            let editor = try XCTUnwrap(view.formEditor?.textView)
+            let font = try XCTUnwrap(editor.font)
+            let layout = try XCTUnwrap(editor.layoutManager)
+            layout.ensureLayout(for: try XCTUnwrap(editor.textContainer))
+            let fragments = try XCTUnwrap(renderer.document?.textFragments(maxWidth: 400))
+            let first = try XCTUnwrap(fragments.first { $0.text == "one" })
+            let second = try XCTUnwrap(fragments.first { $0.text == "two" })
+            let expected = first.frame.maxY - (-font.descender).rounded() - font.leading.rounded()
+            let actual = editor.convert(.zero, to: view).y + layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil).minY + layout.location(forGlyphAt: 0).y
+            XCTAssertEqual(actual, expected, accuracy: 0.5, fontCSS)
+            let firstLine = layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+            let secondLine = layout.lineFragmentRect(forGlyphAt: 4, effectiveRange: nil)
+            XCTAssertEqual(secondLine.minY - firstLine.minY, second.frame.minY - first.frame.minY, accuracy: 0.5, fontCSS)
+        }
+    }
+
     func testEditorClipDoesNotInterceptButtonsOutsideTheTextField() throws {
         let (renderer, window, _) = make([
             ["op": "el", "id": 30, "tag": "div", "attrs": [["style", "height:180px;overflow:auto"]]],
