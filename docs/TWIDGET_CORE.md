@@ -43,6 +43,21 @@ the core paints every frame.
 
 The renderer is not thread-safe: one widget's calls must not overlap.
 
+## Platforms
+
+Each platform's backend is in `platform/`, and the C ABI that Apple and the web drive is
+`include/twidget_litehtml.h`:
+
+| Platform | Backend | What the build produces |
+|---|---|---|
+| iOS, macOS | `apple/`: CoreText, CoreGraphics, ImageIO behind the C ABI | `libtwidget_litehtml.a`, merged into one archive by `tools/build-apple.sh` |
+| Android | `android/`: fonts, text and images from Kotlin over JNI | `libtwidget_litehtml.so` |
+| Web | `web/`: canvas text metrics and images from the page, behind the C ABI | `twidget_litehtml.js` and `.wasm` |
+| Windows | `windows/`: DirectWrite, WIC and Direct2D, canvas included | `twidget::d2d`, which a host paints with |
+
+The adapters that plug a renderer into a host's own interface stay with the host: widget-sandbox's
+desktop core, its demos, and Telegram's clients.
+
 ## Building
 
 ```sh
@@ -51,15 +66,17 @@ cmake --build build
 ctest --test-dir build
 ```
 
-The build produces `twidget_litehtml` (the fork and its gumbo) and `twidget::core`, and with
-`TWIDGET_BUILD_TESTS` (on when twidget is the top-level project) the checks in
-`Tests/TwidgetCoreTests`. TwidgetCore is C++20. Apple builds through `Package.swift` and does not
-use TwidgetCore yet.
+The build produces `twidget::litehtml` (the fork and its gumbo), `twidget::core` and the platform's
+backend; Android and Emscripten builds go through their toolchain files. With `TWIDGET_BUILD_TESTS`
+(on when twidget is the top-level project) it also builds the checks in `Tests/TwidgetCoreTests`,
+and on macOS the CoreGraphics tests and `twidget-core-run`, which turns a message log into a PNG.
+TwidgetCore is C++20. Apple's SwiftPM build does not use TwidgetCore yet.
 
 ## Not yet here
 
-- **The platform glue** still lives in widget-sandbox: the CoreGraphics backend and C ABI for Apple,
-  the JNI backend for Android, the wasm bindings for the web. The Direct2D backend and the Windows
-  Composition player live in a Windows spike.
+- **The Composition player for Windows** (layers on `Windows.UI.Composition`) lives in a Windows
+  spike with its host adapter.
+- **Only MSVC has built this tree.** The Apple, Android and Emscripten targets are carried over from
+  widget-sandbox, where they built, but have not been built here.
 - **`TW_LITEHTML_TWIDGET`** keeps the code that needs the fork apart from code that also builds
   against upstream litehtml. With the fork the only litehtml, it can go.
