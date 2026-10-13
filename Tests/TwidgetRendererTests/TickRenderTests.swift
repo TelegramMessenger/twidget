@@ -45,13 +45,31 @@ final class TickRenderTests: XCTestCase {
         renderer.noteUserInput()
         XCTAssertFalse(renderer.rendersAtTick)
         let atInput = renderer.layoutCount
-        let raster = renderer.isPreparingTiles
+        let rastering = renderer.isPreparingTiles
         send(renderer, [["op": "attr", "id": 5, "name": "title", "value": "b"]])
-        if raster {
-            pump(0.05, until: { renderer.layoutCount > atInput })
+        if rastering {
+            XCTAssertEqual(renderer.heldOpBatches, 1)
+            pump(1, until: { !renderer.isPreparingTiles })
+            XCTAssertEqual(renderer.heldOpBatches, 0)
             XCTAssertGreaterThan(renderer.layoutCount, atInput)
         } else {
-            XCTAssertEqual(renderer.layoutCount, atInput + 1, "preparing=\(renderer.isPreparingTiles) tick=\(renderer.rendersAtTick) env=\(renderer.environmentRefreshes) held=\(renderer.heldOpBatches) layouts=\(renderer.layoutCount)")
+            XCTAssertEqual(renderer.heldOpBatches, 0)
+            XCTAssertGreaterThan(renderer.layoutCount, atInput)
+        }
+        renderer.noteUserInput()
+        let midRaster = renderer.layoutCount
+        var sentDuringRaster = false
+        pump(2, until: {
+            if renderer.isPreparingTiles && !sentDuringRaster {
+                sentDuringRaster = true
+                send(renderer, [["op": "attr", "id": 5, "name": "title", "value": "c"]])
+                XCTAssertEqual(renderer.heldOpBatches, 1)
+            }
+            return sentDuringRaster && !renderer.isPreparingTiles
+        })
+        if sentDuringRaster {
+            XCTAssertEqual(renderer.heldOpBatches, 0)
+            XCTAssertGreaterThan(renderer.layoutCount, midRaster)
         }
         renderer.destroy()
     }

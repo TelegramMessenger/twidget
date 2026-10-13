@@ -477,21 +477,22 @@ public final class LiteHTMLWidgetRenderer {
         }
         let start = CACurrentMediaTime()
         flushingHeld = true
-        while !held.isEmpty && !documentView.preparing && !throttled {
+        let answering = answersInput
+        while !held.isEmpty && !documentView.preparing && (answering || !throttled) {
             var ops: [WidgetOp] = []
             while case .ops(let batch)? = held.first {
                 ops += batch
                 held.removeFirst()
             }
             if !ops.isEmpty {
-                deferringRender = LiteHTMLWidgetRenderer.coalescesHeld
+                deferringRender = LiteHTMLWidgetRenderer.coalescesHeld && !answering
                 applyMeasured(ops, held: true)
                 deferringRender = false
             } else if case .json(let json)? = held.first {
                 held.removeFirst()
                 send(json)
             }
-            if CACurrentMediaTime() - start > 0.004 {
+            if !answering && CACurrentMediaTime() - start > 0.004 {
                 break
             }
         }
@@ -515,11 +516,16 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public func send(_ json: String) {
+        if !destroyed, !flushingHeld, !documentView.preparing, !held.isEmpty, answersInput {
+            held.append(.json(json))
+            prepared()
+            return
+        }
         if (documentView.preparing || (!held.isEmpty && !flushingHeld)) && !destroyed {
             held.append(.json(json))
             return
         }
-        if !destroyed, !flushingHeld, throttled, json.hasPrefix("{\"type\":\"ops\"") {
+        if !destroyed, !flushingHeld, !answersInput, throttled, json.hasPrefix("{\"type\":\"ops\"") {
             holdThrottled(.json(json))
             return
         }
@@ -577,11 +583,16 @@ public final class LiteHTMLWidgetRenderer {
         guard !destroyed else {
             return
         }
+        if !documentView.preparing, !held.isEmpty, answersInput {
+            held.append(.ops(ops))
+            prepared()
+            return
+        }
         if documentView.preparing || !held.isEmpty {
             held.append(.ops(ops))
             return
         }
-        if throttled {
+        if throttled && !answersInput {
             holdThrottled(.ops(ops))
             return
         }
@@ -691,6 +702,10 @@ public final class LiteHTMLWidgetRenderer {
 
     var isPreparingTiles: Bool {
         return documentView.preparing
+    }
+
+    var answersInput: Bool {
+        return CACurrentMediaTime() - lastInputAt <= LiteHTMLWidgetRenderer.inputImmediateWindow
     }
 
     func noteUserInput() {
