@@ -78,7 +78,7 @@ namespace litehtml
         {_text_emphasis_position_, style_text_emphasis_position_strings},
     };
 
-    std::map<string_id, std::vector<string_id>> shorthands = {
+    std::map<string_id, std::vector<string_id>>& shorthands = *new std::map<string_id, std::vector<string_id>>{
         {_font_,            {_font_style_, _font_variant_, _font_weight_, _font_size_, _line_height_, _font_family_}  },
 
         {_background_,
