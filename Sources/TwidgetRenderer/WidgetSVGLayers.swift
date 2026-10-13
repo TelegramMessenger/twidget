@@ -140,7 +140,7 @@ final class WidgetSVGLayers {
 
     func reset() {
         for layer in containers.values {
-            layer.removeFromSuperlayer()
+            layer.twRemoveFromSuperlayer()
         }
         containers.removeAll()
         frames.removeAll()
@@ -158,7 +158,7 @@ final class WidgetSVGLayers {
         if self.host !== host {
             self.host = host
             for layer in containers.values {
-                host?.addSublayer(layer)
+                host?.twAddSublayer(layer)
             }
         }
         for id in ids {
@@ -173,7 +173,7 @@ final class WidgetSVGLayers {
                 refused.insert(id)
                 ids.remove(id)
                 frames[id] = nil
-                containers.removeValue(forKey: id)?.removeFromSuperlayer()
+                containers.removeValue(forKey: id)?.twRemoveFromSuperlayer()
                 dropped = true
                 continue
             }
@@ -183,7 +183,7 @@ final class WidgetSVGLayers {
             } else {
                 container = CALayer()
                 container.masksToBounds = true
-                host?.addSublayer(container)
+                host?.twAddSublayer(container)
                 containers[id] = container
             }
             frames[id] = shapes.frame
@@ -201,7 +201,7 @@ final class WidgetSVGLayers {
         let origin = shapes.frame.origin
         var shift = CGAffineTransform(translationX: -origin.x, y: -origin.y)
         var layers: [CALayer] = []
-        var existing = container.sublayers ?? []
+        var existing = container.twSublayers ?? []
         func take<T: CALayer>(_ type: T.Type) -> T {
             if let index = existing.firstIndex(where: { Swift.type(of: $0) == type }) {
                 return existing.remove(at: index) as! T
@@ -251,8 +251,9 @@ final class WidgetSVGLayers {
                 layers.append(layer)
             }
         }
-        if container.sublayers?.count != layers.count || zip(container.sublayers ?? [], layers).contains(where: { $0 !== $1 }) {
-            container.sublayers = layers
+        let current = container.twSublayers ?? []
+        if current.count != layers.count || zip(current, layers).contains(where: { $0 !== $1 }) {
+            WidgetLayerCommit.perform { container.sublayers = layers }
         }
     }
 }
