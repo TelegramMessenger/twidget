@@ -64,6 +64,26 @@ final class ScriptedReachTests: XCTestCase {
         renderer.destroy()
     }
 
+    func testPromotedTransformReceivesClicksAtItsVisiblePosition() throws {
+        let renderer = self.renderer(css: "")
+        defer { renderer.destroy() }
+        XCTAssertEqual(renderer.compositedCount, 1)
+        move(renderer, x: 200, y: 20)
+        renderer.listened = ["pointerdown", "pointerup", "click"]
+        var events: [[String: Any]] = []
+        renderer.onMessage = { message in
+            if let payload = try? JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any], let event = payload["ev"] as? [String: Any] {
+                events.append(event)
+            }
+        }
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window!.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        renderer.handleMouseDown(CGPoint(x: 210, y: 30), event: event)
+        renderer.handleMouseUp(CGPoint(x: 210, y: 30), event: event)
+        for type in ["pointerdown", "pointerup", "click"] {
+            XCTAssertEqual(events.last { $0["type"] as? String == type }?["targetId"] as? Int, 4, type)
+        }
+    }
+
     func testMoveUnderALaterSiblingRendersAgain() {
         let renderer = self.renderer(css: "")
         XCTAssertEqual(renderer.compositedCount, 1)

@@ -2015,11 +2015,26 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)p
 {
+    return [self attribute:name atPoint:p withinAttribute:nil value:nil];
+}
+
+- (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)p withinAttribute:(NSString *)attribute value:(NSString *)value
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     if(!_doc || !_doc->root_render())
         return nil;
-    const lh::pixel_t x  = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    auto root = attribute && value ? [self renderItemLockedWithAttribute:attribute value:value] : _doc->root_render();
+    if(!root)
+        return nil;
+    lh::pixel_t x = static_cast<float>(p.x), y = static_cast<float>(p.y);
+    if(attribute && value)
+    {
+        const auto placement = root->get_placement();
+        const auto sticky = root->sticky_offset();
+        x -= placement.x - root->pos().x - sticky.x;
+        y -= placement.y - root->pos().y - sticky.y;
+    }
     const char*       key = name.UTF8String;
     static const lh::string_id pointerEvents = lh::raw_declaration_id(lh::_id("pointer-events"));
     const auto hittable = [](const std::shared_ptr<lh::render_item>& item) -> bool {
@@ -2040,10 +2055,10 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         }
         return true;
     };
-    lh::element::ptr hit = _doc->root_render()->get_element_by_point(x, y, x, y, hittable);
+    lh::element::ptr hit = root->get_element_by_point(x, y, static_cast<float>(p.x), static_cast<float>(p.y), hittable);
     if(auto svg = std::dynamic_pointer_cast<lh::el_svg>(hit))
     {
-        if(lh::element::ptr inner = svg->element_at(svg->get_placement(), x, y))
+        if(lh::element::ptr inner = svg->element_at(svg->get_placement(), static_cast<float>(p.x), static_cast<float>(p.y)))
             hit = inner;
     }
     for(lh::element::ptr el = hit; el; el = el->parent())

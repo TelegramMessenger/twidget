@@ -62,4 +62,25 @@ static NSString *Hit(NSString *html, CGPoint point)
     XCTAssertEqualObjects(Hit(html, CGPointMake(231.8, 185.4)), @"handle");
 }
 
+- (void)testScopedHitSkipsTheCompositedTransformAndKeepsChildTransforms
+{
+    NSString *html = @"<style>body{margin:0}</style><div style='padding:30px 10px'><div data-id='panel' style='width:160px;height:100px;transform:translate(100px,200px)'><div data-id='button' style='width:60px;height:30px;transform:translateX(20px)'>button</div></div></div>";
+    LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+    [document layoutWithMaxWidth:420 preferredWidth:420];
+    XCTAssertEqualObjects([document attribute:@"data-id" atPoint:CGPointMake(40, 40) withinAttribute:@"data-id" value:@"panel"], @"button");
+    XCTAssertEqualObjects([document attribute:@"data-id" atPoint:CGPointMake(15, 40) withinAttribute:@"data-id" value:@"panel"], @"panel");
+    XCTAssertNil([document attribute:@"data-id" atPoint:CGPointMake(40, 40) withinAttribute:@"data-id" value:@"missing"]);
+}
+
+- (void)testScopedHitsRespectPointerEventsVisibilityAndClipPaths
+{
+    NSString *html = @"<style>body{margin:0}</style><div data-id='panel' style='width:100px;height:100px;transform:translateX(200px);pointer-events:none;clip-path:circle(40px at 50px 50px)'><div data-id='button' style='width:100px;height:50px;pointer-events:auto'>button</div></div><div data-id='hidden' style='visibility:hidden;width:100px;height:100px'></div>";
+    LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+    [document layoutWithMaxWidth:420 preferredWidth:420];
+    XCTAssertEqualObjects([document attribute:@"data-id" atPoint:CGPointMake(50, 30) withinAttribute:@"data-id" value:@"panel"], @"button");
+    XCTAssertNil([document attribute:@"data-id" atPoint:CGPointMake(50, 70) withinAttribute:@"data-id" value:@"panel"]);
+    XCTAssertNil([document attribute:@"data-id" atPoint:CGPointMake(1, 1) withinAttribute:@"data-id" value:@"panel"]);
+    XCTAssertNil([document attribute:@"data-id" atPoint:CGPointMake(50, 150) withinAttribute:@"data-id" value:@"hidden"]);
+}
+
 @end

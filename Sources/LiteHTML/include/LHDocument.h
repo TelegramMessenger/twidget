@@ -131,6 +131,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)clipOfElementWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect *)rect radii:(CGFloat *)radii NS_SWIFT_NAME(clipOfElement(attribute:value:rect:radii:));
 - (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values NS_SWIFT_NAME(paintOrder(attribute:values:));
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point NS_SWIFT_NAME(attribute(_:at:));
+- (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point withinAttribute:(nullable NSString *)attribute value:(nullable NSString *)value NS_SWIFT_NAME(attribute(_:at:withinAttribute:value:));
 - (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name NS_SWIFT_NAME(bounds(byAttribute:));
 @property (readonly, copy) NSString *layoutSignature;
 - (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name NS_SWIFT_NAME(parents(byAttribute:));

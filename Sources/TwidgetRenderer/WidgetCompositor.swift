@@ -1723,24 +1723,25 @@ final class WidgetCompositor {
         return cacheable ? hasher.finalize() : nil
     }
 
-    func documentPoint(for point: CGPoint) -> CGPoint? {
-        for item in promoted.values {
+    func hitCandidates(for point: CGPoint) -> [(id: Int, point: CGPoint)] {
+        var result: [(id: Int, point: CGPoint)] = []
+        for (id, item) in promoted.sorted(by: { WidgetCompositor.order($0.value.layer) > WidgetCompositor.order($1.value.layer) }) {
             let shown = item.layer.presentation() ?? item.layer
             if shown.opacity <= 0 {
                 continue
             }
-            if let clip = clipOf.first(where: { promoted[$0.key]?.layer === item.layer })?.value, !clip.rect.contains(point) {
+            if let clip = clipOf[id], !clip.rect.contains(point) {
                 continue
             }
             let local = shown.convert(point, from: host?.presentation() ?? host)
             if item.layer.bounds.contains(local) {
                 let mapped = CGPoint(x: item.ink.minX + local.x, y: item.ink.minY + local.y)
                 if item.box.contains(mapped) {
-                    return mapped
+                    result.append((id, mapped))
                 }
             }
         }
-        return nil
+        return result
     }
 
     func draw(into ctx: CGContext) {
