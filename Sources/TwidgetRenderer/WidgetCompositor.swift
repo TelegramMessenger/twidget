@@ -1461,7 +1461,12 @@ final class WidgetCompositor {
         return layer.twSublayers?.contains { $0.backgroundFilters?.isEmpty == false || $0.filters?.isEmpty == false } == true
     }
 
+    static let skipsUnchangedOrder = ProcessInfo.processInfo.environment["TW_ORDER_ALWAYS"] == nil
+
     static func setOrder(_ layer: CALayer, _ value: CGFloat) {
+        if skipsUnchangedOrder, (layer.value(forKey: orderKey) as? CGFloat) == value {
+            return
+        }
         layer.setValue(value, forKey: orderKey)
         let flat = layer.superlayer?.twSublayers?.contains { ($0.value(forKey: orderKey) as? CGFloat) != nil && flattens($0) } ?? false
         layer.zPosition = flat || flattens(layer) ? 0 : value
