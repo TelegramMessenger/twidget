@@ -281,7 +281,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         set {
             guard isOnExecutor() else {
-                return schedule { [weak self] in self?.preparesOffscreen = newValue }
+                return scheduleUrgent { [weak self] in self?.preparesOffscreen = newValue }
             }
             if preparesOffscreenValue != newValue {
                 preparesOffscreenValue = newValue
@@ -335,6 +335,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func rasterFinished() {
+        if documentView.detached {
+            reportSize()
+        }
         prepared()
         if renderDeferred {
             renderDeferred = false
@@ -1340,6 +1343,8 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
+    private var reportedHeight = 0.0
+
     private func reportSize() {
         guard let document = document else {
             return
@@ -1351,13 +1356,19 @@ public final class LiteHTMLWidgetRenderer {
             "innerWidth": Double(width),
             "innerHeight": Double(documentView.size.height),
             "dpr": Double(documentView.scale),
+            "painted": documentView.paintedForReport,
         ]
-        let key = "\(message["height"]!)|\(message["width"]!)|\(message["innerHeight"]!)|\(message["dpr"]!)"
+        let key = "\(message["height"]!)|\(message["width"]!)|\(message["innerHeight"]!)|\(message["dpr"]!)|\(message["painted"]!)"
+        let height = Double(ceil(document.size.height))
+        if documentView.detached, height > reportedHeight, !documentView.tilesDrawn {
+            return
+        }
         if key != lastSize {
             if sizeTransition {
                 message["transition"] = MagicMoveStage.timing
             }
             lastSize = key
+            reportedHeight = height
             post(message)
         }
     }
@@ -1767,7 +1778,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         set {
             guard isOnExecutor() else {
-                return schedule { [weak self] in self?.keepsTilesWhileHidden = newValue }
+                return scheduleUrgent { [weak self] in self?.keepsTilesWhileHidden = newValue }
             }
             if keepsTilesValue != newValue {
                 keepsTilesValue = newValue
@@ -1807,7 +1818,7 @@ public final class LiteHTMLWidgetRenderer {
 
     public func setVisible(_ visible: Bool) {
         guard isOnExecutor() else {
-            return schedule { [weak self] in self?.setVisible(visible) }
+            return scheduleUrgent { [weak self] in self?.setVisible(visible) }
         }
         hostVisible = visible
         updateAnimationClock()
@@ -2516,8 +2527,28 @@ final class WidgetDocumentView: NSView {
         }
     }
 
+    private(set) var everPainted = false
+
+    var tilesDrawn: Bool {
+        guard let document = document, !tiles.isEmpty, !tilesTrimmed else {
+            return false
+        }
+        let covered = tiles.reduce(CGFloat(0)) { max($0, $1.rect.maxY) }
+        return covered >= ceil(document.size.height) - 0.5 && !tiles.contains(where: { $0.layer.contents == nil })
+    }
+
+    var paintedForReport: Bool {
+        if !detached || everPainted {
+            return true
+        }
+        if document != nil, !tiles.isEmpty, !tiles.contains(where: { $0.layer.contents == nil }) {
+            everPainted = true
+        }
+        return everPainted
+    }
+
     private func flushDetached() {
-        guard detached, document != nil, !tilesTrimmed, windowState.inWindow || owner?.preparesOffscreen == true else {
+        guard detached, document != nil, !tilesTrimmed, windowState.inWindow || owner?.preparesOffscreen == true || !everPainted else {
             return
         }
         if preparing {
@@ -2935,8 +2966,10 @@ final class WidgetDocumentView: NSView {
 
     private(set) var tilesTrimmed = false
 
+    static let trimsDetached = ProcessInfo.processInfo.environment["TW_TRIM_DETACHED"] != nil
+
     func trimTiles() {
-        guard !tilesTrimmed else {
+        guard !tilesTrimmed, !detached || WidgetDocumentView.trimsDetached else {
             return
         }
         tilesTrimmed = true
@@ -3221,7 +3254,11 @@ final class WidgetDocumentView: NSView {
         guard let owner = owner else {
             return
         }
-        owner.onExecutor { [weak owner] in
+        if owner.isOnExecutor() {
+            block(owner)
+            return
+        }
+        owner.scheduleUrgent { [weak owner] in
             if let owner = owner {
                 block(owner)
             }
