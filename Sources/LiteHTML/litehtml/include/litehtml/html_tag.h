@@ -54,7 +54,7 @@ namespace litehtml
             style                                       st;
             style                                       st_base;
             bool                                        has_base = false;
-            std::vector<std::pair<css_selector::ptr, bool>> used;
+            used_selector::vector                       used;
             css_properties                              css;
             std::vector<css_properties>                 kids;
             std::map<std::string, int>                  regions;

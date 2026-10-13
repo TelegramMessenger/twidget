@@ -253,12 +253,20 @@ namespace litehtml
                 return false;
         }
         const int parent_id = parent() ? parent()->css().get_shared_id() : 0;
-        auto      others    = [this]() {
-            string_map result = m_attrs;
-            result.erase("class");
-            return result;
+        auto same_others = [this](const string_map& others) {
+            auto a = others.begin();
+            for(auto b = m_attrs.begin(); b != m_attrs.end(); ++b)
+            {
+                if(b->first == "class")
+                    continue;
+                if(a == others.end() || a->first != b->first || a->second != b->second)
+                    return false;
+                ++a;
+            }
+            return a == others.end();
         };
-        flip_state* saved = nullptr;
+        flip_state* saved  = nullptr;
+        flip_state* target = nullptr;
         for(auto& state : m_flips)
         {
             if(state.value == from)
@@ -274,46 +282,64 @@ namespace litehtml
         }
         if(saved->epoch != 0 && saved->epoch != epoch)
             saved->regions.clear();
-        saved->epoch       = epoch;
-        saved->parent_id   = parent_id;
-        saved->others      = others();
-        saved->str_classes = m_str_classes;
-        saved->classes     = m_classes;
-        saved->st          = m_style;
-        saved->st_base     = m_style_base;
-        saved->has_base    = m_has_style_base;
-        saved->used.clear();
-        for(const auto& us : m_used_styles)
-            saved->used.emplace_back(us->m_selector, us->m_used);
-        saved->css = m_css;
-        saved->kids.clear();
-        for(const auto& child : m_children)
-            saved->kids.push_back(child->css());
-        const std::string from_value = saved->value;
+        saved->epoch     = epoch;
+        saved->parent_id = parent_id;
+        if(!same_others(saved->others))
+        {
+            saved->others = m_attrs;
+            saved->others.erase("class");
+        }
         for(auto& state : m_flips)
         {
-            if(state.value != to || state.epoch != epoch || state.parent_id != parent_id || state.kids.size() != m_children.size())
+            if(state.value != to || state.epoch != epoch || state.parent_id != parent_id || state.kids.size() != m_children.size() ||
+               !state.regions.count(from) || !same_others(state.others))
                 continue;
-            auto known = state.regions.find(from_value);
-            if(known == state.regions.end() || state.others != saved->others)
-                return false;
-            *region         = known->second;
-            m_attrs["class"] = to;
-            m_str_classes   = state.str_classes;
-            m_classes       = state.classes;
-            m_style         = state.st;
-            m_style_base    = state.st_base;
-            m_has_style_base = state.has_base;
-            m_used_styles.clear();
-            for(const auto& used : state.used)
-                m_used_styles.push_back(std::make_unique<used_selector>(used.first, used.second));
-            m_css  = state.css;
-            size_t i = 0;
-            for(const auto& child : m_children)
-                child->css_w() = state.kids[i++];
-            return true;
+            target = &state;
         }
-        return false;
+        auto store = [this](flip_state& state, bool move) {
+            if(move)
+            {
+                std::swap(state.str_classes, m_str_classes);
+                std::swap(state.classes, m_classes);
+                std::swap(state.st, m_style);
+                std::swap(state.st_base, m_style_base);
+                std::swap(state.used, m_used_styles);
+                std::swap(state.css, m_css);
+                state.has_base = m_has_style_base;
+                state.kids.resize(m_children.size());
+                size_t i = 0;
+                for(const auto& child : m_children)
+                    std::swap(state.kids[i++], child->css_w());
+                return;
+            }
+            state.str_classes = m_str_classes;
+            state.classes     = m_classes;
+            state.st          = m_style;
+            state.st_base     = m_style_base;
+            state.has_base    = m_has_style_base;
+            state.used.clear();
+            for(const auto& us : m_used_styles)
+            {
+                auto copy    = std::make_unique<used_selector>(us->m_selector, us->m_used);
+                state.used.push_back(std::move(copy));
+            }
+            state.css = m_css;
+            state.kids.clear();
+            for(const auto& child : m_children)
+                state.kids.push_back(child->css());
+        };
+        if(!target)
+        {
+            store(*saved, false);
+            return false;
+        }
+        *region = target->regions[from];
+        store(*saved, true);
+        const bool has_base = target->has_base;
+        store(*target, true);
+        m_has_style_base = has_base;
+        m_attrs["class"] = to;
+        return true;
     }
 
     void litehtml::html_tag::note_flip(const std::string& from, const std::string& to, int region)
