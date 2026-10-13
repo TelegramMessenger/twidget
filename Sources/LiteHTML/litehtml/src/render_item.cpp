@@ -1040,12 +1040,15 @@ void litehtml::render_item::calc_document_size(litehtml::size& sz, pixel_t x /*=
                 {
                     el->calc_document_size(child_size, 0_px, 0_px);
                 }
+                position padding_box = m_pos;
+                padding_box         += m_padding;
+                size scroll_size(child_size.width + m_padding.left + m_padding.right, child_size.height + m_padding.top + m_padding.bottom);
                 if(!m_scroll_view)
                 {
-                    m_scroll_view = std::make_shared<scroll_view>(m_pos, child_size);
+                    m_scroll_view = std::make_shared<scroll_view>(padding_box, scroll_size);
                 } else
                 {
-                    m_scroll_view->set(m_pos, child_size);
+                    m_scroll_view->set(padding_box, scroll_size);
                 }
             } else
             {
@@ -1426,15 +1429,14 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
             position clip_box    = m_pos;
             clip_box.x          += x;
             clip_box.y          += y;
+            clip_box            += m_padding;
             position border_box  = clip_box;
-            border_box          += m_padding;
             border_box          += m_borders;
 
             border_radiuses bdr_radius =
                 src_el()->css().get_borders().radius.calc_percents(border_box.width, border_box.height);
 
             bdr_radius -= m_borders;
-            bdr_radius -= m_padding;
 
             doc->container()->set_clip(clip_box, bdr_radius);
         }

@@ -142,3 +142,34 @@ namespace
 }
 
 @end
+
+@interface OverflowPaddingTests : XCTestCase
+@end
+
+@implementation OverflowPaddingTests
+
+- (void)testOverflowClipsAtThePaddingBox
+{
+    Bitmap b = Draw(@"<div style='width:60px;height:40px;padding:0 0 20px 10px;overflow:hidden'><div style='height:100px;background:#f00'></div></div>", 80, 70);
+    XCTAssertEqual(b.at(30, 30)[0], 255);
+    XCTAssertEqual(b.at(30, 50)[0], 255);
+    XCTAssertEqual(b.at(30, 50)[3], 255);
+    XCTAssertEqual(b.at(30, 65)[3], 0);
+    XCTAssertEqual(b.at(5, 30)[3], 0);
+}
+
+- (void)testScrollersReportThePaddingBoxAndPaddedContent
+{
+    LHDocument* doc = [[LHDocument alloc] initWithHTML:@"<!doctype html><style>body{margin:0}</style><div data-t=s style='height:100px;padding:0 16px 30px;overflow-y:auto'><div style='height:200px'></div></div>" css:nil];
+    [doc layoutWithMaxWidth:200 preferredWidth:200];
+    NSDictionary* info = [doc scrollersByAttribute:@"data-t"][@"s"];
+    XCTAssertNotNil(info);
+    NSRect viewport = [info[@"viewport"] rectValue];
+    NSSize content  = [info[@"content"] sizeValue];
+    XCTAssertEqualWithAccuracy(viewport.size.height, 130, 0.01);
+    XCTAssertEqualWithAccuracy(viewport.size.width, 200, 0.01);
+    XCTAssertEqualWithAccuracy(viewport.origin.x, 0, 0.01);
+    XCTAssertEqualWithAccuracy(content.height, 230, 0.01);
+}
+
+@end

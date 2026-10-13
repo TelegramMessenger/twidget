@@ -1351,14 +1351,13 @@ static std::string MasterWithCSS(NSString *css)
         const char            *v    = ri->src_el()->get_attr(key);
         if(view && v && ri->is_visible() && ri->src_el()->css().get_display() != lh::display_inline)
         {
-            const lh::position placement = ri->get_placement();
+            lh::position       placement = ri->get_placement();
+            placement                   += ri->get_paddings();
             const auto        &css       = ri->src_el()->css();
             lh::position       border    = placement;
-            border += ri->get_paddings();
             border += ri->get_borders();
             lh::border_radiuses radius = css.get_borders().radius.calc_percents(border.width, border.height);
             radius -= ri->get_borders();
-            radius -= ri->get_paddings();
             const lh::size &content = view->get_scroll_size();
             result[@(v)] = @{
                 @"viewport": [NSValue valueWithRect:NSMakeRect(placement.x.value(), placement.y.value(), placement.width.value(), placement.height.value())],
