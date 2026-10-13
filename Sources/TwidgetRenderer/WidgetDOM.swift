@@ -17,6 +17,8 @@ final class WidgetNode {
     var cache: [UInt8]?
     var cacheEpoch = 0
     var attributes: [(name: String, value: String)] = []
+    var formValue: String?
+    var formChecked: Bool?
     var declarations: [(name: String, value: String, important: Bool)] = []
     var children: [WidgetNode] = []
     weak var parent: WidgetNode?
@@ -696,6 +698,7 @@ final class WidgetDOM {
             setCSS(node, (op["text"] as? String) ?? "")
         case "prop":
             if let name = op["name"] as? String {
+                applyFormProperty(node, name, op["value"])
                 onProperty?(node, name, op["value"] ?? NSNull())
             }
         case "call":
@@ -709,6 +712,79 @@ final class WidgetDOM {
         default:
             break
         }
+    }
+
+    private func applyFormProperty(_ node: WidgetNode, _ name: String, _ value: Any?) {
+        let tag = node.tag.lowercased()
+        var changed = false
+        if name == "value", tag == "input" || tag == "textarea" {
+            let text: String
+            if let string = value as? String {
+                text = WidgetDOM.clip(string)
+            } else if let number = value as? NSNumber {
+                text = number.stringValue
+            } else {
+                text = ""
+            }
+            if node.formValue != text {
+                node.formValue = text
+                changed = true
+            }
+        } else if tag == "select", name == "value" || name == "selectedIndex" {
+            var options: [WidgetNode] = []
+            func collect(_ parent: WidgetNode) {
+                for child in parent.children where !child.isText {
+                    if child.tag.lowercased() == "option" {
+                        options.append(child)
+                    } else if child.tag.lowercased() == "optgroup" {
+                        collect(child)
+                    }
+                }
+            }
+            collect(node)
+            var chosen: Int?
+            if name == "selectedIndex" {
+                chosen = (value as? NSNumber)?.intValue
+            } else {
+                let wanted = (value as? String) ?? (value as? NSNumber)?.stringValue ?? ""
+                chosen = options.firstIndex { ($0.attribute("value") ?? WidgetDOM.textContent($0)) == wanted }
+            }
+            for (index, option) in options.enumerated() {
+                let selected = index == chosen
+                if option.formChecked != selected {
+                    option.formChecked = selected
+                    option.cache = nil
+                    changed = true
+                }
+            }
+        } else if name == "selected", tag == "option" {
+            let selected = (value as? NSNumber)?.boolValue ?? false
+            if node.formChecked != selected {
+                node.formChecked = selected
+                changed = true
+            }
+        } else if name == "checked", tag == "input" {
+            let checked = (value as? NSNumber)?.boolValue ?? false
+            if node.formChecked != checked {
+                node.formChecked = checked
+                changed = true
+            }
+        }
+        guard changed else {
+            return
+        }
+        node.cache = nil
+        WidgetDOM.bumpRevision()
+        if patchLog.valid, isAttached(node) {
+            patchLog.valid = false
+        }
+    }
+
+    static func textContent(_ node: WidgetNode) -> String {
+        if node.isText {
+            return node.text
+        }
+        return node.children.map(textContent).joined().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static let unpatchableTextParents: Set<String> = ["style", "script", "textarea", "title", "noscript", "xmp", "iframe", "noembed", "noframes", "plaintext", "pre", "listing", "template"]
@@ -891,8 +967,15 @@ final class WidgetDOM {
         if !node.svg && WidgetDOM.voidElements.contains(node.tag) {
             return
         }
-        for child in node.children {
-            write(child, into: &out, theme: theme, overrides: overrides, canvasSource: canvasSource)
+        if !node.svg, let value = node.formValue, node.tag.lowercased() == "textarea" {
+            if value.hasPrefix("\n") {
+                out.append(10)
+            }
+            WidgetDOM.escape(value, into: &out, attribute: false)
+        } else {
+            for child in node.children {
+                write(child, into: &out, theme: theme, overrides: overrides, canvasSource: canvasSource)
+            }
         }
         out.append(contentsOf: [60, 47])
         WidgetDOM.append(node.tag, to: &out)
@@ -913,12 +996,31 @@ final class WidgetDOM {
             WidgetDOM.escape(source, into: &out, attribute: true)
             put("\"")
         }
+        let formInput = !node.svg && node.tag.lowercased() == "input"
+        let formOption = !node.svg && node.tag.lowercased() == "option"
         for attribute in node.attributes where (canvas == nil || attribute.name.lowercased() != "src") && WidgetNames.isAttribute(attribute.name) {
+            if formInput, (node.formValue != nil && attribute.name.lowercased() == "value") || (node.formChecked != nil && attribute.name.lowercased() == "checked") {
+                continue
+            }
+            if formOption, node.formChecked != nil, attribute.name.lowercased() == "selected" {
+                continue
+            }
             put(" ")
             put(attribute.name)
             put("=\"")
             WidgetDOM.escape(attribute.value, into: &out, attribute: true)
             put("\"")
+        }
+        if formInput, let value = node.formValue {
+            put(" value=\"")
+            WidgetDOM.escape(value, into: &out, attribute: true)
+            put("\"")
+        }
+        if formInput, node.formChecked == true {
+            put(" checked")
+        }
+        if formOption, node.formChecked == true {
+            put(" selected")
         }
         if !node.declarations.isEmpty || animated != nil {
             put(" style=\"")
