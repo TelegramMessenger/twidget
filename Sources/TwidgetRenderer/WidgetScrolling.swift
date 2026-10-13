@@ -52,7 +52,7 @@ final class WidgetScrollLayer {
         clip.name = "tw.scroll"
         content.anchorPoint = .zero
         content.name = "tw.scroll.content"
-        clip.addSublayer(content)
+        clip.twAddSublayer(content)
         thumb.name = "tw.scroll.thumb"
         thumb.backgroundColor = CGColor(gray: 0, alpha: 0.45)
         thumb.borderColor = CGColor(gray: 1, alpha: 0.3)
@@ -60,7 +60,7 @@ final class WidgetScrollLayer {
         thumb.cornerRadius = 3
         thumb.opacity = 0
         thumb.actions = ["position": NSNull(), "bounds": NSNull(), "opacity": NSNull()]
-        clip.addSublayer(thumb)
+        clip.twAddSublayer(thumb)
         apply(geometry)
     }
 
@@ -171,7 +171,7 @@ final class WidgetScrollLayer {
         let width = max(geometry.viewport.width, geometry.content.width), height = max(geometry.viewport.height, geometry.content.height)
         let rows = max(1, Int(ceil(height / size.height)))
         for index in Array(tiles.keys) where !rect(index).intersects(keep) {
-            tiles[index]?.layer.removeFromSuperlayer()
+            tiles[index]?.layer.twRemoveFromSuperlayer()
             tiles[index] = nil
         }
         let wanted = ahead.intersection(CGRect(x: 0, y: 0, width: width, height: height))
@@ -230,7 +230,7 @@ final class WidgetScrollLayer {
         layer.frame = rect
         layer.contentsGravity = .topLeft
         layer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull()]
-        content.addSublayer(layer)
+        content.twAddSublayer(layer)
         return layer
     }
 
@@ -278,13 +278,13 @@ final class WidgetScrolling {
         }
         self.host = host
         for layer in layers.values {
-            host?.addSublayer(layer.clip)
+            host?.twAddSublayer(layer.clip)
         }
     }
 
     func reset() {
         for layer in layers.values {
-            layer.clip.removeFromSuperlayer()
+            layer.clip.twRemoveFromSuperlayer()
         }
         layers.removeAll()
     }
@@ -338,14 +338,14 @@ final class WidgetScrolling {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (id, layer) in layers where wanted[id] == nil {
-            layer.clip.removeFromSuperlayer()
+            layer.clip.twRemoveFromSuperlayer()
             layers[id] = nil
         }
         for (id, geometry) in wanted {
             let layer = layers[id] ?? WidgetScrollLayer(id: id, geometry: geometry)
             if layers[id] == nil {
                 layers[id] = layer
-                host?.addSublayer(layer.clip)
+                host?.twAddSublayer(layer.clip)
             }
             layer.apply(geometry)
             layer.update(signature: WidgetCompositor.contentSignature(id, dom: dom, box: CGRect(origin: .zero, size: geometry.content), scale: scale, styleKey: styleKey) ?? 0)

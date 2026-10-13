@@ -404,10 +404,10 @@ final class WidgetEffectLayers {
             maskReach = max(maxReach, effects.reach) + 4
             layer.filters = WidgetEffectLayers.makeFilters(effects.filter)
             for shadow in shadowLayers {
-                shadow.removeFromSuperlayer()
+                shadow.twRemoveFromSuperlayer()
             }
             shadowLayers = effects.shadows.reversed().map { _ in makeShadowLayer(bounds: layer.bounds) }
-            backdropLayer?.removeFromSuperlayer()
+            backdropLayer?.twRemoveFromSuperlayer()
             backdropLayer = nil
             backdropSteps = backdrop
             if !backdrop.isEmpty {
@@ -424,7 +424,7 @@ final class WidgetEffectLayers {
             }
             var index: UInt32 = 0
             for shadow in shadowLayers {
-                layer.insertSublayer(shadow, at: index)
+                layer.twInsertSublayer(shadow, at: index)
                 index += 1
             }
             if needsContentLayer {
@@ -436,10 +436,10 @@ final class WidgetEffectLayers {
                 }
                 content?.frame = layer.bounds
                 if content?.superlayer !== layer {
-                    layer.insertSublayer(content!, at: index)
+                    layer.twInsertSublayer(content!, at: index)
                 }
             } else {
-                content?.removeFromSuperlayer()
+                content?.twRemoveFromSuperlayer()
                 content = nil
             }
         }
@@ -705,12 +705,12 @@ final class WidgetEffectLayers {
         layer.filters = nil
         layer.shadowOpacity = 0
         for shadow in shadowLayers {
-            shadow.removeFromSuperlayer()
+            shadow.twRemoveFromSuperlayer()
         }
         shadowLayers = []
-        backdropLayer?.removeFromSuperlayer()
+        backdropLayer?.twRemoveFromSuperlayer()
         backdropLayer = nil
-        content?.removeFromSuperlayer()
+        content?.twRemoveFromSuperlayer()
         content = nil
         structure = []
         backdropSteps = []

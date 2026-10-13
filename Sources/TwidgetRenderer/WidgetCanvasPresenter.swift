@@ -28,7 +28,7 @@ final class WidgetCanvasPresenter {
         layer.name = "twidget-canvas"
         container.actions = layer.actions
         container.name = "twidget-canvas-clip"
-        container.addSublayer(layer)
+        container.twAddSublayer(layer)
     }
 
     func place(_ frame: CGRect, clip: (rect: CGRect, radius: CGFloat, corners: CACornerMask)?) {
@@ -54,7 +54,7 @@ final class WidgetCanvasPresenter {
     }
 
     func remove() {
-        container.removeFromSuperlayer()
+        container.twRemoveFromSuperlayer()
         layer.contents = nil
         surfaces = []
         shown = nil

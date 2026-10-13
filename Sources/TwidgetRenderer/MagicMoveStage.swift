@@ -278,7 +278,7 @@ public final class MagicMoveStage {
         CATransaction.setDisableActions(true)
         leaving = leaving.filter { item in
             if item.finished(at: now) {
-                item.layer.removeFromSuperlayer()
+                item.layer.twRemoveFromSuperlayer()
                 return false
             }
             return true
@@ -291,7 +291,7 @@ public final class MagicMoveStage {
             case let .move(key, from, to, previous) where dissolving:
                 let presented = (previousFlights[key] ?? recent[key]).flatMap { presentedSnapshot($0, at: now, scale: scale) }
                 if let item = makeLeave(presented ?? previous?.placed(at: from) ?? to.placed(at: from), scale: scale, now: now, dissolve: true) {
-                    host.addSublayer(item.layer)
+                    host.twAddSublayer(item.layer)
                     leaving.append(item)
                 }
                 if let flight = makeEnter(to, scale: scale, now: now, dissolve: true) {
@@ -317,16 +317,16 @@ public final class MagicMoveStage {
                 }
             case let .leave(snapshot):
                 if let item = makeLeave(snapshot, scale: scale, now: now, dissolve: dissolving) {
-                    host.addSublayer(item.layer)
+                    host.twAddSublayer(item.layer)
                     leaving.append(item)
                 }
             }
         }
         for flight in previousFlights.values {
-            flight.container.removeFromSuperlayer()
+            flight.container.twRemoveFromSuperlayer()
         }
         for (key, flight) in built {
-            host.addSublayer(flight.container)
+            host.twAddSublayer(flight.container)
             flights[key] = flight
             order.append(key)
         }
@@ -354,10 +354,10 @@ public final class MagicMoveStage {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for flight in flights.values {
-            flight.container.removeFromSuperlayer()
+            flight.container.twRemoveFromSuperlayer()
         }
         for item in leaving {
-            item.layer.removeFromSuperlayer()
+            item.layer.twRemoveFromSuperlayer()
         }
         CATransaction.commit()
         flights.removeAll()
@@ -502,13 +502,13 @@ public final class MagicMoveStage {
             let origin = MagicMoveGeometry.contentOrigin(ink: outgoing.ink, border: outgoing.border, overhang: overhang)
             let piece = Piece(layer: MagicMoveStage.contentLayer(outgoing, origin: origin, scale: scale), snapshot: outgoing, origin: origin, fade: .fadeOut, begin: now)
             MagicMoveStage.apply(piece)
-            container.addSublayer(piece.layer)
+            container.twAddSublayer(piece.layer)
             pieces.append(piece)
         }
         let origin = MagicMoveGeometry.contentOrigin(ink: to.ink, border: to.border, overhang: overhang)
         let incoming = Piece(layer: MagicMoveStage.contentLayer(to, origin: origin, scale: scale), snapshot: to, origin: origin, fade: pieces.isEmpty ? nil : .fadeIn, begin: now)
         MagicMoveStage.apply(incoming)
-        container.addSublayer(incoming.layer)
+        container.twAddSublayer(incoming.layer)
         pieces.append(incoming)
         let insets = (from: outgoingOverhang, to: incomingOverhang)
         if let mask = mask {
@@ -549,7 +549,7 @@ public final class MagicMoveStage {
                 layer.bounds = CGRect(origin: .zero, size: target.size)
                 MagicMoveStage.animateInsets(layer, motion: motion, insets: insets)
             }
-            container.insertSublayer(fillLayer, at: 0)
+            container.twInsertSublayer(fillLayer, at: 0)
             container.mask = maskLayer
         } else if clips {
             container.masksToBounds = true
@@ -576,7 +576,7 @@ public final class MagicMoveStage {
         let origin = MagicMoveGeometry.contentOrigin(ink: snapshot.ink, border: snapshot.border, overhang: overhang)
         let piece = Piece(layer: MagicMoveStage.contentLayer(snapshot, origin: origin, scale: scale), snapshot: snapshot, origin: origin, fade: dissolve ? .dissolveIn : .enter, begin: now)
         MagicMoveStage.apply(piece)
-        container.addSublayer(piece.layer)
+        container.twAddSublayer(piece.layer)
         let motion = MagicMoveMotion(from: snapshot.border, to: snapshot.border, begin: now, spring: MagicMoveStage.spring)
         if dissolve {
             return Flight(container: container, motion: motion, overhang: overhang, clips: false, corners: (snapshot.corners, snapshot.corners), scale: (1, 1), pieces: [piece])

@@ -460,7 +460,7 @@ final class WidgetCompositor {
         }
         let container = clipContainer(clip, host: host)
         for (id, item) in members {
-            container.addSublayer(item.layer)
+            container.twAddSublayer(item.layer)
             item.layer.position = CGPoint(x: item.box.minX + item.origin.x - clip.rect.minX, y: item.box.minY + item.origin.y - clip.rect.minY)
             WidgetCompositor.setOrder(container, min(WidgetCompositor.order(container) == 0 ? WidgetCompositor.order(item.layer) : WidgetCompositor.order(container), WidgetCompositor.order(item.layer)))
             clipOf[id] = clip
@@ -536,23 +536,23 @@ final class WidgetCompositor {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for container in containers.values {
-            host?.addSublayer(container)
+            host?.twAddSublayer(container)
         }
         for item in promoted.values where item.layer.superlayer == nil || item.layer.superlayer === previous {
-            host?.addSublayer(item.layer)
+            host?.twAddSublayer(item.layer)
         }
         CATransaction.commit()
     }
 
     func reset() {
         for item in promoted.values {
-            item.effects?.backdropLayer?.removeFromSuperlayer()
-            item.layer.removeFromSuperlayer()
+            item.effects?.backdropLayer?.twRemoveFromSuperlayer()
+            item.layer.twRemoveFromSuperlayer()
         }
         promoted.removeAll()
         driven.removeAll()
         for container in containers.values {
-            container.removeFromSuperlayer()
+            container.twRemoveFromSuperlayer()
         }
         containers.removeAll()
     }
@@ -1244,8 +1244,8 @@ final class WidgetCompositor {
         }
         for (id, item) in promoted where wanted[id] == nil {
             removeEffectAnimations(id)
-            item.effects?.backdropLayer?.removeFromSuperlayer()
-            item.layer.removeFromSuperlayer()
+            item.effects?.backdropLayer?.twRemoveFromSuperlayer()
+            item.layer.twRemoveFromSuperlayer()
             promoted[id] = nil
         }
         document.setPaintExclusions(Set(wanted.keys.map { String($0) }).union(extraExclusions.map { String($0) }), attribute: WidgetDOM.idAttribute)
@@ -1270,8 +1270,8 @@ final class WidgetCompositor {
             guard let image = document.copyImageOfElement(attribute: WidgetDOM.idAttribute, value: String(id), scale: WidgetCompositor.rasterScale(scale, want.maxScale), inkBounds: &ink, borderBox: &border, radii: &radii, bareShadows: owns) else {
                 if let old = promoted[id] {
                     removeEffectAnimations(id)
-                    old.effects?.backdropLayer?.removeFromSuperlayer()
-                    old.layer.removeFromSuperlayer()
+                    old.effects?.backdropLayer?.twRemoveFromSuperlayer()
+                    old.layer.twRemoveFromSuperlayer()
                 }
                 promoted[id] = nil
                 continue
@@ -1340,20 +1340,20 @@ final class WidgetCompositor {
             let anchor = CGPoint(x: item.box.minX + item.origin.x, y: item.box.minY + item.origin.y)
             if let parent = parents[id] {
                 if item.layer.superlayer !== parent.layer {
-                    parent.layer.addSublayer(item.layer)
+                    parent.layer.twAddSublayer(item.layer)
                 }
                 item.layer.position = CGPoint(x: anchor.x - parent.ink.minX, y: anchor.y - parent.ink.minY)
             } else if let clip = clips[id], containedClips.contains(clip) {
                 let container = clipContainer(clip, host: host)
                 usedContainers.insert(ObjectIdentifier(container))
                 if item.layer.superlayer !== container {
-                    container.addSublayer(item.layer)
+                    container.twAddSublayer(item.layer)
                 }
                 item.layer.position = CGPoint(x: anchor.x - clip.rect.minX, y: anchor.y - clip.rect.minY)
                 WidgetCompositor.setOrder(container, min(WidgetCompositor.order(container) == 0 ? WidgetCompositor.order(item.layer) : WidgetCompositor.order(container), WidgetCompositor.order(item.layer)))
             } else {
                 if item.layer.superlayer !== host {
-                    host.addSublayer(item.layer)
+                    host.twAddSublayer(item.layer)
                 }
                 item.layer.position = anchor
             }
@@ -1363,17 +1363,17 @@ final class WidgetCompositor {
                 continue
             }
             guard let parent = item.layer.superlayer else {
-                backdrop.removeFromSuperlayer()
+                backdrop.twRemoveFromSuperlayer()
                 continue
             }
             if backdrop.superlayer !== parent {
-                parent.insertSublayer(backdrop, below: item.layer)
+                parent.twInsertSublayer(backdrop, below: item.layer)
             }
             backdrop.frame = item.layer.convert(effects.box, to: parent)
             WidgetCompositor.setOrder(backdrop, WidgetCompositor.order(item.layer) - 1e-7)
         }
         for (key, container) in containers where !usedContainers.contains(ObjectIdentifier(container)) {
-            container.removeFromSuperlayer()
+            container.twRemoveFromSuperlayer()
             containers[key] = nil
         }
         clipOf = clips.filter { entry in promoted[entry.key].map { $0.layer.superlayer !== host } ?? false }
@@ -1427,7 +1427,7 @@ final class WidgetCompositor {
             return
         }
         for child in children.enumerated().sorted(by: { (order($0.element), $0.offset) < (order($1.element), $1.offset) }).map({ $0.element }) {
-            parent.addSublayer(child)
+            parent.twAddSublayer(child)
         }
     }
 
@@ -1497,7 +1497,7 @@ final class WidgetCompositor {
             mask.path = WidgetCompositor.roundedPath(CGRect(origin: .zero, size: clip.rect.size), clip.radii)
             container.mask = mask
         }
-        host.addSublayer(container)
+        host.twAddSublayer(container)
         containers[key] = container
         return container
     }

@@ -258,7 +258,7 @@ public final class LiteHTMLWidgetRenderer {
             surfaceLayout?(token, .zero, 1, false)
         }
         placedSurfaces.removeAll()
-        surfaceContainer?.removeFromSuperlayer()
+        surfaceContainer?.twRemoveFromSuperlayer()
         surfaceContainer = nil
         clock?.stop()
         clock = nil
@@ -1560,7 +1560,7 @@ public final class LiteHTMLWidgetRenderer {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (token, layer) in placedSurfaces where rects[token] == nil {
-            layer.removeFromSuperlayer()
+            layer.twRemoveFromSuperlayer()
             placedSurfaces[token] = nil
             surfaceLayout?(token, .zero, scale, false)
         }
@@ -1576,7 +1576,7 @@ public final class LiteHTMLWidgetRenderer {
                 surfaceContainer = container
             }
             if container.superlayer !== documentView.contentLayer {
-                documentView.contentLayer?.addSublayer(container)
+                documentView.contentLayer?.twAddSublayer(container)
             }
             container.frame = CGRect(origin: .zero, size: documentView.size)
             container.isHidden = !shown
@@ -1584,7 +1584,7 @@ public final class LiteHTMLWidgetRenderer {
                 var layer = placedSurfaces[token]
                 if layer == nil, let made = surfaceLayer?(token) {
                     made.zPosition = 0
-                    container.addSublayer(made)
+                    container.twAddSublayer(made)
                     placedSurfaces[token] = made
                     layer = made
                 }
@@ -1598,7 +1598,7 @@ public final class LiteHTMLWidgetRenderer {
                 surfaceLayout?(token, rect.size, scale, active)
             }
         } else {
-            surfaceContainer?.removeFromSuperlayer()
+            surfaceContainer?.twRemoveFromSuperlayer()
         }
         CATransaction.commit()
     }
@@ -2263,7 +2263,7 @@ final class WidgetDocumentView: NSView {
         content.frame = CGRect(origin: .zero, size: frame.size)
         content.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         content.actions = ["bounds": NSNull(), "position": NSNull(), "contents": NSNull(), "sublayers": NSNull()]
-        layer?.addSublayer(content)
+        layer?.twAddSublayer(content)
     }
 
     private let content = CALayer()
@@ -2725,7 +2725,7 @@ final class WidgetDocumentView: NSView {
     }
 
     func insertOverlay(_ overlay: CALayer) {
-        rootLayer?.insertSublayer(overlay, at: UInt32(tiles.count))
+        rootLayer?.twInsertSublayer(overlay, at: UInt32(tiles.count))
     }
     static var layerTiles = ProcessInfo.processInfo.environment["TW_SURFACE_TILES"] == nil && ProcessInfo.processInfo.environment["TW_VERIFY"] == nil
 
@@ -3104,7 +3104,7 @@ final class WidgetDocumentView: NSView {
     private func removeTiles() {
         syncInvalidations += 1
         for tile in tiles {
-            tile.layer.removeFromSuperlayer()
+            tile.layer.twRemoveFromSuperlayer()
         }
         tiles.removeAll()
     }
@@ -3152,7 +3152,7 @@ final class WidgetDocumentView: NSView {
         let columns = max(1, Int(ceil(size.width / tileSize)))
         let count = columns * Int(ceil(height / tileSize))
         while tiles.count > count {
-            tiles.removeLast().layer.removeFromSuperlayer()
+            tiles.removeLast().layer.twRemoveFromSuperlayer()
         }
         while tiles.count < count {
             let tile = Tile()
@@ -3162,7 +3162,7 @@ final class WidgetDocumentView: NSView {
             }
             tile.layer.anchorPoint = .zero
             tile.layer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull()]
-            layer.insertSublayer(tile.layer, at: UInt32(tiles.count))
+            layer.twInsertSublayer(tile.layer, at: UInt32(tiles.count))
             tiles.append(tile)
         }
         document.colorSpace = space
@@ -3317,7 +3317,7 @@ final class WidgetDocumentView: NSView {
         let width = ceil((text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width) + 14
         badge.frame = CGRect(x: size.width - width - 6, y: 6, width: width, height: 17)
         if badge.superlayer == nil {
-            layer.addSublayer(badge)
+            layer.twAddSublayer(badge)
         }
     }
 
@@ -3476,6 +3476,9 @@ final class WidgetDocumentView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tracking = tracking {
+            if trackingAreas.contains(tracking) {
+                return
+            }
             removeTrackingArea(tracking)
         }
         let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
