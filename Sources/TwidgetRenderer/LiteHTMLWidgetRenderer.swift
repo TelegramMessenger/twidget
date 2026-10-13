@@ -174,7 +174,7 @@ public final class LiteHTMLWidgetRenderer {
 
     public init(theme: String, width: CGFloat) {
         self.theme = theme
-        documentView = WidgetDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300))
+        documentView = WidgetDocumentView.backingStore ? WidgetBackingStoreDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300)) : WidgetDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300))
         view = documentView
         documentView.owner = self
         dom.onViolation = { [weak self] detail in
@@ -2239,7 +2239,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 }
 
-final class WidgetDocumentView: NSView {
+class WidgetDocumentView: NSView {
     weak var owner: LiteHTMLWidgetRenderer?
     var document: LHDocument?
     private var tracking: NSTrackingArea?
@@ -2292,7 +2292,7 @@ final class WidgetDocumentView: NSView {
         }
     }
 
-    private let drawStatsLock = NSLock()
+    let drawStatsLock = NSLock()
     private var drawStats = (count: 0, total: 0.0, worst: 0.0)
     var drawMilliseconds: Double {
         drawStatsLock.lock()
@@ -2751,27 +2751,21 @@ final class WidgetDocumentView: NSView {
         return !WidgetDocumentView.backingStore
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard WidgetDocumentView.backingStore, let document = document, let ctx = NSGraphicsContext.current?.cgContext else {
-            return
-        }
-        let start = CACurrentMediaTime()
-        defer {
-            recordDraw((CACurrentMediaTime() - start) * 1000)
-        }
-        ctx.saveGState()
-        ctx.setAllowsFontSmoothing(false)
-        ctx.clear(dirtyRect)
-        document.draw(in: ctx, origin: .zero, clip: dirtyRect.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
-        ctx.restoreGState()
-    }
-
     static let asyncFullTiles = ProcessInfo.processInfo.environment["TW_ASYNC_FULL"] != nil
     static var asyncTiles = ProcessInfo.processInfo.environment["TW_SYNC_TILES"] == nil
     var asyncAllowed = false
     private var asyncDirty: [Int: CGRect] = [:]
-    private(set) var asyncTileJobs = 0
-    private(set) var asyncTilesInstalled = 0
+    private var asyncCounts = (jobs: 0, installed: 0)
+    var asyncTileJobs: Int {
+        drawStatsLock.lock()
+        defer { drawStatsLock.unlock() }
+        return asyncCounts.jobs
+    }
+    var asyncTilesInstalled: Int {
+        drawStatsLock.lock()
+        defer { drawStatsLock.unlock() }
+        return asyncCounts.installed
+    }
 
     private var canInvalidateAsync: Bool {
         return asyncAllowed && WidgetDocumentView.asyncTiles && WidgetDocumentView.layerTiles && !WidgetDocumentView.backingStore && windowState.inWindow && !tilesTrimmed && !tiles.isEmpty && tileScale == scale
@@ -2812,7 +2806,9 @@ final class WidgetDocumentView: NSView {
             return
         }
         preparing = true
-        asyncTileJobs += 1
+        drawStatsLock.lock()
+        asyncCounts.jobs += 1
+        drawStatsLock.unlock()
         let syncEpoch = syncInvalidations
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
@@ -2904,7 +2900,9 @@ final class WidgetDocumentView: NSView {
                             WidgetSurfacePool.shared.recycle(previous)
                         }
                         tile.prepared = true
-                        self.asyncTilesInstalled += 1
+                        self.drawStatsLock.lock()
+                        self.asyncCounts.installed += 1
+                        self.drawStatsLock.unlock()
                     }
                     CATransaction.commit()
                 }
@@ -3358,6 +3356,7 @@ final class WidgetDocumentView: NSView {
             state.key = window.isKeyWindow
             state.display = (window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
             state.colorSpace = window.colorSpace?.cgColorSpace
+
             if state.occlusionVisible {
                 occlusionTrusted = true
             }
@@ -3800,5 +3799,22 @@ final class WidgetFrameClock {
         if let link = link {
             CVDisplayLinkStop(link)
         }
+    }
+}
+
+final class WidgetBackingStoreDocumentView: WidgetDocumentView {
+    override func draw(_ dirtyRect: NSRect) {
+        guard let document = document, let ctx = NSGraphicsContext.current?.cgContext else {
+            return
+        }
+        let start = CACurrentMediaTime()
+        defer {
+            recordDraw((CACurrentMediaTime() - start) * 1000)
+        }
+        ctx.saveGState()
+        ctx.setAllowsFontSmoothing(false)
+        ctx.clear(dirtyRect)
+        document.draw(in: ctx, origin: .zero, clip: dirtyRect.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+        ctx.restoreGState()
     }
 }
