@@ -37,6 +37,22 @@ struct LHTextRun
     CGRect      frame;
 };
 
+struct LHShapeData
+{
+    CGPathRef                                      path = nullptr;
+    bool                                           fill = false;
+    CGFloat                                        fillColor[4] = {0, 0, 0, 0};
+    int                                            gradient = 0;
+    CGPoint                                        start = CGPointZero, end = CGPointZero;
+    std::vector<std::pair<CGFloat, std::array<CGFloat, 4>>> stops;
+    bool                                           evenOdd = false;
+    bool                                           stroke = false;
+    CGFloat                                        strokeColor[4] = {0, 0, 0, 0};
+    CGFloat                                        lineWidth = 1;
+    int                                            cap = 0, join = 0;
+    CGFloat                                        miter = 4;
+};
+
 struct LHDrawOp
 {
     CGRect   bounds;
@@ -65,6 +81,9 @@ class LHContainer : public litehtml::document_container
     void set_default_font_size(float px) { m_default_font_size = px; }
     void set_text_runs(std::vector<LHTextRun>* runs) { m_runs = runs; }
     void set_draw_ops(std::vector<LHDrawOp>* ops) { m_ops = ops; }
+    void set_shape_capture(std::vector<LHShapeData>* shapes) { m_shapes = shapes; m_shapes_bad = false; }
+    bool shape_capture_failed() const { return m_shapes_bad; }
+    void capture_shape(const litehtml::vector_path& path);
     void set_clip_culling(bool enabled) { m_clip_culling = enabled; }
     void set_painter(lhx::Painter* painter) { m_painter = painter; }
     void set_gpu_recorder(LHGPURecorder* recorder)
@@ -189,6 +208,8 @@ class LHContainer : public litehtml::document_container
     void for_each_tile(const litehtml::background_layer& layer, CGSize tile,
                        const std::function<void(CGRect tile)>& fn) const;
 
+    std::vector<LHShapeData>* m_shapes = nullptr;
+    bool                     m_shapes_bad = false;
     std::vector<Clip>        m_clips;
     std::vector<Group>       m_groups;
     struct Effect

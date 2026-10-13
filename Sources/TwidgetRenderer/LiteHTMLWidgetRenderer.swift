@@ -103,6 +103,7 @@ public final class LiteHTMLWidgetRenderer {
     private var displayList: LHDisplayList?
     private let animator = WidgetAnimator()
     private lazy var compositor = WidgetCompositor(host: documentView.contentLayer)
+    private let svgLayers = WidgetSVGLayers()
     let scrolling = WidgetScrolling()
     private var lastScrollExclusions: Set<Int> = []
     private lazy var magic: WidgetMagicMove = {
@@ -717,12 +718,13 @@ public final class LiteHTMLWidgetRenderer {
         animator.update(declarations: declarations, now: now)
         let sampled = animator.sample(now: now)
         let before = compositor.ids
-        var scrollersChanged = false
+        let svgAdded = svgLayers.observe(dom.takeSVGTouched())
+        var scrollersChanged = svgAdded
         if let document = document {
             compositor.attach(documentView.contentLayer)
-            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded.union(svgLayers.ids))
             scrolling.attach(documentView.contentLayer)
-            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale)
+            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded).union(svgLayers.ids), styleKey: compositor.styleKey, scale: documentView.scale) || svgAdded
             documentView.publishScrollRegions(scrolling.geometries.values.map { $0.viewport })
             statsLock.lock()
             publishedComposited = compositor.ids.count
@@ -1103,7 +1105,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         lastLayoutTheme = theme
         lastLayoutOverrides = overrides
-        let excluded = compositor.ids.union(magic.excluded)
+        let excluded = compositor.ids.union(magic.excluded).union(svgLayers.ids)
         let scrollExcluded = scrolling.promotedIDs
         let exclusionsChanged = excluded != lastExclusions || scrollExcluded != lastScrollExclusions
         lastExclusions = excluded
@@ -1172,7 +1174,7 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         defer { stage("report") }
-        if LiteHTMLWidgetRenderer.patchRegions, next.reusedPrevious, !exclusionsChanged, displayList != nil, documentView.document != nil, let regions = (next.reusedLayout ? next.patchDirtyRects : next.layoutDirtyRects)?.map({ $0.rectValue }) {
+        if LiteHTMLWidgetRenderer.patchRegions, next.reusedPrevious, !exclusionsChanged, displayList != nil, documentView.document != nil, let regions = (next.reusedLayout ? next.patchDirtyRects : next.layoutDirtyRects)?.map({ $0.rectValue }).filter({ !svgLayers.covers($0) }) {
             stage("diff-list")
             stageMilliseconds["regions", default: 0] += 1
             if listDebt.count + regions.count > 32 {
@@ -1194,7 +1196,7 @@ public final class LiteHTMLWidgetRenderer {
             listDebt.removeAll()
             stage("diff-list")
             if let previous = previousList, documentView.document != nil {
-                let rects = list.changedRects(since: previous).map { $0.rectValue } + debt
+                let rects = (list.changedRects(since: previous).map { $0.rectValue } + debt).filter { !svgLayers.covers($0) }
                 if !rects.isEmpty {
                     if LiteHTMLWidgetRenderer.dirtyLog {
                         print("DIRTY t=\(String(format: "%.3f", CACurrentMediaTime() - timeOrigin)) \(rects.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: " | "))")
@@ -1209,6 +1211,10 @@ public final class LiteHTMLWidgetRenderer {
             stage("diff")
         }
         document = next
+        if !svgLayers.ids.isEmpty, svgLayers.render(document: next, width: width, host: documentView.contentLayer, scale: documentView.scale) {
+            next.setPaintExclusions(Set(compositor.ids.union(magic.excluded).union(svgLayers.ids).map { String($0) }), attribute: WidgetDOM.idAttribute)
+            documentView.invalidate(nil)
+        }
         for url in retiredURLs {
             LHImages.forgetImage(withURL: url)
         }
@@ -1310,7 +1316,7 @@ public final class LiteHTMLWidgetRenderer {
         guard let document = document else {
             return
         }
-        document.setPaintExclusions(Set(compositor.ids.union(magic.excluded).map { String($0) }), attribute: WidgetDOM.idAttribute)
+        document.setPaintExclusions(Set(compositor.ids.union(magic.excluded).union(svgLayers.ids).map { String($0) }), attribute: WidgetDOM.idAttribute)
         documentView.invalidate(nil)
     }
 

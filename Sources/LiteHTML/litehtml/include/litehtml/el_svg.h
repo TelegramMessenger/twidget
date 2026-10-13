@@ -25,6 +25,8 @@ namespace litehtml
         void get_content_size(size& sz, pixel_t max_width) override;
         void draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                   const std::shared_ptr<render_item>& ri) override;
+        bool paint_shapes(uint_ptr hdc, const position& pos);
+        void view_group(const position& pos, float view[4], paint_group& group) const;
 
         std::shared_ptr<render_item> create_render_item(const std::shared_ptr<render_item>& parent_ri) override;
     };

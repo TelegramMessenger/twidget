@@ -1010,17 +1010,12 @@ namespace litehtml
         }
     }
 
-    void el_svg::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, const std::shared_ptr<render_item>& ri)
+    void el_svg::view_group(const position& pos, float view[4], paint_group& group) const
     {
-        html_tag::draw(hdc, x, y, clip, ri);
-        position pos  = ri->pos();
-        pos.x        += x;
-        pos.y        += y;
-        if(pos.width <= 0_px || pos.height <= 0_px || !pos.does_intersect(clip))
-        {
-            return;
-        }
-        float view[4] = {0, 0, pos.width.value(), pos.height.value()};
+        view[0] = 0;
+        view[1] = 0;
+        view[2] = pos.width.value();
+        view[3] = pos.height.value();
         bool  has_box = view_box(view);
         float sx      = pos.width.value() / view[2];
         float sy      = pos.height.value() / view[3];
@@ -1050,12 +1045,44 @@ namespace litehtml
             ty += (pos.height.value() - view[3] * s) * fy;
             sx = sy = s;
         }
+        group.matrix = {sx, 0, 0, sy, tx - view[0] * sx, ty - view[1] * sy};
+        group.bounds = position(pixel_t(view[0]), pixel_t(view[1]), pixel_t(view[2]), pixel_t(view[3]));
+    }
+
+    bool el_svg::paint_shapes(uint_ptr hdc, const position& pos)
+    {
+        if(pos.width <= 0_px || pos.height <= 0_px)
+            return false;
+        paint_group group;
+        float       view[4];
+        view_group(pos, view, group);
+        auto container = doc_ptr()->container();
+        container->begin_group(hdc, group);
+        svg_painter(container, hdc, view).draw_children(shared_from_this());
+        container->end_group(hdc);
+        return true;
+    }
+
+    void el_svg::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, const std::shared_ptr<render_item>& ri)
+    {
+        html_tag::draw(hdc, x, y, clip, ri);
+        position pos  = ri->pos();
+        pos.x        += x;
+        pos.y        += y;
+        if(pos.width <= 0_px || pos.height <= 0_px || !pos.does_intersect(clip))
+        {
+            return;
+        }
+        paint_group group;
+        float       view[4];
+        view_group(pos, view, group);
+        const float     sx        = group.matrix.a;
+        const float     sy        = group.matrix.d;
+        const float     tx        = group.matrix.tx + view[0] * sx;
+        const float     ty        = group.matrix.ty + view[1] * sy;
         auto            container = doc_ptr()->container();
         border_radiuses no_radius{};
         container->set_clip(pos, no_radius);
-        paint_group group;
-        group.matrix = {sx, 0, 0, sy, tx - view[0] * sx, ty - view[1] * sy};
-        group.bounds = position(pixel_t(view[0]), pixel_t(view[1]), pixel_t(view[2]), pixel_t(view[3]));
         auto paint = [&](uint_ptr target) {
             container->begin_group(target, group);
             svg_painter(container, target, view).draw_children(shared_from_this());

@@ -3092,11 +3092,76 @@ static CGPathRef CreateVectorPath(const lh::vector_path& path)
     return out;
 }
 
+void LHContainer::capture_shape(const lh::vector_path& path)
+{
+    if(!path.fill && !path.stroke)
+        return;
+    CGAffineTransform m = group_matrix();
+    bool dashed = false;
+    for(float v : path.dashes)
+        dashed = dashed || v > 0;
+    bool faded = false;
+    for(const auto& g : m_groups)
+        faded = faded || g.opacity < 1;
+    if(dashed || faded || !m_clips.empty() || !m_effects.empty() || m_hidden_depth > 0 || std::fabs(m.b) > 1e-9 || std::fabs(m.c) > 1e-9 ||
+       std::fabs(std::fabs(m.a) - std::fabs(m.d)) > 1e-6 || (path.fill && path.fill_gradient.type == 2))
+    {
+        m_shapes_bad = true;
+        return;
+    }
+    CGPathRef local = CreateVectorPath(path);
+    if(!local)
+        return;
+    LHShapeData shape;
+    shape.path    = CGPathCreateCopyByTransformingPath(local, &m);
+    CGPathRelease(local);
+    shape.evenOdd = path.evenodd;
+    auto rgba = [](const lh::web_color& c, CGFloat out[4]) {
+        out[0] = c.red / 255.0;
+        out[1] = c.green / 255.0;
+        out[2] = c.blue / 255.0;
+        out[3] = c.alpha / 255.0;
+    };
+    if(path.fill)
+    {
+        shape.fill = true;
+        rgba(path.fill_color, shape.fillColor);
+        if(path.fill_gradient.type == 1)
+        {
+            const auto& g  = path.fill_gradient;
+            shape.gradient = 1;
+            shape.start    = CGPointApplyAffineTransform(CGPointMake(g.x1, g.y1), m);
+            shape.end      = CGPointApplyAffineTransform(CGPointMake(g.x2, g.y2), m);
+            for(const auto& stop : g.stops)
+            {
+                std::array<CGFloat, 4> color;
+                rgba(stop.second, color.data());
+                shape.stops.emplace_back(stop.first, color);
+            }
+        }
+    }
+    if(path.stroke && path.stroke_color.alpha > 0 && path.stroke_width > 0)
+    {
+        shape.stroke    = true;
+        rgba(path.stroke_color, shape.strokeColor);
+        shape.lineWidth = path.stroke_width * std::fabs(m.a);
+        shape.cap       = path.line_cap;
+        shape.join      = path.line_join;
+        shape.miter     = path.miter_limit;
+    }
+    m_shapes->push_back(std::move(shape));
+}
+
 void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
 {
     if(m_painter)
     {
         m_painter->path(path);
+        return;
+    }
+    if(m_shapes)
+    {
+        capture_shape(path);
         return;
     }
     if(m_runs || (!path.fill && !path.stroke))

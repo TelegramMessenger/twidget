@@ -278,6 +278,7 @@ final class WidgetDOM {
     }
 
     private func setAttribute(_ node: WidgetNode, _ name: String, _ value: String) {
+        noteSVG(node)
         if !WidgetNames.isAttribute(name) {
             violation("attribute name")
             return
@@ -334,6 +335,31 @@ final class WidgetDOM {
         let key = ObjectIdentifier(parent)
         if patchLog.texts[key] == nil {
             patchLog.texts[key] = (parent, WidgetDOM.hasSoleText(parent))
+        }
+    }
+
+    var svgTouched: Set<Int> = []
+
+    func takeSVGTouched() -> Set<Int> {
+        let touched = svgTouched
+        svgTouched.removeAll()
+        return touched
+    }
+
+    private func noteSVG(_ node: WidgetNode) {
+        guard node.svg else {
+            return
+        }
+        var root: WidgetNode? = nil
+        var current: WidgetNode? = node
+        while let candidate = current, candidate.svg {
+            if candidate.tag.lowercased() == "svg" {
+                root = candidate
+            }
+            current = candidate.parent
+        }
+        if let root = root {
+            svgTouched.insert(root.id)
         }
     }
 

@@ -15,9 +15,32 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+@interface LHSVGShape : NSObject
+@property (nonatomic, readonly) CGPathRef path;
+@property (nonatomic, readonly, nullable) CGColorRef fillColor;
+@property (nonatomic, readonly, nullable) NSArray *gradientColors;
+@property (nonatomic, readonly, nullable) NSArray<NSNumber *> *gradientLocations;
+@property (nonatomic, readonly) CGPoint gradientStart;
+@property (nonatomic, readonly) CGPoint gradientEnd;
+@property (nonatomic, readonly) BOOL evenOdd;
+@property (nonatomic, readonly, nullable) CGColorRef strokeColor;
+@property (nonatomic, readonly) CGFloat lineWidth;
+@property (nonatomic, readonly) int lineCap;
+@property (nonatomic, readonly) int lineJoin;
+@property (nonatomic, readonly) CGFloat miterLimit;
+@end
+
+@interface LHSVGShapes : NSObject
+@property (nonatomic, readonly) CGRect frame;
+@property (nonatomic, readonly) NSArray<LHSVGShape *> *shapes;
+@end
+
 @interface LHDocument : NSObject
 
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css NS_DESIGNATED_INITIALIZER;
+/// Vector shapes of the <svg> whose `attribute` equals `value`, in document coordinates, or nil when the SVG uses
+/// anything beyond solid or axis linear-gradient fills and plain strokes.
+- (nullable LHSVGShapes *)svgShapesWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(svgShapes(attribute:value:maxWidth:));
 /// Builds the next frame of `previous`. When only inline `style` values and text changed, the previous
 /// document's tree is patched in place and handed over (much cheaper than parsing); `previous` then
 /// rebuilds itself from its own HTML if it is used again. Otherwise this parses `html` from scratch.

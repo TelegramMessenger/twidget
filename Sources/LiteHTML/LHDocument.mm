@@ -238,6 +238,49 @@ struct OpIdentityHash
 
 using OpIdentitySet = std::unordered_set<std::pair<uint64_t, size_t>, OpIdentityHash>;
 
+@implementation LHSVGShape
+{
+@public
+    CGPathRef  _path;
+    CGColorRef _fillColor;
+    CGColorRef _strokeColor;
+    NSArray   *_gradientColors;
+    NSArray   *_gradientLocations;
+    CGPoint    _gradientStart, _gradientEnd;
+    BOOL       _evenOdd;
+    CGFloat    _lineWidth, _miterLimit;
+    int        _lineCap, _lineJoin;
+}
+- (CGPathRef)path { return _path; }
+- (CGColorRef)fillColor { return _fillColor; }
+- (CGColorRef)strokeColor { return _strokeColor; }
+- (NSArray *)gradientColors { return _gradientColors; }
+- (NSArray<NSNumber *> *)gradientLocations { return _gradientLocations; }
+- (CGPoint)gradientStart { return _gradientStart; }
+- (CGPoint)gradientEnd { return _gradientEnd; }
+- (BOOL)evenOdd { return _evenOdd; }
+- (CGFloat)lineWidth { return _lineWidth; }
+- (CGFloat)miterLimit { return _miterLimit; }
+- (int)lineCap { return _lineCap; }
+- (int)lineJoin { return _lineJoin; }
+- (void)dealloc
+{
+    CGPathRelease(_path);
+    CGColorRelease(_fillColor);
+    CGColorRelease(_strokeColor);
+}
+@end
+
+@implementation LHSVGShapes
+{
+@public
+    CGRect              _frame;
+    NSArray<LHSVGShape *> *_shapes;
+}
+- (CGRect)frame { return _frame; }
+- (NSArray<LHSVGShape *> *)shapes { return _shapes; }
+@end
+
 @implementation LHDisplayList
 {
     std::vector<LHDrawOp>                    _ops;
@@ -2142,6 +2185,72 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     _container->set_gpu_recorder(nullptr);
     _container->set_draw_ops(nullptr);
     CGContextRelease(ctx);
+}
+
+- (LHSVGShapes *)svgShapesWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self layoutLockedWithMaxWidth:maxWidth];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri)
+        return nil;
+    auto svg = std::dynamic_pointer_cast<lh::el_svg>(ri->src_el());
+    if(!svg)
+        return nil;
+    lh::position pos = ri->get_placement();
+    pos.x += ri->get_margins().left + ri->get_borders().left + ri->get_paddings().left;
+    pos.y += ri->get_margins().top + ri->get_borders().top + ri->get_paddings().top;
+    pos.width  = ri->pos().width;
+    pos.height = ri->pos().height;
+    std::vector<LHDrawOp>    ops;
+    std::vector<LHShapeData> shapes;
+    _container->set_draw_ops(&ops);
+    _container->set_shape_capture(&shapes);
+    bool painted = svg->paint_shapes(0, pos);
+    bool failed  = _container->shape_capture_failed();
+    _container->set_shape_capture(nullptr);
+    _container->set_draw_ops(nullptr);
+    if(!painted || failed || !ops.empty())
+    {
+        for(auto& shape : shapes)
+            CGPathRelease(shape.path);
+        return nil;
+    }
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    NSMutableArray<LHSVGShape *> *list = [NSMutableArray arrayWithCapacity:shapes.size()];
+    for(auto& data : shapes)
+    {
+        LHSVGShape *shape   = [LHSVGShape new];
+        shape->_path        = data.path;
+        shape->_evenOdd     = data.evenOdd;
+        shape->_fillColor   = data.fill ? CGColorCreate(space, data.fillColor) : nullptr;
+        shape->_strokeColor = data.stroke ? CGColorCreate(space, data.strokeColor) : nullptr;
+        shape->_lineWidth   = data.lineWidth;
+        shape->_lineCap     = data.cap;
+        shape->_lineJoin    = data.join;
+        shape->_miterLimit  = data.miter;
+        if(data.gradient == 1)
+        {
+            NSMutableArray *colors = [NSMutableArray array];
+            NSMutableArray *locations = [NSMutableArray array];
+            for(const auto& stop : data.stops)
+            {
+                CGColorRef color = CGColorCreate(space, stop.second.data());
+                [colors addObject:(__bridge_transfer id)color];
+                [locations addObject:@(stop.first)];
+            }
+            shape->_gradientColors    = colors;
+            shape->_gradientLocations = locations;
+            shape->_gradientStart     = data.start;
+            shape->_gradientEnd       = data.end;
+        }
+        [list addObject:shape];
+    }
+    CGColorSpaceRelease(space);
+    LHSVGShapes *result = [LHSVGShapes new];
+    result->_frame  = CGRectMake(pos.x.value(), pos.y.value(), pos.width.value(), pos.height.value());
+    result->_shapes = list;
+    return result;
 }
 
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale
