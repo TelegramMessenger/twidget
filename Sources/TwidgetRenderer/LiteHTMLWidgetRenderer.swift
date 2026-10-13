@@ -619,6 +619,13 @@ public final class LiteHTMLWidgetRenderer {
             prepared()
             return
         }
+        if json == "{\"type\":\"requestFrame\"}", !destroyed, !frozen {
+            if !frameRequested {
+                frameRequested = true
+                startClock()
+            }
+            return
+        }
         if (documentView.preparing || (!held.isEmpty && !flushingHeld)) && !destroyed {
             if throttled && json.hasPrefix("{\"type\":\"ops\"") {
                 throttledUpdates += 1
@@ -1492,9 +1499,10 @@ public final class LiteHTMLWidgetRenderer {
 
     private static let scriptedProperties: Set<String> = ["transform", "opacity"]
     static let scriptedPromotion = ProcessInfo.processInfo.environment["TW_NO_SCRIPTED"] == nil
-    private var scriptedHits: [Int: (count: Int, at: CFTimeInterval)] = [:]
-    static let scriptedSameFrame: CFTimeInterval = 0.006
+    private var scriptedHits: [Int: (count: Int, batch: Int, at: CFTimeInterval)] = [:]
+    private var opsBatch = 0
     static let scriptedStreakGap: CFTimeInterval = 0.12
+    static let scriptedStreakBatches = 4
 
     private func scriptedOnly(_ ops: [WidgetOp]) -> Set<Int>? {
         let promoted = compositor.scriptedIDs
@@ -1512,6 +1520,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func noteScriptedTransforms(_ ops: [WidgetOp]) {
+        opsBatch += 1
         let now = CACurrentMediaTime()
         for op in ops {
             guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()) else {
@@ -1519,17 +1528,18 @@ public final class LiteHTMLWidgetRenderer {
             }
             let id = op.id
             let hit = scriptedHits[id]
-            if let hit = hit, now - hit.at < LiteHTMLWidgetRenderer.scriptedSameFrame {
+            if let hit = hit, hit.batch == opsBatch {
                 continue
             }
-            let count = hit.map { now - $0.at <= LiteHTMLWidgetRenderer.scriptedStreakGap ? $0.count + 1 : 1 } ?? 1
-            scriptedHits[id] = (count, now)
+            let continues = hit.map { opsBatch - $0.batch <= LiteHTMLWidgetRenderer.scriptedStreakBatches || now - $0.at <= LiteHTMLWidgetRenderer.scriptedStreakGap } ?? false
+            let count = continues ? hit!.count + 1 : 1
+            scriptedHits[id] = (count, opsBatch, now)
             if count >= 3 && LiteHTMLWidgetRenderer.scriptedPromotion && !compositor.scriptedCandidates.contains(id) && compositor.scriptedCandidates.count < WidgetCompositor.maxLayers {
                 compositor.scriptedCandidates.insert(id)
             }
         }
         if scriptedHits.count > 4096 {
-            scriptedHits = scriptedHits.filter { now - $0.value.at < 1 }
+            scriptedHits = scriptedHits.filter { opsBatch - $0.value.batch < 8 || now - $0.value.at < 1 }
         }
     }
 
