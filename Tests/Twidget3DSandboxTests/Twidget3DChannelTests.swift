@@ -72,7 +72,7 @@ final class Twidget3DChannelTests: XCTestCase {
         """)
         defer { host.destroy() }
         wait { host.diagnostics.loaded && logs(host).contains("made:40") }
-        XCTAssertEqual(channel.surfaceCount, Widget3DChannel.maxSurfaces)
+        XCTAssertEqual(channel.surfaceCount, channel.maxSurfaces)
         XCTAssertNil(renderer.surfaceLayer?("999"))
         XCTAssertNil(renderer.surfaceLayer?("0"))
         XCTAssertNil(renderer.surfaceLayer?("-1"))
@@ -103,7 +103,7 @@ final class Twidget3DChannelTests: XCTestCase {
         let index: [UInt16] = [0, 1, 60000]
         positions.withUnsafeBytes { p in
             index.withUnsafeBytes { i in
-                _ = surface.call("geometry", [.string("geometry"), .number(1), .number(7), .bytes(Widget3DBytes(pointer: p.baseAddress!, length: p.count, kind: .float32)), .none, .none, .number(0), .bytes(Widget3DBytes(pointer: i.baseAddress!, length: i.count, kind: .uint16))])
+                _ = surface.call("geometry", [.string("geometry"), .number(1), .number(7), .bytes(Widget3DBytes(borrowedPointer: p.baseAddress!, length: p.count, kind: .float32)), .none, .none, .number(0), .bytes(Widget3DBytes(borrowedPointer: i.baseAddress!, length: i.count, kind: .uint16))])
             }
         }
         XCTAssertEqual(diags, ["3d-rejected|geometry 7"])

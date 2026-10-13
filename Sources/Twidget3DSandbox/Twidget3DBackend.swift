@@ -52,7 +52,7 @@ public final class Twidget3DSurface: Widget3DSurface {
         case .uint32: kind = .uint32
         case .other: kind = .other
         }
-        return HTML3DArray(pointer: bytes.pointer, length: bytes.length, kind: kind)
+        return HTML3DArray(pointer: bytes.borrowedPointer, length: bytes.length, kind: kind)
     }
 
     public func call(_ op: String, _ args: [Widget3DArgument]) -> HostReturn {
