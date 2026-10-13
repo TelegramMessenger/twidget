@@ -732,7 +732,7 @@ public final class LiteHTMLWidgetRenderer {
         var scrollersChanged = svgAdded
         if let document = document {
             compositor.attach(documentView.contentLayer)
-            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? WidgetDocumentView.lastWindowSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
             scrolling.attach(documentView.contentLayer)
             scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale) || svgAdded
             documentView.publishScrollRegions(scrolling.geometries.values.map { $0.viewport })
@@ -3346,6 +3346,22 @@ class WidgetDocumentView: NSView {
 
     private var occlusionTrusted = false
 
+    private static let lastSpaceLock = NSLock()
+    private static var lastSpace: CGColorSpace?
+
+    static var lastWindowSpace: CGColorSpace? {
+        get {
+            lastSpaceLock.lock()
+            defer { lastSpaceLock.unlock() }
+            return lastSpace
+        }
+        set {
+            lastSpaceLock.lock()
+            lastSpace = newValue
+            lastSpaceLock.unlock()
+        }
+    }
+
     func captureWindowState() {
         var state = WindowState()
         if let window = window {
@@ -3356,6 +3372,9 @@ class WidgetDocumentView: NSView {
             state.key = window.isKeyWindow
             state.display = (window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
             state.colorSpace = window.colorSpace?.cgColorSpace
+            if let space = state.colorSpace {
+                WidgetDocumentView.lastWindowSpace = space
+            }
 
             if state.occlusionVisible {
                 occlusionTrusted = true

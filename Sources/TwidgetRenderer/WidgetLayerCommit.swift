@@ -92,11 +92,31 @@ enum WidgetSurfaceImage {
     }
     static let enabled = ProcessInfo.processInfo.environment["TW_IMAGE_SURFACES"] != "0"
 
-    static func contents(_ image: CGImage) -> Any {
-        guard enabled, !Thread.isMainThread, let surface = surface(image) else {
+    static let smallPixels = ProcessInfo.processInfo.environment["TW_IMAGE_SURFACE_MIN"].flatMap { Int($0) } ?? Int.max
+
+    static func contents(_ image: CGImage, display: CGColorSpace?) -> Any {
+        guard enabled, !Thread.isMainThread else {
             return image
         }
-        return surface
+        if image.width * image.height < smallPixels {
+            guard let display = display else {
+                return image
+            }
+            return converted(image, to: display) ?? image
+        }
+        return surface(image) ?? image
+    }
+
+    static func converted(_ image: CGImage, to space: CGColorSpace) -> CGImage? {
+        if let source = image.colorSpace, CFEqual(source, space) {
+            return image
+        }
+        guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            return nil
+        }
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
     }
 
     static func surface(_ image: CGImage) -> IOSurfaceRef? {

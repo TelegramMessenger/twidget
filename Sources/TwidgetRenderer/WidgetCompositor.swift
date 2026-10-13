@@ -949,6 +949,7 @@ final class WidgetCompositor {
     }
 
     func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
+        displaySpace = space
         guard let host = host else {
             reset()
             return
@@ -1296,8 +1297,9 @@ final class WidgetCompositor {
             if target !== layer {
                 layer.contents = nil
             }
-            target.contents = WidgetSurfaceImage.contents(image)
-            target.setValue(image, forKey: WidgetSurfaceImage.imageKey)
+            let installed = WidgetSurfaceImage.contents(image, display: displaySpace)
+            target.contents = installed
+            target.setValue(CFGetTypeID(installed as CFTypeRef) == CGImage.typeID ? nil : image, forKey: WidgetSurfaceImage.imageKey)
             target.contentsScale = WidgetCompositor.rasterScale(scale, want.maxScale)
             target.contentsGravity = .resize
             target.minificationFilter = want.maxScale > 1 && ProcessInfo.processInfo.environment["TW_LINEAR"] == nil ? .trilinear : .linear
@@ -1390,6 +1392,8 @@ final class WidgetCompositor {
         }
         CATransaction.commit()
     }
+
+    private var displaySpace: CGColorSpace?
 
     static let orderKey = "twOrder"
 
