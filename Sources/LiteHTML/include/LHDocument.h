@@ -93,6 +93,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:gpu:scale:));
 - (CGRect)boundsOfElementsMatching:(NSString *)selector NS_SWIFT_NAME(bounds(matching:));
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setPaintExclusions(_:attribute:));
+/// Elements drawn by layers instead of tiles, keyed by the paint-exclusion attribute: skipped when drawing tiles but drawn into snapshots.
+- (void)setLayerExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setLayerExclusions(_:attribute:));
+@property (readonly) NSSet<NSString *> *layerExclusions;
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setScrollContentExclusions(_:attribute:));
 - (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute NS_SWIFT_NAME(scrollers(byAttribute:));
 - (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(setScrollOffset(_:attribute:value:));

@@ -722,9 +722,9 @@ public final class LiteHTMLWidgetRenderer {
         var scrollersChanged = svgAdded
         if let document = document {
             compositor.attach(documentView.contentLayer)
-            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded.union(svgLayers.ids))
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
             scrolling.attach(documentView.contentLayer)
-            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded).union(svgLayers.ids), styleKey: compositor.styleKey, scale: documentView.scale) || svgAdded
+            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale) || svgAdded
             documentView.publishScrollRegions(scrolling.geometries.values.map { $0.viewport })
             statsLock.lock()
             publishedComposited = compositor.ids.count
@@ -1105,7 +1105,9 @@ public final class LiteHTMLWidgetRenderer {
         }
         lastLayoutTheme = theme
         lastLayoutOverrides = overrides
-        let excluded = compositor.ids.union(magic.excluded).union(svgLayers.ids)
+        let layered = magic.isActive ? Set<Int>() : svgLayers.ids
+        svgLayers.setSuspended(magic.isActive)
+        let excluded = compositor.ids.union(magic.excluded).union(layered)
         let scrollExcluded = scrolling.promotedIDs
         let exclusionsChanged = excluded != lastExclusions || scrollExcluded != lastScrollExclusions
         lastExclusions = excluded
@@ -1113,9 +1115,11 @@ public final class LiteHTMLWidgetRenderer {
         if !scrollExcluded.isEmpty {
             next.setScrollContentExclusions(Set(scrollExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
-        if !excluded.isEmpty {
-            next.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+        let painted = compositor.ids.union(magic.excluded)
+        if !painted.isEmpty {
+            next.setPaintExclusions(Set(painted.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
+        next.setLayerExclusions(Set(layered.map { String($0) }), attribute: WidgetDOM.idAttribute)
         stage("document")
         if next.reusedPrevious {
             stageMilliseconds["reused", default: 0] += 1
@@ -1137,9 +1141,10 @@ public final class LiteHTMLWidgetRenderer {
             fresh.controlsActive = controlsActive
             _ = fresh.layout(maxWidth: width, preferredWidth: width)
             let size = CGSize(width: width, height: max(1, ceil(max(next.size.height, fresh.size.height))))
-            if !excluded.isEmpty {
-                fresh.setPaintExclusions(Set(excluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
+            if !painted.isEmpty {
+                fresh.setPaintExclusions(Set(painted.map { String($0) }), attribute: WidgetDOM.idAttribute)
             }
+            fresh.setLayerExclusions(Set(layered.map { String($0) }), attribute: WidgetDOM.idAttribute)
             if !scrollExcluded.isEmpty {
                 fresh.setScrollContentExclusions(Set(scrollExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
             }
@@ -1211,8 +1216,8 @@ public final class LiteHTMLWidgetRenderer {
             stage("diff")
         }
         document = next
-        if !svgLayers.ids.isEmpty, svgLayers.render(document: next, width: width, host: documentView.contentLayer, scale: documentView.scale) {
-            next.setPaintExclusions(Set(compositor.ids.union(magic.excluded).union(svgLayers.ids).map { String($0) }), attribute: WidgetDOM.idAttribute)
+        if !svgLayers.ids.isEmpty, !magic.isActive, svgLayers.render(document: next, width: width, host: documentView.contentLayer, scale: documentView.scale, dom: dom, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs)) {
+            next.setLayerExclusions(Set(svgLayers.ids.map { String($0) }), attribute: WidgetDOM.idAttribute)
             documentView.invalidate(nil)
         }
         for url in retiredURLs {
@@ -1316,7 +1321,9 @@ public final class LiteHTMLWidgetRenderer {
         guard let document = document else {
             return
         }
-        document.setPaintExclusions(Set(compositor.ids.union(magic.excluded).union(svgLayers.ids).map { String($0) }), attribute: WidgetDOM.idAttribute)
+        document.setPaintExclusions(Set(compositor.ids.union(magic.excluded).map { String($0) }), attribute: WidgetDOM.idAttribute)
+        document.setLayerExclusions(Set((magic.isActive ? [] : svgLayers.ids).map { String($0) }), attribute: WidgetDOM.idAttribute)
+        svgLayers.setSuspended(magic.isActive)
         documentView.invalidate(nil)
     }
 
@@ -2328,7 +2335,7 @@ final class WidgetDocumentView: NSView {
     private(set) var mismatchedFrames = 0
 
     private func verifyFrame(_ surface: Surface, document: LHDocument, rect: CGRect, scale: CGFloat, space: CGColorSpace) {
-        guard let fresh = document.copyImage(maxWidth: bounds.width, rect: rect, scale: scale), fresh.width == surface.width, fresh.height == surface.height,
+        guard let fresh = document.copyImage(maxWidth: bounds.width, rect: rect, scale: scale, excluding: document.layerExclusions, attribute: WidgetDOM.idAttribute), fresh.width == surface.width, fresh.height == surface.height,
               let context = CGContext(data: nil, width: surface.width, height: surface.height, bitsPerComponent: 8, bytesPerRow: surface.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
             return
         }

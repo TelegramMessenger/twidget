@@ -566,6 +566,9 @@ static bool LHPaintTraceUncached()
     CGFloat                      _consumedMaxWidth;
     NSString                    *_exclusionAttribute;
     NSSet<NSString *>           *_exclusions;
+    NSSet<NSString *>           *_layerExclusions;
+    NSString                    *_layerAttribute;
+    int                          _snapshotDepth;
     NSSet<NSString *>           *_scrollExclusions;
     std::unordered_map<std::string, std::weak_ptr<lh::render_item>> _scrollItems;
     std::unordered_map<std::string, std::weak_ptr<lh::render_item>> _itemIndex;
@@ -1232,15 +1235,25 @@ static std::string MasterWithCSS(NSString *css)
         };
         visitScrollers(_doc->root());
     }
-    if(_exclusions.count == 0 || !_doc->root())
+    const BOOL layered = _snapshotDepth == 0 && _layerExclusions.count > 0;
+    if((_exclusions.count == 0 && !layered) || !_doc->root())
         return;
-    std::unordered_set<std::string> wanted;
+    std::unordered_set<std::string> wanted, layers;
     for(NSString *value in _exclusions)
         wanted.insert(value.UTF8String);
-    const char *key = _exclusionAttribute.UTF8String;
+    if(layered)
+    {
+        for(NSString *value in _layerExclusions)
+            layers.insert(value.UTF8String);
+    }
+    const char *key      = _exclusionAttribute.UTF8String;
+    const char *layerKey = _layerAttribute.UTF8String;
     std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
-        const char *value = el->get_attr(key);
+        const char *value = key ? el->get_attr(key) : nullptr;
         if(value && wanted.count(value))
+            _doc->skip_paint.insert(el.get());
+        const char *layer = layerKey && !layers.empty() ? el->get_attr(layerKey) : nullptr;
+        if(layer && layers.count(layer))
             _doc->skip_paint.insert(el.get());
         for(const auto &child : el->children())
             visit(child);
@@ -1344,7 +1357,9 @@ static std::string MasterWithCSS(NSString *css)
     CGContextTranslateCTM(ctx, -(placement.x.value() + rect.origin.x), -(placement.y.value() + rect.origin.y));
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
+    _snapshotDepth++;
     [self resolveExclusionsLocked];
+    _snapshotDepth--;
     _doc->skip_scroll_content.erase(ri->src_el().get());
     const lh::pixel_t left = ri->get_scroll_left(), top = ri->get_scroll_top();
     ri->scroll_to(0, 0);
@@ -1374,6 +1389,19 @@ static std::string MasterWithCSS(NSString *css)
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
     return image;
+}
+
+- (NSSet<NSString *> *)layerExclusions
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return _layerExclusions ?: [NSSet set];
+}
+
+- (void)setLayerExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _layerExclusions = [values copy];
+    _layerAttribute  = [attribute copy];
 }
 
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
@@ -1538,7 +1566,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
     auto skipped = _doc->skip_paint;
+    _snapshotDepth++;
     [self resolveExclusionsLocked];
+    _snapshotDepth--;
     _doc->skip_paint.erase(ri->src_el().get());
     PixelSnap snap(ctx);
     _doc->bare_effects = ri->src_el().get();
@@ -2328,7 +2358,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextScaleCTM(ctx, scale, -scale);
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
+    _snapshotDepth++;
     [self drawLockedInContext:ctx origin:CGPointMake(-rect.origin.x, -rect.origin.y) clip:rect];
+    _snapshotDepth--;
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
     return image;

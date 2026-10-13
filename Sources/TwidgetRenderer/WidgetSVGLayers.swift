@@ -31,7 +31,25 @@ final class WidgetSVGLayers {
         return added
     }
 
+    private var suspended = false
+
+    func setSuspended(_ value: Bool) {
+        guard value != suspended else {
+            return
+        }
+        suspended = value
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in containers.values {
+            layer.isHidden = value
+        }
+        CATransaction.commit()
+    }
+
     func covers(_ rect: CGRect) -> Bool {
+        if suspended {
+            return false
+        }
         return frames.values.contains { $0.contains(rect) }
     }
 
@@ -45,7 +63,7 @@ final class WidgetSVGLayers {
         streaks.removeAll()
     }
 
-    func render(document: LHDocument, width: CGFloat, host: CALayer?, scale: CGFloat) -> Bool {
+    func render(document: LHDocument, width: CGFloat, host: CALayer?, scale: CGFloat, dom: WidgetDOM, composited: Set<Int>) -> Bool {
         guard !ids.isEmpty else {
             return false
         }
@@ -59,7 +77,13 @@ final class WidgetSVGLayers {
             }
         }
         for id in ids {
-            guard let shapes = document.svgShapes(attribute: WidgetDOM.idAttribute, value: String(id), maxWidth: width),
+            var nested = false
+            var ancestor = dom.node(id)?.parent
+            while let node = ancestor, !nested {
+                nested = composited.contains(node.id)
+                ancestor = node.parent
+            }
+            guard !nested, !composited.contains(id), let shapes = document.svgShapes(attribute: WidgetDOM.idAttribute, value: String(id), maxWidth: width),
                   WidgetCompositor.unobscured(document, id, shapes.frame, clip: nil, ignoring: []) else {
                 refused.insert(id)
                 ids.remove(id)
