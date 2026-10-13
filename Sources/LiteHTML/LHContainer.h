@@ -15,6 +15,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <atomic>
 
 CGImageRef LHCreateSVGImage(const std::string& markup, CGSize* size);
 bool       LHRenderingSVGImage(void);
@@ -85,6 +86,10 @@ class LHContainer : public litehtml::document_container
     bool shape_capture_failed() const { return m_shapes_bad; }
     void capture_shape(const litehtml::vector_path& path);
     void set_clip_culling(bool enabled) { m_clip_culling = enabled; }
+    static std::atomic<bool> s_text_batching;
+    void begin_text_batching(CGContextRef ctx);
+    void end_text_batching();
+    void flush_text();
     void set_painter(lhx::Painter* painter) { m_painter = painter; }
     void set_gpu_recorder(LHGPURecorder* recorder)
     {
@@ -209,6 +214,19 @@ class LHContainer : public litehtml::document_container
                        const std::function<void(CGRect tile)>& fn) const;
 
     std::vector<LHShapeData>* m_shapes = nullptr;
+    struct TextBatch
+    {
+        CGContextRef         ctx = nullptr;
+        CTFontRef            font = nullptr;
+        litehtml::web_color  color;
+        int                  smoothing = 0;
+        std::vector<CGGlyph> glyphs;
+        std::vector<CGPoint> points;
+        std::vector<CGRect>  inks;
+    };
+    std::vector<TextBatch>   m_text_batches;
+    CGContextRef             m_batch_ctx = nullptr;
+    bool                     clips_needed(CGRect bounds) const;
     bool                     m_shapes_bad = false;
     std::vector<Clip>        m_clips;
     std::vector<Group>       m_groups;

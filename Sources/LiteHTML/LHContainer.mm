@@ -1545,6 +1545,53 @@ struct LHContainer::OpHash
     }
 };
 
+bool LHContainer::clips_needed(CGRect bounds) const
+{
+    CGRect            ink    = CGRectInset(bounds, -1, -1);
+    CGAffineTransform matrix = group_matrix();
+    for(const auto& c : m_clips)
+    {
+        if(!CGAffineTransformEqualToTransform(c.matrix, matrix) || !m_clip_culling || !InsideRoundedRect(R(c.box), c.radius, ink))
+            return true;
+    }
+    return false;
+}
+
+std::atomic<bool> LHContainer::s_text_batching{getenv("LH_NO_TEXT_BATCH") == nullptr};
+
+void LHContainer::begin_text_batching(CGContextRef ctx)
+{
+    flush_text();
+    m_batch_ctx = s_text_batching.load(std::memory_order_relaxed) ? ctx : nullptr;
+}
+
+void LHContainer::end_text_batching()
+{
+    flush_text();
+    m_batch_ctx = nullptr;
+}
+
+void LHContainer::flush_text()
+{
+    for(auto& batch : m_text_batches)
+    {
+        if(batch.glyphs.empty())
+            continue;
+        CGContextRef ctx = batch.ctx;
+        CGContextSaveGState(ctx);
+        SetFill(ctx, batch.color);
+        CGContextSetAllowsFontSmoothing(ctx, true);
+        CGContextSetShouldSmoothFonts(ctx, batch.smoothing == lh::font_smoothing_auto || batch.smoothing == lh::font_smoothing_subpixel_antialiased);
+        if(batch.smoothing == lh::font_smoothing_none)
+            CGContextSetShouldAntialias(ctx, false);
+        CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
+        CGContextSetTextPosition(ctx, 0, 0);
+        CTFontDrawGlyphs(batch.font, batch.glyphs.data(), batch.points.data(), batch.glyphs.size(), ctx);
+        CGContextRestoreGState(ctx);
+    }
+    m_text_batches.clear();
+}
+
 void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFont, lh::web_color color,
                             const lh::position& pos)
 {
@@ -1622,11 +1669,62 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
         ctx = m_capture;
     }
 
+    SimpleRun simple;
+    const bool simpleRun = ShapeSimple(*f->shared, text, simple);
+    if(simpleRun && ctx == m_batch_ctx && !m_capture && f->shadows.empty() && !f->underline && !f->overline && !f->strike && !clips_needed(ink))
+    {
+        const CGRect glyphBox = CGRectInset(CGRectMake(F(pos.x), F(pos.y), std::max<CGFloat>(simple.width, 0), box.size.height), -2, -2);
+        TextBatch* target = nullptr;
+        bool       overlap = false;
+        for(auto& batch : m_text_batches)
+        {
+            if(batch.ctx == ctx && batch.font == f->shared->font && batch.smoothing == f->smoothing && batch.color.red == color.red &&
+               batch.color.green == color.green && batch.color.blue == color.blue && batch.color.alpha == color.alpha &&
+               batch.color.is_current_color == color.is_current_color)
+            {
+                target = &batch;
+                continue;
+            }
+            for(const auto& other : batch.inks)
+            {
+                if(CGRectIntersectsRect(other, glyphBox))
+                {
+                    overlap = true;
+                    break;
+                }
+            }
+            if(overlap)
+                break;
+        }
+        if(overlap || (!target && m_text_batches.size() >= 8))
+        {
+            flush_text();
+            target = nullptr;
+        }
+        if(!target)
+        {
+            m_text_batches.emplace_back();
+            target            = &m_text_batches.back();
+            target->ctx       = ctx;
+            target->font      = f->shared->font;
+            target->smoothing = f->smoothing;
+            target->color     = color;
+        }
+        auto& batch = *target;
+        batch.inks.push_back(glyphBox);
+        CGFloat x        = F(pos.x);
+        CGFloat baseline = F(pos.y) + f->shared->ascent;
+        for(size_t i = 0; i < simple.count; i++)
+        {
+            batch.glyphs.push_back(simple.glyphs[i]);
+            batch.points.push_back(CGPointMake(x + simple.xs[i], -baseline));
+        }
+        return;
+    }
+    flush_text();
     CGContextSaveGState(ctx);
     apply_clips(ctx, ink);
 
-    SimpleRun simple;
-    const bool simpleRun = ShapeSimple(*f->shared, text, simple);
     CTLineRef  line      = simpleRun ? nullptr : CopyLine(*f->shared, text);
 
     if(simpleRun || line)
@@ -1755,6 +1853,7 @@ void LHContainer::transform_text(std::string& text, lh::text_transform tt)
 
 void LHContainer::set_clip(const lh::position& pos, const lh::border_radiuses& bdr_radius)
 {
+    flush_text();
     if(m_painter)
         m_painter->pushClip(pos, bdr_radius);
     m_clips.push_back({pos, bdr_radius, group_matrix()});
@@ -1762,6 +1861,7 @@ void LHContainer::set_clip(const lh::position& pos, const lh::border_radiuses& b
 
 void LHContainer::del_clip()
 {
+    flush_text();
     if(m_painter)
         m_painter->popClip();
     if(!m_clips.empty())
@@ -2071,6 +2171,7 @@ bool LHContainer::record_glyphs(const char* text, Font* f, const lh::web_color& 
 
 void LHContainer::record_op(OpHash& hash, CGRect ink, bool capture)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2217,6 +2318,7 @@ void LHContainer::for_each_tile(const lh::background_layer& layer, CGSize tile,
 
 void LHContainer::draw_solid_fill(lh::uint_ptr hdc, const lh::background_layer& layer, const lh::web_color& color)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2351,6 +2453,7 @@ static void AppendColorPoints(std::string& key, const std::vector<lh::background
 void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::linear_gradient& gradient)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2417,6 +2520,7 @@ void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::radial_gradient& gradient)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2486,6 +2590,7 @@ void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_conic_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                       const lh::background_layer::conic_gradient& gradient)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2569,6 +2674,7 @@ void LHContainer::get_image_size(const char* src, const char* baseurl, lh::size&
 void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer, const std::string& url,
                              const std::string& base_url)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2618,6 +2724,7 @@ void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer
 
 void LHContainer::draw_list_marker(lh::uint_ptr hdc, const lh::list_marker& marker)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2708,6 +2815,7 @@ static lh::web_color ShadeBorder(lh::web_color color, bool topLeft, bool inset)
 
 void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, const lh::position& draw_pos, bool root)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2917,6 +3025,7 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
 
 bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_t key, const std::function<void(lh::uint_ptr)>& paint)
 {
+    flush_text();
     if(m_hidden_depth > 0 && !m_painter)
         return true;
     if(m_painter || m_runs || m_capture)
@@ -2947,6 +3056,7 @@ bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_
 
 void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const std::function<void(lh::uint_ptr)>& paint)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -2974,6 +3084,7 @@ void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const
 void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, const lh::border_radiuses& radius,
                                   const lh::shadow_paint& shadow)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -3209,6 +3320,7 @@ void LHContainer::capture_shape(const lh::vector_path& path)
 
 void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
 {
+    flush_text();
     if(m_painter)
     {
         m_painter->path(path);
@@ -3344,6 +3456,7 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
 
 void LHContainer::begin_group(lh::uint_ptr hdc, const lh::paint_group& group)
 {
+    flush_text();
     if(m_painter)
     {
         m_painter->beginGroup(group);
@@ -3379,6 +3492,7 @@ void LHContainer::begin_group(lh::uint_ptr hdc, const lh::paint_group& group)
 
 void LHContainer::end_group(lh::uint_ptr hdc)
 {
+    flush_text();
     if(m_painter)
     {
         m_painter->endGroup();
@@ -3505,6 +3619,7 @@ static CGColorSpaceRef FilterSpace(CGContextRef ctx)
 
 void LHContainer::draw_filtered(lh::uint_ptr hdc, const lh::filter_paint& filter, const std::function<void(lh::uint_ptr)>& paint)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;
@@ -3570,6 +3685,7 @@ bool LHContainer::backdrop_allowed(const void* owner)
 
 void LHContainer::draw_backdrop(lh::uint_ptr hdc, const lh::filter_paint& filter)
 {
+    flush_text();
     if(m_shapes)
     {
         m_shapes_bad = true;

@@ -1826,7 +1826,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
                    static_cast<float>(clip.size.width), static_cast<float>(clip.size.height));
     PixelSnap  snap(ctx);
     static const bool disabled = getenv("LH_NO_SUBTREE_CULL") != nullptr;
+    _container->begin_text_batching(ctx);
     _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, &c, !_noSubtreeCulling && !disabled && _container->rasterizes());
+    _container->end_text_batching();
     CGContextRestoreGState(ctx);
 }
 
@@ -2215,6 +2217,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     _container->set_gpu_recorder(nullptr);
     _container->set_draw_ops(nullptr);
     CGContextRelease(ctx);
+}
+
++ (void)setTextBatchingEnabled:(BOOL)enabled
+{
+    LHContainer::s_text_batching.store(enabled, std::memory_order_relaxed);
 }
 
 - (LHSVGShapes *)svgShapesWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth
