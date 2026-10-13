@@ -122,6 +122,28 @@ final class WidgetFormInputTests: XCTestCase {
         XCTAssertEqual(editor.textColor?.usingColorSpace(.sRGB), color)
     }
 
+    func testEditorClipDoesNotInterceptButtonsOutsideTheTextField() throws {
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 30, "tag": "div", "attrs": [["style", "height:180px;overflow:auto"]]],
+            ["op": "ins", "id": 30, "parent": 7],
+            ["op": "el", "id": 31, "tag": "textarea", "attrs": [["style", "display:block;width:200px;height:40px"]]],
+            ["op": "ins", "id": 31, "parent": 30],
+            ["op": "el", "id": 32, "tag": "button", "attrs": [["style", "display:block;width:100px;height:40px;margin-top:20px"]]],
+            ["op": "ins", "id": 32, "parent": 30],
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 31)
+        let view = try XCTUnwrap(renderer.view as? WidgetDocumentView)
+        pump(2, until: { view.formEditor != nil })
+        XCTAssertNotNil(view.formEditor)
+        let button = try XCTUnwrap(renderer.elementBounds()[32])
+        let field = try XCTUnwrap(renderer.elementBounds()[31])
+        let buttonPoint = view.convert(CGPoint(x: button.midX, y: button.midY), to: view.superview)
+        let fieldPoint = view.convert(CGPoint(x: field.midX, y: field.midY), to: view.superview)
+        XCTAssertTrue(view.hitTest(buttonPoint) === view)
+        XCTAssertFalse(view.hitTest(fieldPoint) === view)
+    }
+
     func testChoosingFromTheSelectMenuSetsTheValueAndDispatchesInputAndChange() {
         let previous = WidgetRendererEnvironment.presentMenu
         defer { WidgetRendererEnvironment.presentMenu = previous }

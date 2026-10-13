@@ -839,6 +839,11 @@ final class WidgetEditorClip: NSView {
         return true
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let target = super.hitTest(point)
+        return target === self ? nil : target
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
