@@ -63,10 +63,10 @@ namespace litehtml
             {
                 out += ":ts=" + std::to_string(shadow_x) + "," + std::to_string(shadow_y) + "," +
                        std::to_string(shadow_blur) + "," + shadow_color.to_string();
-                for(const auto& extra : extra_shadows)
-                {
-                    out += ";" + std::to_string(extra.x) + "," + std::to_string(extra.y) + "," + std::to_string(extra.blur) + "," + extra.color.to_string();
-                }
+            }
+            for(const auto& extra : extra_shadows)
+            {
+                out += ";" + std::to_string(extra.x) + "," + std::to_string(extra.y) + "," + std::to_string(extra.blur) + "," + extra.color.to_string();
             }
 
             return out;

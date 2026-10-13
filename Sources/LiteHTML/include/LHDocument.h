@@ -96,6 +96,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) CGSize size;
 
 - (void)drawInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip;
+- (void)drawInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip baseTransform:(CGAffineTransform)baseTransform;
 - (BOOL)drawIfCurrentInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip;
 - (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:));
 - (nullable CGImageRef)copyImageWithMaxWidth:(CGFloat)maxWidth rect:(CGRect)rect scale:(CGFloat)scale excluding:(NSSet<NSString *> *)values attribute:(NSString *)attribute CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImage(maxWidth:rect:scale:excluding:attribute:));

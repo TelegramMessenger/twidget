@@ -2785,13 +2785,14 @@ class WidgetDocumentView: NSView {
             let start = CACurrentMediaTime()
             let clip = ctx.boundingBoxOfClipPath
             let origin = layer.frame.origin
+            let baseTransform = ctx.ctm
             ctx.saveGState()
             ctx.translateBy(x: -origin.x, y: -origin.y)
             ctx.setAllowsFontSmoothing(false)
             ctx.setShouldAntialias(true)
             let dirty = clip.offsetBy(dx: origin.x, dy: origin.y)
             let drawCPU = LiteHTMLWidgetRenderer.threadCPUSeconds()
-            document.draw(in: ctx, origin: .zero, clip: dirty.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+            document.draw(in: ctx, origin: .zero, clip: dirty.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin), baseTransform: baseTransform)
             view.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
             ctx.restoreGState()
             let spent = (CACurrentMediaTime() - start) * 1000
@@ -4490,7 +4491,8 @@ final class WidgetBackingStoreDocumentView: WidgetDocumentView {
         ctx.saveGState()
         ctx.setAllowsFontSmoothing(false)
         ctx.clear(dirtyRect)
-        document.draw(in: ctx, origin: .zero, clip: dirtyRect.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin))
+        let baseTransform = CGAffineTransform(scaleX: abs(ctx.ctm.a), y: -abs(ctx.ctm.d))
+        document.draw(in: ctx, origin: .zero, clip: dirtyRect.insetBy(dx: -WidgetDocumentView.cullMargin, dy: -WidgetDocumentView.cullMargin), baseTransform: baseTransform)
         ctx.restoreGState()
     }
 }

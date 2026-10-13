@@ -1583,6 +1583,14 @@ std::atomic<bool> LHContainer::s_exact_group_bounds{getenv("LH_NO_EXACT_GROUP_BO
 
 std::atomic<bool> LHContainer::s_text_batching{getenv("LH_NO_TEXT_BATCH") == nullptr};
 
+CGAffineTransform LHContainer::shadow_transform(CGContextRef ctx) const
+{
+    CGAffineTransform transform = CGContextGetCTM(ctx);
+    if(ctx == m_shadow_base_context)
+        transform = CGAffineTransformConcat(transform, m_shadow_base_inverse);
+    return transform;
+}
+
 void LHContainer::begin_text_batching(CGContextRef ctx)
 {
     flush_text();
@@ -1644,7 +1652,7 @@ void LHContainer::flush_shadow_batch()
             continue;
         auto paint = [&](CGContextRef target) {
             CGFloat           far = ink.size.width + reach * 4 + 1000;
-            CGAffineTransform m   = CGContextGetCTM(target);
+            CGAffineTransform m   = shadow_transform(target);
             CGFloat           ms  = std::sqrt(std::fabs(m.a * m.d - m.b * m.c));
             CGColorRef        sc  = CreateColor(shadow.color);
             CGContextSaveGState(target);
@@ -1770,7 +1778,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
         hash.number(f->shadow_x);
         hash.number(f->shadow_y);
         hash.number(f->shadow_blur);
-        for(size_t i = 1; i < f->shadows.size(); i++)
+        for(size_t i = f->shadow_color.alpha != 0 ? 1 : 0; i < f->shadows.size(); i++)
         {
             hash.color(f->shadows[i].color);
             for(CGFloat v : {f->shadows[i].x, f->shadows[i].y, f->shadows[i].blur})
@@ -1891,7 +1899,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
                 return;
             auto paint = [&](CGContextRef target) {
                 CGFloat           far = ink.size.width + slack * 4 + 1000;
-                CGAffineTransform m   = CGContextGetCTM(target);
+                CGAffineTransform m   = shadow_transform(target);
                 CGFloat           ms  = std::sqrt(std::fabs(m.a * m.d - m.b * m.c));
                 CGColorRef        sc  = CreateColor(shadow.color);
                 CGContextSaveGState(target);
@@ -2269,7 +2277,7 @@ bool LHContainer::record_solid(const lh::background_layer& layer, const lh::web_
 
 bool LHContainer::record_glyphs(const char* text, Font* f, const lh::web_color& color, const lh::position& pos, CGRect ink)
 {
-    if(!m_gpu || !m_gpu->glyph || m_hidden_depth > 0 || !m_groups.empty() || f->shadow_color.alpha != 0 || f->underline ||
+    if(!m_gpu || !m_gpu->glyph || m_hidden_depth > 0 || !m_groups.empty() || !f->shadows.empty() || f->underline ||
        f->overline || f->strike || color.alpha == 0)
         return false;
     for(const auto& c : m_clips)
@@ -3446,7 +3454,7 @@ void LHContainer::paint_box_shadow(CGContextRef ctx, CGRect r, const lh::border_
         CGPathRelease(clip);
         AddRoundedRect(path, CGRectOffset(shape, far, 0), shape_radius);
     }
-    CGAffineTransform ctm    = CGContextGetCTM(ctx);
+    CGAffineTransform ctm    = shadow_transform(ctx);
     CGSize            offset = CGSizeApplyAffineTransform(CGSizeMake(dx - far, dy), ctm);
     CGFloat           scale  = std::sqrt(std::fabs(ctm.a * ctm.d - ctm.b * ctm.c));
     CGColorRef        color  = CreateColor(shadow.color);

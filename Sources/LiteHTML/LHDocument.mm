@@ -1944,6 +1944,19 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self drawLockedInContext:ctx origin:origin clip:clip];
 }
 
+- (void)drawInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip baseTransform:(CGAffineTransform)baseTransform
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc)
+        return;
+    _container->m_shadow_base_context = ctx;
+    _container->m_shadow_base_inverse = CGAffineTransformInvert(baseTransform);
+    [self drawLockedInContext:ctx origin:origin clip:clip];
+    _container->m_shadow_base_context = nullptr;
+    _container->m_shadow_base_inverse = CGAffineTransformIdentity;
+}
+
 - (BOOL)drawIfCurrentInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip
 {
     std::lock_guard<std::mutex> guard(_lock);

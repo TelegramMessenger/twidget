@@ -248,4 +248,16 @@ static NSData *RenderGPU(LHGPURenderer *renderer, NSString *html, BOOL *supporte
     XCTAssertEqualObjects(fast, slow);
 }
 
+- (void)testTransparentLeadingShadowMatchesVisibleShadowOnGPU
+{
+    LHGPURenderer *renderer = [[LHGPURenderer alloc] initWithDevice:nil];
+    XCTSkipIf(!renderer, @"Metal is unavailable");
+    BOOL supported = NO;
+    NSData *visible = RenderGPU(renderer, @"<p style='font:24px -apple-system;text-shadow:3px 4px 0 red'>Shadow cache</p>", &supported);
+    XCTAssertTrue(supported);
+    NSData *leadingTransparent = RenderGPU(renderer, @"<p style='font:24px -apple-system;text-shadow:0 0 0 transparent,3px 4px 0 red'>Shadow cache</p>", &supported);
+    XCTAssertTrue(supported);
+    XCTAssertTrue([visible isEqualToData:leadingTransparent]);
+}
+
 @end

@@ -103,6 +103,9 @@ class LHContainer : public litehtml::document_container
     std::unordered_map<std::string, SourceFilter>  m_source_filters;
     bool begin_source_filters();
     void end_source_filters();
+    CGContextRef m_shadow_base_context = nullptr;
+    CGAffineTransform m_shadow_base_inverse = CGAffineTransformIdentity;
+    CGAffineTransform shadow_transform(CGContextRef ctx) const;
     void begin_text_batching(CGContextRef ctx);
     void end_text_batching();
     void flush_text();
