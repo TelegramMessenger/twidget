@@ -538,6 +538,10 @@ namespace litehtml
     static element::ptr outermost_svg(const element::ptr& el)
     {
         element::ptr found;
+        if(!el)
+            return found;
+        if(auto doc = el->get_document(); doc && !doc->has_svg())
+            return found;
         for(auto p = el; p; p = p->parent())
         {
             if(std::dynamic_pointer_cast<el_svg>(p))

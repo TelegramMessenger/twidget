@@ -960,6 +960,8 @@ namespace litehtml
     el_svg::el_svg(const document::ptr& doc) :
         html_tag(doc)
     {
+        if(doc)
+            doc->note_svg();
         m_css.set_display(display_inline_block);
     }
 

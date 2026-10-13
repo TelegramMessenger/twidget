@@ -149,6 +149,7 @@ namespace litehtml
         std::string                             m_master_styles;
         mutable uint32_t                        m_paint_generation = 1;
         uint64_t                                m_match_epoch      = 1;
+        bool                                    m_has_svg          = false;
         bool                                    m_cull_paint       = false;
         struct html_hole
         {
@@ -202,6 +203,8 @@ namespace litehtml
         pixel_t   render(pixel_t max_width, render_type rt = render_all);
         void      draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull = false);
         uint32_t  paint_generation() const { return m_paint_generation; }
+        void      note_svg() { m_has_svg = true; }
+        bool      has_svg() const { return m_has_svg; }
         void      invalidate_paint() const { m_paint_generation = m_paint_generation + 1 == 0 ? 1 : m_paint_generation + 1; }
         bool      culls_paint() const { return m_cull_paint; }
         void      set_culls_paint(bool cull) { m_cull_paint = cull; }
