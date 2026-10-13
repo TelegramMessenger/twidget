@@ -1,9 +1,16 @@
 // swift-tools-version:5.5
 
+import Foundation
 import PackageDescription
 
-let localCheckout = !#filePath.contains("/checkouts/")
-let optimizedC: [CSetting] = localCheckout ? [.unsafeFlags(["-O2"])] : []
+let widgetSandboxSource = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SANDBOX"] ?? "../widget-sandbox"
+let widgetSandboxBranch = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SANDBOX_BRANCH"] ?? "telegram-macos"
+let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || widgetSandboxSource.hasPrefix("git@")
+    ? .package(name: "WidgetSandbox", url: widgetSandboxSource, .branch(widgetSandboxBranch))
+    : .package(name: "WidgetSandbox", path: widgetSandboxSource)
+let cQuickJS: Target.Dependency = .product(name: "CQuickJS", package: "WidgetSandbox")
+let widgetProtocol: Target.Dependency = .product(name: "WidgetSandboxProtocol", package: "WidgetSandbox")
+
 
 let package = Package(
     name: "twidget",
@@ -15,10 +22,10 @@ let package = Package(
         .library(name: "HTMLSandbox", targets: ["HTMLSandbox"]),
         .library(name: "HTML3D", targets: ["HTML3D"]),
         .library(name: "Twidget3D", targets: ["Twidget3D"]),
+        .library(name: "Twidget3DSandbox", targets: ["Twidget3DSandbox"]),
         .library(name: "TwidgetRenderer", targets: ["TwidgetRenderer"]),
-        .library(name: "CQuickJSNG", targets: ["CQuickJSNG"]),
-        .library(name: "TwidgetProtocol", targets: ["TwidgetProtocol"]),
     ],
+    dependencies: [widgetSandbox],
     targets: [
         .target(
             name: "TwidgetAssets",
@@ -58,24 +65,11 @@ let package = Package(
                 .linkedFramework("CoreImage"),
             ]),
         .target(
-            name: "CQuickJSNG",
-            path: "Sources/CQuickJSNG",
-            exclude: ["quickjs/LICENSE", "quickjs/docs", "quickjs/examples", "quickjs/tests", "quickjs/test262", "quickjs/gen"],
-            sources: ["quickjs/quickjs.c", "quickjs/dtoa.c", "quickjs/libregexp.c", "quickjs/libunicode.c", "shim/qjs_shim.c"],
-            publicHeadersPath: "include",
-            cSettings: [
-                .headerSearchPath("include"),
-                .headerSearchPath("quickjs"),
-                .define("_GNU_SOURCE"),
-                .define("QUICKJS_NG_BUILD"),
-                .define("QJS_DISABLE_DUMPS"),
-            ] + optimizedC),
-        .target(
             name: "HTMLSandbox",
             path: "Sources/HTMLSandbox"),
         .target(
             name: "HTMLScript",
-            dependencies: ["HTMLSandbox", "CQuickJSNG"],
+            dependencies: ["HTMLSandbox", cQuickJS],
             path: "Sources/HTMLScript",
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("QuartzCore")]),
         .target(
@@ -89,17 +83,22 @@ let package = Package(
             path: "Sources/HTML3D",
             linkerSettings: [.linkedFramework("JavaScriptCore")]),
         .target(
-            name: "TwidgetProtocol",
-            path: "Sources/TwidgetProtocol"),
+            name: "Twidget3DSandbox",
+            dependencies: ["Twidget3D", .product(name: "WidgetSandbox", package: "WidgetSandbox"), widgetProtocol],
+            path: "Sources/Twidget3DSandbox"),
         .target(
             name: "TwidgetRenderer",
-            dependencies: ["LiteHTML", "TwidgetProtocol"],
+            dependencies: ["LiteHTML", widgetProtocol],
             path: "Sources/TwidgetRenderer",
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(
             name: "TwidgetRendererTests",
-            dependencies: ["TwidgetRenderer", "TwidgetProtocol", "HTMLScript", "HTMLSandbox", "LiteHTML", "CQuickJSNG"],
+            dependencies: ["TwidgetRenderer", widgetProtocol, "HTMLScript", "HTMLSandbox", "LiteHTML", cQuickJS],
             path: "Tests/TwidgetRendererTests"),
+        .testTarget(
+            name: "Twidget3DSandboxTests",
+            dependencies: ["Twidget3DSandbox", "Twidget3D", "TwidgetRenderer", .product(name: "WidgetSandbox", package: "WidgetSandbox"), widgetProtocol],
+            path: "Tests/Twidget3DSandboxTests"),
         .testTarget(
             name: "Twidget3DTests",
             dependencies: ["Twidget3D"],

@@ -1,6 +1,6 @@
 import XCTest
 @testable import TwidgetRenderer
-import TwidgetProtocol
+import WidgetSandboxProtocol
 
 private struct SeededRandom: RandomNumberGenerator {
     var state: UInt64

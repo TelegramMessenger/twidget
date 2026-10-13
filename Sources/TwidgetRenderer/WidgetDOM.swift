@@ -1,4 +1,4 @@
-import TwidgetProtocol
+import WidgetSandboxProtocol
 import Foundation
 import os
 

@@ -1,6 +1,6 @@
 import XCTest
 @testable import TwidgetRenderer
-import TwidgetProtocol
+import WidgetSandboxProtocol
 
 final class CanvasBatchTests: XCTestCase {
     func testBatchesDecodeLikeTheirCommandArrays() {

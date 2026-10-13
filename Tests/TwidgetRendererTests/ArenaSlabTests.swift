@@ -1,6 +1,6 @@
 import XCTest
 import Darwin
-import CQuickJSNG
+import CQuickJS
 
 final class ArenaSlabTests: XCTestCase {
     private func evaluate(_ ctx: OpaquePointer, _ code: String) {

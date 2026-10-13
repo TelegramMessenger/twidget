@@ -2,7 +2,7 @@ import AppKit
 import IOSurface
 import CoreVideo
 import LiteHTML
-import TwidgetProtocol
+import WidgetSandboxProtocol
 
 public final class LiteHTMLWidgetRenderer {
     public let view: NSView
@@ -4210,3 +4210,5 @@ final class WidgetBackingStoreDocumentView: WidgetDocumentView {
         ctx.restoreGState()
     }
 }
+
+extension LiteHTMLWidgetRenderer: SurfaceHostingRenderer {}

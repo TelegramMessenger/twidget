@@ -1,6 +1,6 @@
 import AppKit
 import LiteHTML
-import TwidgetProtocol
+import WidgetSandboxProtocol
 
 final class WidgetMagicMove {
     struct Capture {

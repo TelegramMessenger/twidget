@@ -1,5 +1,5 @@
 import Foundation
-import TwidgetProtocol
+import WidgetSandboxProtocol
 
 enum CanvasArg: Equatable {
     case number(Double)
