@@ -1548,6 +1548,11 @@ struct LHContainer::OpHash
 void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFont, lh::web_color color,
                             const lh::position& pos)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         auto* font = reinterpret_cast<Font*>(hFont);
@@ -2066,6 +2071,11 @@ bool LHContainer::record_glyphs(const char* text, Font* f, const lh::web_color& 
 
 void LHContainer::record_op(OpHash& hash, CGRect ink, bool capture)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_hidden_depth > 0)
         return;
     if(m_gpu)
@@ -2207,6 +2217,11 @@ void LHContainer::for_each_tile(const lh::background_layer& layer, CGSize tile,
 
 void LHContainer::draw_solid_fill(lh::uint_ptr hdc, const lh::background_layer& layer, const lh::web_color& color)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->solidFill(layer, color);
@@ -2336,6 +2351,11 @@ static void AppendColorPoints(std::string& key, const std::vector<lh::background
 void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::linear_gradient& gradient)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->linearGradient(layer, gradient);
@@ -2397,6 +2417,11 @@ void LHContainer::draw_linear_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                        const lh::background_layer::radial_gradient& gradient)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->radialGradient(layer, gradient);
@@ -2461,6 +2486,11 @@ void LHContainer::draw_radial_gradient(lh::uint_ptr hdc, const lh::background_la
 void LHContainer::draw_conic_gradient(lh::uint_ptr hdc, const lh::background_layer& layer,
                                       const lh::background_layer::conic_gradient& gradient)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->conicGradient(layer, gradient);
@@ -2539,6 +2569,11 @@ void LHContainer::get_image_size(const char* src, const char* baseurl, lh::size&
 void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer, const std::string& url,
                              const std::string& base_url)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->image(layer, url);
@@ -2583,6 +2618,11 @@ void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer
 
 void LHContainer::draw_list_marker(lh::uint_ptr hdc, const lh::list_marker& marker)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->listMarker(marker);
@@ -2668,6 +2708,11 @@ static lh::web_color ShadeBorder(lh::web_color color, bool topLeft, bool inset)
 
 void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, const lh::position& draw_pos, bool root)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->borders(borders, draw_pos, root);
@@ -2902,6 +2947,11 @@ bool LHContainer::draw_cached(lh::uint_ptr hdc, const lh::position& box, uint64_
 
 void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const std::function<void(lh::uint_ptr)>& paint)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_hidden_depth > 0 && !m_painter)
         return;
     auto ctx = reinterpret_cast<CGContextRef>(hdc);
@@ -2924,6 +2974,11 @@ void LHContainer::draw_isolated(lh::uint_ptr hdc, const lh::position& box, const
 void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, const lh::border_radiuses& radius,
                                   const lh::shadow_paint& shadow)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter)
     {
         m_painter->boxShadow(box, radius, shadow);
@@ -3429,6 +3484,11 @@ static CGColorSpaceRef FilterSpace(CGContextRef ctx)
 
 void LHContainer::draw_filtered(lh::uint_ptr hdc, const lh::filter_paint& filter, const std::function<void(lh::uint_ptr)>& paint)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter || m_runs || !filter.steps || filter.steps->empty())
     {
         paint(hdc);
@@ -3488,6 +3548,11 @@ bool LHContainer::backdrop_allowed(const void* owner)
 
 void LHContainer::draw_backdrop(lh::uint_ptr hdc, const lh::filter_paint& filter)
 {
+    if(m_shapes)
+    {
+        m_shapes_bad = true;
+        return;
+    }
     if(m_painter || m_runs || !filter.steps || filter.steps->empty() || !backdrop_allowed(filter.owner))
         return;
     CGRect box = R(filter.box);

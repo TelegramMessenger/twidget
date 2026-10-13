@@ -1,5 +1,6 @@
 import Foundation
 import QuartzCore
+import ImageIO
 import LiteHTML
 
 final class WidgetSVGLayers {
@@ -44,6 +45,67 @@ final class WidgetSVGLayers {
             layer.isHidden = value
         }
         CATransaction.commit()
+    }
+
+    static let check = ProcessInfo.processInfo.environment["TW_SVGCHECK"] != nil
+    static let tolerance = ProcessInfo.processInfo.environment["TW_SVGCHECK_T"].flatMap { Int($0) } ?? 64
+    private(set) var checks = 0
+    private(set) var mismatches = 0
+    private(set) var worstFraction = 0.0
+
+    func verify(document: LHDocument, width: CGFloat) {
+        guard WidgetSVGLayers.check, !suspended else {
+            return
+        }
+        let scale: CGFloat = 2
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        for (id, container) in containers {
+            guard let frame = frames[id], frame.width >= 1, frame.height >= 1,
+                  let raster = document.copyImage(maxWidth: width, rect: frame, scale: scale),
+                  let base = document.copyImage(maxWidth: width, rect: frame, scale: scale, excluding: [String(id)], attribute: WidgetDOM.idAttribute),
+                  let context = CGContext(data: nil, width: raster.width, height: raster.height, bitsPerComponent: 8, bytesPerRow: raster.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                  let reference = CGContext(data: nil, width: raster.width, height: raster.height, bitsPerComponent: 8, bytesPerRow: raster.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+                continue
+            }
+            let full = CGRect(x: 0, y: 0, width: raster.width, height: raster.height)
+            reference.draw(raster, in: full)
+            context.draw(base, in: full)
+            context.saveGState()
+            context.translateBy(x: 0, y: CGFloat(raster.height))
+            context.scaleBy(x: scale, y: -scale)
+            let hidden = container.isHidden
+            container.isHidden = false
+            container.render(in: context)
+            container.isHidden = hidden
+            context.restoreGState()
+            guard let a = reference.data, let b = context.data else {
+                continue
+            }
+            let count = raster.width * raster.height
+            let pa = a.bindMemory(to: UInt8.self, capacity: count * 4), pb = b.bindMemory(to: UInt8.self, capacity: count * 4)
+            var off = 0
+            for i in 0..<(count * 4) where abs(Int(pa[i]) - Int(pb[i])) > WidgetSVGLayers.tolerance {
+                off += 1
+            }
+            let fraction = Double(off) / Double(count)
+            checks += 1
+            worstFraction = max(worstFraction, fraction)
+            if fraction > 0.002 {
+                mismatches += 1
+                if let dir = ProcessInfo.processInfo.environment["TW_SVGCHECK_DUMP"], mismatches <= 3 {
+                    for (name, ctx) in [("raster", reference), ("layers", context)] {
+                        if let image = ctx.makeImage(), let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: dir + "/svg-\(name)\(mismatches).png") as CFURL, "public.png" as CFString, 1, nil) {
+                            CGImageDestinationAddImage(dest, image, nil)
+                            CGImageDestinationFinalize(dest)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    var report: String {
+        return String(format: "svgcheck: %d checks, %d differ, worst %.4f", checks, mismatches, worstFraction)
     }
 
     func covers(_ rect: CGRect) -> Bool {

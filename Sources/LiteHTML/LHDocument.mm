@@ -2228,15 +2228,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     if(!svg)
         return nil;
     lh::position pos = ri->get_placement();
-    pos.x += ri->get_margins().left + ri->get_borders().left + ri->get_paddings().left;
-    pos.y += ri->get_margins().top + ri->get_borders().top + ri->get_paddings().top;
-    pos.width  = ri->pos().width;
-    pos.height = ri->pos().height;
     std::vector<LHDrawOp>    ops;
     std::vector<LHShapeData> shapes;
     _container->set_draw_ops(&ops);
     _container->set_shape_capture(&shapes);
-    bool painted = svg->paint_shapes(0, pos);
+    svg->lh::html_tag::draw(0, pos.x - ri->pos().x, pos.y - ri->pos().y, nullptr, ri);
+    bool painted = !_container->shape_capture_failed() && svg->paint_shapes(0, pos);
     bool failed  = _container->shape_capture_failed();
     _container->set_shape_capture(nullptr);
     _container->set_draw_ops(nullptr);

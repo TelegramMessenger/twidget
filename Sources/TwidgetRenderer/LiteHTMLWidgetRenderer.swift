@@ -754,6 +754,10 @@ public final class LiteHTMLWidgetRenderer {
     private var presentationChecked: LHDocument?
     public private(set) var canvasFastMessages = 0
 
+    public var svgCheckReport: String {
+        return svgLayers.report
+    }
+
     public var canvasReport: String {
         var accelerated = 0, fallback = 0, gpuFrames = 0, gpuMilliseconds = 0.0
         #if canImport(Metal)
@@ -1220,6 +1224,7 @@ public final class LiteHTMLWidgetRenderer {
             next.setLayerExclusions(Set(svgLayers.ids.map { String($0) }), attribute: WidgetDOM.idAttribute)
             documentView.invalidate(nil)
         }
+        svgLayers.verify(document: next, width: width)
         for url in retiredURLs {
             LHImages.forgetImage(withURL: url)
         }
