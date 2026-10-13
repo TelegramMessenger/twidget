@@ -47,6 +47,38 @@ static long Hits()
     return [LHDocument.layoutCacheStats[@"hits"] longValue];
 }
 
+- (void)testNestedFlexMeasurementsAcrossEditsAndViewportChanges
+{
+    LHDocument *document = nil;
+    for(int frame = 0; frame < 12; frame++)
+    {
+        std::string body = "<div style='display:flex;flex-direction:column;height:480px'>";
+        for(int row = 0; row < 8; row++)
+        {
+            body += "<div class='row' style='flex:1;min-height:0;padding:1%'>";
+            for(int column = 0; column < 3; column++)
+            {
+                body += "<div style='display:flex;flex-direction:column;flex:1;padding:2%;border:1px solid'>";
+                body += "<span>Nested flex heading wraps here</span><div style='display:flex;flex:1'><span>";
+                body += (row == frame % 8 && column == 1) ? "Long changed content that must wrap across several lines" : "Short text";
+                body += "</span><span style='margin-left:auto'>42</span></div></div>";
+            }
+            body += "</div>";
+        }
+        body += "</div>";
+        NSString *html = Page(body);
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:html css:nil previous:document];
+        if(document)
+            XCTAssertTrue(patched.reusedPrevious);
+        for(NSNumber *width in @[@420, @280, @520, @420])
+        {
+            LHDocument *fresh = [[LHDocument alloc] initWithHTML:html css:nil];
+            [self expect:patched like:fresh width:width.doubleValue label:[NSString stringWithFormat:@"flex %d %@", frame, width]];
+        }
+        document = patched;
+    }
+}
+
 - (void)testOneCellEditReusesTheOtherCells
 {
     auto body = [](int frame) {

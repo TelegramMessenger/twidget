@@ -97,6 +97,7 @@ namespace litehtml
             rendered_width           ret;
             bool                     second_pass = false;
             bool                     valid       = false;
+            pixel_t                  outer_height = 0_px;
         };
         bool         m_layout_dirty   = true;
         bool         m_relayout_pending = false;
@@ -544,6 +545,8 @@ namespace litehtml
         rendered_width render(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                               formatting_context* fmt_ctx, bool second_pass = false);
         rendered_width measure(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
+                               formatting_context* fmt_ctx, bool second_pass = false, pixel_t* measured_height = nullptr);
+        pixel_t measure_height(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                                formatting_context* fmt_ctx, bool second_pass = false);
         void           mark_layout_dirty();
         bool           relayout_boundary() const;

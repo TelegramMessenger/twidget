@@ -728,7 +728,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func renderOrDefer() {
-        if deferringRender {
+        if deferringRender || (!pendingGeometry && !answersInput) {
             setNeedsRender()
         } else if rendersAtTick {
             renderAtTick = true
@@ -739,11 +739,25 @@ public final class LiteHTMLWidgetRenderer {
 
     private var pendingGeometry = true
 
+    static let visualProperties: Set<String> = [
+        "transform", "transform-origin", "opacity", "color", "background", "background-color",
+        "background-image", "background-position", "background-repeat", "box-shadow", "text-shadow",
+        "filter", "outline", "outline-color", "outline-width", "outline-style", "outline-offset",
+        "border-color", "border-top-color", "border-right-color", "border-bottom-color",
+        "border-left-color", "text-decoration-color", "caret-color", "cursor"
+    ]
+
     private func notePendingGeometry(_ ops: [WidgetOp]) {
         if pendingGeometry {
             return
         }
-        for op in ops where !(op.kind == .style && LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased())) {
+        if !ops.isEmpty, dom.styleSheets().contains(where: {
+            $0.range(of: "\\[\\s*style(?:\\s|[~|^$*]?=|\\])", options: [.regularExpression, .caseInsensitive]) != nil
+        }) {
+            pendingGeometry = true
+            return
+        }
+        for op in ops where !(op.kind == .style && LiteHTMLWidgetRenderer.visualProperties.contains(op.name.lowercased())) {
             pendingGeometry = true
             return
         }
@@ -2011,10 +2025,11 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func binaryQuery(_ q: [String: Any]) -> (result: [String: Any], data: Data)? {
+        guard (q["q"] as? String) == "imageData" else { return nil }
         if needsRender || renderAtTick {
             render()
         }
-        guard (q["q"] as? String) == "imageData", let id = (q["id"] as? NSNumber)?.intValue, let node = dom.node(id), node.tag == "canvas" else {
+        guard let id = (q["id"] as? NSNumber)?.intValue, let node = dom.node(id), node.tag == "canvas" else {
             return nil
         }
         let canvas = self.canvas(for: node)

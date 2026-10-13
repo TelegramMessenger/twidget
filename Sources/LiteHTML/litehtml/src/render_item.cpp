@@ -122,6 +122,11 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
 {
     const bool cacheable = layout_cacheable(fmt_ctx);
     document*  doc       = src_el()->doc_ptr();
+    if(doc && m_layout_epoch != doc->layout_epoch())
+    {
+        m_measured[0].valid = false;
+        m_measured[1].valid = false;
+    }
     if(cacheable && layout_reusable() && same_layout_input(m_last_layout, containing_block_size, second_pass))
     {
         m_pos     = m_last_pos;
@@ -174,7 +179,7 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
     if(cacheable && doc)
     {
         m_layout_epoch = doc->layout_epoch();
-        m_last_layout  = {containing_block_size, ret, second_pass, true};
+        m_last_layout  = {containing_block_size, ret, second_pass, true, height()};
         m_last_pos     = m_pos;
         m_last_x       = x;
         m_last_y       = y;
@@ -188,7 +193,7 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
 
 litehtml::rendered_width litehtml::render_item::measure(pixel_t x, pixel_t y,
                                                         const containing_block_context& containing_block_size,
-                                                        formatting_context* fmt_ctx, bool second_pass)
+                                                        formatting_context* fmt_ctx, bool second_pass, pixel_t* measured_height)
 {
     const bool cacheable = layout_cacheable(fmt_ctx);
     document*  doc       = src_el()->doc_ptr();
@@ -197,6 +202,8 @@ litehtml::rendered_width litehtml::render_item::measure(pixel_t x, pixel_t y,
         if(same_layout_input(m_last_layout, containing_block_size, second_pass))
         {
             doc->note_layout_hit();
+            if(measured_height)
+                *measured_height = m_last_layout.outer_height;
             return m_last_layout.ret;
         }
         for(const auto& entry : m_measured)
@@ -204,17 +211,30 @@ litehtml::rendered_width litehtml::render_item::measure(pixel_t x, pixel_t y,
             if(same_layout_input(entry, containing_block_size, second_pass))
             {
                 doc->note_layout_hit();
+                if(measured_height)
+                    *measured_height = entry.outer_height;
                 return entry.ret;
             }
         }
     }
     rendered_width ret = render(x, y, containing_block_size, fmt_ctx, second_pass);
+    if(measured_height)
+        *measured_height = height();
     if(cacheable)
     {
-        m_measured[m_measured_next] = {containing_block_size, ret, second_pass, true};
+        m_measured[m_measured_next] = {containing_block_size, ret, second_pass, true, height()};
         m_measured_next ^= 1;
     }
     return ret;
+}
+
+litehtml::pixel_t litehtml::render_item::measure_height(pixel_t x, pixel_t y,
+                                                        const containing_block_context& containing_block_size,
+                                                        formatting_context* fmt_ctx, bool second_pass)
+{
+    pixel_t measured_height = 0_px;
+    measure(x, y, containing_block_size, fmt_ctx, second_pass, &measured_height);
+    return measured_height;
 }
 
 void litehtml::render_item::calc_outlines(pixel_t parent_width)

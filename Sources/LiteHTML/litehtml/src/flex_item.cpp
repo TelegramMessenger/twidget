@@ -151,7 +151,7 @@ void litehtml::flex_item_row_direction::direction_specific_init(const litehtml::
     if(el->css().get_min_width().is_predefined())
     {
         min_size =
-            el->render(0_px, 0_px,
+            el->measure(0_px, 0_px,
                        self_size.new_width(el->content_offset_width(), containing_block_context::size_mode_content),
                        fmt_ctx)
                 .natural_width;
@@ -204,7 +204,7 @@ void litehtml::flex_item_row_direction::direction_specific_init(const litehtml::
             break;
         case flex_basis_fit_content:
         case flex_basis_content:
-            base_size = el->render(0_px, 0_px,
+            base_size = el->measure(0_px, 0_px,
                                    self_size.new_width(self_size.render_width.value + el->content_offset_width(),
                                                        containing_block_context::size_mode_content |
                                                            containing_block_context::size_mode_exact_width),
@@ -214,7 +214,7 @@ void litehtml::flex_item_row_direction::direction_specific_init(const litehtml::
         case flex_basis_min_content:
             if(content_size.is_default())
             {
-                content_size = el->render(0_px, 0_px,
+                content_size = el->measure(0_px, 0_px,
                                           self_size.new_width(el->content_offset_width(),
                                                               containing_block_context::size_mode_content),
                                           fmt_ctx)
@@ -355,13 +355,13 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
     def_value<pixel_t> content_height(0_px);
     if(el->css().get_min_height().is_predefined())
     {
-        el->render(0_px, 0_px, self_size.new_width(self_size.render_width, containing_block_context::size_mode_content),
-                   fmt_ctx);
-        content_height = el->height();
+        content_height = el->measure_height(0_px, 0_px,
+                                            self_size.new_width(self_size.render_width, containing_block_context::size_mode_content),
+                                            fmt_ctx);
         min_size = el->css().get_overflow() != overflow_visible &&
                            self_size.height.type != containing_block_context::cbc_value_type_auto
                        ? el->render_offset_height()
-                       : el->height();
+                       : static_cast<pixel_t>(content_height);
     } else
     {
         min_size = el->css().get_min_height().calc_percent(self_size.height) + el->render_offset_height();
@@ -402,8 +402,7 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
                 base_size = content_height;
             } else
             {
-                el->render(0_px, 0_px, self_size, fmt_ctx);
-                base_size = el->height();
+                base_size = el->measure_height(0_px, 0_px, self_size, fmt_ctx);
             }
             break;
         case flex_basis_min_content:
