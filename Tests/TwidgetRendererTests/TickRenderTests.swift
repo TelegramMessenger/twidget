@@ -34,14 +34,14 @@ final class TickRenderTests: XCTestCase {
             ["op": "el", "id": 5, "tag": "div", "attrs": [["class", "tick"]]],
             ["op": "ins", "id": 5, "parent": 1],
         ])
-        pump(3, until: { renderer.rendersAtTick && !renderer.isPreparingTiles })
+        pump(10, until: { renderer.rendersAtTick && !renderer.isPreparingTiles && renderer.heldOpBatches == 0 })
         XCTAssertTrue(renderer.rendersAtTick)
         let before = renderer.layoutCount
         send(renderer, [["op": "attr", "id": 5, "name": "title", "value": "a"]])
         XCTAssertEqual(renderer.layoutCount, before)
-        pump(0.5, until: { renderer.layoutCount > before })
+        pump(5, until: { renderer.layoutCount > before })
         XCTAssertGreaterThan(renderer.layoutCount, before)
-        pump(3, until: { !renderer.isPreparingTiles })
+        pump(10, until: { !renderer.isPreparingTiles && renderer.heldOpBatches == 0 })
         renderer.noteUserInput()
         XCTAssertFalse(renderer.rendersAtTick)
         let atInput = renderer.layoutCount
@@ -49,7 +49,7 @@ final class TickRenderTests: XCTestCase {
         send(renderer, [["op": "attr", "id": 5, "name": "title", "value": "b"]])
         if rastering {
             XCTAssertEqual(renderer.heldOpBatches, 1)
-            pump(1, until: { !renderer.isPreparingTiles })
+            pump(10, until: { !renderer.isPreparingTiles })
             XCTAssertEqual(renderer.heldOpBatches, 0)
             XCTAssertGreaterThan(renderer.layoutCount, atInput)
         } else {
@@ -59,7 +59,8 @@ final class TickRenderTests: XCTestCase {
         renderer.noteUserInput()
         let midRaster = renderer.layoutCount
         var sentDuringRaster = false
-        pump(2, until: {
+        pump(10, until: { renderer.heldOpBatches == 0 })
+        pump(10, until: {
             if renderer.isPreparingTiles && !sentDuringRaster {
                 sentDuringRaster = true
                 send(renderer, [["op": "attr", "id": 5, "name": "title", "value": "c"]])

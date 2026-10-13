@@ -21,7 +21,10 @@ public final class WidgetSurfacePool {
     private var refilling = Set<Key>()
     private var pressure: DispatchSourceMemoryPressure?
 
-    init() {
+    init(observesMemoryPressure: Bool = true) {
+        guard observesMemoryPressure else {
+            return
+        }
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: queue)
         source.setEventHandler { [weak self] in
             self?.purge()

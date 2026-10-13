@@ -453,6 +453,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private func applyMeasured(_ ops: [WidgetOp], held: Bool) {
         metered { applyMeasuredBody(ops, held: held) }
+        if inputAwaitingAnswer && !documentView.preparing && (!held || self.held.isEmpty) {
+            inputAwaitingAnswer = false
+        }
     }
 
     private func applyMeasuredBody(_ ops: [WidgetOp], held: Bool) {
@@ -705,16 +708,19 @@ public final class LiteHTMLWidgetRenderer {
         return documentView.preparing
     }
 
+    private var inputAwaitingAnswer = false
+
     var answersInput: Bool {
-        return CACurrentMediaTime() - lastInputAt <= LiteHTMLWidgetRenderer.inputImmediateWindow
+        return inputAwaitingAnswer || CACurrentMediaTime() - lastInputAt <= LiteHTMLWidgetRenderer.inputImmediateWindow
     }
 
     func noteUserInput() {
         lastInputAt = CACurrentMediaTime()
+        inputAwaitingAnswer = true
     }
 
     var rendersAtTick: Bool {
-        return LiteHTMLWidgetRenderer.coalescesFrames && !frozen && clock?.isRunning == true && needsFrames && isOnScreen && CACurrentMediaTime() - lastInputAt > LiteHTMLWidgetRenderer.inputImmediateWindow
+        return LiteHTMLWidgetRenderer.coalescesFrames && !frozen && clock?.isRunning == true && needsFrames && isOnScreen && !answersInput
     }
 
     private func setNeedsRender() {

@@ -4,7 +4,7 @@ import LiteHTML
 
 final class OffMainTests: XCTestCase {
     func testSurfacePoolRefillsInBackground() {
-        let pool = WidgetSurfacePool()
+        let pool = WidgetSurfacePool(observesMemoryPressure: false)
         pool.prewarm(width: 33, height: 17, count: 2)
         let deadline = Date().addingTimeInterval(5)
         while pool.count < 2 && Date() < deadline {
