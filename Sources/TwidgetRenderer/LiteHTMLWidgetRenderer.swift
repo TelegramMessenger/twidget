@@ -43,6 +43,14 @@ public final class LiteHTMLWidgetRenderer {
         return layoutStats.worst
     }
     public private(set) var stageMilliseconds: [String: Double] = [:]
+    public private(set) var passMaxCPUMilliseconds = 0.0
+
+    private static func threadCPUSeconds() -> Double {
+        var t = timespec()
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t)
+        return Double(t.tv_sec) + Double(t.tv_nsec) / 1e9
+    }
+
     public var drawMilliseconds: Double {
         return documentView.drawMilliseconds
     }
@@ -297,10 +305,12 @@ public final class LiteHTMLWidgetRenderer {
     private func metered<T>(_ body: () -> T) -> T {
         meterDepth += 1
         let start = CACurrentMediaTime()
+        let cpuStart = LiteHTMLWidgetRenderer.threadCPUSeconds()
         defer {
             meterDepth -= 1
             if meterDepth == 0 {
                 charge(CACurrentMediaTime() - start)
+                passMaxCPUMilliseconds = max(passMaxCPUMilliseconds, (LiteHTMLWidgetRenderer.threadCPUSeconds() - cpuStart) * 1000)
             }
         }
         return body()
