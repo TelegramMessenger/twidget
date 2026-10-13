@@ -69,4 +69,23 @@ static NSData *Pixels(CGImageRef image)
     XCTAssertNil([framed svgShapesWithAttribute:@"data-twid" value:@"6" maxWidth:100]);
 }
 
+
+- (void)testCSSRotatedClockHandMatchesSVGAttributeAndUsesRasterFallback
+{
+    NSString *prefix = @"<style>body{margin:0}.hand{transform-origin:100px 100px}</style><svg data-twid='9' width='150' height='150' viewBox='0 0 200 200'><line class='hand' x1='100' y1='110' x2='100' y2='20' stroke='red' stroke-width='4' ";
+    LHDocument *css = [[LHDocument alloc] initWithHTML:[prefix stringByAppendingString:@"style='transform:rotate(90deg)'/></svg>"] css:nil];
+    LHDocument *attr = [[LHDocument alloc] initWithHTML:[prefix stringByAppendingString:@"transform='rotate(90 100 100)'/></svg>"] css:nil];
+    [css layoutWithMaxWidth:200 preferredWidth:200];
+    [attr layoutWithMaxWidth:200 preferredWidth:200];
+    CGImageRef a = [css copyImageWithMaxWidth:200 rect:CGRectMake(0, 0, 200, 160) scale:2];
+    CGImageRef b = [attr copyImageWithMaxWidth:200 rect:CGRectMake(0, 0, 200, 160) scale:2];
+    XCTAssertEqualObjects(Pixels(a), Pixels(b));
+    CGImageRelease(a);
+    CGImageRelease(b);
+    LHSVGShapes *shapes = [css svgShapesWithAttribute:@"data-twid" value:@"9" maxWidth:200];
+    LHSVGShapes *reference = [attr svgShapesWithAttribute:@"data-twid" value:@"9" maxWidth:200];
+    XCTAssertNil(shapes);
+    XCTAssertNil(reference);
+}
+
 @end

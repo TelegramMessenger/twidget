@@ -106,6 +106,7 @@ public final class LiteHTMLWidgetRenderer {
     private var hoverId = 0
     var form = WidgetFormState()
     private var pressId = 0
+    private var pointerCaptureId = 0
     private var lastPointer: CGPoint?
     private var clickCount = 0
     private var lastClick: (time: CFTimeInterval, point: CGPoint) = (0, .zero)
@@ -284,6 +285,9 @@ public final class LiteHTMLWidgetRenderer {
 
     public func destroy() {
         destroyed = true
+        pointerCaptureId = 0
+        pressId = 0
+        form.rangeId = 0
         endEditing()
         magic.cancel()
         for (id, url) in canvasURLs {
@@ -1894,6 +1898,13 @@ public final class LiteHTMLWidgetRenderer {
     private func call(_ node: WidgetNode, _ method: String, _ args: [Any] = []) {
         let id = dom.publicId(node)
         switch method {
+        case "setPointerCapture", "releasePointerCapture":
+            guard (args.first as? NSNumber)?.intValue == 1, pressId != 0 else { return }
+            if method == "setPointerCapture", dom.isAttached(node) {
+                setPointerCapture(id)
+            } else if pointerCaptureId == id {
+                setPointerCapture(0)
+            }
         case "scrollTo", "scrollBy":
             guard scrolling.geometries[id] != nil, args.count >= 2, let left = (args[0] as? NSNumber)?.doubleValue, let top = (args[1] as? NSNumber)?.doubleValue, left.isFinite, top.isFinite else {
                 return
@@ -2126,6 +2137,9 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         frozen = true
+        pointerCaptureId = 0
+        pressId = 0
+        form.rangeId = 0
         endEditing()
         if magic.isActive {
             magic.cancel()
@@ -2477,7 +2491,26 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
+    private func setPointerCapture(_ id: Int) {
+        guard pointerCaptureId != id else { return }
+        let previous = pointerCaptureId
+        pointerCaptureId = id
+        for (type, target) in [("lostpointercapture", previous), ("gotpointercapture", id)] where target != 0 {
+            post(["type": "event", "ev": ["type": type, "targetId": target, "pointerId": 1, "pointerType": "mouse", "isPrimary": true]])
+        }
+    }
+
+    private func pointerTarget(at point: CGPoint) -> Int {
+        if pointerCaptureId != 0 {
+            if let node = dom.node(pointerCaptureId), dom.isAttached(node) { return pointerCaptureId }
+            setPointerCapture(0)
+        }
+        return target(at: point)
+    }
+
     func handleMouseDown(_ point: CGPoint, event: NSEvent) {
+        guard !frozen, !destroyed else { return }
+        setPointerCapture(0)
         let id = target(at: point)
         pressId = id
         let now = CACurrentMediaTime()
@@ -2496,12 +2529,13 @@ public final class LiteHTMLWidgetRenderer {
         dispatch("pointerdown", target: id, point: point, event: event, buttons: 1)
         dispatch("mousedown", target: id, point: point, event: event, buttons: 1)
         lastPointer = point
-        formMouseDown(id, event: event)
+        formMouseDown(id, point: point, event: event)
     }
 
     func handleMouseDragged(_ point: CGPoint, event: NSEvent) {
-        dispatch("pointermove", target: pressId != 0 ? target(at: point) : 0, point: point, event: event, buttons: 1)
+        dispatch("pointermove", target: pressId != 0 ? pointerTarget(at: point) : 0, point: point, event: event, buttons: 1)
         dispatch("mousemove", target: target(at: point), point: point, event: event, buttons: 1)
+        dragRange(to: point)
         lastPointer = point
     }
 
@@ -2510,7 +2544,7 @@ public final class LiteHTMLWidgetRenderer {
         if document?.mouseUp(point) == true {
             setNeedsRender()
         }
-        dispatch("pointerup", target: id, point: point, event: event, buttons: 0)
+        dispatch("pointerup", target: pointerTarget(at: point), point: point, event: event, buttons: 0)
         dispatch("mouseup", target: id, point: point, event: event, buttons: 0)
         if id == pressId || isAncestor(pressId, of: id) || isAncestor(id, of: pressId) {
             let clickTarget = isAncestor(id, of: pressId) ? id : (isAncestor(pressId, of: id) ? pressId : id)
@@ -2519,6 +2553,8 @@ public final class LiteHTMLWidgetRenderer {
                 dispatch("dblclick", target: clickTarget, point: point, event: event, buttons: 0)
             }
         }
+        finishRange(at: point)
+        setPointerCapture(0)
         pressId = 0
         lastPointer = point
     }

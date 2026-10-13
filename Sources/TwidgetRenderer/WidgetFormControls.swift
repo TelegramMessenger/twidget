@@ -74,6 +74,8 @@ final class WidgetNativeMenu: NSObject {
 }
 
 struct WidgetFormState {
+    var rangeId = 0
+    var rangeInitialValue = ""
     var focusedId = 0
     var generation = 0
     var initialValue = ""
@@ -129,7 +131,7 @@ extension LiteHTMLWidgetRenderer {
         }
     }
 
-    func formMouseDown(_ id: Int, event: NSEvent) {
+    func formMouseDown(_ id: Int, point: CGPoint, event: NSEvent) {
         form.lastActivation = CACurrentMediaTime()
         form.focusedSelect = 0
         guard !frozen, !destroyed, let node = formControl(from: id) else {
@@ -142,9 +144,51 @@ extension LiteHTMLWidgetRenderer {
         if node.tag.lowercased() == "select" {
             form.focusedSelect = control
             openSelect(node, event: event)
+        } else if node.tag.lowercased() == "input", node.attribute("type")?.lowercased() == "range", node.attribute("disabled") == nil {
+            endEditing()
+            form.rangeId = control
+            form.rangeInitialValue = currentValue(node)
+            dragRange(to: point)
         } else if isEditable(node) {
             focusControl(node)
         }
+    }
+
+    func dragRange(to point: CGPoint) {
+        guard form.rangeId != 0, !frozen, !destroyed,
+              let node = dom.node(form.rangeId), dom.isAttached(node), node.attribute("disabled") == nil,
+              let box = elementBounds()[form.rangeId], box.width > 0 else { return }
+        func number(_ name: String, _ fallback: Double) -> Double {
+            guard let raw = node.attribute(name), let value = Double(raw), value.isFinite else { return fallback }
+            return value
+        }
+        let minimum = number("min", 0)
+        let maximum = max(minimum, number("max", 100))
+        let inset = min(12, box.width / 2)
+        let fraction = min(1, max(0, (point.x - box.minX - inset) / max(1, box.width - inset * 2)))
+        var value = minimum + Double(fraction) * (maximum - minimum)
+        if node.attribute("step")?.lowercased() != "any" {
+            let step = number("step", 1) > 0 ? number("step", 1) : 1
+            let base = number("min", number("value", 0))
+            value = base + ((value - base) / step).rounded() * step
+            if value > maximum { value -= step }
+        }
+        value = min(maximum, max(minimum, value))
+        guard value.isFinite else { return }
+        let text = String(format: "%.12g", locale: Locale(identifier: "en_US_POSIX"), value)
+        guard Double(currentValue(node)) != value else { return }
+        dom.setFormProperty(node, "value", text)
+        setNeedsRender()
+        postForm("input", form.rangeId, ["value": text])
+    }
+
+    func finishRange(at point: CGPoint) {
+        dragRange(to: point)
+        let id = form.rangeId
+        form.rangeId = 0
+        guard id != 0, let node = dom.node(id), dom.isAttached(node), node.attribute("disabled") == nil else { return }
+        let value = currentValue(node)
+        if value != form.rangeInitialValue { postForm("change", id, ["value": value]) }
     }
 
     private func postForm(_ type: String, _ id: Int, _ extra: [String: Any] = [:]) {

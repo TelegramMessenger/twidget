@@ -39,6 +39,61 @@ final class WidgetFormInputTests: XCTestCase {
         renderer.handleMouseDown(point, event: event)
     }
 
+    func testRangeDragClampsSnapsAndCommitsOnceOutsideTheControl() {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "input", "attrs": [["type", "range"], ["min", "10"], ["max", "90"], ["step", "10"], ["value", "50"], ["style", "width:200px"]]],
+            ["op": "ins", "parent": 7, "id": 10]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let event = NSEvent.mouseEvent(with: .leftMouseDragged, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        let box = renderer.elementBounds()[10]!
+        renderer.handleMouseDragged(CGPoint(x: box.minX + 130, y: box.midY), event: event)
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "60")
+        renderer.handleMouseDragged(CGPoint(x: -100, y: 200), event: event)
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "10")
+        renderer.handleMouseUp(CGPoint(x: 600, y: 200), event: event)
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "90")
+        XCTAssertEqual(events().filter { $0["type"] as? String == "change" }.count, 1)
+        XCTAssertEqual(events().filter { $0["type"] as? String == "input" }.last?["value"] as? String, "90")
+        renderer.handleMouseDragged(CGPoint(x: -100, y: 200), event: event)
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "90")
+    }
+
+    func testDisabledRangeDoesNotChange() {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "input", "attrs": [["type", "range"], ["disabled", ""], ["value", "25"]]],
+            ["op": "ins", "parent": 7, "id": 10]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        renderer.finishRange(at: CGPoint(x: 500, y: 100))
+        XCTAssertNil(renderer.dom.node(10)?.formValue)
+        XCTAssertFalse(events().contains { $0["type"] as? String == "input" })
+    }
+
+    func testPointerCaptureDeliversReleaseOutsideAndResetsForNextGesture() {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "div", "attrs": [["style", "width:100px;height:60px"]]],
+            ["op": "ins", "parent": 7, "id": 10]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        renderer.listened = ["pointerdown", "pointermove", "pointerup"]
+        click(renderer, 10)
+        renderer.send("{\"type\":\"ops\",\"ops\":[{\"op\":\"call\",\"id\":10,\"method\":\"setPointerCapture\",\"args\":[1]}]}")
+        let event = NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+        renderer.handleMouseDragged(CGPoint(x: 500, y: 500), event: event)
+        renderer.handleMouseUp(CGPoint(x: 500, y: 500), event: event)
+        XCTAssertEqual(events().last { $0["type"] as? String == "pointermove" }?["targetId"] as? Int, 10)
+        let types = events().compactMap { $0["type"] as? String }
+        XCTAssertLessThan(types.lastIndex(of: "pointermove")!, types.lastIndex(of: "pointerup")!)
+        XCTAssertEqual(events().last { $0["type"] as? String == "pointerup" }?["targetId"] as? Int, 10)
+        XCTAssertEqual(events().filter { $0["type"] as? String == "lostpointercapture" }.count, 1)
+        renderer.handleMouseDown(CGPoint(x: 300, y: 200), event: event)
+        renderer.handleMouseUp(CGPoint(x: 300, y: 200), event: event)
+        XCTAssertNotEqual(events().last { $0["type"] as? String == "pointerup" }?["targetId"] as? Int, 10)
+    }
+
     func testNumberInputKeepsItsColorsAndEditorWhileTyping() throws {
         let (renderer, window, events) = make([
             ["op": "el", "id": 10, "tag": "input", "attrs": [["type", "number"], ["placeholder", "Calories"], ["style", "color:rgb(220,230,240);background:#292929;padding:12px;border:0;border-radius:12px"]]],

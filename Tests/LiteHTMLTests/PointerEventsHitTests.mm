@@ -49,4 +49,17 @@ static NSString *Hit(NSString *html, CGPoint point)
     XCTAssertEqualObjects(Hit(html, CGPointMake(250, 50)), @"svg");
 }
 
+- (void)testTransformedNotesInsideZeroSizeWorldAreHitAtTheirPaintedPosition
+{
+    NSString *html = @"<style>body{margin:0}</style><div data-id='desk' style='position:relative;height:500px;overflow:hidden'><div style='position:absolute;width:0;height:0;transform-origin:0 0;transform:translate(40px,60px) scale(.8)'><div data-id='note' style='position:absolute;left:0;top:0;width:100px;height:100px;transform:translate(150px,50px) rotate(10deg)'>note</div></div></div>";
+    XCTAssertEqualObjects(Hit(html, CGPointMake(200, 140)), @"note");
+    XCTAssertEqualObjects(Hit(html, CGPointMake(50, 50)), @"desk");
+}
+
+- (void)testHandleOutsideTransformedNoteIsHitBeforeTheNote
+{
+    NSString *html = @"<style>body{margin:0}</style><div data-id='desk' style='position:relative;height:500px;overflow:hidden'><div style='position:absolute;width:0;height:0;transform-origin:0 0;transform:translate(40px,60px) scale(.8)'><div data-id='note' style='position:absolute;z-index:100;display:flex;flex-direction:column;width:100px;height:100px;transform:translate(150px,50px) rotate(10deg)'>note<div data-id='handle' style='position:absolute;right:-14px;bottom:-14px;width:30px;height:30px'></div></div></div></div>";
+    XCTAssertEqualObjects(Hit(html, CGPointMake(231.8, 185.4)), @"handle");
+}
+
 @end

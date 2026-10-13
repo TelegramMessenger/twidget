@@ -419,6 +419,54 @@ namespace litehtml
             }
         };
 
+        static litehtml::transform_matrix svg_css_transform(const element::ptr& el, const litehtml::position& border_box)
+        {
+            using namespace litehtml;
+            const auto& el_css = el->css();
+            const auto tag = std::dynamic_pointer_cast<html_tag>(el);
+            const bool has_origin = tag && tag->has_own_property(_transform_origin_);
+            pixel_t ox = has_origin ? border_box.x + el_css.get_transform_origin_x().calc_percent(border_box.width) : 0_px;
+            pixel_t oy = has_origin ? border_box.y + el_css.get_transform_origin_y().calc_percent(border_box.height) : 0_px;
+            transform_matrix m{1, 0, 0, 1, -ox.value(), -oy.value()};
+            const auto&      functions = el_css.get_transform();
+            for(auto it = functions.rbegin(); it != functions.rend(); ++it)
+            {
+                transform_matrix f;
+                switch(it->kind)
+                {
+                case transform_function::translate:
+                    f.tx = it->x.calc_percent(border_box.width).value();
+                    f.ty = it->y.calc_percent(border_box.height).value();
+                    break;
+                case transform_function::scale:
+                    f.a = it->v[0];
+                    f.d = it->v[1];
+                    break;
+                case transform_function::rotate:
+                    f.a = std::cos(it->v[0]);
+                    f.b = std::sin(it->v[0]);
+                    f.c = -f.b;
+                    f.d = f.a;
+                    break;
+                case transform_function::skew:
+                    f.b = std::tan(it->v[1]);
+                    f.c = std::tan(it->v[0]);
+                    break;
+                case transform_function::matrix:
+                    f = {it->v[0], it->v[1], it->v[2], it->v[3], it->v[4], it->v[5]};
+                    break;
+                case transform_function::rotate_x:
+                    f.d = std::cos(it->v[0]);
+                    break;
+                case transform_function::rotate_y:
+                    f.a = std::cos(it->v[0]);
+                    break;
+                }
+                m = m.then(f);
+            }
+            return m.then(transform_matrix{1, 0, 0, 1, ox.value(), oy.value()});
+        }
+
         transform_matrix parse_svg_transform(const char* s)
         {
             transform_matrix m;
@@ -957,7 +1005,10 @@ namespace litehtml
                         opacity *= std::max(0.f, std::min(1.f, std::strtof(attr, nullptr)));
                     }
                     paint_group group;
-                    group.matrix  = parse_svg_transform(child->get_attr("transform"));
+                    const auto tag = std::dynamic_pointer_cast<html_tag>(child);
+                    group.matrix = tag && tag->has_own_property(_transform_)
+                        ? svg_css_transform(child, position(pixel_t(m_view[0]), pixel_t(m_view[1]), pixel_t(m_view[2]), pixel_t(m_view[3])))
+                        : parse_svg_transform(child->get_attr("transform"));
                     group.opacity = opacity;
                     group.bounds  = position(-100000, -100000, 200000, 200000);
                     bool grouped  = opacity < 1 || !group.matrix.is_identity();
