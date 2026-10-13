@@ -894,6 +894,10 @@ final class WidgetAnimator {
         return bases[id]?[property] ?? underlying?(id, property) ?? WidgetAnimator.initialValues[property] ?? ""
     }
 
+    func hasCSSMotion(_ id: Int) -> Bool {
+        return transitions[id] != nil || running[id]?.isEmpty == false
+    }
+
     private func hasLiveCSS(_ id: Int) -> Bool {
         return transitions[id] != nil || running[id]?.contains(where: { !$0.ended && keyframes[$0.spec.name] != nil }) == true
     }

@@ -124,6 +124,18 @@ enum CSSTransform {
             }
             let y = args.count > 1 ? length(args[1], relative: box.height) : 0
             return y.map { CGAffineTransform(translationX: x, y: $0) }
+        case "translate3d":
+            guard args.count == 3, let x = length(args[0], relative: box.width), let y = length(args[1], relative: box.height), length(args[2], relative: 0) != nil else {
+                return nil
+            }
+            return CGAffineTransform(translationX: x, y: y)
+        case "translatez":
+            return args.count == 1 && length(args[0], relative: 0) != nil ? .identity : nil
+        case "scale3d":
+            guard args.count == 3, let x = number(0), let y = number(1), number(2) != nil else {
+                return nil
+            }
+            return CGAffineTransform(scaleX: x, y: y)
         case "translatex":
             return args.first.flatMap { length($0, relative: box.width) }.map { CGAffineTransform(translationX: $0, y: 0) }
         case "translatey":
@@ -1094,7 +1106,7 @@ final class WidgetCompositor {
         var scriptedWanted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
         var scriptedBases: [Int: CGRect] = [:]
         scriptedCandidates = scriptedCandidates.filter { dom.node($0) != nil }
-        for id in scriptedCandidates where wanted[id] == nil && !animated.contains(id) && animator.base(id).isEmpty {
+        for id in scriptedCandidates where wanted[id] == nil && !animated.contains(id) && !animator.hasCSSMotion(id) {
             guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                 continue
             }

@@ -566,7 +566,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         let start = CACurrentMediaTime()
         flushingHeld = true
-        let answering = answersInput
+        let answering = answersInput || answeringQuery
         while !held.isEmpty && !documentView.preparing && (answering || !throttled) {
             var ops: [WidgetOp] = []
             while case .ops(let batch)? = held.first {
@@ -604,7 +604,16 @@ public final class LiteHTMLWidgetRenderer {
         schedulePrepare()
     }
 
+    private var answeringQuery = false
+
     public func send(_ json: String) {
+        if !destroyed, !flushingHeld, !documentView.preparing, !held.isEmpty, json.hasPrefix("{\"type\":\"query\"") {
+            held.append(.json(json))
+            answeringQuery = true
+            prepared()
+            answeringQuery = false
+            return
+        }
         if !destroyed, !flushingHeld, !documentView.preparing, !held.isEmpty, answersInput {
             held.append(.json(json))
             prepared()
@@ -984,7 +993,6 @@ public final class LiteHTMLWidgetRenderer {
 
     private func sendCanvas(_ list: [(id: Int, stream: CanvasStream)]) {
         canvasFastMessages += 1
-        opsBatch += 1
         var direct = true
         for (id, stream) in list {
             guard let node = dom.canvasNode(id) else {
@@ -1462,8 +1470,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private static let scriptedProperties: Set<String> = ["transform", "opacity"]
     static let scriptedPromotion = ProcessInfo.processInfo.environment["TW_NO_SCRIPTED"] == nil
-    private var scriptedHits: [Int: (count: Int, batch: Int)] = [:]
-    private var opsBatch = 0
+    private var scriptedHits: [Int: (count: Int, at: CFTimeInterval)] = [:]
+    static let scriptedSameFrame: CFTimeInterval = 0.006
+    static let scriptedStreakGap: CFTimeInterval = 0.12
 
     private func scriptedOnly(_ ops: [WidgetOp]) -> Set<Int>? {
         let promoted = compositor.scriptedIDs
@@ -1481,28 +1490,25 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func noteScriptedTransforms(_ ops: [WidgetOp]) {
-        opsBatch += 1
-        var promote = false
+        let now = CACurrentMediaTime()
         for op in ops {
             guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()) else {
                 continue
             }
             let id = op.id
-            let hit = scriptedHits[id] ?? (0, 0)
-            if hit.batch == opsBatch {
+            let hit = scriptedHits[id]
+            if let hit = hit, now - hit.at < LiteHTMLWidgetRenderer.scriptedSameFrame {
                 continue
             }
-            let count = hit.batch == opsBatch - 1 ? hit.count + 1 : 1
-            scriptedHits[id] = (count, opsBatch)
+            let count = hit.map { now - $0.at <= LiteHTMLWidgetRenderer.scriptedStreakGap ? $0.count + 1 : 1 } ?? 1
+            scriptedHits[id] = (count, now)
             if count >= 3 && LiteHTMLWidgetRenderer.scriptedPromotion && !compositor.scriptedCandidates.contains(id) && compositor.scriptedCandidates.count < WidgetCompositor.maxLayers {
                 compositor.scriptedCandidates.insert(id)
-                promote = true
             }
         }
         if scriptedHits.count > 4096 {
-            scriptedHits = scriptedHits.filter { opsBatch - $0.value.batch < 8 }
+            scriptedHits = scriptedHits.filter { now - $0.value.at < 1 }
         }
-        _ = promote
     }
 
     private var needsFrames: Bool {
@@ -3636,6 +3642,9 @@ class WidgetDocumentView: NSView {
         return tiles.count
     }
 
+    private weak var appliedSpaceDocument: LHDocument?
+    private var appliedSpace: CGColorSpace?
+
     private func syncGrid(layer: CALayer, document: LHDocument, scale: CGFloat) -> (columns: Int, tileSize: CGFloat, height: CGFloat, space: CGColorSpace)? {
         let space = WidgetDocumentView.screenTagged ? (window?.colorSpace?.cgColorSpace ?? WidgetDocumentView.surfaceSpace) : WidgetDocumentView.surfaceSpace
         let height = max(1, ceil(document.size.height))
@@ -3666,7 +3675,11 @@ class WidgetDocumentView: NSView {
             layer.twInsertSublayer(tile.layer, at: UInt32(tiles.count))
             tiles.append(tile)
         }
-        document.colorSpace = space
+        if appliedSpaceDocument !== document || appliedSpace !== space {
+            document.colorSpace = space
+            appliedSpaceDocument = document
+            appliedSpace = space
+        }
         tileScale = scale
         return (columns, tileSize, height, space)
     }
