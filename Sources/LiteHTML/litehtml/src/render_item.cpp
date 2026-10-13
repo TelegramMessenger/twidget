@@ -4,6 +4,7 @@
 #include "types.h"
 #include <algorithm>
 #include <functional>
+#include <set>
 #include <typeinfo>
 
 thread_local std::vector<const litehtml::render_item*>* litehtml::g_paint_trace = nullptr;
@@ -1282,6 +1283,42 @@ const litehtml::paint_ink& litehtml::render_item::ink(uint32_t generation, bool 
     return drawn ? m_drawn_ink : m_ink;
 }
 
+namespace
+{
+    // The z-indexes a paint group draws as its own stacking context: its positioned descendants, short of
+    // those inside another positioned element or paint group, which draw their own. A group that is not
+    // positioned keeps none of them in m_positioned (add_positioned files them with their containing block),
+    // so they are found in the tree.
+    void group_z_indexes(const std::shared_ptr<litehtml::render_item>& item, std::set<int>& z)
+    {
+        for(const auto& child : item->children())
+        {
+            if(child->src_el()->is_positioned())
+                z.insert(child->src_el()->css().get_z_index());
+            else if(!child->src_el()->css().is_paint_group())
+                group_z_indexes(child, z);
+        }
+    }
+
+    void draw_group_contents(const std::shared_ptr<litehtml::render_item>& el, litehtml::uint_ptr hdc, litehtml::pixel_t x,
+                             litehtml::pixel_t y, const litehtml::position* clip)
+    {
+        if(!el->is_visible())
+            return;
+        std::set<int> z;
+        group_z_indexes(el, z);
+        for(int index : z)
+            if(index < 0)
+                el->draw_children(hdc, x, y, clip, litehtml::draw_positioned, index);
+        el->draw_children(hdc, x, y, clip, litehtml::draw_block, 0);
+        el->draw_children(hdc, x, y, clip, litehtml::draw_floats, 0);
+        el->draw_children(hdc, x, y, clip, litehtml::draw_inlines, 0);
+        for(int index : z)
+            if(index >= 0)
+                el->draw_children(hdc, x, y, clip, litehtml::draw_positioned, index);
+    }
+}
+
 void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                                        const std::shared_ptr<render_item>& el)
 {
@@ -1357,12 +1394,12 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
         }
         container->draw_filtered(hdc, paint, [&](uint_ptr target) {
             el->src_el()->draw(target, x, y, nullptr, el);
-            el->draw_stacking_context(target, x, y, nullptr, true);
+            draw_group_contents(el, target, x, y, nullptr);
         });
     } else
     {
         el->src_el()->draw(hdc, x, y, inner_clip, el);
-        el->draw_stacking_context(hdc, x, y, inner_clip, true);
+        draw_group_contents(el, hdc, x, y, inner_clip);
     }
     container->end_group(hdc);
 }
@@ -1439,10 +1476,8 @@ void litehtml::render_item::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, co
                 {
                     bool fixed = el_css.get_position() == element_position_fixed;
                     draw_group(hdc, fixed ? 0_px : pos.x, fixed ? 0_px : pos.y, clip, el);
-                } else if(flag == draw_positioned && !positioned && el_css.get_transform().empty())
-                {
-                    el->draw_children(hdc, pos.x, pos.y, clip, flag, zindex);
                 }
+                // The group draws its positioned descendants itself, inside its opacity, filter and transform.
                 continue;
             }
             bool process = true;
