@@ -1,4 +1,5 @@
 import XCTest
+import LiteHTML
 @testable import TwidgetRenderer
 
 final class FormValueTests: XCTestCase {
@@ -62,5 +63,47 @@ final class FormValueTests: XCTestCase {
         dom.resetPatchLog()
         dom.apply(["op": "prop", "id": 10, "name": "value", "value": "x"])
         XCTAssertFalse(dom.patchLog.valid)
+    }
+
+    func testTextareaValueChangesUseTargetedPatches() throws {
+        let dom = makeDOM()
+        add(dom, 10, "textarea", attrs: [["style", "width:180px;height:auto;font:16px system-ui;line-height:22px;padding:10px"], ["placeholder", "Write here"]])
+        dom.apply(["op": "prop", "id": 10, "name": "value", "value": "first"])
+        let doc = LHDocument(html: dom.serialize(theme: "light"), css: nil, previous: nil)
+        doc.layout(maxWidth: 260, preferredWidth: 260)
+        dom.resetPatchLog()
+        dom.apply(["op": "prop", "id": 10, "name": "value", "value": "first more"])
+        let changes = try XCTUnwrap(dom.patchChanges(theme: "light", overrides: [:], previous: [:]))
+        let next = try XCTUnwrap(LHDocument(previous: doc, changes: Data(changes), attribute: WidgetDOM.idAttribute, css: nil))
+        XCTAssertEqual(next.html, dom.serialize(theme: "light"))
+    }
+
+    func testTextareaPatchTransitionsMatchFreshRendering() throws {
+        let values = ["Typing", "Typing more", "Typing more text that wraps onto several lines at a narrow width", "a😀b", "line one\nline two", "a & b <tag>", "plain again", "\nleading line", "after leading line", "", "restart", " ", "last\r\nline", "final"]
+        for width: CGFloat in [180, 320] {
+            for initial in ["", "seed", "\nseed", "a & b"] {
+                let dom = makeDOM()
+                add(dom, 10, "textarea", attrs: [["style", "width:100%;height:auto;font:16px system-ui;line-height:22px;padding:10px;box-sizing:border-box"], ["placeholder", "Write here"]])
+                dom.apply(["op": "prop", "id": 10, "name": "value", "value": initial])
+                var doc = LHDocument(html: dom.serialize(theme: "light"), css: nil, previous: nil)
+                doc.layout(maxWidth: width, preferredWidth: width)
+                for value in values {
+                    dom.resetPatchLog()
+                    dom.apply(["op": "prop", "id": 10, "name": "value", "value": value])
+                    let html = dom.serialize(theme: "light")
+                    let changes = try XCTUnwrap(dom.patchChanges(theme: "light", overrides: [:], previous: [:]))
+                    doc = LHDocument(previous: doc, changes: Data(changes), attribute: WidgetDOM.idAttribute, css: nil) ?? LHDocument(html: html, css: nil, previous: doc)
+                    let fresh = LHDocument(html: html, css: nil, previous: nil)
+                    doc.layout(maxWidth: width, preferredWidth: width)
+                    fresh.layout(maxWidth: width, preferredWidth: width)
+                    XCTAssertEqual(doc.html, html, "\(initial.debugDescription) → \(value.debugDescription)")
+                    XCTAssertEqual(doc.layoutSignature, fresh.layoutSignature, value.debugDescription)
+                    let rect = CGRect(x: 0, y: 0, width: width, height: max(doc.size.height, fresh.size.height))
+                    let a = try XCTUnwrap(doc.copyImage(maxWidth: width, rect: rect, scale: 1)?.dataProvider?.data)
+                    let b = try XCTUnwrap(fresh.copyImage(maxWidth: width, rect: rect, scale: 1)?.dataProvider?.data)
+                    XCTAssertEqual(a as Data, b as Data, value.debugDescription)
+                }
+            }
+        }
     }
 }

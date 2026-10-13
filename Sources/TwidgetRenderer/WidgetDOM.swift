@@ -303,6 +303,7 @@ final class WidgetDOM {
     struct PatchLog {
         var valid = true
         var texts: [ObjectIdentifier: (node: WidgetNode, soleText: Bool)] = [:]
+        var formTexts: [ObjectIdentifier: WidgetNode] = [:]
         var attributes: [ObjectIdentifier: (node: WidgetNode, names: Set<String>)] = [:]
     }
 
@@ -462,10 +463,16 @@ final class WidgetDOM {
                 }
             }
         }
-        for entry in patchLog.texts.values {
+        for (key, entry) in patchLog.texts where patchLog.formTexts[key] == nil {
             guard entry.soleText, let value = WidgetDOM.patchedText(of: entry.node), put(publicId(entry.node), "", value) else {
                 return nil
             }
+        }
+        for node in patchLog.formTexts.values {
+            guard let value = node.formValue else { return nil }
+            var text: [UInt8] = value.hasPrefix("\n") ? [10] : []
+            WidgetDOM.escape(value, into: &text, attribute: false)
+            guard put(publicId(node), "", String(decoding: text, as: UTF8.self)) else { return nil }
         }
         return changes
     }
@@ -764,7 +771,15 @@ final class WidgetDOM {
         guard changed else {
             return
         }
-        invalidateForm(node)
+        if name == "value", tag == "textarea" {
+            node.cache = nil
+            WidgetDOM.bumpRevision()
+            if patchLog.valid, isAttached(node) {
+                patchLog.formTexts[ObjectIdentifier(node)] = node
+            }
+        } else {
+            invalidateForm(node)
+        }
     }
 
     func setFormProperty(_ node: WidgetNode, _ name: String, _ value: Any?) {

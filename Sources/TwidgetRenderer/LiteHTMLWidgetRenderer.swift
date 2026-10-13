@@ -1333,7 +1333,7 @@ public final class LiteHTMLWidgetRenderer {
         guard LiteHTMLWidgetRenderer.styleFastPath, let document = document, document.viewportSize == layoutViewport, onSerialized == nil, canvases.isEmpty, lastLayoutTheme == theme, let last = lastLayoutOverrides else {
             return nil
         }
-        if !LiteHTMLWidgetRenderer.holePatches && (!dom.patchLog.attributes.isEmpty || !dom.patchLog.texts.isEmpty) {
+        if !LiteHTMLWidgetRenderer.holePatches && (!dom.patchLog.attributes.isEmpty || !dom.patchLog.texts.isEmpty || !dom.patchLog.formTexts.isEmpty) {
             return nil
         }
         guard let changes = dom.patchChanges(theme: theme, overrides: overrides, previous: last), !changes.isEmpty else {

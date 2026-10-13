@@ -655,8 +655,11 @@ namespace litehtml
                     s.hole.value  = std::string(base + s.start, s.end - s.start);
                     spans.push_back(std::move(s));
                 }
+                const char* content = e.original_tag.data ? e.original_tag.data + e.original_tag.length : nullptr;
+                const bool textarea_newline = e.tag == GUMBO_TAG_TEXTAREA && content && content < base + size &&
+                                              (*content == '\n' || *content == '\r');
                 const bool child_raw = e.tag == GUMBO_TAG_STYLE || e.tag == GUMBO_TAG_SCRIPT || e.tag == GUMBO_TAG_TITLE ||
-                                       e.tag == GUMBO_TAG_TEXTAREA || e.tag == GUMBO_TAG_NOSCRIPT;
+                                       textarea_newline || e.tag == GUMBO_TAG_NOSCRIPT;
                 for(unsigned int i = 0; i < e.children.length; i++)
                     walk(static_cast<const GumboNode*>(e.children.data[i]), child_raw);
                 break;
