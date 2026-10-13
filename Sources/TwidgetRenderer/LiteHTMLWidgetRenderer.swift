@@ -283,8 +283,8 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public func destroy() {
-        endEditing()
         destroyed = true
+        endEditing()
         magic.cancel()
         for (id, url) in canvasURLs {
             WidgetCanvasImages.unregister(uid + "-" + String(id))

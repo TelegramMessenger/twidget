@@ -252,6 +252,13 @@ extension LiteHTMLWidgetRenderer {
         }
         let id = dom.publicId(node)
         if form.focusedId == id {
+            form.generation += 1
+            if let spec = editorSpec(node, id: id) {
+                let view = documentView
+                DispatchQueue.main.async { [weak view] in
+                    view?.beginEditing(spec)
+                }
+            }
             return
         }
         endEditing()
