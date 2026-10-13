@@ -131,6 +131,41 @@ static bool CacheFastPathEnabled()
     }
 }
 
+- (void)testNestedFlexConstraintsAcrossEditsAndViewportChanges
+{
+    LHDocument *document = nil;
+    const long mismatches = [LHDocument.layoutCacheStats[@"mismatches"] longValue];
+    for(int frame = 0; frame < 10; frame++)
+    {
+        std::string body = "<div data-lh-id='5' style='display:flex;flex-direction:column;min-height:" + std::to_string(180 + frame * 7) + "px;max-width:95%'>";
+        int id = 10;
+        for(int row = 0; row < 4; row++)
+        {
+            body += "<div data-lh-id='" + std::to_string(id++) + "' class='row card' style='min-width:" + std::to_string(40 + frame) + "%;max-width:" + std::to_string(90 - frame) + "%'>";
+            body += "<div data-lh-id='" + std::to_string(id++) + "' style='display:flex;flex:1;min-width:20%;max-width:80%;padding:2%'>";
+            body += "<div data-lh-id='" + std::to_string(id++) + "' style='display:flex;flex-direction:column;min-height:30px;max-height:120px'>";
+            body += "<span data-lh-id='" + std::to_string(id++) + "'>" + (row == frame % 4 ? "Changed label with enough words to wrap onto multiple lines" : "Original label") + "</span>";
+            body += "<span data-lh-id='" + std::to_string(id++) + "' style='align-self:flex-end'>10:42</span></div>";
+            body += "<div data-lh-id='" + std::to_string(id++) + "' style='overflow:hidden;min-width:25%;max-width:60%'>";
+            body += "<i data-lh-id='" + std::to_string(id++) + "' style='float:left;width:12px;height:24px;background:#c00'></i>Float contents";
+            body += "<div data-lh-id='" + std::to_string(id++) + "' style='clear:both'>Below</div></div></div>";
+            body += "<span data-lh-id='" + std::to_string(id++) + "' style='flex:none'>Value</span></div>";
+        }
+        body += "</div>";
+        NSString *html = Page(body);
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:html css:nil previous:document];
+        if(document)
+            XCTAssertTrue(patched.reusedPrevious);
+        for(NSNumber *width in @[@420, @260, @520, @420])
+        {
+            LHDocument *fresh = [[LHDocument alloc] initWithHTML:html css:nil];
+            [self expect:patched like:fresh width:width.doubleValue label:[NSString stringWithFormat:@"constraints %d %@", frame, width]];
+        }
+        document = patched;
+    }
+    XCTAssertEqual([LHDocument.layoutCacheStats[@"mismatches"] longValue], mismatches);
+}
+
 - (void)testNestedSVGFlexMeasurementsAcrossEditsAndViewportChanges
 {
     LHDocument *document = nil;
