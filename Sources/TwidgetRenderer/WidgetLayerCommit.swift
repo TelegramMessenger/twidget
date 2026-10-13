@@ -77,3 +77,45 @@ extension CALayer {
         return sublayers
     }
 }
+
+enum WidgetSurfaceImage {
+    static let imageKey = "twImage"
+
+    static func image(of layer: CALayer) -> Any? {
+        if let contents = layer.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+            return contents
+        }
+        guard layer.contents != nil else {
+            return nil
+        }
+        return layer.value(forKey: imageKey)
+    }
+    static let enabled = ProcessInfo.processInfo.environment["TW_IMAGE_SURFACES"] != "0"
+
+    static func contents(_ image: CGImage) -> Any {
+        guard enabled, !Thread.isMainThread, let surface = surface(image) else {
+            return image
+        }
+        return surface
+    }
+
+    static func surface(_ image: CGImage) -> IOSurfaceRef? {
+        let width = image.width, height = image.height
+        guard width > 0, height > 0, width * height <= 4096 * 4096, let surface = WidgetSurfacePool.make(width: width, height: height) else {
+            return nil
+        }
+        let space = image.colorSpace ?? WidgetDocumentView.surfaceSpace
+        if let plist = space.copyPropertyList() {
+            IOSurfaceSetValue(surface, kIOSurfaceColorSpace, plist)
+        }
+        IOSurfaceLock(surface, [], nil)
+        defer { IOSurfaceUnlock(surface, [], nil) }
+        guard let context = CGContext(data: IOSurfaceGetBaseAddress(surface), width: width, height: height, bitsPerComponent: 8, bytesPerRow: IOSurfaceGetBytesPerRow(surface), space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            return nil
+        }
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        context.flush()
+        return surface
+    }
+}

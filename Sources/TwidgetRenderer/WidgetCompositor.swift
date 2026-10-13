@@ -1296,7 +1296,8 @@ final class WidgetCompositor {
             if target !== layer {
                 layer.contents = nil
             }
-            target.contents = image
+            target.contents = WidgetSurfaceImage.contents(image)
+            target.setValue(image, forKey: WidgetSurfaceImage.imageKey)
             target.contentsScale = WidgetCompositor.rasterScale(scale, want.maxScale)
             target.contentsGravity = .resize
             target.minificationFilter = want.maxScale > 1 && ProcessInfo.processInfo.environment["TW_LINEAR"] == nil ? .trilinear : .linear
@@ -1644,7 +1645,7 @@ final class WidgetCompositor {
             for shadow in (model.twSublayers ?? []) where shadow.name == WidgetEffectLayers.shadowName {
                 WidgetEffectLayers.paintShadow(shadow.presentation() ?? shadow, in: target)
             }
-            if let contents = model.contents ?? model.twSublayers?.first(where: { $0.name == "tw.content" })?.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+            if let contents = WidgetSurfaceImage.image(of: model) ?? model.twSublayers?.first(where: { $0.name == "tw.content" }).flatMap({ WidgetSurfaceImage.image(of: $0) }), CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
                 target.saveGState()
                 target.translateBy(x: 0, y: size.height)
                 target.scaleBy(x: 1, y: -1)
