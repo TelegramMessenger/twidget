@@ -3,6 +3,7 @@
 #include "document_container.h"
 #include "types.h"
 #include <algorithm>
+#include <functional>
 #include <typeinfo>
 
 thread_local std::vector<const litehtml::render_item*>* litehtml::g_paint_trace = nullptr;
@@ -945,6 +946,21 @@ void litehtml::render_item::render_positioned(render_type rt)
 
         el->render_positioned();
     }
+
+    // A transformed or contained box holds the positioned elements inside it (add_positioned) but is
+    // on no m_positioned list unless it is positioned itself, so nothing else would lay them out.
+    std::function<void(render_item*)> holders = [&](render_item* item) {
+        for(const auto& child : item->m_children)
+        {
+            if(child->src_el()->css().get_position() != element_position_static)
+                continue;
+            if(!child->m_positioned.empty())
+                child->render_positioned(rt);
+            else
+                holders(child.get());
+        }
+    };
+    holders(this);
 
     if(!m_positioned.empty())
     {
