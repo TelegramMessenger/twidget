@@ -679,6 +679,22 @@ enum CSSInterpolate {
         if value == value.rounded(), abs(value) < 1e9 {
             return String(Int(value))
         }
+        if value.isFinite, abs(value) < 1e9 {
+            let scaled = (abs(value) * 10000).rounded()
+            let whole = Int(scaled / 10000)
+            var fraction = Int(scaled - Double(whole) * 10000)
+            let sign = value < 0 && scaled != 0 ? "-" : ""
+            if fraction == 0 {
+                return sign + String(whole)
+            }
+            var width = 4
+            while fraction % 10 == 0 {
+                fraction /= 10
+                width -= 1
+            }
+            let digits = String(fraction)
+            return sign + String(whole) + "." + String(repeating: "0", count: width - digits.count) + digits
+        }
         let text = String(format: "%.4f", value).replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
         return text.hasSuffix(".") ? String(text.dropLast()) : text
     }

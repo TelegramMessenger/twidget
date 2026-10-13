@@ -970,6 +970,7 @@ final class WidgetCompositor {
     }
 
     func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
+        ancestorCache.removeAll(keepingCapacity: true)
         if let previous = displaySpace, !CFEqual(previous, space) {
             spaceGeneration += 1
             WidgetCompositor.promotionLock.lock()
@@ -1097,7 +1098,7 @@ final class WidgetCompositor {
             guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                 continue
             }
-            if wanted.keys.contains(where: { WidgetCompositor.isAncestor(id, of: $0, dom: dom) || WidgetCompositor.isAncestor($0, of: id, dom: dom) }) || scriptedCandidates.contains(where: { $0 != id && (WidgetCompositor.isAncestor(id, of: $0, dom: dom) || WidgetCompositor.isAncestor($0, of: id, dom: dom)) }) {
+            if wanted.keys.contains(where: { isAncestor(id, of: $0, dom: dom) || isAncestor($0, of: id, dom: dom) }) || scriptedCandidates.contains(where: { $0 != id && (isAncestor(id, of: $0, dom: dom) || isAncestor($0, of: id, dom: dom)) }) {
                 continue
             }
             let style = WidgetCompositor.style(node)
@@ -1115,7 +1116,7 @@ final class WidgetCompositor {
         }
         for id in wanted.keys {
             var dx: CGFloat = 0, dy: CGFloat = 0
-            for other in wanted.keys where other != id && WidgetCompositor.isAncestor(other, of: id, dom: dom) {
+            for other in wanted.keys where other != id && isAncestor(other, of: id, dom: dom) {
                 if let box = wanted[other]?.box, let reach = reaches[other]?.first {
                     dx += max(box.minX - reach.minX, reach.maxX - box.maxX, 0)
                     dy += max(box.minY - reach.minY, reach.maxY - box.maxY, 0)
@@ -1143,12 +1144,24 @@ final class WidgetCompositor {
             }
         }
         for id in wanted.keys {
-            for other in wanted.keys where other != id && WidgetCompositor.isAncestor(other, of: id, dom: dom) && clips[other] != clips[id] {
+            for other in wanted.keys where other != id && isAncestor(other, of: id, dom: dom) && clips[other] != clips[id] {
                 wanted[id] = nil
             }
         }
+        struct UnobscuredKey: Hashable {
+            let id: Int
+            let x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat
+            let ignoring: Set<String>
+        }
+        var unobscuredMemo: [UnobscuredKey: Bool] = [:]
         func unobscured(_ id: Int, _ reach: CGRect, _ ignoring: Set<String>) -> Bool {
-            return WidgetCompositor.unobscured(document, id, reach, clip: clips[id], ignoring: ignoring)
+            let key = UnobscuredKey(id: id, x: reach.minX, y: reach.minY, width: reach.width, height: reach.height, ignoring: ignoring)
+            if let known = unobscuredMemo[key] {
+                return known
+            }
+            let result = WidgetCompositor.unobscured(document, id, reach, clip: clips[id], ignoring: ignoring)
+            unobscuredMemo[key] = result
+            return result
         }
         func adoptStaticEffects(_ id: Int) -> Bool {
             guard effectTemplates[id] == nil, !animated.contains(id), let values = declarations[id], values["filter"] != nil || values["box-shadow"] != nil else {
@@ -1185,7 +1198,7 @@ final class WidgetCompositor {
                 }
                 let others = obscuring.compactMap { Int($0) }
                 guard others.count == obscuring.count, others.allSatisfy({ other in
-                    wanted[other] == nil && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !WidgetCompositor.isAncestor(other, of: id, dom: dom) && !WidgetCompositor.isAncestor(id, of: other, dom: dom) && boxes[String(other)] != nil
+                    wanted[other] == nil && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !isAncestor(other, of: id, dom: dom) && !isAncestor(id, of: other, dom: dom) && boxes[String(other)] != nil
                 }) else {
                     continue
                 }
@@ -1221,7 +1234,7 @@ final class WidgetCompositor {
             let ignoring = Set(accepted.keys.map { String($0) })
             var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
             for (id, want) in accepted {
-                if animated.contains(where: { accepted[$0] == nil && WidgetCompositor.isAncestor($0, of: id, dom: dom) }) {
+                if animated.contains(where: { accepted[$0] == nil && isAncestor($0, of: id, dom: dom) }) {
                     continue
                 }
                 if log, !(reaches[id]?.contains(where: { unobscured(id, $0, ignoring) }) ?? false) {
@@ -1253,7 +1266,7 @@ final class WidgetCompositor {
                 break
             }
         }
-        while let orphan = accepted.keys.first(where: { id in animated.contains(where: { accepted[$0] == nil && WidgetCompositor.isAncestor($0, of: id, dom: dom) }) }) {
+        while let orphan = accepted.keys.first(where: { id in animated.contains(where: { accepted[$0] == nil && isAncestor($0, of: id, dom: dom) }) }) {
             accepted[orphan] = nil
         }
         if accepted.count > 1 {
@@ -1278,7 +1291,7 @@ final class WidgetCompositor {
         }
         document.setPaintExclusions(Set(wanted.keys.map { String($0) }).union(extraExclusions.map { String($0) }), attribute: WidgetDOM.idAttribute)
         for (id, want) in wanted {
-            let inner = wanted.keys.filter { $0 != id && WidgetCompositor.isAncestor(id, of: $0, dom: dom) }.sorted()
+            let inner = wanted.keys.filter { $0 != id && isAncestor(id, of: $0, dom: dom) }.sorted()
             let owns = effectOwners[id] != nil
             let backdrop = backdrops[id] ?? []
             var effectKey = Hasher()
@@ -1760,16 +1773,20 @@ final class WidgetCompositor {
         return rest
     }
 
-    private static func isAncestor(_ ancestor: Int, of id: Int, dom: WidgetDOM) -> Bool {
-        guard var node = dom.node(id) else {
-            return false
+    private var ancestorCache: [Int: Set<Int>] = [:]
+
+    private func isAncestor(_ ancestor: Int, of id: Int, dom: WidgetDOM) -> Bool {
+        if let known = ancestorCache[id] {
+            return known.contains(ancestor)
         }
-        while let parent = node.parent {
-            if dom.publicId(parent) == ancestor {
-                return true
+        var ancestors = Set<Int>()
+        if var node = dom.node(id) {
+            while let parent = node.parent {
+                ancestors.insert(dom.publicId(parent))
+                node = parent
             }
-            node = parent
         }
-        return false
+        ancestorCache[id] = ancestors
+        return ancestors.contains(ancestor)
     }
 }
