@@ -223,3 +223,70 @@ namespace
 }
 
 @end
+
+@interface FlexColumnOverflowTests : XCTestCase
+@end
+
+@implementation FlexColumnOverflowTests
+
+- (NSDictionary<NSString*, NSValue*>*)bounds:(NSString*)html
+{
+    LHDocument* document = [[LHDocument alloc] initWithHTML:[@"<!doctype html><style>body{margin:0}.k{height:30px;flex:none}</style>" stringByAppendingString:html] css:nil];
+    [document layoutWithMaxWidth:300 preferredWidth:300];
+    return [document boundsByAttribute:@"data-t"];
+}
+
+- (void)testMaxHeightAboveTheHeightKeepsAColumnInOneLineAtItsHeight
+{
+    NSMutableString* kids = [NSMutableString string];
+    for(int i = 0; i < 14; i++)
+        [kids appendString:@"<div class=k></div>"];
+    NSDictionary* b = [self bounds:[NSString stringWithFormat:@"<section data-t=s style='height:200px;max-height:776px;display:flex;flex-direction:column'><div data-t=g style='flex:none;height:10px'></div><div data-t=b style='flex:1;min-height:0;overflow-y:auto'>%@</div></section>", kids]];
+    XCTAssertEqualWithAccuracy([b[@"s"] rectValue].size.height, 200, 0.5);
+    XCTAssertEqualWithAccuracy([b[@"b"] rectValue].origin.x, 0, 0.5);
+    XCTAssertEqualWithAccuracy([b[@"b"] rectValue].origin.y, 10, 0.5);
+    XCTAssertEqualWithAccuracy([b[@"b"] rectValue].size.height, 190, 0.5);
+    b = [self bounds:[NSString stringWithFormat:@"<section data-t=s style='height:200px;max-height:100px;display:flex;flex-direction:column'><div data-t=g style='flex:none;height:10px'></div><div data-t=b style='flex:1;min-height:0;overflow-y:auto'>%@</div></section>", kids]];
+    XCTAssertEqualWithAccuracy([b[@"s"] rectValue].size.height, 100, 0.5);
+    XCTAssertEqualWithAccuracy([b[@"b"] rectValue].size.height, 90, 0.5);
+}
+
+- (void)testScrollContainersShrinkBelowTheirContentInAColumn
+{
+    NSMutableString* kids = [NSMutableString string];
+    for(int i = 0; i < 14; i++)
+        [kids appendString:@"<div class=k></div>"];
+    for(NSString* overflow in @[@"overflow-y:auto", @"overflow:hidden"])
+    {
+        NSDictionary* b = [self bounds:[NSString stringWithFormat:@"<section style='height:200px;display:flex;flex-direction:column'><div style='flex:none;height:10px'></div><div data-t=b style='flex:1;%@'>%@</div></section>", overflow, kids]];
+        XCTAssertEqualWithAccuracy([b[@"b"] rectValue].size.height, 190, 0.5, @"%@", overflow);
+    }
+    NSDictionary* b = [self bounds:[NSString stringWithFormat:@"<section style='height:200px;display:flex;flex-direction:column'><div style='flex:none;height:10px'></div><div data-t=b style='flex:1'>%@</div></section>", kids]];
+    XCTAssertEqualWithAccuracy([b[@"b"] rectValue].size.height, 420, 0.5);
+}
+
+- (void)testAutoHeightWrappingColumnStillWrapsAtMaxHeight
+{
+    NSDictionary* b = [self bounds:@"<section style='width:200px;max-height:65px;display:flex;flex-direction:column;flex-wrap:wrap'><div class=k data-t=a style='width:50px'></div><div class=k data-t=c style='width:50px'></div><div class=k data-t=d style='width:50px'></div></section>"];
+    XCTAssertGreaterThan([b[@"d"] rectValue].origin.x, 0);
+}
+
+- (void)testOverflowingScrollerStaysBelowItsSiblingInAColumn
+{
+    NSMutableString* kids = [NSMutableString string];
+    for(int i = 0; i < 14; i++)
+        [kids appendString:@"<div class=k></div>"];
+    for(NSString* body in @[@"flex:1;display:flex;flex-direction:column;overflow-y:auto", @"flex:1;overflow-y:auto", @"flex:1;display:flex;flex-direction:column"])
+    {
+        NSDictionary* b = [self bounds:[NSString stringWithFormat:@"<div style='position:relative;height:300px'><section data-t=s style='position:absolute;left:0;right:0;bottom:0;height:200px;display:flex;flex-direction:column'>"
+                                                                  @"<div data-t=g style='padding:8px 0 4px;display:grid;place-items:center;flex:none'><i style='display:block;width:36px;height:5px'></i></div>"
+                                                                  @"<div data-t=b style='%@'>%@</div></section></div>", body, kids]];
+        CGRect g = [b[@"g"] rectValue], s = [b[@"s"] rectValue], bb = [b[@"b"] rectValue];
+        XCTAssertEqualWithAccuracy(g.size.width, 300, 0.5, @"%@", body);
+        XCTAssertEqualWithAccuracy(bb.origin.x, 0, 0.5, @"%@", body);
+        XCTAssertEqualWithAccuracy(bb.size.width, 300, 0.5, @"%@", body);
+        XCTAssertEqualWithAccuracy(bb.origin.y, s.origin.y + 17, 0.5, @"%@", body);
+    }
+}
+
+@end

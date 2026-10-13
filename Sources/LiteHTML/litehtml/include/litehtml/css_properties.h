@@ -36,6 +36,8 @@ namespace litehtml
         element_position      m_el_position    = element_position_static;
         text_align            m_text_align     = text_align_start;
         overflow              m_overflow       = overflow_visible;
+        overflow              m_overflow_x     = overflow_visible;
+        overflow              m_overflow_y     = overflow_visible;
         white_space           m_white_space    = white_space_normal;
         style_display         m_display        = display_inline;
         visibility            m_visibility     = visibility_visible;

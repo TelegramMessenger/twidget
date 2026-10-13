@@ -204,8 +204,10 @@ void litehtml::flex_line::distribute_free_space_shrink(pixel_t container_main_si
                     // the line. Set the item’s target main size to its flex base size minus a fraction of the
                     // absolute value of the remaining free space proportional to the ratio.
 
-                    item->main_size = item->base_size + remaining_free_space * item->scaled_flex_shrink_factor /
-                                                            sum_scaled_flex_shrink_factor;
+                    item->main_size = sum_scaled_flex_shrink_factor > 0_px
+                                          ? item->base_size + remaining_free_space * item->scaled_flex_shrink_factor /
+                                                                  sum_scaled_flex_shrink_factor
+                                          : item->base_size;
                 }
             }
         }

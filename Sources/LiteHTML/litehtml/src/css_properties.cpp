@@ -26,7 +26,9 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     m_resize = static_cast<resize>(el->get_property<int>(_resize_, false, resize_none, offset(m_resize)));
     m_box_sizing = static_cast<box_sizing>(
         el->get_property<int>(_box_sizing_, false, box_sizing_content_box, offset(m_box_sizing)));
-    m_overflow = static_cast<overflow>(el->get_property<int>(_overflow_, false, overflow_visible, offset(m_overflow)));
+    m_overflow_x = static_cast<overflow>(el->get_property<int>(_overflow_x_, false, overflow_visible, offset(m_overflow_x)));
+    m_overflow_y = static_cast<overflow>(el->get_property<int>(_overflow_y_, false, overflow_visible, offset(m_overflow_y)));
+    m_overflow   = m_overflow_y != overflow_visible ? m_overflow_y : m_overflow_x;
     m_text_align =
         static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_start, offset(m_text_align)));
     if(m_text_align == text_align_th_center)

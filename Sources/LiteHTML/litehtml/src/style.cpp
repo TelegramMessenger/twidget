@@ -35,6 +35,8 @@ namespace litehtml
         {_float_,                  element_float_strings               },
         {_clear_,                  element_clear_strings               },
         {_overflow_,               overflow_strings                    },
+        {_overflow_x_,             overflow_strings                    },
+        {_overflow_y_,             overflow_strings                    },
         {_appearance_,             appearance_strings                  },
         {_resize_,                 resize_strings                      },
         {_box_sizing_,             box_sizing_strings                  },
@@ -399,6 +401,21 @@ namespace litehtml
         {
             //  =============================  SINGLE KEYWORD  =============================
 
+        case _overflow_:
+            {
+                std::string first  = value.size() >= 1 ? value[0].ident() : "";
+                std::string second = value.size() == 2 ? value[1].ident() : first;
+                auto        x      = m_valid_values.at(_overflow_).value_index(first);
+                auto        y      = m_valid_values.at(_overflow_).value_index(second);
+                if(value.size() <= 2 && x.has_value() && y.has_value())
+                {
+                    add_parsed_property(_overflow_, property_value(*x, important));
+                    add_parsed_property(_overflow_x_, property_value(*x, important));
+                    add_parsed_property(_overflow_y_, property_value(*y, important));
+                }
+            }
+            break;
+
         case _display_:
         case _visibility_:
         case _position_:
@@ -407,7 +424,8 @@ namespace litehtml
         case _appearance_:
         case _resize_:
         case _box_sizing_:
-        case _overflow_:
+        case _overflow_x_:
+        case _overflow_y_:
 
         case _text_align_:
         case _vertical_align_:

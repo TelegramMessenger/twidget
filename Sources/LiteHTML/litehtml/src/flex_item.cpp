@@ -347,7 +347,10 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
     {
         el->render(0_px, 0_px, self_size.new_width(self_size.render_width, containing_block_context::size_mode_content),
                    fmt_ctx);
-        min_size = el->height();
+        min_size = el->css().get_overflow() != overflow_visible &&
+                           self_size.height.type != containing_block_context::cbc_value_type_auto
+                       ? el->render_offset_height()
+                       : el->height();
     } else
     {
         min_size = el->css().get_min_height().calc_percent(self_size.height) + el->render_offset_height();

@@ -51,10 +51,19 @@ litehtml::rendered_width litehtml::render_item_flex::_render_content(pixel_t x, 
             container_main_size = self_size.min_height;
         }
         if(self_size.max_height.type != containing_block_context::cbc_value_type_auto &&
-           self_size.max_height.value > container_main_size)
+           self_size.max_height.type != containing_block_context::cbc_value_type_none)
         {
-            container_main_size = self_size.max_height;
-            single_line         = false;
+            if(self_size.height.type != containing_block_context::cbc_value_type_auto)
+            {
+                if(self_size.max_height.value < container_main_size)
+                {
+                    container_main_size = self_size.max_height;
+                }
+            } else if(css().get_flex_wrap() != flex_wrap_nowrap)
+            {
+                container_main_size = self_size.max_height;
+                single_line         = false;
+            }
         }
     }
 
