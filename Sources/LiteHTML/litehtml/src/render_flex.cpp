@@ -96,6 +96,11 @@ litehtml::rendered_width litehtml::render_item_flex::_render_content(pixel_t x, 
             ret_width += ln.main_size;
         }
         ln.init(container_main_size, fit_container, is_row_direction, self_size, fmt_ctx);
+        if(!is_row_direction && m_lines.size() == 1 && !(self_size.size_mode & containing_block_context::size_mode_content) &&
+           ln.cross_size > self_size.render_width)
+        {
+            ln.cross_size = std::max(0_px, pixel_t(self_size.render_width));
+        }
         sum_cross_size += ln.cross_size;
         sum_main_size   = std::max(sum_main_size, ln.main_size);
         if(reverse)

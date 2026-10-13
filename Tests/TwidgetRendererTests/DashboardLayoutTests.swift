@@ -31,6 +31,17 @@ final class DashboardLayoutTests: XCTestCase {
         }
     }
 
+    func testWrappedBubbleNameDoesNotWidenAColumnFlexSheet() {
+        let doc = document("""
+        <style>*{box-sizing:border-box}.sheet{display:flex;flex-direction:column;width:420px;height:400px}.body{flex:1;display:flex;flex-direction:column;overflow-y:auto;padding:4px 16px}.body>*{flex:none}.title{width:100%;height:20px}.thread{display:flex;flex-direction:column}.msg{display:flex;max-width:86%}.bubble{display:flex;flex-wrap:wrap;column-gap:8px;padding:7px 11px}.who{flex-basis:100%}.time{margin-left:auto}</style>
+        <div class=sheet><div class=body><div class=title id=t></div><div class=seg style='display:grid;grid-template-columns:repeat(4,1fr);gap:6px'><button>Urgent</button><button>High</button><button>Normal</button><button id=d>Low</button></div><div class=thread id=c><div class=msg id=m><div class=bubble><b class=who>Alex Kim</b><span>Happens on 19.1 too.</span><span class=time>10:52 AM</span></div></div></div></div></div>
+        """, width: 420)
+        XCTAssertEqual(doc.bounds(matching: "#t").width, 388, accuracy: 0.5)
+        XCTAssertEqual(doc.bounds(matching: "#c").width, 388, accuracy: 0.5)
+        XCTAssertEqual(doc.bounds(matching: "#m").width, 388 * 0.86, accuracy: 0.5)
+        XCTAssertEqual(doc.bounds(matching: "#d").maxX, 404, accuracy: 0.5)
+    }
+
     func testPaddedGridCardsKeepTheTrackWidth() {
         for sizing in ["content-box", "border-box"] {
             let doc = document("""
