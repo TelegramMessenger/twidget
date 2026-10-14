@@ -43,4 +43,23 @@ static NSData *Render(LHDocument *document, CGFloat scale)
     }
 }
 
+
+- (void)testCollapsedTransformsDrawNothingInsideClips
+{
+    NSString *base = @"<style>body{margin:0;width:240px;height:200px}.s{position:relative;margin:10px;width:200px;height:160px;border-radius:24px;overflow:hidden;background:#eef0f6}.t{position:absolute;left:20px;top:20px;width:60px;height:60px;border-radius:8px;background:#ff2d55;overflow:hidden}.t div{width:30px;height:30px;background:#34c759}</style><div class=s>%@</div>";
+    NSString *empty = [NSString stringWithFormat:base, @""];
+    for(NSString *transform in @[@"scale(0)", @"scale(0,1)", @"scaleX(0) rotate(30deg)", @"matrix(0,0,0,0,10,10)"])
+    {
+        NSString *html = [NSString stringWithFormat:base, [NSString stringWithFormat:@"<div class=t style=\"transform:%@\"><div></div></div>", transform]];
+        for(CGFloat scale : {1.0, 2.0})
+        {
+            LHDocument *reference = [[LHDocument alloc] initWithHTML:empty css:nil];
+            [reference layoutWithMaxWidth:240 preferredWidth:240];
+            LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+            [document layoutWithMaxWidth:240 preferredWidth:240];
+            XCTAssertEqualObjects(Render(reference, scale), Render(document, scale), @"%@", transform);
+        }
+    }
+}
+
 @end

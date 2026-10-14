@@ -2642,6 +2642,11 @@ void LHContainer::apply_clips(CGContextRef ctx, CGRect bounds) const
 {
     CGRect            ink    = CGRectInset(bounds, -1, -1);
     CGAffineTransform matrix = group_matrix();
+    if(!m_clips.empty() && !(std::fabs(matrix.a * matrix.d - matrix.b * matrix.c) > 1e-12))
+    {
+        CGContextClipToRect(ctx, CGRectZero);
+        return;
+    }
     for(const auto& c : m_clips)
     {
         CGRect box = R(c.box);
@@ -2665,6 +2670,11 @@ void LHContainer::apply_clips(CGContextRef ctx, CGRect bounds) const
             continue;
         }
         CGAffineTransform t = CGAffineTransformConcat(c.matrix, CGAffineTransformInvert(matrix));
+        if(!(std::fabs(t.a * t.d - t.b * t.c) > 1e-12))
+        {
+            CGContextClipToRect(ctx, CGRectZero);
+            return;
+        }
         if(m_clip_culling && !CGRectIsNull(bounds) && !CGRectIsInfinite(bounds) && std::fabs(t.a * t.d - t.b * t.c) > 1e-9)
         {
             CGRect local = CGRectInset(CGRectApplyAffineTransform(bounds, CGAffineTransformInvert(t)), -1, -1);
