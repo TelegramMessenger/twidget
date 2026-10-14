@@ -953,6 +953,17 @@ struct LHTextShadow
 
 struct LHContainer::Font
 {
+    static uint64_t allocatePaintIdentity()
+    {
+        static std::atomic<uint64_t> next{1};
+        uint64_t identity = next.load(std::memory_order_relaxed);
+        while(identity && !next.compare_exchange_weak(identity, identity + 1, std::memory_order_relaxed))
+        {
+        }
+        return identity;
+    }
+
+    const uint64_t paintIdentity = allocatePaintIdentity();
     std::shared_ptr<SharedFont> shared;
     CGFloat         shadow_x = 0, shadow_y = 0, shadow_blur = 0;
     lh::web_color   shadow_color = lh::web_color::transparent;
@@ -1894,6 +1905,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
             return;
         lhx::TextStyle style;
         style.nativeFont          = font->shared->font;
+        style.paintIdentity       = font->paintIdentity;
         style.ascent              = float(font->shared->ascent);
         style.descent             = float(font->shared->descent);
         style.underline           = font->underline;
@@ -1906,6 +1918,7 @@ void LHContainer::draw_text(lh::uint_ptr hdc, const char* text, lh::uint_ptr hFo
         style.shadowX             = float(font->shadow_x);
         style.shadowY             = float(font->shadow_y);
         style.shadowBlur          = float(font->shadow_blur);
+        style.hasShadows          = !font->shadows.empty();
         style.smoothing           = font->smoothing;
         m_painter->text(text, style, color, pos);
         return;
@@ -3572,7 +3585,7 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
         std::string key = "shadow:";
         CGFloat phaseX = std::round((r.origin.x - aligned.origin.x) * 1e9) / 1e9;
         CGFloat phaseY = std::round((r.origin.y - aligned.origin.y) * 1e9) / 1e9;
-        for(CGFloat v : {r.size.width, r.size.height, phaseX, phaseY, dx, dy, blur, spread})
+        for(CGFloat v : {phaseX, phaseY, dx, dy, blur, spread})
             AppendNumber(key, v);
         for(auto v : {radius.top_left_x, radius.top_left_y, radius.top_right_x, radius.top_right_y, radius.bottom_right_x, radius.bottom_right_y, radius.bottom_left_x, radius.bottom_left_y})
             AppendNumber(key, F(v));
@@ -3605,7 +3618,11 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
         }
         AppendInteger(key, stretchX > 0);
         AppendInteger(key, stretchY > 0);
-        bool drawn = DrawRasterized(ctx, aligned, key, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, compact, radius, copy); }, true, stretchX, stretchY);
+        std::string rasterKey = key;
+        const CGSize keySize = getenv("LH_NO_SHADOW_RESIZE_CACHE") ? r.size : compact.size;
+        AppendNumber(rasterKey, keySize.width);
+        AppendNumber(rasterKey, keySize.height);
+        bool drawn = DrawRasterized(ctx, aligned, rasterKey, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, compact, radius, copy); }, true, stretchX, stretchY);
         if(!drawn)
         {
             CGContextSaveGState(ctx);
@@ -3619,6 +3636,8 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
             else
                 CGContextEOClip(ctx);
             CGPathRelease(clip);
+            AppendNumber(key, r.size.width);
+            AppendNumber(key, r.size.height);
             drawn = DrawDownsampled(ctx, aligned, key + "|down", blur, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, r, radius, copy); });
             CGContextRestoreGState(ctx);
         }

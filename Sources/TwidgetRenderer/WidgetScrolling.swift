@@ -338,6 +338,7 @@ final class WidgetScrolling {
     private weak var host: CALayer?
     static let enabled = ProcessInfo.processInfo.environment["TW_NO_SCROLL_LAYERS"] == nil
     static let resizeAwareClips = ProcessInfo.processInfo.environment["TW_NO_RESIZE_AWARE_CLIPS"] == nil
+    var allowsCompositorTakeover = ProcessInfo.processInfo.environment["TW_SCROLL_COMPOSITOR_TAKEOVER"] == "1"
 
     struct Gesture {
         var id: Int?
@@ -349,6 +350,36 @@ final class WidgetScrolling {
 
     var promotedIDs: Set<Int> {
         return Set(layers.keys)
+    }
+
+    func compositorBlockedIDs(dom: WidgetDOM, scrollers: [String: [String: Any]]? = nil) -> Set<Int> {
+        var blocked = Set<Int>()
+        var interactive = Set(hitViewports.keys)
+        if let scrollers = scrollers {
+            interactive = Set(scrollers.compactMap { key, info in
+                guard (info["wheel"] as? NSNumber)?.boolValue != false, let viewport = (info["viewport"] as? NSValue)?.rectValue, let content = (info["content"] as? NSValue)?.sizeValue, content.width > viewport.width + 0.5 || content.height > viewport.height + 0.5 else {
+                    return nil
+                }
+                return Int(key)
+            })
+        }
+        interactive.formUnion(offsets.keys)
+        if let id = gesture?.id {
+            interactive.insert(id)
+        }
+        for id in Set(layers.keys).union(interactive) {
+            guard let node = dom.node(id) else {
+                continue
+            }
+            if !allowsCompositorTakeover || interactive.contains(id) || layers[id]?.content.animation(forKey: "tw.settle") != nil {
+                var pending = node.children
+                while let child = pending.popLast() {
+                    blocked.insert(dom.publicId(child))
+                    pending.append(contentsOf: child.children)
+                }
+            }
+        }
+        return blocked
     }
 
     func attach(_ host: CALayer?) {
@@ -369,11 +400,11 @@ final class WidgetScrolling {
         resizedClips.removeAll()
     }
 
-    func update(document: LHDocument, dom: WidgetDOM, animated: Set<Int>, promoted: Set<Int>, styleKey: Int, scale: CGFloat) -> Bool {
+    func update(document: LHDocument, dom: WidgetDOM, animated: Set<Int>, promoted: Set<Int>, styleKey: Int, scale: CGFloat, scrollers: [String: [String: Any]]? = nil) -> Bool {
         var found: [Int: WidgetScrollGeometry] = [:]
         var hits: [Int: CGRect] = [:]
         var sticky = Set<Int>()
-        for (key, info) in document.scrollers(byAttribute: WidgetDOM.idAttribute) {
+        for (key, info) in scrollers ?? document.scrollers(byAttribute: WidgetDOM.idAttribute) {
             guard let id = Int(key), let viewport = (info["viewport"] as? NSValue)?.rectValue, let content = (info["content"] as? NSValue)?.sizeValue else {
                 continue
             }

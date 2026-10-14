@@ -381,6 +381,7 @@ final class WidgetCompositor {
 
     static let maxLayers = ProcessInfo.processInfo.environment["TW_MAX_LAYERS"].flatMap { Int($0) } ?? 256
     static let maxPixels = 4096 * 4096
+    static let localPaintReuse = ProcessInfo.processInfo.environment["TW_LOCAL_PAINT_REUSE"] != "0"
 
     private var promoted: [Int: Promoted] = [:]
     private weak var host: CALayer?
@@ -589,6 +590,7 @@ final class WidgetCompositor {
         let affected = promoted.keys.filter { $0 == id || isAncestor($0, of: id, dom: dom) || isAncestor(id, of: $0, dom: dom) }
         for item in affected {
             rasterSignatures[item] = nil
+            localRasters[item] = nil
         }
         return !affected.isEmpty
     }
@@ -620,6 +622,9 @@ final class WidgetCompositor {
             item.layer.twRemoveFromSuperlayer()
         }
         promoted.removeAll()
+        rasterSignatures.removeAll()
+        localRasters.removeAll()
+        localObservations.removeAll()
         driven.removeAll()
         for container in containers.values {
             container.twRemoveFromSuperlayer()
@@ -1025,7 +1030,7 @@ final class WidgetCompositor {
         return Track(times: keptTimes, transforms: kept.map { $0.transform }, opacities: kept.map { $0.opacity }, effects: effects ? kept.map { $0.effects ?? WidgetEffects() } : [])
     }
 
-    func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = []) {
+    func update(document: LHDocument, animator: WidgetAnimator, dom: WidgetDOM, declarations: [Int: [String: String]], scale: CGFloat, space: CGColorSpace, extraExclusions: Set<Int> = [], blockedIDs: Set<Int> = []) {
         ancestorCache.removeAll(keepingCapacity: true)
         if let previous = displaySpace, !CFEqual(previous, space) {
             spaceGeneration += 1
@@ -1184,6 +1189,31 @@ final class WidgetCompositor {
             scriptedBases[id] = current
             scriptedWanted[id] = (.null, scale)
         }
+        let blockedScriptedIDs = blockedIDs.intersection(scriptedWanted.keys)
+        for id in blockedScriptedIDs {
+            wanted[id] = nil
+            reaches[id] = nil
+            scriptedWanted[id] = nil
+        }
+        var deferredLocalPaint = Set<Int>()
+        if WidgetCompositor.localPaintReuse {
+            for (id, want) in wanted where scriptedWanted[id] != nil && want.maxScale == 1 {
+                guard let previous = localObservations[id], previous.origin != want.box.origin else {
+                    continue
+                }
+                func phase(_ origin: CGPoint) -> CGPoint {
+                    let x = origin.x * scale, y = origin.y * scale
+                    return CGPoint(x: x - x.rounded(.down), y: y - y.rounded(.down))
+                }
+                if phase(previous.origin) != phase(want.box.origin) {
+                    localObservations[id] = (previous.key, want.box.origin)
+                    deferredLocalPaint.insert(id)
+                    wanted[id] = nil
+                    reaches[id] = nil
+                    scriptedWanted[id] = nil
+                }
+            }
+        }
         for id in wanted.keys {
             var dx: CGFloat = 0, dy: CGFloat = 0
             for other in ancestors(of: id, dom: dom) where other != id && wanted[other] != nil {
@@ -1289,7 +1319,7 @@ final class WidgetCompositor {
                 }
                 let others = obscuring.compactMap { Int($0) }
                 guard others.count <= budget, others.count == obscuring.count, others.allSatisfy({ other in
-                    wanted[other] == nil && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !isAncestor(other, of: id, dom: dom) && !isAncestor(id, of: other, dom: dom) && boxes[other] != nil
+                    wanted[other] == nil && !blockedScriptedIDs.contains(other) && !deferredLocalPaint.contains(other) && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !isAncestor(other, of: id, dom: dom) && !isAncestor(id, of: other, dom: dom) && boxes[other] != nil
                 }) else {
                     continue
                 }
@@ -1320,6 +1350,61 @@ final class WidgetCompositor {
                 }
             }
         }
+        var localKeys: [Int: Data] = [:]
+        var localCandidates = Set<Int>()
+        var movingPaint = Set<Int>()
+        if WidgetCompositor.localPaintReuse {
+            var remainingBytes = 4 * 1024 * 1024 - deferredLocalPaint.reduce(0, { $0 + (localObservations[$1]?.key.count ?? 0) })
+            var remainingCandidates = WidgetCompositor.maxLayers - deferredLocalPaint.count
+            for (id, want) in wanted.sorted(by: { (promoted[$0.key] == nil ? 1 : 0, $0.key) < (promoted[$1.key] == nil ? 1 : 0, $1.key) }) where scriptedWanted[id] != nil && want.maxScale == 1 && effectOwners[id] == nil && backdrops[id] == nil {
+                guard remainingCandidates > 0, remainingBytes > 0 else {
+                    break
+                }
+                guard let node = dom.node(id), let transform = parse(WidgetCompositor.style(node)["transform"], box: want.box.size, id: id), transform.a == 1, transform.b == 0, transform.c == 0, transform.d == 1 else {
+                    continue
+                }
+                remainingCandidates -= 1
+                localKeys[id] = document.localPaintKey(attribute: WidgetDOM.idAttribute, value: String(id), scale: WidgetCompositor.rasterScale(scale, want.maxScale))
+                if let key = localKeys[id] {
+                    if key.count > remainingBytes {
+                        localKeys[id] = nil
+                        remainingBytes = 0
+                    } else {
+                        remainingBytes -= key.count
+                    }
+                }
+                if localKeys[id] != nil || localRasters[id] != nil {
+                    localCandidates.insert(id)
+                }
+                if let key = localKeys[id] {
+                    var retainedKey = key
+                    if let previous = localObservations[id] {
+                        if previous.key == key {
+                            retainedKey = previous.key
+                        } else if previous.origin != want.box.origin {
+                            movingPaint.insert(id)
+                        }
+                    }
+                    localKeys[id] = retainedKey
+                    localObservations[id] = (retainedKey, want.box.origin)
+                }
+            }
+        }
+        for id in localObservations.keys where localKeys[id] == nil && !deferredLocalPaint.contains(id) {
+            localObservations[id] = nil
+        }
+        for id in localRasters.keys where localKeys[id] == nil && wanted[id] != nil {
+            localCandidates.insert(id)
+        }
+        for id in movingPaint {
+            wanted[id] = nil
+        }
+        func reusableLocalRaster(_ id: Int, box: CGRect) -> Bool {
+            guard let key = localKeys[id], let cached = localRasters[id], let existing = promoted[id], existing.effects == nil, existing.layer.superlayer != nil, existing.box.size == box.size else {
+                return false
+            }
+            return cached.space == spaceGeneration && cached.key == key
+        }
         var accepted = wanted
         var chosenReach: [Int: CGRect] = [:]
         var paintRank: [Int: Int]?
@@ -1342,22 +1427,25 @@ final class WidgetCompositor {
                     }
                 }
             }
-            func pixels(_ want: (box: CGRect, origin: CGPoint, maxScale: CGFloat)) -> Int {
+            func pixels(_ id: Int, _ want: (box: CGRect, origin: CGPoint, maxScale: CGFloat)) -> Int {
+                if reusableLocalRaster(id, box: want.box), let cached = localRasters[id] {
+                    return cached.pixels
+                }
                 let factor = WidgetCompositor.rasterScale(scale, want.maxScale)
                 return Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
             }
             var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
-            if next.count <= WidgetCompositor.maxLayers && next.values.reduce(0, { $0 + pixels($1) }) <= WidgetCompositor.maxPixels {
+            if next.count <= WidgetCompositor.maxLayers && next.reduce(0, { $0 + pixels($1.key, $1.value) }) <= WidgetCompositor.maxPixels {
                 admitted = next
             } else {
                 if paintRank == nil {
-                    let order = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(wanted.keys.map { String($0) }))
+                    let order = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(wanted.keys.map { String($0) }), includingScrollContent: true)
                     paintRank = Dictionary(order.compactMap { key, value in Int(key).map { ($0, value.intValue) } }, uniquingKeysWith: { max($0, $1) })
                 }
                 let rank = paintRank ?? [:]
                 var budget = WidgetCompositor.maxPixels
                 for (id, want) in next.sorted(by: { (rank[$0.key] ?? -1, $0.key) > (rank[$1.key] ?? -1, $1.key) }) {
-                    let cost = pixels(want)
+                    let cost = pixels(id, want)
                     if admitted.count >= WidgetCompositor.maxLayers || cost > budget {
                         break
                     }
@@ -1392,9 +1480,8 @@ final class WidgetCompositor {
         scripted = scriptedWanted.filter { accepted[$0.key] != nil && !$0.value.reach.isNull }
         overlapIDs = overlapAdded.filter { accepted[$0] != nil }
         var order: [String: NSNumber] = [:]
-        if Set(wanted.keys) != Set(promoted.keys) || wanted.count > 1 && zOrderStale {
-            order = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(wanted.keys.map { String($0) }))
-            zOrderStale = false
+        if wanted.count > 1 || Set(wanted.keys) != Set(promoted.keys) {
+            order = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(wanted.keys.map { String($0) }), includingScrollContent: true)
         }
         for (id, item) in promoted where wanted[id] == nil {
             removeEffectAnimations(id)
@@ -1414,10 +1501,21 @@ final class WidgetCompositor {
             effectKey.combine(effectTemplates[id]?.parameters ?? [])
             effectKey.combine(spaceGeneration)
             let signature = WidgetCompositor.contentSignature(id, dom: dom, box: want.box, scale: WidgetCompositor.rasterScale(scale, want.maxScale), styleKey: styleKey ^ inner.hashValue ^ effectKey.finalize())
-            if let signature = signature, let existing = promoted[id], rasterSignatures[id] == signature, existing.layer.superlayer != nil {
+            let reuse = localCandidates.contains(id) ? inner.isEmpty && reusableLocalRaster(id, box: want.box) : signature != nil && rasterSignatures[id] == signature
+            if let signature = signature, var existing = promoted[id], existing.layer.superlayer != nil, reuse {
+                existing.ink = existing.ink.offsetBy(dx: want.box.minX - existing.box.minX, dy: want.box.minY - existing.box.minY)
+                existing.box = want.box
+                existing.origin = want.origin
+                let anchor = CGPoint(x: want.box.minX + want.origin.x, y: want.box.minY + want.origin.y)
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                existing.layer.anchorPoint = CGPoint(x: (anchor.x - existing.ink.minX) / existing.ink.width, y: (anchor.y - existing.ink.minY) / existing.ink.height)
                 if let index = order[String(id)] {
                     WidgetCompositor.setOrder(existing.layer, 1 + CGFloat(index.intValue) * 1e-6)
                 }
+                CATransaction.commit()
+                promoted[id] = existing
+                rasterSignatures[id] = signature
                 continue
             }
             var ink = CGRect.zero, border = CGRect.zero
@@ -1472,9 +1570,13 @@ final class WidgetCompositor {
             }
             promoted[id] = Promoted(layer: layer, box: border, origin: want.origin, ink: ink, effects: effects, template: owns ? effectTemplates[id] : nil)
             rasterSignatures[id] = signature
+            localRasters[id] = localKeys[id].map { LocalRaster(key: $0, space: spaceGeneration, pixels: image.width * image.height) }
         }
         for id in rasterSignatures.keys where promoted[id] == nil {
             rasterSignatures[id] = nil
+        }
+        for id in localRasters.keys where promoted[id] == nil {
+            localRasters[id] = nil
         }
         var usedContainers: Set<ObjectIdentifier> = []
         for container in containers.values {
@@ -1571,8 +1673,6 @@ final class WidgetCompositor {
             return
         }
         layer.setValue(value, forKey: orderKey)
-        let flat = layer.superlayer?.twSublayers?.contains { ($0.value(forKey: orderKey) as? CGFloat) != nil && flattens($0) } ?? false
-        layer.zPosition = flat || flattens(layer) ? 0 : value
     }
 
     static func orderSublayers(of parent: CALayer, members: Set<ObjectIdentifier>) {
@@ -1755,8 +1855,14 @@ final class WidgetCompositor {
     }
 
     private var rasterSignatures: [Int: Int] = [:]
+    private struct LocalRaster {
+        let key: Data
+        let space: Int
+        let pixels: Int
+    }
+    private var localRasters: [Int: LocalRaster] = [:]
+    private var localObservations: [Int: (key: Data, origin: CGPoint)] = [:]
     var styleKey = 0
-    var zOrderStale = true
 
     static func contentSignature(_ id: Int, dom: WidgetDOM, box: CGRect, scale: CGFloat, styleKey: Int) -> Int? {
         var hasher = Hasher()

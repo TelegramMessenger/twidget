@@ -5,6 +5,8 @@
 
 #include "LHContainer.h"
 #include "LHSimpleText.h"
+#include "lhx_local_paint_key.h"
+#include "lhx_alpha_bounds.h"
 #include "render_item.h"
 #include "render_inline_context.h"
 #include "html_tag.h"
@@ -18,6 +20,7 @@
 #include <cstring>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -139,6 +142,20 @@ static bool SubtreeNeedsBackdrop(const lh::element *root)
         if(SubtreeNeedsBackdrop(child.get()))
             return true;
     return false;
+}
+
+static void IncludeScrollSubtree(lh::document &document, const lh::element *root)
+{
+    for(auto it = document.skip_scroll_content.begin(); it != document.skip_scroll_content.end();)
+    {
+        auto owner = *it;
+        while(owner && owner != root)
+            owner = owner->parent().get();
+        if(owner == root)
+            it = document.skip_scroll_content.erase(it);
+        else
+            ++it;
+    }
 }
 
 static bool ParseKeyInteger(const char *text, int64_t &out)
@@ -603,6 +620,10 @@ static CGFloat ChangedBottom(const std::vector<LHDrawOp> &ops, const std::unorde
 struct PixelSnap
 {
     float saved;
+    explicit PixelSnap(CGFloat scale) : saved(lh::pixel_snap_scale())
+    {
+        lh::pixel_snap_scale() = scale >= 1 && scale <= 16 && std::isfinite(scale) ? static_cast<float>(scale) : 1.0f;
+    }
     explicit PixelSnap(CGContextRef ctx) : saved(lh::pixel_snap_scale())
     {
         const CGAffineTransform m = CGContextGetCTM(ctx);
@@ -763,15 +784,20 @@ struct LHCoverVisit
     CGContextRef ctx = [self createContextWithWidth:1 height:1];
     if(!ctx)
         return NO;
+    auto saved = _doc->skip_paint;
+    auto savedScroll = _doc->skip_scroll_content;
+    auto savedBackgrounds = _doc->skip_background_images;
     [self resolveExclusionsLocked];
-    auto saved        = _doc->skip_paint;
     lh::g_paint_trace = &_paintTrace;
     _doc->skip_paint.clear();
+    _doc->skip_scroll_content.clear();
     _backdropDepth++;
     _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, nullptr);
     _backdropDepth--;
     lh::g_paint_trace = nullptr;
-    _doc->skip_paint  = saved;
+    _doc->skip_paint = std::move(saved);
+    _doc->skip_scroll_content = std::move(savedScroll);
+    _doc->skip_background_images = std::move(savedBackgrounds);
     CGContextRelease(ctx);
     _paintTraceValid = YES;
     _paintTraceGeneration++;
@@ -1996,37 +2022,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     const size_t   pw = CGBitmapContextGetWidth(ctx), ph = CGBitmapContextGetHeight(ctx), row = CGBitmapContextGetBytesPerRow(ctx);
     if(step == 0 || !data || CGBitmapContextGetBitsPerPixel(ctx) != 32 || (CGBitmapContextGetBitmapInfo(ctx) & kCGBitmapAlphaInfoMask) != kCGImageAlphaPremultipliedFirst || (CGBitmapContextGetBitmapInfo(ctx) & kCGBitmapByteOrderMask) != kCGBitmapByteOrder32Little)
         return ink;
-    size_t minX = pw, minY = ph, maxX = 0, maxY = 0;
-    for(size_t py = 0; py < ph; py++)
-    {
-        const uint32_t* line = reinterpret_cast<const uint32_t*>(data + py * row);
-        size_t first = pw;
-        for(size_t px = 0; px < pw; px++)
-        {
-            if(line[px] >> 24)
-            {
-                first = px;
-                break;
-            }
-        }
-        if(first == pw)
-            continue;
-        size_t last = first;
-        for(size_t px = pw; px-- > first;)
-        {
-            if(line[px] >> 24)
-            {
-                last = px;
-                break;
-            }
-        }
-        const size_t top = py;
-        minX = std::min(minX, first);
-        maxX = std::max(maxX, last + 1);
-        minY = std::min(minY, top);
-        maxY = std::max(maxY, top + 1);
-    }
-    CGRect painted = minX < maxX ? CGRectMake(ink.origin.x + minX / scale, ink.origin.y + minY / scale, (maxX - minX) / scale, (maxY - minY) / scale) : CGRectNull;
+    lhx::Alpha8Bounds bounds;
+    if(ph != 0 && row > std::numeric_limits<size_t>::max() / ph)
+        return ink;
+    if(!lhx::alpha8Bounds<4, 3>(data, row * ph, pw, ph, row, bounds))
+        return ink;
+    CGRect painted = bounds.empty() ? CGRectNull : CGRectMake(ink.origin.x + bounds.left / scale, ink.origin.y + bounds.top / scale, (bounds.right - bounds.left) / scale, (bounds.bottom - bounds.top) / scale);
     CGRect wanted = CGRectIntersection(CGRectUnion(painted, box), ink);
     if(CGRectIsNull(wanted) || CGRectIsEmpty(wanted))
         return ink;
@@ -2072,11 +2073,14 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextTranslateCTM(ctx, -ink.origin.x, -ink.origin.y);
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
-    auto skipped = _doc->skip_paint;
+    auto savedPaint = _doc->skip_paint;
+    auto savedScroll = _doc->skip_scroll_content;
+    auto savedBackgrounds = _doc->skip_background_images;
     _snapshotDepth++;
     [self resolveExclusionsLockedInRoot:ri->src_el()];
     _snapshotDepth--;
     _doc->skip_paint.erase(ri->src_el().get());
+    IncludeScrollSubtree(*_doc, ri->src_el().get());
     PixelSnap snap(ctx);
     _doc->bare_effects = ri->src_el().get();
     _doc->bare_shadows = bareShadows;
@@ -2085,6 +2089,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         DrawAsStackingContext(ri, reinterpret_cast<lh::uint_ptr>(ctx), x, y);
     _doc->bare_effects = nullptr;
     _doc->bare_shadows = false;
+    _doc->skip_paint = std::move(savedPaint);
+    _doc->skip_scroll_content = std::move(savedScroll);
+    _doc->skip_background_images = std::move(savedBackgrounds);
     CGRect tight = TightInk(ctx, ink, box, scale);
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
@@ -2113,6 +2120,63 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
             radiiOut[i] = std::max<CGFloat>(0, values[i]);
     }
     return image;
+}
+
+- (NSData *)localPaintKeyForAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri || !std::isfinite(scale) || scale < 1 || scale > 16)
+        return nil;
+    static const std::unordered_set<std::string> tags{"div", "span", "p", "section", "article", "header", "footer", "main", "aside", "nav", "b", "strong", "i", "em", "small", "label", "code", "pre", "h1", "h2", "h3", "h4", "h5", "h6", "br"};
+    std::vector<std::shared_ptr<lh::render_item>> pending{ri};
+    size_t count = 0;
+    while(!pending.empty())
+    {
+        auto item = std::move(pending.back());
+        pending.pop_back();
+        if(++count > 512)
+            return nil;
+        const auto &css = item->css();
+        if(!css.get_filter().empty() || !css.get_backdrop_filter().empty() || !css.get_clip_path().empty() ||
+           css.get_position() == lh::element_position_fixed || css.get_position() == lh::element_position_sticky ||
+           (item != ri && css.is_paint_group()))
+            return nil;
+        if(!dynamic_cast<lh::el_text *>(item->src_el().get()) && !tags.count(item->src_el()->get_tagName()))
+            return nil;
+        for(const auto &child : item->children())
+            pending.push_back(child);
+    }
+    const CGRect box = BorderBox(ri);
+    lhx::LocalPaintKey key(box.origin.x, box.origin.y, scale);
+    auto savedPaint = _doc->skip_paint;
+    auto savedScroll = _doc->skip_scroll_content;
+    auto savedBackgrounds = _doc->skip_background_images;
+    _snapshotDepth++;
+    [self resolveExclusionsLockedInRoot:ri->src_el()];
+    _snapshotDepth--;
+    _doc->skip_paint.erase(ri->src_el().get());
+    IncludeScrollSubtree(*_doc, ri->src_el().get());
+    const lh::position placement = ri->get_placement();
+    const lh::pixel_t x = placement.x - ri->pos().x;
+    const lh::pixel_t y = placement.y - ri->pos().y;
+    _container->set_painter(&key);
+    _doc->bare_effects = ri->src_el().get();
+    {
+        PixelSnap snap(scale);
+        ri->src_el()->draw(lh::uint_ptr(0), x, y, nullptr, ri);
+        if(ri->is_visible())
+            DrawAsStackingContext(ri, lh::uint_ptr(0), x, y);
+    }
+    _doc->bare_effects = nullptr;
+    _container->set_painter(nullptr);
+    _doc->skip_paint = std::move(savedPaint);
+    _doc->skip_scroll_content = std::move(savedScroll);
+    _doc->skip_background_images = std::move(savedBackgrounds);
+    if(!key.valid())
+        return nil;
+    return [NSData dataWithBytes:key.bytes().data() length:key.bytes().size()];
 }
 
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value isolatedInRect:(CGRect)rect
@@ -2190,11 +2254,32 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values
 {
+    return [self paintOrderOfAttribute:attribute values:values includingScrollContent:NO];
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values includingScrollContent:(BOOL)includingScrollContent
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     NSMutableDictionary<NSString *, NSNumber *> *result = [NSMutableDictionary dictionary];
     if(!_doc || !_doc->root_render() || values.count == 0)
         return result;
+    if(includingScrollContent)
+    {
+        if(![self ensurePaintTraceLocked])
+            return result;
+        const char *key = attribute.UTF8String;
+        for(size_t index = 0; index < _paintTrace.size(); index++)
+        {
+            const char *v = _paintTrace[index]->src_el()->get_attr(key);
+            if(!v)
+                continue;
+            NSString *string = @(v);
+            if([values containsObject:string] && !result[string])
+                result[string] = @(index);
+        }
+        return result;
+    }
     std::vector<const lh::render_item *> trace;
     trace.reserve(512);
     CGContextRef ctx = [self createContextWithWidth:1 height:1];

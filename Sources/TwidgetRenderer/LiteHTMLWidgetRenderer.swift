@@ -1190,9 +1190,10 @@ public final class LiteHTMLWidgetRenderer {
         var scrollersChanged = svgAdded
         if let document = document {
             compositor.attach(documentView.contentLayer)
-            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? WidgetDocumentView.lastWindowSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
+            let scrollers = document.scrollers(byAttribute: WidgetDOM.idAttribute)
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? WidgetDocumentView.lastWindowSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded, blockedIDs: scrolling.compositorBlockedIDs(dom: dom, scrollers: scrollers))
             scrolling.attach(documentView.contentLayer)
-            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale) || svgAdded
+            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale, scrollers: scrollers) || svgAdded
             documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
             statsLock.lock()
             publishedComposited = compositor.ids.count

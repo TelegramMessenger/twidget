@@ -101,4 +101,52 @@ final class ScopedExclusionTests: XCTestCase {
             XCTAssertEqual(try snapshot(actual, "panel"), try snapshot(expected, "panel"), "primed=\(primed)")
         }
     }
+
+    func testAdmissionSeesScrollOwnedDescendantsAndTheirOverlaps() throws {
+        for indexed in [false, true] {
+            for primed in [false, true] {
+                for overlapping in [false, true] {
+                    let html = "<style>body{margin:0}.clip{position:relative;width:100px;height:40px;overflow:hidden;background:blue}.track{width:300px;height:32px;background:red}.cover{position:absolute;left:40px;top:\(overlapping ? 0 : 60)px;width:20px;height:20px;background:lime}</style><div class='clip' id='window'><div class='track' id='track'></div><div class='cover' id='cover'></div></div>"
+                    let document = LHDocument(html: html, css: nil)
+                    _ = document.layout(maxWidth: 100, preferredWidth: 100)
+                    document.setValue(!indexed, forKey: "obscuringCacheDisabled")
+                    let rect = CGRect(x: 0, y: 0, width: 100, height: 40)
+                    let expected = overlapping ? ["cover"] : []
+                    if primed {
+                        XCTAssertEqual(document.elementsObscuring(attribute: "id", value: "track", in: rect, ignoring: [], clipped: true), expected)
+                    }
+                    document.setScrollContentExclusions(["window"], attribute: "id")
+                    let before = try pixels(document.copyImage(maxWidth: 100, rect: rect, scale: 2))
+                    XCTAssertEqual(document.elementsObscuring(attribute: "id", value: "track", in: rect, ignoring: [], clipped: true), expected, "indexed=\(indexed) primed=\(primed) overlapping=\(overlapping)")
+                    XCTAssertEqual(document.elementsObscuring(attribute: "id", value: "track", in: rect, ignoring: ["cover"], clipped: true), [])
+                    XCTAssertNil(document.paintOrder(attribute: "id", values: ["track"])["track"])
+                    let order = document.paintOrder(attribute: "id", values: ["track", "cover"], includingScrollContent: true)
+                    XCTAssertNotNil(order["track"])
+                    if overlapping {
+                        XCTAssertLessThan(try XCTUnwrap(order["track"]).intValue, try XCTUnwrap(order["cover"]).intValue)
+                    }
+                    XCTAssertEqual(try pixels(document.copyImage(maxWidth: 100, rect: rect, scale: 2)), before)
+                    document.setScrollContentExclusions([], attribute: "id")
+                    XCTAssertEqual(document.elementsObscuring(attribute: "id", value: "track", in: rect, ignoring: [], clipped: true), expected)
+                }
+            }
+        }
+    }
+
+    func testBackdropSamplingPreservesScrollOwnershipAfterAdmission() throws {
+        for primed in [false, true] {
+            func page(hidden: Bool) -> LHDocument {
+                let html = "<style>body{margin:0;width:100px;height:100px;background:blue}#window{position:absolute;width:100px;height:100px;overflow:hidden}#track{height:200px;background:red;visibility:\(hidden ? "hidden" : "visible")}#panel{position:absolute;width:100px;height:100px}#glass{width:100px;height:100px;backdrop-filter:blur(3px);background:#ffffff22}</style><div id='window'><div id='track'></div></div><div id='panel'><div id='glass'></div></div>"
+                let document = LHDocument(html: html, css: nil)
+                _ = document.layout(maxWidth: 100, preferredWidth: 100)
+                return document
+            }
+            let actual = page(hidden: false)
+            actual.setScrollContentExclusions(["window"], attribute: "id")
+            if primed {
+                _ = actual.elementsObscuring(attribute: "id", value: "track", in: CGRect(x: 0, y: 0, width: 100, height: 100), ignoring: [], clipped: true)
+            }
+            XCTAssertEqual(try snapshot(actual, "panel"), try snapshot(page(hidden: true), "panel"), "primed=\(primed)")
+        }
+    }
 }
