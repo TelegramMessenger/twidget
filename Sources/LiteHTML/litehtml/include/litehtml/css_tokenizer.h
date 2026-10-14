@@ -190,6 +190,8 @@ namespace litehtml
 
         css_token_vector tokenize();
 
+        static double convert_string_to_number(const std::string& str);
+
       private:
         // Input stream. Valid UTF-8; no NUL bytes. https://www.w3.org/TR/css-syntax-3/#input-stream
         std::string str;
@@ -228,7 +230,6 @@ namespace litehtml
         std::string consume_ident_sequence();
 
         static bool   would_start_a_number(int x, int y, int z);
-        static double convert_string_to_number(const std::string& str);
         double        consume_number(css_number_type& number_type);
         css_token     consume_numeric_token();
 

@@ -664,8 +664,16 @@ namespace litehtml
             }
         }
         auto  doc = get_document();
-        style scratch;
-        scratch.add(normalize(patch, f_componentize), "", doc->container());
+        style            scratch;
+        css_token_vector fast;
+        if(names.size() == 1 && names[0] == _transform_ && patch.size() > 11 &&
+           patch.compare(0, 10, "transform:") == 0 && patch.back() == ';' &&
+           fast_transform_tokens(patch.substr(10, patch.size() - 11), fast))
+        {
+            if(!doc->container() || doc->container()->sanitize_declaration("transform", fast))
+                scratch.add_property(_transform_, fast, "", false, doc->container());
+        } else
+            scratch.add(normalize(patch, f_componentize), "", doc->container());
         std::vector<string_id> ids;
         for(string_id name : names)
         {

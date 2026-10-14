@@ -682,6 +682,174 @@ namespace litehtml
         return true;
     }
 
+    static bool fast_alpha(char c)
+    {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    }
+
+    static bool fast_digit(char c)
+    {
+        return c >= '0' && c <= '9';
+    }
+
+    static bool fast_one_of(const std::string& word, std::initializer_list<const char*> list)
+    {
+        std::string low = lowcase(word);
+        for(const char* item : list)
+        {
+            if(low == item)
+                return true;
+        }
+        return false;
+    }
+
+    bool fast_transform_tokens(const std::string& value, css_token_vector& tokens)
+    {
+        tokens.clear();
+        const size_t size = value.size();
+        if(size == 0 || size > 512)
+            return false;
+        auto ws = [](char c) { return c == ' ' || c == '\t' || c == '\n'; };
+        for(char c : value)
+        {
+            if(!(fast_alpha(c) || fast_digit(c) || ws(c) || c == '.' || c == ',' || c == '+' || c == '-' || c == '(' ||
+                 c == ')' || c == '%'))
+                return false;
+        }
+        css_token_vector flat;
+        size_t           i = 0;
+        auto             whitespace = [&]() {
+            size_t start = i;
+            while(i < size && ws(value[i]))
+                i++;
+            if(i > start)
+            {
+                css_token tok(WHITESPACE);
+                tok.repr = value.substr(start, i - start);
+                flat.push_back(std::move(tok));
+            }
+        };
+        auto word = [&]() {
+            size_t start = i;
+            while(i < size && fast_alpha(value[i]))
+                i++;
+            return value.substr(start, i - start);
+        };
+        auto ends_ident = [&]() {
+            return i >= size || !(fast_alpha(value[i]) || fast_digit(value[i]) || value[i] == '-');
+        };
+        whitespace();
+        if(i < size && fast_alpha(value[i]))
+        {
+            size_t      start = i;
+            std::string name  = word();
+            if(lowcase(name) == "none" && ends_ident() && (i >= size || value[i] != '('))
+            {
+                css_token tok(IDENT, name);
+                tok.repr = value.substr(start, i - start);
+                flat.push_back(std::move(tok));
+                whitespace();
+                if(i != size)
+                    return false;
+                tokens = normalize(flat, f_componentize | f_remove_whitespace);
+                return true;
+            }
+            i = start;
+        }
+        int functions = 0;
+        while(i < size)
+        {
+            size_t      start = i;
+            std::string name  = word();
+            if(name.empty() || i >= size || value[i] != '(' || ++functions > 32 ||
+               !fast_one_of(name, {"translate", "translatex", "translatey", "rotate", "scale", "scalex", "scaley",
+                                   "skewx", "skewy", "matrix"}))
+                return false;
+            i++;
+            css_token fn(FUNCTION, name);
+            fn.repr = value.substr(start, i - start);
+            flat.push_back(std::move(fn));
+            int args = 0;
+            while(true)
+            {
+                whitespace();
+                if(i >= size)
+                    return false;
+                char c = value[i];
+                if(c == ')')
+                {
+                    css_token tok(RIGHT_PAREN);
+                    tok.repr = ")";
+                    flat.push_back(std::move(tok));
+                    i++;
+                    break;
+                }
+                if(c == ',')
+                {
+                    css_token tok(COMMA);
+                    tok.repr = ",";
+                    flat.push_back(std::move(tok));
+                    i++;
+                    continue;
+                }
+                size_t num = i;
+                if(c == '+' || c == '-')
+                    i++;
+                size_t digits = i;
+                while(i < size && fast_digit(value[i]))
+                    i++;
+                bool integral = i > digits;
+                bool fraction = false;
+                if(i + 1 < size && value[i] == '.' && fast_digit(value[i + 1]))
+                {
+                    i++;
+                    while(i < size && fast_digit(value[i]))
+                        i++;
+                    fraction = true;
+                }
+                if(!integral && !fraction)
+                    return false;
+                if(i - num > 32)
+                    return false;
+                double number = css_tokenizer::convert_string_to_number(value.substr(num, i - num));
+                if(!std::isfinite(number) || std::fabs(number) > 1e9)
+                    return false;
+                css_number_type type = fraction ? css_number_number : css_number_integer;
+                if(i < size && value[i] == '%')
+                {
+                    i++;
+                    css_token tok(PERCENTAGE, static_cast<float>(number));
+                    tok.repr = value.substr(num, i - num);
+                    flat.push_back(std::move(tok));
+                } else if(i < size && fast_alpha(value[i]))
+                {
+                    std::string unit = word();
+                    if(!ends_ident() || !fast_one_of(unit, {"px", "deg", "rad", "turn"}))
+                        return false;
+                    css_token tok(DIMENSION, static_cast<float>(number), type, unit);
+                    tok.repr = value.substr(num, i - num);
+                    flat.push_back(std::move(tok));
+                } else
+                {
+                    css_token tok(NUMBER, static_cast<float>(number), type);
+                    tok.repr = value.substr(num, i - num);
+                    flat.push_back(std::move(tok));
+                }
+                if(++args > 6)
+                    return false;
+                if(i < size && !(ws(value[i]) || value[i] == ',' || value[i] == ')'))
+                    return false;
+            }
+            if(args == 0)
+                return false;
+            whitespace();
+        }
+        if(functions == 0)
+            return false;
+        tokens = normalize(flat, f_componentize | f_remove_whitespace);
+        return true;
+    }
+
     bool parse_transform(const css_token_vector& tokens, transform_vector& functions)
     {
         functions.clear();

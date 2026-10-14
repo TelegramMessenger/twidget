@@ -195,6 +195,7 @@ namespace litehtml
 
     bool parse_box_shadow(const css_token_vector& tokens, box_shadow_vector& shadows, document_container* container);
     bool parse_transform(const css_token_vector& tokens, transform_vector& functions);
+    bool fast_transform_tokens(const std::string& value, css_token_vector& tokens);
     bool parse_filter(const css_token_vector& tokens, filter_vector& functions, document_container* container);
     bool parse_transform_origin(const css_token_vector& tokens, css_length& x, css_length& y);
     bool parse_grid_track_list(const css_token_vector& tokens, grid_track_list& list);
