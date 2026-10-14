@@ -104,6 +104,37 @@ static bool NeedsViewportHeight(const lh::document::ptr &doc)
     return false;
 }
 
+struct LHDeclarationsEntry
+{
+    NSDictionary *value;
+    NSArray      *key;
+    uint64_t      epoch;
+    uint64_t      generation;
+};
+
+static bool ParseKeyInteger(const char *text, int64_t &out)
+{
+    const char *p = text;
+    bool negative = false;
+    if(*p == '-' || *p == '+')
+        negative = *p++ == '-';
+    if(!*p)
+        return false;
+    uint64_t magnitude = 0;
+    const uint64_t limit = negative ? uint64_t(INT64_MAX) + 1 : uint64_t(INT64_MAX);
+    for(; *p; p++)
+    {
+        if(*p < '0' || *p > '9')
+            return false;
+        const uint64_t digit = uint64_t(*p - '0');
+        if(magnitude > (limit - digit) / 10)
+            return false;
+        magnitude = magnitude * 10 + digit;
+    }
+    out = negative ? int64_t(0 - magnitude) : int64_t(magnitude);
+    return true;
+}
+
 static void CollectPositionedZ(const std::shared_ptr<lh::render_item> &item, std::set<int> &z)
 {
     for(const auto &child : item->children())
@@ -1597,9 +1628,11 @@ static std::string MasterWithCSS(NSString *css)
     const lh::position placement = ri->get_placement();
     const lh::pixel_t  x         = placement.x - ri->pos().x;
     const lh::pixel_t  y         = placement.y - ri->pos().y;
+    lh::position viewport = placement;
+    viewport += ri->get_paddings();
     CGContextTranslateCTM(ctx, 0, ph);
     CGContextScaleCTM(ctx, scale, -scale);
-    CGContextTranslateCTM(ctx, -(placement.x.value() + rect.origin.x), -(placement.y.value() + rect.origin.y));
+    CGContextTranslateCTM(ctx, -(viewport.x.value() + rect.origin.x), -(viewport.y.value() + rect.origin.y));
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
     _snapshotDepth++;
@@ -1612,7 +1645,7 @@ static std::string MasterWithCSS(NSString *css)
     _doc->unclipped_scroll            = ri->src_el().get();
     const bool savedCull              = _doc->culls_paint();
     _doc->set_culls_paint(true);
-    lh::position clip(static_cast<float>(placement.x.value() + rect.origin.x), static_cast<float>(placement.y.value() + rect.origin.y), static_cast<float>(rect.size.width), static_cast<float>(rect.size.height));
+    lh::position clip(static_cast<float>(viewport.x.value() + rect.origin.x), static_cast<float>(viewport.y.value() + rect.origin.y), static_cast<float>(rect.size.width), static_cast<float>(rect.size.height));
     {
         PixelSnap snap(ctx);
         std::set<int> z;
@@ -2518,15 +2551,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return out;
 }
 
-- (NSDictionary<NSString *, NSValue *> *)boundsWithAttribute:(NSString *)name transformed:(BOOL)transformed
+- (void)visitBoundsLocked:(NSString *)name transformed:(BOOL)transformed visitor:(const std::function<void(const char *, CGRect)> &)visitor
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    [self restoreLocked];
-    NSMutableDictionary<NSString *, NSValue *> *result = [NSMutableDictionary dictionary];
     if(!_doc || !_doc->root_render())
-        return result;
+        return;
     const char *key = name.UTF8String;
-    std::unordered_map<std::string, CGRect> boxes;
     std::function<void(const std::shared_ptr<lh::render_item> &, const lh::transform_matrix&)> visit = [&](const std::shared_ptr<lh::render_item> &ri, const lh::transform_matrix& ancestors) {
         const auto matrix = transformed ? ri->get_visual_transform().then(ancestors) : lh::transform_matrix{};
         if(const char *value = ri->src_el()->get_attr(key))
@@ -2541,19 +2570,49 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
             {
                 box = CGRectApplyAffineTransform(box, CGAffineTransformMake(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty));
             }
-            auto               it     = boxes.find(value);
-            if(it == boxes.end())
-                boxes.emplace(value, box);
-            else
-                it->second = CGRectUnion(it->second, box);
+            visitor(value, box);
         }
         for(const auto &child : ri->children())
             visit(child, matrix);
     };
     visit(_doc->root_render(), {});
+}
+
+- (NSDictionary<NSString *, NSValue *> *)boundsWithAttribute:(NSString *)name transformed:(BOOL)transformed
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableDictionary<NSString *, NSValue *> *result = [NSMutableDictionary dictionary];
+    std::unordered_map<std::string, CGRect> boxes;
+    [self visitBoundsLocked:name transformed:transformed visitor:[&](const char *value, CGRect box) {
+        auto it = boxes.find(value);
+        if(it == boxes.end())
+            boxes.emplace(value, box);
+        else
+            it->second = CGRectUnion(it->second, box);
+    }];
     for(const auto &entry : boxes)
         result[@(entry.first.c_str())] = [NSValue valueWithRect:NSRectFromCGRect(entry.second)];
     return result;
+}
+
+- (NSData *)keyedBoundsByAttribute:(NSString *)name transformed:(BOOL)transformed
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    std::vector<LHKeyedRect> boxes;
+    std::unordered_map<int64_t, size_t> slots;
+    [self visitBoundsLocked:name transformed:transformed visitor:[&](const char *value, CGRect box) {
+        int64_t key = 0;
+        if(!ParseKeyInteger(value, key))
+            return;
+        auto [it, inserted] = slots.emplace(key, boxes.size());
+        if(inserted)
+            boxes.push_back({(NSInteger)key, box});
+        else
+            boxes[it->second].rect = CGRectUnion(boxes[it->second].rect, box);
+    }];
+    return [NSData dataWithBytes:boxes.data() length:boxes.size() * sizeof(LHKeyedRect)];
 }
 
 - (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name

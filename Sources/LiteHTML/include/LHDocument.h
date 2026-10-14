@@ -3,6 +3,11 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef struct LHKeyedRect {
+    NSInteger key;
+    CGRect rect;
+} LHKeyedRect;
+
 @class LHGPURenderer;
 
 @interface LHDisplayList : NSObject
@@ -142,6 +147,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point withinAttribute:(nullable NSString *)attribute value:(nullable NSString *)value NS_SWIFT_NAME(attribute(_:at:withinAttribute:value:));
 - (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name NS_SWIFT_NAME(bounds(byAttribute:));
 - (NSDictionary<NSString *, NSValue *> *)visualBoundsByAttribute:(NSString *)name NS_SWIFT_NAME(visualBounds(byAttribute:));
+- (NSData *)keyedBoundsByAttribute:(NSString *)name transformed:(BOOL)transformed NS_SWIFT_NAME(keyedBounds(byAttribute:transformed:));
 @property (readonly, copy) NSString *layoutSignature;
 - (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name NS_SWIFT_NAME(parents(byAttribute:));
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(computedStyle(attribute:value:));

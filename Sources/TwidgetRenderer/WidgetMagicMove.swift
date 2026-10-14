@@ -142,14 +142,8 @@ final class WidgetMagicMove {
     }
 
     private static func rects(_ document: LHDocument, of ids: [Int]) -> [Int: CGRect] {
-        var rects: [Int: CGRect] = [:]
-        let wanted = Set(ids.map { String($0) })
-        for (key, value) in document.bounds(byAttribute: WidgetDOM.idAttribute) where wanted.contains(key) {
-            if let id = Int(key) {
-                rects[id] = value.rectValue
-            }
-        }
-        return rects
+        let wanted = Set(ids)
+        return document.idBounds().filter { wanted.contains($0.key) }
     }
 
     private static func snapshot(_ document: LHDocument, id: Int, scale: CGFloat) -> MagicMoveStage.Snapshot? {

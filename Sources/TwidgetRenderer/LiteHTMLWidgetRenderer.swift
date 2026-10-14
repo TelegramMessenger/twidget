@@ -1099,12 +1099,12 @@ public final class LiteHTMLWidgetRenderer {
         #endif
     }
 
-    private func canvasPresentable(_ id: Int, _ canvas: WidgetCanvas, document: LHDocument, boxes: [String: NSValue]) -> (frame: CGRect, clip: (rect: CGRect, radius: CGFloat, corners: CACornerMask)?)? {
+    private func canvasPresentable(_ id: Int, _ canvas: WidgetCanvas, document: LHDocument, boxes: [Int: CGRect]) -> (frame: CGRect, clip: (rect: CGRect, radius: CGFloat, corners: CACornerMask)?)? {
         guard WidgetCanvasPresenter.enabled, canvas.storage != nil, canvas.width > 0, canvas.height > 0, !magic.isActive, let node = dom.node(id), node.tag == "canvas", !node.svg else {
             return nil
         }
         let key = String(id)
-        guard let box = boxes[key]?.rectValue, box.width >= 1, box.height >= 1, box.width * box.height < 4_000_000 else {
+        guard let box = boxes[id], box.width >= 1, box.height >= 1, box.width * box.height < 4_000_000 else {
             return nil
         }
         for other in compositor.ids where other == id || isAncestor(other, of: id) {
@@ -1172,7 +1172,7 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         presentationChecked = document
-        let boxes = document.bounds(byAttribute: WidgetDOM.idAttribute)
+        let boxes = document.idBounds()
         var changed = false
         var added: [WidgetCanvasPresenter] = []
         var budget = LiteHTMLWidgetRenderer.maxPresentedPixels
@@ -1827,12 +1827,7 @@ public final class LiteHTMLWidgetRenderer {
         if boundsValid {
             return bounds
         }
-        var result: [Int: CGRect] = [:]
-        for (key, value) in document?.bounds(byAttribute: WidgetDOM.idAttribute) ?? [:] {
-            if let id = Int(key) {
-                result[id] = value.rectValue
-            }
-        }
+        let result = document?.idBounds() ?? [:]
         bounds = result
         boundsValid = true
         return result
@@ -1996,11 +1991,7 @@ public final class LiteHTMLWidgetRenderer {
             }
             if kind == "rect" || kind == "rects" {
                 if visualBounds == nil {
-                    var result: [Int: CGRect] = [:]
-                    for (key, value) in document?.visualBounds(byAttribute: WidgetDOM.idAttribute) ?? [:] {
-                        if let id = Int(key) { result[id] = value.rectValue }
-                    }
-                    visualBounds = result
+                    visualBounds = document?.idBounds(transformed: true) ?? [:]
                 }
                 rect = visualBounds?[id] ?? .zero
             } else {

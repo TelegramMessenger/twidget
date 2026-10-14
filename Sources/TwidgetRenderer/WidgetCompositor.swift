@@ -1015,12 +1015,12 @@ final class WidgetCompositor {
         let independentBackgrounds = Set(animated.filter {
             animator.animatesOnly($0, ["background-color"]) && document.backgroundColorIsLocal(attribute: WidgetDOM.idAttribute, value: String($0))
         })
-        var measured: [String: NSValue]?
-        var boxes: [String: NSValue] {
+        var measured: [Int: CGRect]?
+        var boxes: [Int: CGRect] {
             if let known = measured {
                 return known
             }
-            let made = document.bounds(byAttribute: WidgetDOM.idAttribute)
+            let made = document.idBounds()
             measured = made
             return made
         }
@@ -1035,7 +1035,7 @@ final class WidgetCompositor {
                 if log { print("COMPOSITE \(id) not compositable") }
                 continue
             }
-            guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
+            guard let node = dom.node(id), !node.svg, let box = boxes[id], box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                 if log { print("COMPOSITE \(id) no box") }
                 continue
             }
@@ -1114,7 +1114,7 @@ final class WidgetCompositor {
                 guard CSSFilterStep.parseList(resolved(values["filter"], id: id))?.isEmpty == true, (Double(values["opacity"] ?? "1") ?? 0) >= 1 else {
                     continue
                 }
-                guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
+                guard let node = dom.node(id), !node.svg, let box = boxes[id], box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                     continue
                 }
                 wanted[id] = (box, CGPoint(x: box.width / 2, y: box.height / 2), 1)
@@ -1126,7 +1126,7 @@ final class WidgetCompositor {
         var scriptedBases: [Int: CGRect] = [:]
         scriptedCandidates = scriptedCandidates.filter { dom.node($0) != nil }
         for id in scriptedCandidates where wanted[id] == nil && !animated.contains(id) && !animator.hasCSSMotion(id) {
-            guard let node = dom.node(id), !node.svg, let box = boxes[String(id)]?.rectValue, box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
+            guard let node = dom.node(id), !node.svg, let box = boxes[id], box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                 continue
             }
             if wanted.keys.contains(where: { isAncestor(id, of: $0, dom: dom) || isAncestor($0, of: id, dom: dom) }) || scriptedCandidates.contains(where: { $0 != id && (isAncestor(id, of: $0, dom: dom) || isAncestor($0, of: id, dom: dom)) }) {
@@ -1237,12 +1237,12 @@ final class WidgetCompositor {
                 }
                 let others = obscuring.compactMap { Int($0) }
                 guard others.count == obscuring.count, others.allSatisfy({ other in
-                    wanted[other] == nil && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !isAncestor(other, of: id, dom: dom) && !isAncestor(id, of: other, dom: dom) && boxes[String(other)] != nil
+                    wanted[other] == nil && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !isAncestor(other, of: id, dom: dom) && !isAncestor(id, of: other, dom: dom) && boxes[other] != nil
                 }) else {
                     continue
                 }
                 for other in others {
-                    let box = boxes[String(other)]!.rectValue
+                    let box = boxes[other]!
                     guard box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                         continue
                     }
