@@ -726,7 +726,7 @@ static bool DrawDownsampled(CGContextRef ctx, CGRect r, std::string key, CGFloat
     return true;
 }
 
-static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const std::function<void(CGContextRef)>& paint, bool store = true)
+static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const std::function<void(CGContextRef)>& paint, bool store = true, size_t stretchX = 0)
 {
     static const bool disabled = getenv("LH_NO_RASTER_CACHE") != nullptr;
     if(disabled)
@@ -743,6 +743,9 @@ static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const st
     if(!CGRectIntersectsRect(r, CGContextGetClipBoundingBox(ctx)))
         return true;
     CGFloat sx = std::fabs(m.a), sy = std::fabs(m.d);
+    if(stretchX && (stretchX >= pw || pw - stretchX < 3))
+        return false;
+    pw -= stretchX;
     AppendNumber(key, (double)pw);
     AppendNumber(key, (double)ph);
     AppendNumber(key, sx);
@@ -785,7 +788,40 @@ static bool DrawRasterized(CGContextRef ctx, CGRect r, std::string key, const st
     }
     else
         CGContextTranslateCTM(ctx, r.origin.x, r.origin.y);
-    CGContextDrawImage(ctx, CGRectMake(0, 0, r.size.width, r.size.height), image);
+    if(stretchX)
+    {
+        size_t left = pw / 2, right = pw - left - 1;
+        std::array<CGRect, 3> slices = {CGRectMake(0, 0, left, ph), CGRectMake(left, 0, 1, ph), CGRectMake(left + 1, 0, right, ph)};
+        std::array<CGImageRef, 3> parts = {};
+        bool complete = true;
+        for(size_t i = 0; i < parts.size(); i++)
+        {
+            parts[i] = CGImageCreateWithImageInRect(image, slices[i]);
+            complete = complete && parts[i] != nullptr;
+        }
+        if(!complete)
+        {
+            for(auto part : parts)
+                if(part)
+                    CGImageRelease(part);
+            CGContextRestoreGState(ctx);
+            CGImageRelease(image);
+            return false;
+        }
+        for(size_t i = 0; i < parts.size(); i++)
+        {
+            CGRect slice = slices[i];
+            CGRect target = CGRectMake(slice.origin.x / sx, 0, slice.size.width / sx, r.size.height);
+            if(slice.origin.x == left)
+                target.size.width += stretchX / sx;
+            else if(slice.origin.x > left)
+                target.origin.x += stretchX / sx;
+            CGContextDrawImage(ctx, target, parts[i]);
+            CGImageRelease(parts[i]);
+        }
+    }
+    else
+        CGContextDrawImage(ctx, CGRectMake(0, 0, r.size.width, r.size.height), image);
     CGContextRestoreGState(ctx);
     CGImageRelease(image);
     return true;
@@ -3485,7 +3521,9 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
         CGRect device = CGRectIntegral(CGContextConvertRectToDeviceSpace(ctx, ink));
         CGRect aligned = CGContextConvertRectToUserSpace(ctx, device);
         std::string key = "shadow:";
-        for(CGFloat v : {r.size.width, r.size.height, r.origin.x - aligned.origin.x, r.origin.y - aligned.origin.y, dx, dy, blur, spread})
+        CGFloat phaseX = std::round((r.origin.x - aligned.origin.x) * 1e9) / 1e9;
+        CGFloat phaseY = std::round((r.origin.y - aligned.origin.y) * 1e9) / 1e9;
+        for(CGFloat v : {r.size.width, r.size.height, phaseX, phaseY, dx, dy, blur, spread})
             AppendNumber(key, v);
         for(auto v : {radius.top_left_x, radius.top_left_y, radius.top_right_x, radius.top_right_y, radius.bottom_right_x, radius.bottom_right_y, radius.bottom_left_x, radius.bottom_left_y})
             AppendNumber(key, F(v));
@@ -3494,7 +3532,20 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
         CGContextSaveGState(ctx);
         apply_clips(ctx, ink);
         lh::shadow_paint copy = shadow;
-        bool drawn = DrawRasterized(ctx, aligned, key, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, r, radius, copy); });
+        CGRect compact = r;
+        size_t stretchX = 0;
+        CGAffineTransform transform = CGContextGetCTM(ctx);
+        CGFloat scaleX = std::fabs(transform.a);
+        CGFloat corner = std::max({F(radius.top_left_x), F(radius.top_right_x), F(radius.bottom_left_x), F(radius.bottom_right_x)});
+        CGFloat cap = std::ceil((reach + corner + blur * 2 + std::fabs(spread) + std::fabs(dx) + 4) * scaleX);
+        if(!getenv("LH_NO_SHADOW_SLICES") && !shadow.inset && spread >= 0 && blur > 0 && scaleX > 0 && cap >= 1 &&
+           std::fabs(transform.b) < 1e-9 && std::fabs(transform.c) < 1e-9 && device.size.width <= (4 << 20) && device.size.width > cap * 2 + 1)
+        {
+            stretchX = (size_t)(device.size.width - cap * 2 - 1);
+            compact.size.width -= stretchX / scaleX;
+        }
+        AppendInteger(key, stretchX > 0);
+        bool drawn = DrawRasterized(ctx, aligned, key, [&](CGContextRef bitmap) { paint_box_shadow(bitmap, compact, radius, copy); }, true, stretchX);
         if(!drawn)
         {
             CGContextSaveGState(ctx);
