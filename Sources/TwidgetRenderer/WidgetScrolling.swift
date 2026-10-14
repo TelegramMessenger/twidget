@@ -136,7 +136,7 @@ final class WidgetScrollLayer {
     func flashIndicator(_ offset: CGPoint) {
         let viewport = geometry.viewport.size
         let total = max(viewport.height, geometry.content.height)
-        guard geometry.maxOffset.y > 0.5, total > 0 else {
+        guard !thumb.isHidden, geometry.maxOffset.y > 0.5, total > 0 else {
             return
         }
         let inset: CGFloat = 2
@@ -421,6 +421,7 @@ final class WidgetScrolling {
                 host?.twAddSublayer(layer.clip)
             }
             layer.apply(geometry)
+            layer.thumb.isHidden = hits[id] == nil
             layer.update(signature: WidgetCompositor.contentSignature(id, dom: dom, box: CGRect(origin: .zero, size: geometry.content), scale: scale, styleKey: styleKey) ?? 0)
             if layer.content.animation(forKey: "tw.settle") == nil && gesture?.id != id {
                 layer.show(offsets[id] ?? .zero)

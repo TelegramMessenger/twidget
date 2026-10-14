@@ -107,6 +107,76 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertNil(renderer.scrolling.hitViewports[4])
     }
 
+    func testScrollOnlyBatchesMoveContentWithoutRebuildingLayout() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 240, height: 200)
+        var scheduled: [() -> Void] = []
+        renderer.schedule = { scheduled.append($0) }
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+        }
+        renderer.load()
+        try send([
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:100px;height:80px;overflow:auto"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "width:400px;height:400px;background:red"]]], ["op": "ins", "id": 4, "parent": 3],
+        ])
+        let count = renderer.layoutCount
+        let original = try XCTUnwrap(renderer.elementBounds()[4])
+        try send([
+            ["op": "prop", "id": 3, "name": "scrollTop", "value": 120],
+            ["op": "prop", "id": 3, "name": "scrollLeft", "value": 50],
+        ])
+        XCTAssertEqual(renderer.scrolling.offset(3), CGPoint(x: 50, y: 120))
+        XCTAssertEqual(renderer.elementBounds()[4], original.offsetBy(dx: -50, dy: -120))
+        XCTAssertEqual(renderer.layoutCount, count)
+        try send([["op": "call", "id": 3, "method": "scrollBy", "args": [5, 10]]])
+        XCTAssertEqual(renderer.scrolling.offset(3), CGPoint(x: 55, y: 130))
+        XCTAssertEqual(renderer.layoutCount, count)
+        try send([
+            ["op": "style", "id": 3, "name": "height", "value": "60px"],
+            ["op": "prop", "id": 3, "name": "scrollTop", "value": 160],
+        ])
+        XCTAssertGreaterThan(renderer.layoutCount, count)
+        XCTAssertEqual(renderer.scrolling.geometries[3]?.viewport.height, 60)
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 160)
+    }
+
+    func testHiddenScrollerKeepsItsLayerWithoutFlashingAnIndicator() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 240, height: 200)
+        window.contentView?.addSubview(renderer.view)
+        defer { renderer.destroy(); window.orderOut(nil) }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+        }
+        renderer.load()
+        try send([
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:160px;height:100px;overflow:hidden"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "width:120px;height:80px;overflow:hidden"]]], ["op": "ins", "id": 4, "parent": 3],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["style", "height:400px;background:red"]]], ["op": "ins", "id": 5, "parent": 4],
+        ])
+        pump(1, until: { renderer.scrolling.layers[4] != nil })
+        let layer = try XCTUnwrap(renderer.scrolling.layers[4])
+        try send([["op": "prop", "id": 4, "name": "scrollTop", "value": 120]])
+        XCTAssertEqual(renderer.scrolling.offset(4).y, 120)
+        XCTAssertTrue(layer.thumb.isHidden)
+        XCTAssertNil(layer.thumb.animation(forKey: "tw.fade"))
+        try send([["op": "style", "id": 4, "name": "overflow", "value": "auto"]])
+        pump(1, until: { renderer.scrolling.hitViewports[4] != nil })
+        try send([["op": "prop", "id": 4, "name": "scrollTop", "value": 150]])
+        XCTAssertFalse(layer.thumb.isHidden)
+        XCTAssertNotNil(layer.thumb.animation(forKey: "tw.fade"))
+    }
+
     func testSmoothRevealMovesDocumentAndCanBeInterrupted() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 180), styleMask: [.borderless], backing: .buffered, defer: false)

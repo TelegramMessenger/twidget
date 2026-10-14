@@ -776,6 +776,21 @@ public final class LiteHTMLWidgetRenderer {
             applyingOps = outer
             pacer.answered(CACurrentMediaTime())
         }
+        if !frozen, !pendingGeometry, !needsRender, !renderAtTick, document != nil, !ops.isEmpty,
+           ops.allSatisfy({ op in
+               guard op.kind == .other else { return false }
+               if op.op == "prop", let name = op["name"] as? String {
+                   return name == "scrollTop" || name == "scrollLeft"
+               }
+               if op.op == "call", let method = op["method"] as? String {
+                   return method == "scrollTo" || method == "scrollBy"
+               }
+               return false
+           }) {
+            for op in ops { dom.apply(op) }
+            stageMilliseconds["scroll-fast", default: 0] += 1
+            return
+        }
         notePendingGeometry(ops)
         if LiteHTMLWidgetRenderer.canvasFastPath, !ops.isEmpty, ops.allSatisfy({ $0.kind == .canvas && $0.canvas != nil }) {
             sendCanvas(ops.map { ($0.id, CanvasStream(batch: $0.canvas!)) })
