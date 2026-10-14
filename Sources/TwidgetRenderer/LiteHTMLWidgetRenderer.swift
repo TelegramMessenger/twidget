@@ -1656,6 +1656,9 @@ public final class LiteHTMLWidgetRenderer {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         magic.removeLayers()
+        if let document = document, !svgLayers.ids.isEmpty {
+            _ = svgLayers.render(document: document, width: width, host: documentView.contentLayer, scale: documentView.scale, dom: dom, composited: compositor.ids.union(scrolling.promotedIDs))
+        }
         applyExclusions()
         documentView.displayIfNeeded()
         CATransaction.commit()
