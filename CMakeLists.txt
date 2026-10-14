@@ -5,6 +5,7 @@
 #   iOS, macOS   libtwidget_litehtml.a, the C ABI on CoreGraphics (platform/apple), merged by tools/build-apple.sh
 #   Emscripten   twidget_litehtml.js and .wasm, the C ABI for a page (platform/web)
 #   Windows      twidget_d2d, the Direct2D backend a host paints with (platform/windows)
+#   Qt           twidget_qt with -DTWIDGET_QT=ON, the QPainter backend (platform/qt; demo in tools/qt-demo)
 cmake_minimum_required(VERSION 3.22)
 project(twidget C CXX)
 
@@ -13,6 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(TWIDGET_BUILD_TESTS "Build the TwidgetCore checks" ${PROJECT_IS_TOP_LEVEL})
+option(TWIDGET_QT "Build twidget_qt, the QPainter backend (needs Qt 6)" OFF)
 
 # widget-sandbox owns the protocol and its JSON helper. Package.swift finds it the same way: a checkout
 # next to twidget, or the path in TWIDGET_WIDGET_SANDBOX (a URL there is for SwiftPM only).
@@ -102,6 +104,19 @@ elseif(WIN32)
     endif()
 endif()
 
+# Qt hosts (Telegram Desktop) on any desktop OS: fonts, images, canvases and the painter on QPainter.
+if(TWIDGET_QT)
+    find_package(Qt6 REQUIRED COMPONENTS Gui)
+    add_library(twidget_qt STATIC "${TW_PLATFORM}/qt/qt_backend.cpp")
+    add_library(twidget::qt ALIAS twidget_qt)
+    target_include_directories(twidget_qt PUBLIC "${TW_PLATFORM}/qt")
+    target_link_libraries(twidget_qt PUBLIC twidget_core Qt6::Gui)
+    if(MSVC)
+        target_compile_options(twidget_qt PRIVATE /utf-8 /W3)
+        target_compile_definitions(twidget_qt PRIVATE NOMINMAX)
+    endif()
+endif()
+
 if(TWIDGET_BUILD_TESTS)
     enable_testing()
     add_executable(twidget_core_tests "${CMAKE_CURRENT_SOURCE_DIR}/Tests/TwidgetCoreTests/core_tests.cpp")
@@ -110,6 +125,14 @@ if(TWIDGET_BUILD_TESTS)
         target_compile_options(twidget_core_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_core COMMAND twidget_core_tests)
+    if(TWIDGET_QT)
+        add_executable(twidget_qt_tests "${CMAKE_CURRENT_SOURCE_DIR}/Tests/TwidgetCoreTests/qt_tests.cpp")
+        target_link_libraries(twidget_qt_tests PRIVATE twidget::qt)
+        if(MSVC)
+            target_compile_options(twidget_qt_tests PRIVATE /utf-8)
+        endif()
+        add_test(NAME twidget_qt COMMAND twidget_qt_tests)
+    endif()
     if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         add_executable(twidget_apple_tests "${CMAKE_CURRENT_SOURCE_DIR}/Tests/TwidgetCoreTests/apple_tests.cpp")
         target_link_libraries(twidget_apple_tests PRIVATE twidget_litehtml)
