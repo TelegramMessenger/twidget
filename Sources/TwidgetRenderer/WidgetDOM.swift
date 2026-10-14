@@ -1157,8 +1157,47 @@ final class WidgetDOM {
 }
 
 enum CSSTheme {
+    private static let token = Array("light-dark(".utf8)
+
+    static func lacksToken(_ css: String) -> Bool {
+        var css = css
+        return css.withUTF8 { bytes -> Bool in
+            let count = bytes.count
+            guard count >= token.count else {
+                return bytes.allSatisfy { $0 < 0x80 }
+            }
+            var index = 0
+            while index < count {
+                let byte = bytes[index]
+                if byte >= 0x80 {
+                    return false
+                }
+                if byte == 0x28, index >= token.count - 1 {
+                    var matches = true
+                    var offset = 0
+                    while offset < token.count - 1 {
+                        var c = bytes[index - token.count + 1 + offset]
+                        if c >= 0x41 && c <= 0x5A {
+                            c |= 0x20
+                        }
+                        if c != token[offset] {
+                            matches = false
+                            break
+                        }
+                        offset += 1
+                    }
+                    if matches {
+                        return false
+                    }
+                }
+                index += 1
+            }
+            return true
+        }
+    }
+
     static func resolve(_ css: String, theme: String, depth: Int = 0) -> String {
-        guard depth < 8, css.range(of: "light-dark(", options: .caseInsensitive) != nil else {
+        guard depth < 8, !lacksToken(css), css.range(of: "light-dark(", options: .caseInsensitive) != nil else {
             return css
         }
         let dark = theme == "dark"
