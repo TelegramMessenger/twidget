@@ -1018,6 +1018,22 @@ public final class LiteHTMLWidgetRenderer {
         return animator.animatedIDs()
     }
 
+    var presentedDocument: LHDocument? {
+        return documentView.document
+    }
+
+    var compositedElementIDs: Set<Int> {
+        return compositor.ids
+    }
+
+    func animationEnd(_ id: Int) -> CFTimeInterval? {
+        return animator.endTime(id)
+    }
+
+    func animationValues(_ id: Int) -> (transform: String?, opacity: String?)? {
+        return animator.peek(id, at: animationNow)
+    }
+
     private func render() {
         if frameHoldStart != nil && !destroyed && !frozen {
             frameHoldRender = true
