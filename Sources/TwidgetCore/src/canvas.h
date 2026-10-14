@@ -120,4 +120,7 @@ private:
 /// Appends an SVG path (`d`) to a geometry, arcs as cubic béziers. Shared with Path2D.
 void append_svg_path(const std::string& d, Geometry& out);
 
+/// Whether a point is inside a geometry filled with the nonzero or even-odd rule, curves flattened.
+bool geometry_contains(const Geometry& g, double x, double y, bool evenodd);
+
 } // namespace twlite

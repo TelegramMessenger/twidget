@@ -441,6 +441,44 @@ int main() {
         }
     }
 
+    // ── clip-path and fixed elements under an overflow clip ──
+    {
+        const char* page = R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":".box{width:200px;height:200px;overflow:hidden} .round{width:100px;height:100px;clip-path:circle(50%);background-color:#ff0000} .wide{width:300px;height:20px;background-color:#00ff00} .fixed{position:fixed;left:0;top:0;width:300px;height:10px;background-color:#0000ff}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":80,"tag":"div","attrs":[["class","box"]]},
+         {"op":"el","id":81,"tag":"div","attrs":[["class","round"]]},
+         {"op":"el","id":82,"tag":"div","attrs":[["class","wide"]]},
+         {"op":"el","id":83,"tag":"div","attrs":[["class","fixed"]]},
+         {"op":"ins","parent":4,"id":80,"before":null},
+         {"op":"ins","parent":80,"id":81,"before":null},
+         {"op":"ins","parent":80,"id":82,"before":null},
+         {"op":"ins","parent":80,"id":83,"before":null}
+        ]})";
+        StubBackend b;
+        Renderer clipped(360, 1, false, b);
+        clipped.receive(parse(page));
+        int depth = 0, low = 0, wide = -1, fixed = -1, paths = 0;
+        for (const Command& cmd : clipped.paint()) {
+            if (cmd.kind == Cmd::ClipPush) { depth++; if (cmd.path) paths++; }
+            else if (cmd.kind == Cmd::ClipPop) low = std::min(low, --depth);
+            else if (cmd.kind == Cmd::FillRect && cmd.color.g == 255) wide = depth;
+            else if (cmd.kind == Cmd::FillRect && cmd.color.b == 255 && cmd.color.r == 0) fixed = depth;
+        }
+        check(paths == 1, "clip-path pushes a path clip");
+        check(depth == 0 && low == 0, "clip pushes and pops balance, so clip-path does not pop its parent's clip");
+        check(wide >= 1, "the element after the clip-path one is still clipped by the overflow box (depth " + std::to_string(wide) + ")");
+        check(fixed >= 0 && fixed < wide, "a fixed element escapes its ancestor's overflow clip (depth " + std::to_string(fixed) + ")");
+        auto at = [&](int x, int y) {
+            return clipped.receive(parse("{\"type\":\"query\",\"qid\":9,\"query\":{\"q\":\"elementFromPoint\",\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) + "}}"))[0]["result"].asNumber();
+        };
+        check(at(50, 50) == 81 && at(4, 14) != 81, "hits inside the circle reach it, the corner outside does not (" + std::to_string(at(50, 50)) + ", " + std::to_string(at(4, 14)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

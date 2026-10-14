@@ -1089,7 +1089,18 @@ namespace twlite
             switch (c.kind)
             {
             case Cmd::ClipPush:
-                push(c.rect, c.radii);
+                if (c.path)
+                {
+                    Entry e;
+                    auto shape = geometry(c.path->ops, c.path->points, c.path->evenodd);
+                    ctx->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), shape.get()), nullptr);
+                    e.layer = true;
+                    stack.push_back(e);
+                }
+                else
+                {
+                    push(c.rect, c.radii);
+                }
                 break;
             case Cmd::ClipPop:
             case Cmd::GroupPop:
