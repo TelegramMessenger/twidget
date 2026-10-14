@@ -177,6 +177,37 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertNotNil(layer.thumb.animation(forKey: "tw.fade"))
     }
 
+    func testScrollTileSamplingPreservesTranslucentContentAtTileBoundaries() throws {
+        let document = LHDocument(html: "<body style='margin:0'><div id='3' style='width:300px;height:100px;overflow:hidden'><div style='width:900px;height:300px;background:rgba(80,160,200,.5)'></div></div></body>", css: nil)
+        _ = document.layout(maxWidth: 340, preferredWidth: 340)
+        let geometry = WidgetScrollGeometry(viewport: CGRect(x: 20.25, y: 20.25, width: 300, height: 100), content: CGSize(width: 900, height: 300), radii: [])
+        let layer = WidgetScrollLayer(id: 3, geometry: geometry)
+        let root = CALayer()
+        root.frame = CGRect(x: 0, y: 0, width: 340, height: 140)
+        root.backgroundColor = CGColor(gray: 1, alpha: 1)
+        root.addSublayer(layer.clip)
+        layer.show(CGPoint(x: 430.25, y: 200.25))
+        layer.ensureTiles(document: document, scale: 2, attribute: "id")
+        pump(2, until: { layer.rasterCount == layer.tileCount })
+        XCTAssertEqual(layer.rasterCount, layer.tileCount)
+        let context = try XCTUnwrap(CGContext(data: nil, width: 680, height: 280, bitsPerComponent: 8, bytesPerRow: 680 * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.scaleBy(x: 2, y: 2)
+        root.render(in: context)
+        let image = try XCTUnwrap(context.makeImage())
+        let bytes = try XCTUnwrap(image.dataProvider?.data) as Data
+        let reference = Array(bytes[(80 * 680 + 80) * 4..<(80 * 680 + 81) * 4])
+        XCTAssertLessThan(reference[0], 220)
+        for y in 60..<220 {
+            for x in 60..<620 {
+                let pixel = (y * 680 + x) * 4
+                if (0..<4).contains(where: { abs(Int(bytes[pixel + $0]) - Int(reference[$0])) > 1 }) {
+                    XCTFail("Tile seam at \(x),\(y): \(Array(bytes[pixel..<pixel + 4])) instead of \(reference)")
+                    return
+                }
+            }
+        }
+    }
+
     func testSmoothRevealMovesDocumentAndCanBeInterrupted() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 180), styleMask: [.borderless], backing: .buffered, defer: false)

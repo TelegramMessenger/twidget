@@ -208,6 +208,9 @@ final class WidgetScrollLayer {
     }
 
     func ensureTiles(document: LHDocument, scale: CGFloat, attribute: String, velocity: CGFloat = 0) {
+        guard scale.isFinite, scale > 0 else {
+            return
+        }
         rasterSource = (document, scale, attribute)
         let columns = self.columns()
         let size = WidgetScrollLayer.tileSize
@@ -238,6 +241,7 @@ final class WidgetScrollLayer {
         order.sort { abs(rect($0).midY - visible.midY) < abs(rect($1).midY - visible.midY) }
         for index in order where tiles[index]?.signature != signature && !pending.contains(index) {
             let tileRect = rect(index)
+            let rasterRect = tileRect.insetBy(dx: -1 / scale, dy: -1 / scale)
             guard tileRect.width > 0, tileRect.height > 0 else {
                 continue
             }
@@ -249,7 +253,7 @@ final class WidgetScrollLayer {
                 tiles[index] = (layer, 0)
             }
             WidgetScrollLayer.queue.async { [weak self] in
-                let image = lifetime.isActive ? document.copyScrollContent(attribute: attribute, value: value, rect: tileRect, scale: scale) : nil
+                let image = lifetime.isActive ? document.copyScrollContent(attribute: attribute, value: value, rect: rasterRect, scale: scale) : nil
                 DispatchQueue.main.async {
                     guard let self = self else {
                         return
@@ -265,6 +269,9 @@ final class WidgetScrollLayer {
                     CATransaction.setDisableActions(true)
                     layer.frame = tileRect
                     layer.contentsScale = scale
+                    if let image = image {
+                        layer.contentsRect = CGRect(x: 1 / CGFloat(image.width), y: 1 / CGFloat(image.height), width: tileRect.width * scale / CGFloat(image.width), height: tileRect.height * scale / CGFloat(image.height))
+                    }
                     layer.contents = image
                     CATransaction.commit()
                     self.tiles[index] = (layer, signature)
@@ -278,7 +285,9 @@ final class WidgetScrollLayer {
         let layer = CALayer()
         layer.anchorPoint = .zero
         layer.frame = rect
-        layer.contentsGravity = .topLeft
+        layer.contentsGravity = .resize
+        layer.allowsEdgeAntialiasing = false
+        layer.edgeAntialiasingMask = []
         layer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull()]
         content.twAddSublayer(layer)
         return layer
