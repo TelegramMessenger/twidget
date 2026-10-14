@@ -411,6 +411,7 @@ public:
         elements_.clear();
         doc_ = nullptr;
 #ifdef TW_LITEHTML_TWIDGET
+        scans_.clear();
         doc_ = litehtml::document::createUpdatableFromString(html, this, std::string(litehtml::master_css) + UA_EXTRA);
 #else
         doc_ = litehtml::document::createFromString(litehtml::estring(html), this, std::string(litehtml::master_css) + UA_EXTRA);
@@ -437,6 +438,14 @@ public:
     std::unordered_map<int64_t, Declared> declarations(const std::vector<std::string>& names, const std::vector<std::string>& gates, const std::vector<int64_t>& always) const {
         std::unordered_map<int64_t, Declared> out;
         if (!doc_ || !doc_->root()) return out;
+        // A frame asks the same few questions of a document whose styles have not changed: the walk
+        // is done once per style epoch for each.
+        for (size_t i = 0; i < scans_.size(); i++) {
+            const Scan& scan = scans_[i];
+            if (scan.epoch != doc_->style_epoch() || scan.names != names || scan.gates != gates || scan.always != always) continue;
+            std::rotate(scans_.begin(), scans_.begin() + i, scans_.begin() + i + 1);
+            return scans_.front().result;
+        }
         std::function<void(const litehtml::element::ptr&)> visit = [&](const litehtml::element::ptr& el) {
             if (el->css().get_display() == litehtml::display_none) return;
             if (auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(el)) {
@@ -458,6 +467,8 @@ public:
             for (const auto& child : el->children()) visit(child);
         };
         visit(doc_->root());
+        scans_.insert(scans_.begin(), Scan{names, gates, always, doc_->style_epoch(), out});
+        if (scans_.size() > 4) scans_.pop_back();
         return out;
     }
     /// Replaces the style attribute of elements in place (the fork's style holes), relaying out
@@ -1234,6 +1245,15 @@ private:
     int vp_height_ = int(MIN_HEIGHT);
     float rendered_width_ = 0;
     bool viewport_units_ = false;  // the current document has lengths folded from the viewport
+#ifdef TW_LITEHTML_TWIDGET
+    struct Scan {
+        std::vector<std::string> names, gates;
+        std::vector<int64_t> always;
+        uint64_t epoch;
+        std::unordered_map<int64_t, Declared> result;
+    };
+    mutable std::vector<Scan> scans_;  // declarations(), latest first; a new document starts its epochs again
+#endif
     uint64_t layouts_ = 0;
     bool patched_ = false;
     std::unordered_map<int64_t, litehtml::element::ptr> elements_;
