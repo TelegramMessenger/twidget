@@ -114,6 +114,25 @@ CGPathRef rounded_path(const Rect& r, const Radii& q) {
     return p;
 }
 
+CGPathRef vector_path(const Path& path) {
+    CGMutablePathRef p = CGPathCreateMutable();
+    const float* v = path.points.data();
+    size_t n = path.points.size(), i = 0;
+    for (auto op : path.ops) {
+        size_t need = op == Path::Cubic ? 6 : op == Path::Quad ? 4 : op == Path::Close ? 0 : 2;
+        if (i + need > n) break;
+        switch (op) {
+        case Path::Move: CGPathMoveToPoint(p, nullptr, v[i], v[i + 1]); break;
+        case Path::Line: CGPathAddLineToPoint(p, nullptr, v[i], v[i + 1]); break;
+        case Path::Quad: CGPathAddQuadCurveToPoint(p, nullptr, v[i], v[i + 1], v[i + 2], v[i + 3]); break;
+        case Path::Cubic: CGPathAddCurveToPoint(p, nullptr, v[i], v[i + 1], v[i + 2], v[i + 3], v[i + 4], v[i + 5]); break;
+        case Path::Close: CGPathCloseSubpath(p); break;
+        }
+        i += need;
+    }
+    return p;
+}
+
 } // namespace
 
 CGBackend::CGBackend() : rgb_(CGColorSpaceCreateDeviceRGB()) {}
@@ -279,7 +298,15 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
         case Cmd::ClipPush:
             CGContextSaveGState(ctx);
             clip_depth++;
-            clip_to(c.rect, c.radii);
+            if (c.path) {
+                CGPathRef p = vector_path(*c.path);
+                CGContextAddPath(ctx, p);
+                if (c.path->evenodd) CGContextEOClip(ctx);
+                else CGContextClip(ctx);
+                CGPathRelease(p);
+            } else {
+                clip_to(c.rect, c.radii);
+            }
             break;
         case Cmd::ClipPop:
             if (clip_depth > 0) {

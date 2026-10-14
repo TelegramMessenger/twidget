@@ -405,6 +405,8 @@ public:
     DisplayList draw_layer(const litehtml::element::ptr& el, const std::vector<litehtml::element::ptr>& skip, Rect& bounds) {
         list_.clear();
         groups_.clear();
+        clips_.clear();
+        suspended_.clear();
         auto ri = el->get_render_item();
         if (!doc_ || !ri) return {};
         for (const auto& other : skip)
@@ -495,6 +497,8 @@ public:
     }
     DisplayList draw() {
         list_.clear();
+        clips_.clear();
+        suspended_.clear();
 #ifdef TW_LITEHTML_TWIDGET
         groups_.clear();
 #endif
@@ -815,13 +819,60 @@ public:
         c.kind = Cmd::ClipPush;
         c.rect = rect_of(pos);
         c.radii = radii_of(r);
+        clips_.push_back(c);
         list_.push_back(std::move(c));
     }
     void del_clip() override {
+        if (!clips_.empty()) clips_.pop_back();
         Command c;
         c.kind = Cmd::ClipPop;
         list_.push_back(std::move(c));
     }
+#ifdef TW_LITEHTML_TWIDGET
+    void set_clip_path(const litehtml::vector_path& path) override {
+        auto p = std::make_shared<Path>();
+        p->ops.reserve(path.ops.size());
+        for (auto op : path.ops) p->ops.push_back(Path::Op(op));
+        p->points = path.points;
+        p->evenodd = path.evenodd;
+        float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+        for (size_t i = 0; i + 1 < p->points.size(); i += 2) {
+            x0 = std::min(x0, p->points[i]); x1 = std::max(x1, p->points[i]);
+            y0 = std::min(y0, p->points[i + 1]); y1 = std::max(y1, p->points[i + 1]);
+        }
+        Command c;
+        c.kind = Cmd::ClipPush;
+        c.rect = x0 <= x1 && y0 <= y1 ? Rect{x0, y0, x1 - x0, y1 - y0} : Rect{};
+        c.path = std::move(p);
+        clips_.push_back(c);
+        list_.push_back(std::move(c));
+    }
+    bool point_in_clip_path(const litehtml::vector_path& path, litehtml::pixel_t x, litehtml::pixel_t y) override {
+        Geometry g;
+        g.ops.reserve(path.ops.size());
+        for (auto op : path.ops) g.ops.push_back(Path::Op(op));
+        g.points = path.points;
+        return geometry_contains(g, float(x), float(y), path.evenodd);
+    }
+    // A fixed element outside every group escapes its ancestors' overflow clips, as in WebKit: the clips
+    // are popped around it and pushed again after.
+    void suspend_clips() override {
+        Command pop;
+        pop.kind = Cmd::ClipPop;
+        for (size_t i = 0; i < clips_.size(); i++) list_.push_back(pop);
+        suspended_.push_back(std::move(clips_));
+        clips_.clear();
+    }
+    void resume_clips() override {
+        if (suspended_.empty()) return;
+        Command pop;
+        pop.kind = Cmd::ClipPop;
+        for (size_t i = 0; i < clips_.size(); i++) list_.push_back(pop);
+        clips_ = std::move(suspended_.back());
+        suspended_.pop_back();
+        for (const Command& c : clips_) list_.push_back(c);
+    }
+#endif
 #ifdef TW_LITEHTML_TWIDGET
     void draw_box_shadow(litehtml::uint_ptr, const litehtml::position& box, const litehtml::border_radiuses& radius, const litehtml::shadow_paint& shadow) override {
         if (shadow.color.alpha == 0) return;
@@ -993,6 +1044,8 @@ private:
     std::unordered_map<std::string, Image> images_;
     int next_image_ = 0;
     DisplayList list_;
+    std::vector<Command> clips_;
+    std::vector<std::vector<Command>> suspended_;
 };
 
 // ───────────────────────── Renderer ─────────────────────────
