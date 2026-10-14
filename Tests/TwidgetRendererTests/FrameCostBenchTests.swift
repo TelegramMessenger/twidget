@@ -226,6 +226,7 @@ final class FrameCostBenchTests: XCTestCase {
         var wall = 0.0, cpu = 0.0, waitCPU = 0.0
         let stagesBefore = renderer.stageMilliseconds
         let layoutsBefore = renderer.layoutCount
+        let dirtyBefore = renderer.dirtyArea
         for f in 0..<frames {
             let t0 = CACurrentMediaTime()
             let c0 = LiteHTMLWidgetRenderer.threadCPUSeconds()
@@ -243,6 +244,7 @@ final class FrameCostBenchTests: XCTestCase {
             if delta > 0 { stages.append(String(format: "%@=%.1f", key, delta * 1000 / Double(frames))) }
         }
         print(String(format: "BENCH mode=swarm n=%d frames=%d wall=%.1fus cpu=%.1fus tailcpu=%.1fus total=%.1fus layouts=%d", count, frames, wall * 1e6 / Double(frames), cpu * 1e6 / Double(frames), waitCPU * 1e6 / Double(frames), (cpu + waitCPU) * 1e6 / Double(frames), renderer.layoutCount - layoutsBefore))
+        print(String(format: "BENCH swarm dirty=%.0fpt2/frame composited=%d", (renderer.dirtyArea - dirtyBefore) / Double(frames), renderer.compositedCount))
         print("BENCH stages(us/frame or count*1000/frame) " + stages.joined(separator: " "))
     }
 }

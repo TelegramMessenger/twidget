@@ -157,6 +157,10 @@ public final class LiteHTMLWidgetRenderer {
     private let statsLock = NSLock()
     private var publishedComposited = 0
 
+    var dirtyArea: CGFloat {
+        return documentView.dirtyArea
+    }
+
     public var compositedCount: Int {
         if isOnExecutor() {
             return compositor.ids.count
@@ -3266,6 +3270,7 @@ class WidgetDocumentView: NSView {
     private(set) var preparedMilliseconds = 0.0
     private var invalidations = 0
     private var syncInvalidations = 0
+    private(set) var dirtyArea: CGFloat = 0
     private var tileScale: CGFloat = 0
 
     private static func surface(of layer: CALayer) -> IOSurfaceRef? {
@@ -4025,6 +4030,12 @@ class WidgetDocumentView: NSView {
     }
 
     func invalidate(_ rects: [CGRect]) {
+        for rect in rects {
+            let visible = rect.intersection(bounds)
+            if !visible.isNull {
+                dirtyArea += visible.width * visible.height
+            }
+        }
         if detached {
             invalidateDetached(rects)
             return
@@ -4072,6 +4083,9 @@ class WidgetDocumentView: NSView {
     }
 
     func invalidate(_ rect: CGRect?) {
+        if rect == nil {
+            dirtyArea += bounds.width * bounds.height
+        }
         if detached {
             invalidateDetached(rect.map { [$0] })
             return
