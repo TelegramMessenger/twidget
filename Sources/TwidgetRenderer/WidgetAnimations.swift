@@ -991,8 +991,9 @@ final class WidgetAnimator {
             }
         }
         for (property, transition) in transitions[id] ?? [:] {
-            for step in 0...16 {
-                let value = CSSInterpolate.mix(transition.from, transition.to, Double(step) / 16)
+            for step in 0...max(16, samples) {
+                let progress = Double(step) / Double(max(16, samples))
+                let value = CSSInterpolate.mix(transition.from, transition.to, transition.spec.timing.function(progress))
                 switch property {
                 case "transform":
                     out.append((value, nil, base["filter"], base["box-shadow"]))
@@ -1034,6 +1035,25 @@ final class WidgetAnimator {
     }
 
     func bakeable(_ id: Int) -> Baked? {
+        if let list = transitions[id] {
+            guard list.count == 1, let (property, transition) = list.first,
+                  property == "transform" || property == "opacity",
+                  web.animations(id).isEmpty, cssOverrides[id] == nil,
+                  running[id]?.contains(where: { keyframes[$0.spec.name] != nil }) != true else {
+                return nil
+            }
+            let base = bases[id] ?? [:]
+            var spec = CSSAnimationSpec()
+            spec.name = "transition|\(property)|\(transition.from)|\(transition.to)|\(base["transform"] ?? "")|\(base["opacity"] ?? "")"
+            spec.duration = transition.spec.duration
+            spec.delay = transition.spec.delay
+            spec.timingText = transition.spec.timingText
+            spec.fill = "both"
+            return Baked(spec: spec, start: transition.start, value: { progress in
+                let value = progress <= 0 ? transition.from : progress >= 1 ? transition.to : CSSInterpolate.mix(transition.from, transition.to, transition.spec.timing.function(progress))
+                return (property == "transform" ? value : base["transform"], property == "opacity" ? value : base["opacity"], base["filter"], base["box-shadow"])
+            })
+        }
         guard transitions[id] == nil, web.animations(id).isEmpty, cssOverrides[id] == nil, let list = running[id] else {
             return nil
         }
@@ -1055,6 +1075,9 @@ final class WidgetAnimator {
     private var lastSampleNow: CFTimeInterval = 0
 
     func peek(_ id: Int, at now: CFTimeInterval) -> (transform: String?, opacity: String?)? {
+        if transitions[id] != nil, bakeable(id) != nil {
+            return (currentTransitionValue(id, "transform", now) ?? bases[id]?["transform"], currentTransitionValue(id, "opacity", now) ?? bases[id]?["opacity"])
+        }
         if !web.animations(id).isEmpty {
             let values = web.values(id, at: web.clock() + (now - lastSampleNow), underlying: { [self] in self.underlyingValue(id, $0) })
             let base = bases[id] ?? [:]
@@ -1115,6 +1138,9 @@ final class WidgetAnimator {
     }
 
     func endTime(_ id: Int) -> CFTimeInterval? {
+        if let list = transitions[id], !list.isEmpty {
+            return list.values.map { $0.start + $0.spec.delay + $0.spec.duration }.min()
+        }
         if !web.animations(id).isEmpty {
             return web.endTime(id)
         }
