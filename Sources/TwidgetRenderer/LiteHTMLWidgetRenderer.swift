@@ -102,6 +102,7 @@ public final class LiteHTMLWidgetRenderer {
     }
     private var pendingMoves: [String: [String: Any]] = [:]
     private var bounds: [Int: CGRect] = [:]
+    private var scannedDeclarations: (generation: UInt64, values: [Int: [String: String]]) = (0, [:])
     private var visualBounds: [Int: CGRect]?
     private var boundsValid = false {
         didSet { if !boundsValid { visualBounds = nil } }
@@ -722,6 +723,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     static let presamples = ProcessInfo.processInfo.environment["TW_NO_PRESAMPLE"] == nil
+    static let declarationGates = WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow"]
     static let coalescesHeld = ProcessInfo.processInfo.environment["TW_HELD_RENDER_NOW"] == nil
     private var deferringRender = false
 
@@ -966,12 +968,20 @@ public final class LiteHTMLWidgetRenderer {
         }
         layout(overrides)
         let scanStart = CACurrentMediaTime()
-        var declarations: [Int: [String: String]] = [:]
-        for (key, values) in document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow"]) ?? [:] {
-            if let id = Int(key) {
-                declarations[id] = values
+        var generation: UInt64 = 0
+        let scanned = document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: LiteHTMLWidgetRenderer.declarationGates, changedSince: scannedDeclarations.generation, generation: &generation)
+        if let scanned = scanned {
+            var converted: [Int: [String: String]] = [:]
+            for (key, values) in scanned {
+                if let id = Int(key) {
+                    converted[id] = values
+                }
             }
+            scannedDeclarations = (generation, converted)
+        } else if document == nil {
+            scannedDeclarations = (0, [:])
         }
+        var declarations = scannedDeclarations.values
         if !animator.web.isEmpty, let document = document {
             webUnderlying.removeAll()
             let targets = animator.web.targets

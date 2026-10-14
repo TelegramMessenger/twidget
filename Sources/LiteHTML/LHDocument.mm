@@ -25,6 +25,7 @@
 #include <mutex>
 
 #include <set>
+#include <vector>
 
 namespace lh = litehtml;
 
@@ -674,9 +675,7 @@ static bool DependsOnViewport(const std::string& text)
     std::string                  _itemIndexAttribute;
     BOOL                         _itemIndexValid;
     NSString                    *_scrollAttribute;
-    NSDictionary                *_declarations;
-    NSArray                     *_declarationsKey;
-    uint64_t                     _declarationsEpoch;
+    std::vector<LHDeclarationsEntry> _declarations;
 }
 
 - (BOOL)ensurePaintTraceLocked
@@ -1133,11 +1132,8 @@ static std::string MasterWithCSS(NSString *css)
 
 - (void)takeDeclarationsLocked:(LHDocument *)previous
 {
-    _declarations              = previous->_declarations;
-    _declarationsKey           = previous->_declarationsKey;
-    _declarationsEpoch         = previous->_declarationsEpoch;
-    previous->_declarations    = nil;
-    previous->_declarationsKey = nil;
+    _declarations = std::move(previous->_declarations);
+    previous->_declarations.clear();
 }
 
 - (void)restoreLocked
@@ -1145,7 +1141,7 @@ static std::string MasterWithCSS(NSString *css)
     if(!_consumed || _doc)
         return;
     _consumed     = NO;
-    _declarations = nil;
+    _declarations.clear();
     _paintTraceValid = NO;
     _itemIndexValid  = NO;
     _container = std::make_unique<LHContainer>();
@@ -2320,14 +2316,30 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required
 {
+    uint64_t generation = 0;
+    return [self declarations:names byAttribute:attribute requiringAny:required changedSince:0 generation:&generation];
+}
+
+- (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required changedSince:(uint64_t)known generation:(uint64_t *)generation
+{
+    static std::atomic<uint64_t> generations{0};
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
+    *generation = 0;
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     if(!_doc || !_doc->root())
         return result;
     NSArray *cacheKey = @[names, attribute, required];
-    if(_declarations && _declarationsEpoch == _doc->style_epoch() && [_declarationsKey isEqualToArray:cacheKey] && !getenv("LH_NO_DECLARATION_CACHE"))
-        return _declarations;
+    const bool caching = !getenv("LH_NO_DECLARATION_CACHE");
+    for(size_t i = 0; caching && i < _declarations.size(); i++)
+    {
+        if(_declarations[i].epoch != _doc->style_epoch() || ![_declarations[i].key isEqualToArray:cacheKey])
+            continue;
+        if(i > 0)
+            std::rotate(_declarations.begin(), _declarations.begin() + i, _declarations.begin() + i + 1);
+        *generation = _declarations[0].generation;
+        return known != 0 && known == *generation ? nil : _declarations[0].value;
+    }
     std::vector<std::pair<lh::string_id, NSString *>> keys;
     for(NSString *name in names)
     {
@@ -2384,10 +2396,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         for(auto it = children.rbegin(); it != children.rend(); ++it)
             pending.push_back(it->get());
     }
-    _declarations      = [result copy];
-    _declarationsKey   = cacheKey;
-    _declarationsEpoch = _doc->style_epoch();
-    return _declarations;
+    LHDeclarationsEntry entry{[result copy], cacheKey, _doc->style_epoch(), ++generations};
+    _declarations.insert(_declarations.begin(), entry);
+    if(_declarations.size() > 4)
+        _declarations.resize(4);
+    *generation = entry.generation;
+    return entry.value;
 }
 
 - (nullable NSDictionary<NSString *, NSNumber *> *)svgGeometry:(NSString *)method at:(double)distance attribute:(NSString *)attribute value:(NSString *)value
