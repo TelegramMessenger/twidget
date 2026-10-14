@@ -416,6 +416,10 @@ namespace litehtml
                 }
                 size_t a = decl.find_first_not_of(" \t\n"), b = decl.find_last_not_of(" \t\n", colon - 1);
                 std::string name = a == std::string::npos || a >= colon ? std::string() : decl.substr(a, b - a + 1);
+                if(name.compare(0, 2, "--") != 0)
+                    for(char& ch : name)
+                        if(ch >= 'A' && ch <= 'Z')
+                            ch = static_cast<char>(ch - 'A' + 'a');
                 out.emplace_back(name, decl.substr(colon + 1));
             }
         }
