@@ -555,6 +555,27 @@ int main() {
         }
     }
 
+    // ── pointer capture ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        c.receive(parse(PAGE));
+        c.receive(parse(R"({"type":"listen","types":["pointermove","mousemove","pointerup","mouseup","gotpointercapture","lostpointercapture"]})"));
+        c.touch(0, 10, 10, 0, true, true, 0);
+        auto got = c.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":11,"method":"setPointerCapture","args":[1]}]})"));
+        check(types(got) == "gotpointercapture:11 ", "setPointerCapture on the pressed mouse: gotpointercapture (got " + types(got) + ")");
+        c.touch(1, 150, 10, 0, true, true, 0);
+        auto moved = c.tick();
+        check(types(moved) == "pointermove:11 mousemove:12 ", "captured: pointermove to the capture, mousemove to the element under the mouse (got " + types(moved) + ")");
+        auto up = c.touch(2, 150, 10, 0, true, true, 0);
+        check(types(up) == "pointerup:11 mouseup:12 lostpointercapture:11 ", "release: pointerup to the capture, mouseup under the mouse, then the capture is lost (got " + types(up) + ")");
+        c.touch(0, 10, 10, 0, true, true, 0);
+        auto click = events(c.touch(2, 10, 10, 0, true, true, 0));
+        bool actions = false;
+        for (const Json& e : click) if (e["type"].asString() == "click") actions = e["defaultActions"].asBool();
+        check(actions, "a click asks the sandbox for its default actions");
+    }
+
     // ── viewport units ──
     {
         StubBackend vb;

@@ -106,6 +106,7 @@ private:
         int pointer;
         bool mouse;
         int modifiers;
+        int64_t capture = 0;  // setPointerCapture: pointer events go here instead
     };
     /// What an input event carries besides its type and target.
     struct Input {
@@ -135,6 +136,9 @@ private:
     bool match_media(const std::string& query) const;
     int64_t widget_id_at(double x, double y, Rect* placement) const;
     bool wants_gesture(int64_t target) const;
+    void set_capture(Touch& t, int64_t id, std::vector<twidget::Json>& out);
+    /// The border box of element `id`, empty when it is not laid out.
+    Rect box_of(int64_t id) const;
     void emit_event(const char* type, int64_t target, const Rect& target_rect, const Touch& t, int action, std::vector<twidget::Json>& out);
     twidget::Json event_json(const char* type, int64_t target, const Rect& target_rect, const Input& in) const;
     /// Sends `ev` if the sandbox listens for its type; move-type events wait for the next tick, the

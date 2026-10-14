@@ -1277,6 +1277,15 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         } else if (method == "close" || method == "hidePopover") {
             n->attrs.erase(std::remove_if(n->attrs.begin(), n->attrs.end(), [](auto& p) { return p.first == "open"; }), n->attrs.end());
         }
+        else if (method == "setPointerCapture" || method == "releasePointerCapture") {
+            // The pointer id as event_json gives it out: the mouse is 1, a finger its pointer + 2.
+            int64_t pointer_id = op["args"][size_t(0)].asInt();
+            for (auto& [pointer, t] : touches_) {
+                if ((t.mouse ? 1 : pointer + 2) != pointer_id) continue;
+                if (method == "setPointerCapture" && container_->element(n->id)) set_capture(t, n->id, out);
+                else if (t.capture == n->id) set_capture(t, 0, out);
+            }
+        }
         // focus/blur/scroll*/select*: nothing to do without a focus model or scrolling
     } else if (kind == "canvas") {
         if (n->tag == "canvas" && !n->svg) {
@@ -2107,9 +2116,11 @@ Json Renderer::event_json(const char* type, int64_t target, const Rect& target_r
     ev.set("button", 0).set("buttons", in.buttons).set("detail", in.detail).set("modifiers", in.modifiers);
     if (in.related) ev.set("relatedId", double(in.related));
     std::string name = type;
-    if (name.rfind("pointer", 0) == 0 || name == "click" || name == "dblclick") {
+    if (name.rfind("pointer", 0) == 0 || name.find("pointercapture") != std::string::npos || name == "click" || name == "dblclick") {
         ev.set("pointerId", double(in.mouse ? 1 : in.pointer + 2)).set("pointerType", in.mouse ? "mouse" : "touch").set("isPrimary", in.primary).set("pressure", in.buttons ? 0.5 : 0.0);
     }
+    // The sandbox runs a click's default action (a link, a label, a checkbox) unless a listener prevents it.
+    if (name == "click") ev.set("defaultActions", true);
     // Form control state travels with every event (the sandbox mirror relies on it).
     const Node* n = node(target);
     if (n && (n->tag == "input" || n->tag == "textarea" || n->tag == "select" || n->tag == "button")) {
@@ -2171,6 +2182,19 @@ void Renderer::emit_event(const char* type, int64_t target, const Rect& target_r
     dispatch(event_json(type, target, target_rect, in), out);
 }
 
+Rect Renderer::box_of(int64_t id) const {
+    auto el = container_->element(id);
+    return el ? border_box_of(el) : Rect{};
+}
+
+void Renderer::set_capture(Touch& t, int64_t id, std::vector<Json>& out) {
+    if (t.capture == id) return;
+    int64_t previous = t.capture;
+    t.capture = id;
+    if (previous) emit_event("lostpointercapture", previous, box_of(previous), t, 2, out);
+    if (id) emit_event("gotpointercapture", id, box_of(id), t, 1, out);
+}
+
 bool Renderer::is_ancestor(int64_t ancestor, int64_t id) const {
     if (!ancestor) return false;
     const Node* n = node(id);
@@ -2216,8 +2240,14 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         }
         if (container_->mouse(1, x, y)) dirty_ = true;
         if (t.target) {
-            emit_event("pointermove", t.target, t.target_rect, t, 1, out);
-            emit_event("mousemove", t.target, t.target_rect, t, 1, out);
+            // A finger's events stay with the element it pressed; a mouse's go to the element under
+            // it. Either way a capture takes the pointer events.
+            Rect rect = t.target_rect;
+            int64_t under = t.mouse ? widget_id_at(x, y, &rect) : t.target;
+            if (t.capture && !container_->element(t.capture)) set_capture(t, 0, out);
+            if (t.capture) emit_event("pointermove", t.capture, box_of(t.capture), t, 1, out);
+            else if (under) emit_event("pointermove", under, rect, t, 1, out);
+            if (under) emit_event("mousemove", under, rect, t, 1, out);
             emit_event("touchmove", t.target, t.target_rect, t, 1, out);
         }
         return out;
@@ -2229,8 +2259,12 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         Rect up_rect;
         int64_t up_target = widget_id_at(x, y, &up_rect);
         if (done.target) {
-            emit_event("pointerup", done.target, done.target_rect, done, 2, out);
-            emit_event("mouseup", done.target, done.target_rect, done, 2, out);
+            int64_t under = done.mouse ? up_target : done.target;
+            const Rect& under_rect = done.mouse ? up_rect : done.target_rect;
+            if (done.capture && !container_->element(done.capture)) set_capture(done, 0, out);
+            if (done.capture) emit_event("pointerup", done.capture, box_of(done.capture), done, 2, out);
+            else if (under) emit_event("pointerup", under, under_rect, done, 2, out);
+            if (under) emit_event("mouseup", under, under_rect, done, 2, out);
             emit_event("touchend", done.target, done.target_rect, done, 2, out);
         }
         // A click: the press and the release land on the same element, or one inside the other
@@ -2252,9 +2286,10 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             if (click_count_ == 2) emit_event("dblclick", click, rect, done, 2, out);
         }
     } else if (done.target) {
-        emit_event("pointercancel", done.target, done.target_rect, done, 3, out);
+        emit_event("pointercancel", done.capture ? done.capture : done.target, done.capture ? box_of(done.capture) : done.target_rect, done, 3, out);
         emit_event("touchcancel", done.target, done.target_rect, done, 3, out);
     }
+    set_capture(done, 0, out);
     flush_pending(out);
     return out;
 }
@@ -2262,10 +2297,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
 std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers) {
     std::vector<Json> out;
     if (frozen_) return out;
-    auto box = [this](int64_t id) {
-        auto el = container_->element(id);
-        return el ? border_box_of(el) : Rect{};
-    };
+    auto box = [this](int64_t id) { return box_of(id); };
     Input in;
     in.mouse = true;
     in.pointer = 1;
