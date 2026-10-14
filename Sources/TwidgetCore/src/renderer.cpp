@@ -131,25 +131,6 @@ double now_ms() {
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
 
-std::string base64_encode(const std::vector<uint8_t>& in) {
-    static const char* A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((in.size() + 2) / 3 * 4);
-    size_t i = 0;
-    for (; i + 2 < in.size(); i += 3) {
-        uint32_t v = (uint32_t(in[i]) << 16) | (uint32_t(in[i + 1]) << 8) | in[i + 2];
-        out += A[v >> 18]; out += A[(v >> 12) & 63]; out += A[(v >> 6) & 63]; out += A[v & 63];
-    }
-    if (i + 1 == in.size()) {
-        uint32_t v = uint32_t(in[i]) << 16;
-        out += A[v >> 18]; out += A[(v >> 12) & 63]; out += "==";
-    } else if (i + 2 == in.size()) {
-        uint32_t v = (uint32_t(in[i]) << 16) | (uint32_t(in[i + 1]) << 8);
-        out += A[v >> 18]; out += A[(v >> 12) & 63]; out += A[(v >> 6) & 63]; out += '=';
-    }
-    return out;
-}
-
 /// What a compositor layer animates; an element animating anything else is painted per frame.
 bool is_layer_property(const std::string& property) {
     return property == "transform" || property == "opacity" || property == "translate" || property == "rotate" || property == "scale";
@@ -2019,7 +2000,7 @@ Json Renderer::answer(const Json& q) {
         auto it = shadow ? canvases_.find(shadow->id) : canvases_.end();
         if (it == canvases_.end() || !backend_.canvas_read(it->second->id(), q["x"].asInt(), q["y"].asInt(), w, h, rgba) || rgba.size() != size_t(w) * h * 4)
             rgba.assign(size_t(w) * h * 4, 0);
-        binary_ = base64_encode(rgba);
+        binary_ = base64(rgba);
         return Json::object().set("width", w).set("height", h);
     }
     if (kind == "canvasCall") {
@@ -2376,68 +2357,6 @@ void Renderer::freeze(const std::string& reason, bool fatal) {
     touches_.clear();
     pending_moves_.clear();
     hover_ = 0;
-}
-
-// ───────────────────────── display list JSON ─────────────────────────
-
-std::string to_json(const DisplayList& list) {
-    std::string out;
-    out.reserve(list.size() * 64 + 2);
-    auto num = [&](float v) { out += twidget::Json::number(std::round(double(v) * 100) / 100); };
-    auto rect = [&](const char* key, const Rect& r) {
-        out += ",\"";
-        out += key;
-        out += "\":[";
-        num(r.x); out.push_back(','); num(r.y); out.push_back(','); num(r.w); out.push_back(','); num(r.h);
-        out.push_back(']');
-    };
-    auto color = [&](const Color& c) {
-        out += ",\"c\":";
-        out += std::to_string((uint32_t(c.a) << 24) | (uint32_t(c.r) << 16) | (uint32_t(c.g) << 8) | c.b);
-    };
-    out.push_back('[');
-    bool first = true;
-    for (const Command& c : list) {
-        if (!first) out.push_back(',');
-        first = false;
-        out += "{\"k\":";
-        out += std::to_string(int(c.kind));
-        if (c.kind != Cmd::ClipPop && c.kind != Cmd::Text) rect("r", c.rect);
-        if (c.radii.any()) {
-            out += ",\"q\":[";
-            const float v[] = {c.radii.tlx, c.radii.tly, c.radii.trx, c.radii.try_, c.radii.brx, c.radii.bry, c.radii.blx, c.radii.bly};
-            for (int i = 0; i < 8; i++) { if (i) out.push_back(','); num(v[i]); }
-            out.push_back(']');
-        }
-        if (c.has_clip) rect("l", c.clip);
-        switch (c.kind) {
-        case Cmd::FillRect: case Cmd::FillEllipse: color(c.color); break;
-        case Cmd::StrokeRect: case Cmd::StrokeEllipse: color(c.color); out += ",\"w\":"; num(c.width); break;
-        case Cmd::Text:
-            color(c.color);
-            out += ",\"f\":" + std::to_string(c.font) + ",\"x\":"; num(c.x);
-            out += ",\"y\":"; num(c.y);
-            out += ",\"t\":" + twidget::Json::quote(c.text);
-            break;
-        case Cmd::Image: out += ",\"i\":" + std::to_string(c.image); break;
-        case Cmd::Linear: case Cmd::Radial: case Cmd::Conic:
-            out += ",\"a\":["; num(c.ax); out.push_back(','); num(c.ay); out.push_back(','); num(c.bx); out.push_back(','); num(c.by); out.push_back(']');
-            out += ",\"s\":[";
-            for (size_t i = 0; i < c.stops.size(); i++) {
-                if (i) out.push_back(',');
-                num(c.stops[i].offset);
-                out.push_back(',');
-                const Color& s = c.stops[i].color;
-                out += std::to_string((uint32_t(s.a) << 24) | (uint32_t(s.r) << 16) | (uint32_t(s.g) << 8) | s.b);
-            }
-            out.push_back(']');
-            break;
-        case Cmd::ClipPush: case Cmd::ClipPop: break;
-        }
-        out.push_back('}');
-    }
-    out.push_back(']');
-    return out;
 }
 
 } // namespace twlite

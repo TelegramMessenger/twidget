@@ -479,6 +479,74 @@ int main() {
         check(at(50, 50) == 81 && at(4, 14) != 81, "hits inside the circle reach it, the corner outside does not (" + std::to_string(at(50, 50)) + ", " + std::to_string(at(4, 14)) + ")");
     }
 
+    // ── JSON for the Android and web painters ──
+    {
+        DisplayList list;
+        Command group;
+        group.kind = Cmd::GroupPush;
+        group.matrix[0] = 0.70710678f;
+        group.opacity = 0.5f;
+        list.push_back(group);
+        Command shape;
+        shape.kind = Cmd::Path;
+        auto p = std::make_shared<Path>();
+        p->ops = {Path::Move, Path::Line, Path::Close};
+        p->points = {0, 0, 10, 0};
+        p->fill = true;
+        p->fill_color = Color{255, 0, 0, 255};
+        p->stroke = true;
+        p->stroke_width = 2;
+        p->dashes = {4, 2};
+        shape.path = p;
+        list.push_back(shape);
+        Command clip;
+        clip.kind = Cmd::ClipPush;
+        clip.path = p;
+        list.push_back(clip);
+        Command shadow;
+        shadow.kind = Cmd::Shadow;
+        shadow.rect = Rect{1, 2, 3, 4};
+        shadow.inset = true;
+        shadow.bx = 6;
+        list.push_back(shadow);
+        list.push_back(Command{Cmd::ClipPop});
+        list.push_back(Command{Cmd::GroupPop});
+        auto json = Json::parse(to_json(list));
+        bool parsed = json && json->arr().size() == 6;
+        check(parsed, "the display list JSON parses");
+        if (parsed) {
+            const Json& j = *json;
+            check(j[size_t(0)]["k"].asInt() == int(Cmd::GroupPush) && std::abs(j[size_t(0)]["m"][size_t(0)].asNumber() - 0.70710678) < 1e-6 && j[size_t(0)]["o"].asNumber() == 0.5,
+                  "a group keeps its matrix exact and its opacity");
+            const Json& path = j[size_t(1)]["p"];
+            check(path["o"].arr().size() == 3 && path["v"].arr().size() == 4 && path["f"].asNumber() == double(0xffff0000u) && path["sw"].asNumber() == 2 && path["d"].arr().size() == 2,
+                  "an SVG path carries its geometry, fill and dashed stroke");
+            check(j[size_t(2)]["p"]["o"].arr().size() == 3 && !j[size_t(2)]["p"].find("f"), "a path clip carries the geometry only");
+            check(j[size_t(3)]["n"].asInt() == 1 && j[size_t(3)]["a"][size_t(2)].asNumber() == 6 && j[size_t(3)]["r"][size_t(3)].asNumber() == 4, "a shadow carries inset, blur and box");
+        }
+
+        std::vector<CanvasOp> ops(2);
+        ops[0].kind = CanvasOp::Fill;
+        ops[0].path.ops = {Path::Move, Path::Line};
+        ops[0].path.points = {0, 0, 5, 5};
+        ops[0].paint.kind = CanvasPaint::Linear;
+        ops[0].paint.stops = {Stop{0, Color{}}, Stop{1, Color{255, 255, 255, 255}}};
+        ops[0].composite = Composite::Multiply;
+        ops[0].clips = std::make_shared<std::vector<CanvasClip>>(1);
+        ops[1].kind = CanvasOp::PutImage;
+        ops[1].w = ops[1].h = 1;
+        ops[1].rgba = std::make_shared<std::vector<uint8_t>>(std::vector<uint8_t>{1, 2, 3, 4});
+        auto canvas = Json::parse(to_json(ops));
+        bool read = canvas && canvas->arr().size() == 2;
+        check(read, "the canvas JSON parses");
+        if (read) {
+            const Json& c = *canvas;
+            check(c[size_t(0)]["pk"].asInt() == 1 && c[size_t(0)]["s"].arr().size() == 4 && c[size_t(0)]["cm"].asInt() == int(Composite::Multiply) && c[size_t(0)]["cl"].arr().size() == 1 && !c[size_t(0)].find("a"),
+                  "a fill carries its paint, blend mode and clip, and no alpha when opaque");
+            check(c[size_t(1)]["px"].asString() == "AQIDBA==", "putImageData pixels are base64");
+        }
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
