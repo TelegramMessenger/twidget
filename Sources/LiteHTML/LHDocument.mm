@@ -637,6 +637,8 @@ static bool DependsOnViewport(const std::string& text)
     std::string                  _htmlSource;
     std::vector<const lh::render_item *> _paintTrace;
     BOOL                         _paintTraceValid;
+    NSSet                       *_ignoredKey;
+    std::unordered_set<std::string> _ignoredValues;
     int                          _backdropDepth;
     NSString                    *_html;
     lh::document::ptr            _doc;
@@ -1755,7 +1757,7 @@ static std::string MasterWithCSS(NSString *css)
     return found;
 }
 
-static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
+static CGRect BorderBox(const lh::render_item *ri)
 {
     const lh::position p      = ri->get_placement();
     const CGFloat      left   = ri->padding_left().value() + ri->border_left().value();
@@ -1763,6 +1765,11 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     const CGFloat      right  = ri->padding_right().value() + ri->border_right().value();
     const CGFloat      bottom = ri->padding_bottom().value() + ri->border_bottom().value();
     return CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
+}
+
+static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
+{
+    return BorderBox(ri.get());
 }
 
 static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
@@ -2051,6 +2058,17 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return obscuring != nil && obscuring.count == 0;
 }
 
+- (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoringSet:(NSObject *)ignoring clipped:(BOOL)clipped
+{
+    NSArray<NSString *> *obscuring = [self elementsObscuringAttribute:attribute value:value inRect:rect ignoringSet:ignoring clipped:clipped];
+    return obscuring != nil && obscuring.count == 0;
+}
+
+- (nullable NSArray<NSString *> *)elementsObscuringAttribute:(NSString *)attribute value:(NSString *)value inRect:(CGRect)rect ignoringSet:(NSObject *)ignoring clipped:(BOOL)clipped
+{
+    return [self elementsObscuringAttribute:attribute value:value inRect:rect ignoring:[ignoring isKindOfClass:[NSSet class]] ? (NSSet<NSString *> *)ignoring : [NSSet set] clipped:clipped];
+}
+
 - (nullable NSArray<NSString *> *)elementsObscuringAttribute:(NSString *)attribute value:(NSString *)value inRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring clipped:(BOOL)clipped
 {
     std::lock_guard<std::mutex> guard(_lock);
@@ -2085,15 +2103,17 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     const std::vector<const lh::render_item *> &trace = _paintTrace;
     const char *key = attribute.UTF8String;
     NSMutableOrderedSet<NSString *> *found = [NSMutableOrderedSet orderedSet];
-    std::unordered_set<std::string> ignored;
-    for(NSString *value in ignoring)
-        ignored.insert(value.UTF8String ?: "");
+    std::unordered_set<std::string> local;
+    const std::unordered_set<std::string> *ignoredRef = nullptr;
     auto self_it = std::find(trace.begin(), trace.end(), ri.get());
     if(self_it == trace.end())
         return nil;
     for(auto it = std::next(self_it); it != trace.end(); ++it)
     {
         const lh::render_item *item = *it;
+        CGRect box = BorderBox(item);
+        if(!(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect)))
+            continue;
         bool descendant = false;
         for(auto p = item->parent(); p; p = p->parent())
         {
@@ -2112,6 +2132,23 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
             transparent = walk->src_el()->css().get_opacity() <= 0;
         if(transparent)
             continue;
+        if(!ignoredRef)
+        {
+            const bool reusable = ![ignoring isKindOfClass:[NSMutableSet class]];
+            if(reusable && ignoring == _ignoredKey)
+                ignoredRef = &_ignoredValues;
+            else
+            {
+                std::unordered_set<std::string> &target = reusable ? _ignoredValues : local;
+                target.clear();
+                for(NSString *value in ignoring)
+                    target.insert(value.UTF8String ?: "");
+                if(reusable)
+                    _ignoredKey = ignoring;
+                ignoredRef = &target;
+            }
+        }
+        const std::unordered_set<std::string> &ignored = *ignoredRef;
         if(!ignored.empty())
         {
             bool skipped = false;
@@ -2124,8 +2161,6 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
             if(skipped)
                 continue;
         }
-        CGRect box = BorderBox(std::const_pointer_cast<lh::render_item>(item->shared_from_this()));
-        if(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect))
         {
             NSString *owner = nil;
             for(const lh::render_item *walk = item; walk; walk = walk->parent().get())
