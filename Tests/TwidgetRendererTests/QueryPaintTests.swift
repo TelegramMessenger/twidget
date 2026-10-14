@@ -56,7 +56,11 @@ final class QueryPaintTests: XCTestCase {
         let composited = renderer.compositedElementIDs
         XCTAssertNotNil(presented)
 
+        renderer.noteUserInput()
+        renderer.send("{\"type\":\"requestFrame\"}")
         send(renderer, [["op": "attr", "id": 3, "name": "class", "value": "box"]])
+        XCTAssertTrue(renderer.holdsForFrame)
+        XCTAssertTrue(renderer.presentedDocument === presented)
         renderer.send("{\"type\":\"query\",\"qid\":1,\"query\":{\"q\":\"box\",\"id\":3}}")
         XCTAssertEqual((results.last as? [String: Any])?["offsetWidth"] as? Double, 100)
         XCTAssertNil(renderer.animationEnd(3))
@@ -67,7 +71,7 @@ final class QueryPaintTests: XCTestCase {
         XCTAssertEqual(renderer.compositedElementIDs, composited)
 
         send(renderer, [["op": "attr", "id": 3, "name": "class", "value": "box pop"]])
-        pump(0.2, until: { renderer.presentedDocument !== presented })
+        pump(0.2, step: 0.001, until: { renderer.presentedDocument !== presented })
         XCTAssertFalse(renderer.presentedDocument === presented)
         guard let restartedEnd = renderer.animationEnd(3) else {
             return XCTFail("pop animation did not restart")
