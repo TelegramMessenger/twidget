@@ -102,7 +102,10 @@ public final class LiteHTMLWidgetRenderer {
     }
     private var pendingMoves: [String: [String: Any]] = [:]
     private var bounds: [Int: CGRect] = [:]
-    private var boundsValid = false
+    private var visualBounds: [Int: CGRect]?
+    private var boundsValid = false {
+        didSet { if !boundsValid { visualBounds = nil } }
+    }
     private var hoverId = 0
     var form = WidgetFormState()
     private var pressId = 0
@@ -1988,7 +1991,18 @@ public final class LiteHTMLWidgetRenderer {
             guard let node = dom.node(id), !node.isText else {
                 return ["error": "no such element"]
             }
-            rect = elementBounds()[id] ?? .zero
+            if kind == "rect" || kind == "rects" {
+                if visualBounds == nil {
+                    var result: [Int: CGRect] = [:]
+                    for (key, value) in document?.visualBounds(byAttribute: WidgetDOM.idAttribute) ?? [:] {
+                        if let id = Int(key) { result[id] = value.rectValue }
+                    }
+                    visualBounds = result
+                }
+                rect = visualBounds?[id] ?? .zero
+            } else {
+                rect = elementBounds()[id] ?? .zero
+            }
         }
         switch kind {
         case "rect":

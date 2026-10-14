@@ -1474,11 +1474,17 @@ static std::string MasterWithCSS(NSString *css)
             break;
         }
     }
-    return @{
+    NSMutableDictionary<NSString *, NSNumber *> *metrics = [@{
         @"offsetLeft": @(std::round(point.x)),
         @"offsetTop": @(std::round(point.y)),
         @"offsetParent": @(parentId),
-    };
+    } mutableCopy];
+    if(!ri->src_el()->is_inline() || ri->src_el()->is_inline_box() || ri->src_el()->is_replaced())
+    {
+        metrics[@"offsetWidth"] = @(std::round(ri->pos().width.value() + ri->get_paddings().width().value() + ri->get_borders().width().value()));
+        metrics[@"offsetHeight"] = @(std::round(ri->pos().height.value() + ri->get_paddings().height().value() + ri->get_borders().height().value()));
+    }
+    return metrics;
 }
 
 - (nullable NSDictionary<NSString *, NSNumber *> *)textareaMetricsWithAttribute:(NSString *)attribute value:(NSString *)value
@@ -2440,7 +2446,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return out;
 }
 
-- (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name
+- (NSDictionary<NSString *, NSValue *> *)boundsWithAttribute:(NSString *)name transformed:(BOOL)transformed
 {
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
@@ -2449,7 +2455,8 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         return result;
     const char *key = name.UTF8String;
     std::unordered_map<std::string, CGRect> boxes;
-    std::function<void(const std::shared_ptr<lh::render_item> &)> visit = [&](const std::shared_ptr<lh::render_item> &ri) {
+    std::function<void(const std::shared_ptr<lh::render_item> &, const lh::transform_matrix&)> visit = [&](const std::shared_ptr<lh::render_item> &ri, const lh::transform_matrix& ancestors) {
+        const auto matrix = transformed ? ri->get_visual_transform().then(ancestors) : lh::transform_matrix{};
         if(const char *value = ri->src_el()->get_attr(key))
         {
             const lh::position p      = ri->get_placement();
@@ -2457,7 +2464,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
             const CGFloat      top    = ri->padding_top().value() + ri->border_top().value();
             const CGFloat      right  = ri->padding_right().value() + ri->border_right().value();
             const CGFloat      bottom = ri->padding_bottom().value() + ri->border_bottom().value();
-            const CGRect       box    = CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
+            CGRect box = CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
+            if(transformed)
+            {
+                box = CGRectApplyAffineTransform(box, CGAffineTransformMake(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty));
+            }
             auto               it     = boxes.find(value);
             if(it == boxes.end())
                 boxes.emplace(value, box);
@@ -2465,12 +2476,22 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
                 it->second = CGRectUnion(it->second, box);
         }
         for(const auto &child : ri->children())
-            visit(child);
+            visit(child, matrix);
     };
-    visit(_doc->root_render());
+    visit(_doc->root_render(), {});
     for(const auto &entry : boxes)
         result[@(entry.first.c_str())] = [NSValue valueWithRect:NSRectFromCGRect(entry.second)];
     return result;
+}
+
+- (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name
+{
+    return [self boundsWithAttribute:name transformed:NO];
+}
+
+- (NSDictionary<NSString *, NSValue *> *)visualBoundsByAttribute:(NSString *)name
+{
+    return [self boundsWithAttribute:name transformed:YES];
 }
 
 - (NSString *)layoutSignature

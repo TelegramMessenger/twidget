@@ -63,6 +63,45 @@ final class VisualQueryTests: XCTestCase {
         XCTAssertEqual(query(renderer, "box")["offsetTop"] as? Double, 25)
     }
 
+    func testOffsetDimensionsIgnoreVisualTransforms() {
+        for (tag, style) in [("div", "display:block"), ("div", "display:inline-block"), ("textarea", "display:block"), ("div", "overflow:auto"), ("img", "display:inline")] {
+            let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+            renderer.schedule = { _ in }
+            renderer.load()
+            defer { renderer.destroy() }
+            send(renderer, ["type": "ops", "ops": [
+                ["op": "el", "id": 7, "tag": "body", "adopt": "body", "attrs": [["style", "margin:0;transform:scale(1.2);transform-origin:0 0"]]],
+                ["op": "el", "id": 8, "tag": tag, "attrs": [["style", "\(style);box-sizing:content-box;width:100.25px;height:60.25px;padding:3px;border:2px solid black;transform:scale(1.5);transform-origin:0 0"]]],
+                ["op": "ins", "parent": 7, "id": 8]
+            ]])
+            let visual = query(renderer, "rect")
+            XCTAssertEqual(visual["width"] as? Double ?? 0, 198.45, accuracy: 0.01, "\(tag) \(style)")
+            XCTAssertEqual(visual["height"] as? Double ?? 0, 126.45, accuracy: 0.01, "\(tag) \(style)")
+            let box = query(renderer, "box")
+            XCTAssertEqual(box["offsetWidth"] as? Double, 110, "\(tag) \(style)")
+            XCTAssertEqual(box["offsetHeight"] as? Double, 70, "\(tag) \(style)")
+        }
+    }
+
+    func testVisualRectCacheUpdatesAfterRotationAndAncestorTranslation() {
+        let renderer = make()
+        defer { renderer.destroy() }
+        let initial = query(renderer, "rect")
+        send(renderer, ["type": "ops", "ops": [
+            ["op": "style", "id": 8, "name": "transform-origin", "value": "0 0"],
+            ["op": "style", "id": 8, "name": "transform", "value": "rotate(90deg)"],
+            ["op": "style", "id": 7, "name": "transform", "value": "translate(20px,30px)"]
+        ]])
+        let transformed = query(renderer, "rect")
+        XCTAssertEqual(transformed["x"] as? Double ?? 0, (initial["x"] as! Double) - 40, accuracy: 0.01)
+        XCTAssertEqual(transformed["y"] as? Double ?? 0, (initial["y"] as! Double) + 30, accuracy: 0.01)
+        XCTAssertEqual(transformed["width"] as? Double ?? 0, 60, accuracy: 0.01)
+        XCTAssertEqual(transformed["height"] as? Double ?? 0, 100, accuracy: 0.01)
+        XCTAssertEqual(query(renderer, "box")["offsetWidth"] as? Double, 100)
+        send(renderer, ["type": "ops", "ops": [["op": "style", "id": 8, "name": "transform", "value": "none"]]])
+        XCTAssertEqual(query(renderer, "rect")["width"] as? Double, 100)
+    }
+
     func testPositionOffsetsDoNotChangeWhenAnAncestorScrolls() {
         let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
         renderer.schedule = { _ in }

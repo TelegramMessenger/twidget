@@ -628,6 +628,7 @@ namespace litehtml
         virtual bool is_point_inside(pixel_t x, pixel_t y) const;
         void         dump(litehtml::dumper& cout);
         position     get_placement() const;
+        transform_matrix get_visual_transform() const;
         position     sticky_offset() const;
         virtual void y_shift(pixel_t delta);
         /**

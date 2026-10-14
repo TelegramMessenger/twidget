@@ -1193,6 +1193,16 @@ static litehtml::transform_matrix group_transform(const litehtml::css_properties
     return m.then(transform_matrix{1, 0, 0, 1, ox.value(), oy.value()});
 }
 
+litehtml::transform_matrix litehtml::render_item::get_visual_transform() const
+{
+    if(css().get_transform().empty() || (src_el()->is_inline() && !src_el()->is_inline_box() && !src_el()->is_replaced()))
+        return {};
+    position box = get_placement();
+    box += m_padding;
+    box += m_borders;
+    return group_transform(css(), box);
+}
+
 static float shadow_reach(const litehtml::box_shadow_vector& shadows)
 {
     float reach = 0;
