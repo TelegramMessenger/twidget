@@ -136,6 +136,29 @@ Rect visual_box_of(const litehtml::element::ptr& el) {
 }
 
 #ifdef TW_LITEHTML_TWIDGET
+Rect padding_box_of(const litehtml::render_item* ri) {
+    Rect border = border_box_of(ri->src_el());
+    float l = float(ri->border_left()), t = float(ri->border_top()), r = float(ri->border_right()), b = float(ri->border_bottom());
+    return Rect{border.x + l, border.y + t, border.w - l - r, border.h - t - b};
+}
+
+/// What can show of an item's border box: inside the padding box of each ancestor that clips it,
+/// up to a fixed ancestor, which escapes them.
+Rect clipped_border_box(const litehtml::render_item* ri) {
+    Rect box = border_box_of(ri->src_el());
+    bool escaped = ri->src_el()->css().get_position() == litehtml::element_position_fixed;
+    for (auto p = ri->parent(); p && box.w > 0 && box.h > 0; p = p->parent()) {
+        if (escaped || !p->parent()) break;
+        escaped = p->src_el()->css().get_position() == litehtml::element_position_fixed;
+        if (!p->src_el()->css().clips_contents()) continue;
+        Rect clip = padding_box_of(p.get());
+        float x0 = std::max(box.x, clip.x), y0 = std::max(box.y, clip.y);
+        float x1 = std::min(box.x + box.w, clip.x + clip.w), y1 = std::min(box.y + box.h, clip.y + clip.h);
+        box = Rect{x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
+    }
+    return box;
+}
+
 /// offsetLeft/offsetTop and offsetParent: from the border box to the padding edge of the nearest
 /// positioned, transformed or contained ancestor (a table cell for a static element), else the body.
 void offsets_of(const std::shared_ptr<litehtml::render_item>& ri, double& left, double& top, int64_t& parent) {
@@ -468,20 +491,28 @@ public:
         box = border_box_of(el);
         return box.w > 0 && box.h > 0 && box.w * box.h < 2'000'000;
     }
-    /// The ancestor that clips `el`, if one does: its padding box and inner radii. False when two
-    /// do; a layer carries one clip.
+    /// The ancestor that clips `el`, if one does: the innermost one's padding box and inner radii. A
+    /// layer carries one clip, so false when an outer one could cut what the inner one lets through.
     bool clip_of(const litehtml::element::ptr& el, bool& has, Rect& rect, Radii& radii) const {
         has = false;
         auto ri = el->get_render_item();
         if (!ri) return false;
         for (auto p = ri->parent(); p; p = p->parent()) {
             if (!p->src_el()->css().clips_contents()) continue;
-            if (has) return false;
-            has = true;
             Rect border = border_box_of(p->src_el());
-            const auto& b = p->get_borders();
-            rect = Rect{border.x + float(b.left), border.y + float(b.top), border.w - float(b.left) - float(b.right), border.h - float(b.top) - float(b.bottom)};
             auto r = p->src_el()->css().get_borders().radius.calc_percents(litehtml::pixel_t(border.w), litehtml::pixel_t(border.h));
+            if (has) {
+                // Past its rounded corners an outer clip is a rectangle: it is moot when that holds the inner one.
+                float corner = std::max({float(r.top_left_x), float(r.top_left_y), float(r.top_right_x), float(r.top_right_y),
+                                         float(r.bottom_left_x), float(r.bottom_left_y), float(r.bottom_right_x), float(r.bottom_right_y)});
+                Rect outer = padding_box_of(p.get());
+                if (rect.x < outer.x + corner || rect.y < outer.y + corner || rect.x + rect.w > outer.x + outer.w - corner || rect.y + rect.h > outer.y + outer.h - corner)
+                    return false;
+                continue;
+            }
+            has = true;
+            const auto& b = p->get_borders();
+            rect = padding_box_of(p.get());
             radii = Radii{std::max(0.0f, float(r.top_left_x) - float(b.left)), std::max(0.0f, float(r.top_left_y) - float(b.top)),
                           std::max(0.0f, float(r.top_right_x) - float(b.right)), std::max(0.0f, float(r.top_right_y) - float(b.top)),
                           std::max(0.0f, float(r.bottom_right_x) - float(b.right)), std::max(0.0f, float(r.bottom_right_y) - float(b.bottom)),
@@ -499,7 +530,8 @@ public:
         return trace;
     }
     /// Something painted after `el` meets `area`, other than `el`'s descendants and what `ignore`
-    /// holds (other layers, ordered among themselves by paint order).
+    /// holds (other layers, ordered among themselves by paint order). What shows of an item is its
+    /// border box inside its clipping ancestors; hidden and fully transparent items show nothing.
     bool covered(const litehtml::element::ptr& el, const Rect& area, const std::vector<const litehtml::render_item*>& trace,
                  const std::unordered_set<const litehtml::element*>& ignore) const {
         auto ri = el->get_render_item();
@@ -507,14 +539,16 @@ public:
         if (self == trace.end()) return true;
         for (auto it = std::next(self); it != trace.end(); ++it) {
             const litehtml::render_item* item = *it;
-            if (item->src_el()->is_space()) continue;
+            // The box test first: most items are nowhere near the layer.
+            Rect box = clipped_border_box(item);
+            if (box.w <= 0 || box.h <= 0) continue;
+            if (!(box.x < area.x + area.w && area.x < box.x + box.w && box.y < area.y + area.h && area.y < box.y + box.h)) continue;
+            if (item->src_el()->is_space() || item->src_el()->css().get_visibility() != litehtml::visibility_visible) continue;
             bool skip = false;
             for (const litehtml::render_item* walk = item; walk && !skip; walk = walk->parent().get())
-                skip = walk == ri.get() || ignore.count(walk->src_el().get());
+                skip = walk == ri.get() || ignore.count(walk->src_el().get()) || walk->src_el()->css().get_opacity() <= 0;
             if (skip) continue;
-            Rect box = border_box_of(item->src_el());
-            if (box.w <= 0 || box.h <= 0) continue;
-            if (box.x < area.x + area.w && area.x < box.x + box.w && box.y < area.y + area.h && area.y < box.y + box.h) return true;
+            return true;
         }
         return false;
     }
