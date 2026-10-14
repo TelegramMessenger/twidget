@@ -1107,6 +1107,8 @@ public final class LiteHTMLWidgetRenderer {
             renderDeferred = true
             return
         }
+        documentView.beginUpdates()
+        defer { documentView.endUpdates() }
         pendingGeometry = false
         updateAnimationClock()
         let now = animationNow
@@ -1603,6 +1605,9 @@ public final class LiteHTMLWidgetRenderer {
             lastExclusions = excluded
             lastScrollExclusions = scrollExcluded
             lastTextExclusions = textExcluded
+            if exclusionsChanged {
+                documentView.synchronizePaintHandoff()
+            }
         }
         if !textExcluded.isEmpty {
             next.setTextPaintExclusions(Set(textExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
@@ -3270,7 +3275,7 @@ class WidgetDocumentView: NSView {
         return tilesTrimmed || tiles.isEmpty || tiles.contains { !$0.prepared && ($0.layer.contents == nil || $0.layer.needsDisplay()) }
     }
 
-    func prepareTiles(completion: @escaping () -> Void) -> Bool {
+    func prepareTiles(synchronously: Bool = false, completion: @escaping () -> Void) -> Bool {
         guard rasterLifetime.isActive, WidgetDocumentView.layerTiles, !WidgetDocumentView.backingStore, !preparing, let layer = rootLayer, let document = document else {
             return false
         }
@@ -3300,7 +3305,7 @@ class WidgetDocumentView: NSView {
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
         let schedule = owner?.scheduleUrgent
-        WidgetDocumentView.prepareQueue.async { [weak self] in
+        let draw = { [weak self] in
             let start = CACurrentMediaTime()
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
             for job in jobs {
@@ -3326,7 +3331,9 @@ class WidgetDocumentView: NSView {
                 ctx.setShouldAntialias(true)
                 let drawCPU = LiteHTMLWidgetRenderer.threadCPUSeconds()
                 let drawn = document.drawIfCurrent(in: ctx, origin: .zero, clip: rect.insetBy(dx: -margin, dy: -margin))
-                self?.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
+                if !synchronously {
+                    self?.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
+                }
                 ctx.restoreGState()
                 ctx.flush()
                 IOSurfaceUnlock(surface.surface, [], nil)
@@ -3372,11 +3379,18 @@ class WidgetDocumentView: NSView {
                     self.scheduleFlush()
                 }
             }
-            if let schedule = schedule {
+            if synchronously {
+                finish()
+            } else if let schedule = schedule {
                 schedule(finish)
             } else {
                 DispatchQueue.main.async(execute: finish)
             }
+        }
+        if synchronously {
+            draw()
+        } else {
+            WidgetDocumentView.prepareQueue.async(execute: draw)
         }
         return true
     }
@@ -3468,6 +3482,23 @@ class WidgetDocumentView: NSView {
         return contentLayer
     }
     private var flushScheduled = false
+    private var updateDepth = 0
+    private var synchronousHandoff = false
+
+    func beginUpdates() {
+        updateDepth += 1
+    }
+
+    func endUpdates() {
+        updateDepth -= 1
+        flushIfDetached()
+    }
+
+    func synchronizePaintHandoff() {
+        guard detached else { return }
+        synchronousHandoff = true
+        invalidateDetached(nil)
+    }
 
     func scheduleFlush() {
         guard !flushScheduled, let owner = owner else {
@@ -3515,17 +3546,24 @@ class WidgetDocumentView: NSView {
     }
 
     private func flushDetached() {
-        guard detached, document != nil, !tilesTrimmed, windowState.inWindow || owner?.preparesOffscreen == true || !everPainted else {
+        guard updateDepth == 0, detached, document != nil, !tilesTrimmed, windowState.inWindow || owner?.preparesOffscreen == true || !everPainted else {
             return
         }
         if preparing {
             return
         }
-        let started = prepareTiles { [weak self] in
-            self?.owner?.rasterFinished()
+        let synchronously = synchronousHandoff
+        synchronousHandoff = false
+        let started = prepareTiles(synchronously: synchronously) { [weak self] in
+            if !synchronously { self?.owner?.rasterFinished() }
         }
-        if !started && !asyncDirty.isEmpty {
-            rasterDirtyTiles()
+        if (!started || synchronously) && !asyncDirty.isEmpty {
+            rasterDirtyTiles(synchronously: synchronously)
+        }
+        if synchronously {
+            owner?.scheduleUrgent { [weak self] in
+                self?.owner?.rasterFinished()
+            }
         }
     }
 
@@ -3780,7 +3818,7 @@ class WidgetDocumentView: NSView {
         return CGRect(x: tile.minX + x0, y: tile.minY + y0, width: x1 - x0, height: y1 - y0)
     }
 
-    private func rasterDirtyTiles() {
+    private func rasterDirtyTiles(synchronously: Bool = false) {
         guard rasterLifetime.isActive, !preparing, !asyncDirty.isEmpty, let document = document, windowState.inWindow, !tilesTrimmed else {
             return
         }
@@ -3829,7 +3867,7 @@ class WidgetDocumentView: NSView {
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
         let schedule = owner?.scheduleUrgent
-        WidgetDocumentView.prepareQueue.async { [weak self] in
+        let draw = { [weak self] in
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef, partial: Bool, dirty: CGRect, usedSpare: Bool)] = []
             var aborted = false
             var stats = WidgetTileStats.Snapshot()
@@ -3891,7 +3929,9 @@ class WidgetDocumentView: NSView {
                 ctx.setShouldAntialias(true)
                 let drawCPU = LiteHTMLWidgetRenderer.threadCPUSeconds()
                 let drawn = document.drawIfCurrent(in: ctx, origin: .zero, clip: aligned.insetBy(dx: -margin, dy: -margin))
-                self?.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
+                if !synchronously {
+                    self?.owner?.chargeTileDraw(LiteHTMLWidgetRenderer.threadCPUSeconds() - drawCPU)
+                }
                 ctx.restoreGState()
                 ctx.flush()
                 IOSurfaceUnlock(targetSurface, [], nil)
@@ -3954,18 +3994,25 @@ class WidgetDocumentView: NSView {
                         print("DAMAGE RESTORE aborted=\(aborted) sync=\(self.syncInvalidations != syncEpoch) inWindow=\(self.windowState.inWindow) trimmed=\(self.tilesTrimmed) scale=\(self.tileScale == scale) made=\(made.contains { $0.index == index }) prepared=\(tile.prepared) detached=\(self.detached)")
                     }
                 }
-                self.owner?.rasterFinished()
+                if !synchronously { self.owner?.rasterFinished() }
                 if self.detached {
                     self.scheduleFlush()
                 } else if !self.asyncDirty.isEmpty {
                     self.rasterDirtyTiles()
                 }
             }
-            if let schedule = schedule {
+            if synchronously {
+                finish()
+            } else if let schedule = schedule {
                 schedule(finish)
             } else {
                 DispatchQueue.main.async(execute: finish)
             }
+        }
+        if synchronously {
+            draw()
+        } else {
+            WidgetDocumentView.prepareQueue.async(execute: draw)
         }
     }
 
