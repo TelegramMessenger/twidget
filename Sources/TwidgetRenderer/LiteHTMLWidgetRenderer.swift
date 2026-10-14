@@ -81,6 +81,12 @@ public final class LiteHTMLWidgetRenderer {
     private var idleTicks = 0
     private var controlsActive = false
     private var lastFramePost: CFTimeInterval = 0
+    private var frameHoldStart: CFTimeInterval?
+    private var frameHoldPosted: CFTimeInterval?
+    private var frameHoldAnswers = 0
+    private var frameHoldRender = false
+    static var frameHoldLimit: CFTimeInterval = 0.05
+    static var frameHoldAnswerWait: CFTimeInterval = 0.02
     private static let frameInterval = ProcessInfo.processInfo.environment["TW_RAF_FPS"].flatMap { Double($0) }.map { 1 / $0 - 0.002 } ?? 1.0 / 60 - 0.002
     private var clock: WidgetFrameClock?
     private let timeOrigin = CACurrentMediaTime()
@@ -553,6 +559,12 @@ public final class LiteHTMLWidgetRenderer {
         if inputAwaitingAnswer && !documentView.preparing && (!held || self.held.isEmpty) {
             inputAwaitingAnswer = false
         }
+        if frameHoldPosted != nil {
+            frameHoldAnswers -= 1
+            if frameHoldAnswers <= 0 {
+                releaseFrameHold()
+            }
+        }
     }
 
     private func applyMeasuredBody(_ ops: [WidgetOp], held: Bool) {
@@ -634,6 +646,7 @@ public final class LiteHTMLWidgetRenderer {
         if json == "{\"type\":\"requestFrame\"}", !destroyed, !frozen {
             if !frameRequested {
                 frameRequested = true
+                holdForFrameIfAnswering()
                 startClock()
             }
             return
@@ -679,6 +692,7 @@ public final class LiteHTMLWidgetRenderer {
                 return
             }
             frameRequested = true
+            holdForFrameIfAnswering()
             startClock()
         case "frozen":
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
@@ -953,7 +967,46 @@ public final class LiteHTMLWidgetRenderer {
         return resolved
     }
 
+    private func holdForFrameIfAnswering() {
+        let now = CACurrentMediaTime()
+        guard frameHoldStart == nil, answersInput, isOnScreen, now - lastFramePost > 0.1 else {
+            return
+        }
+        frameHoldStart = now
+        frameHoldPosted = nil
+        scheduleAfter(LiteHTMLWidgetRenderer.frameHoldLimit) { [weak self] in
+            if self?.frameHoldStart == now {
+                self?.releaseFrameHold()
+            }
+        }
+    }
+
+    private func releaseFrameHold() {
+        guard frameHoldStart != nil else {
+            return
+        }
+        frameHoldStart = nil
+        frameHoldPosted = nil
+        frameHoldAnswers = 0
+        if frameHoldRender {
+            frameHoldRender = false
+            if !destroyed && !frozen {
+                render()
+            }
+        }
+    }
+
+    var holdsForFrame: Bool {
+        return frameHoldStart != nil
+    }
+
     private func render() {
+        if frameHoldStart != nil && !destroyed && !frozen {
+            frameHoldRender = true
+            needsRender = false
+            renderAtTick = false
+            return
+        }
         renderAtTick = false
         metered { renderBody() }
         if form.focusedId != 0 {
@@ -1253,6 +1306,10 @@ public final class LiteHTMLWidgetRenderer {
     public private(set) var handoffOffsets: [Double] = []
 
     private func renderAnimationFrame() {
+        if frameHoldStart != nil {
+            frameHoldRender = true
+            return
+        }
         let sampled = animator.sample(now: animationNow)
         if WidgetDocumentView.verify && !compositor.drivenIDs.isEmpty {
             let error = compositor.handoffError(animator: animator, now: animationNow)
@@ -2007,6 +2064,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private func query(_ q: [String: Any]) -> Any {
         let kind = (q["q"] as? String) ?? ""
+        if frameHoldRender {
+            releaseFrameHold()
+        }
         if needsRender || renderAtTick {
             if !(kind == "box" && !pendingGeometry && document != nil) {
                 render()
@@ -2111,6 +2171,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private func binaryQuery(_ q: [String: Any]) -> (result: [String: Any], data: Data)? {
         guard (q["q"] as? String) == "imageData" else { return nil }
+        if frameHoldRender {
+            releaseFrameHold()
+        }
         if needsRender || renderAtTick {
             render()
         }
@@ -2225,6 +2288,9 @@ public final class LiteHTMLWidgetRenderer {
             magic.cancel()
             applyExclusions()
         }
+        frameHoldStart = nil
+        frameHoldPosted = nil
+        frameHoldRender = false
         releaseTickRender()
         clock?.stop()
         frameRequested = false
@@ -2417,6 +2483,7 @@ public final class LiteHTMLWidgetRenderer {
         ticks += 1
         updateAnimationClock()
         if !isOnScreen {
+            releaseFrameHold()
             releaseTickRender()
             clock?.stop()
             return
@@ -2442,12 +2509,22 @@ public final class LiteHTMLWidgetRenderer {
             if pacer.due(now) {
                 frameRequested = false
                 lastFramePost = now
+                if frameHoldStart != nil && frameHoldPosted == nil {
+                    frameHoldPosted = now
+                    frameHoldAnswers = inputAwaitingAnswer ? 2 : 1
+                }
                 pacer.posted(now)
                 postFrame(time: (now - timeOrigin) * 1000)
                 framesPosted += 1
             } else {
                 scriptFramesPaced += 1
             }
+        }
+        if let posted = frameHoldPosted, CACurrentMediaTime() - posted >= LiteHTMLWidgetRenderer.frameHoldAnswerWait {
+            releaseFrameHold()
+        }
+        if frameHoldStart != nil {
+            worked = true
         }
         idleTicks = worked ? 0 : idleTicks + 1
         if !frameRequested && pendingMoves.isEmpty && !needsFrames && smoothScrolls.isEmpty && idleTicks > 8 {
