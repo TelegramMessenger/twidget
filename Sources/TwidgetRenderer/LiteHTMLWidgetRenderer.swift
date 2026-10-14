@@ -776,7 +776,7 @@ public final class LiteHTMLWidgetRenderer {
             applyingOps = outer
             pacer.answered(CACurrentMediaTime())
         }
-        if !frozen, !pendingGeometry, !needsRender, !renderAtTick, document != nil, !ops.isEmpty,
+        if !frozen, !pendingGeometry, !needsRender, !renderAtTick, pendingScrollRequests.isEmpty, document != nil, !ops.isEmpty,
            ops.allSatisfy({ op in
                guard op.kind == .other else { return false }
                if op.op == "prop", let name = op["name"] as? String {
@@ -1017,7 +1017,7 @@ public final class LiteHTMLWidgetRenderer {
             overrides = rest
             layout(overrides)
         }
-        revealPendingScrollTargets()
+        applyPendingScrollRequests()
         scheduleDrivenEnds(now: now)
         updateCanvasPresentation()
         if needsFrames && !frozen {
@@ -1940,13 +1940,12 @@ public final class LiteHTMLWidgetRenderer {
                 setPointerCapture(0)
             }
         case "scrollTo", "scrollBy":
-            guard scrolling.geometries[id] != nil, args.count >= 2, let left = (args[0] as? NSNumber)?.doubleValue, let top = (args[1] as? NSNumber)?.doubleValue, left.isFinite, top.isFinite else {
+            guard args.count >= 2, let left = (args[0] as? NSNumber)?.doubleValue, let top = (args[1] as? NSNumber)?.doubleValue, left.isFinite, top.isFinite else {
                 return
             }
-            let base = method == "scrollBy" ? scrolling.offset(id) : .zero
-            scrollProgrammatically(id, CGPoint(x: base.x + CGFloat(left), y: base.y + CGFloat(top)))
+            requestScroll(.position(id, left: CGFloat(left), top: CGFloat(top), relative: method == "scrollBy"))
         case "scrollIntoView":
-            pendingScrollRequests.append((id, args))
+            pendingScrollRequests.append(.reveal(id, args))
         case "observeResize":
             observedResize.insert(id)
             lastResize[id] = nil
@@ -2523,19 +2522,14 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         let id = dom.publicId(node)
-        guard scrolling.geometries[id] != nil else {
-            return
-        }
-        var offset = scrolling.offset(id)
-        if name == "scrollTop" {
-            offset.y = CGFloat(number)
-        } else {
-            offset.x = CGFloat(number)
-        }
-        scrollProgrammatically(id, offset)
+        requestScroll(.position(id, left: name == "scrollLeft" ? CGFloat(number) : nil, top: name == "scrollTop" ? CGFloat(number) : nil, relative: false))
     }
 
-    private var pendingScrollRequests: [(Int, [Any])] = []
+    private enum ScrollRequest {
+        case reveal(Int, [Any])
+        case position(Int, left: CGFloat?, top: CGFloat?, relative: Bool)
+    }
+    private var pendingScrollRequests: [ScrollRequest] = []
     private struct SmoothScroll {
         var from: CGPoint
         var to: CGPoint
@@ -2543,12 +2537,32 @@ public final class LiteHTMLWidgetRenderer {
     }
     private var smoothScrolls: [Int: SmoothScroll] = [:]
 
-    private func revealPendingScrollTargets() {
-        guard !pendingScrollRequests.isEmpty, let document = document else { return }
+    private func requestScroll(_ request: ScrollRequest) {
+        if pendingGeometry || needsRender || renderAtTick || document == nil || !pendingScrollRequests.isEmpty {
+            pendingScrollRequests.append(request)
+        } else {
+            applyScrollRequest(request)
+        }
+    }
+
+    private func applyPendingScrollRequests() {
+        guard !pendingScrollRequests.isEmpty, document != nil else { return }
         let requests = pendingScrollRequests
         pendingScrollRequests.removeAll()
-        for (id, args) in requests {
-            guard let node = dom.node(id), dom.isAttached(node), var target = elementBounds()[id] else { continue }
+        for request in requests {
+            applyScrollRequest(request)
+        }
+    }
+
+    private func applyScrollRequest(_ request: ScrollRequest) {
+        switch request {
+        case let .position(id, left, top, relative):
+            guard let node = dom.node(id), dom.isAttached(node), scrolling.geometries[id] != nil else { return }
+            let current = scrolling.offset(id)
+            let offset = CGPoint(x: left.map { $0 + (relative ? current.x : 0) } ?? current.x, y: top.map { $0 + (relative ? current.y : 0) } ?? current.y)
+            scrollProgrammatically(id, offset)
+        case let .reveal(id, args):
+            guard let document = document, let node = dom.node(id), dom.isAttached(node), var target = elementBounds()[id] else { return }
             let info = document.scrollers(byAttribute: WidgetDOM.idAttribute)
             let block = (args.first as? NSNumber)?.intValue ?? 0
             let inline = (args.count > 1 ? args[1] as? NSNumber : nil)?.intValue ?? 3

@@ -145,6 +145,63 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertEqual(renderer.scrolling.offset(3).y, 160)
     }
 
+    func testInitialScrollRequestsWaitForTheirNewContainerLayout() throws {
+        _ = NSApplication.shared
+        for method in ["scrollTop", "scrollTo", "scrollBy"] {
+            let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+            renderer.view.frame = NSRect(x: 0, y: 0, width: 240, height: 200)
+            var scheduled: [() -> Void] = []
+            renderer.schedule = { scheduled.append($0) }
+            defer { renderer.destroy() }
+            renderer.load()
+            let request: [String: Any] = method == "scrollTop"
+                ? ["op": "prop", "id": 3, "name": method, "value": 200]
+                : ["op": "call", "id": 3, "method": method, "args": [0, 200]]
+            let ops: [[String: Any]] = [
+                ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+                ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:100px;height:80px;overflow:auto"]]], ["op": "ins", "id": 3, "parent": 1],
+                ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "height:400px"]]], ["op": "ins", "id": 4, "parent": 3],
+                request,
+            ]
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+            XCTAssertEqual(renderer.scrolling.offset(3).y, 200, method)
+        }
+    }
+
+    func testScrollRequestsUseUpdatedGeometryAndPreserveOrder() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 240, height: 200)
+        var scheduled: [() -> Void] = []
+        renderer.schedule = { scheduled.append($0) }
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+        }
+        renderer.load()
+        try send([
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:100px;height:80px;overflow:auto"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "position:relative;width:500px;height:160px"]]], ["op": "ins", "id": 4, "parent": 3],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["style", "position:absolute;left:250px;top:100px;width:20px;height:20px"]]], ["op": "ins", "id": 5, "parent": 4],
+        ])
+        try send([
+            ["op": "style", "id": 4, "name": "height", "value": "400px"],
+            ["op": "prop", "id": 3, "name": "scrollTop", "value": 9999],
+            ["op": "call", "id": 3, "method": "scrollBy", "args": [0, -20]],
+        ])
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 300)
+        try send([
+            ["op": "call", "id": 5, "method": "scrollIntoView", "args": [1, 1, 1, 0]],
+            ["op": "prop", "id": 3, "name": "scrollTop", "value": 40],
+            ["op": "call", "id": 3, "method": "scrollBy", "args": [10, 20]],
+            ["op": "prop", "id": 3, "name": "scrollLeft", "value": 15],
+        ])
+        XCTAssertEqual(renderer.scrolling.offset(3), CGPoint(x: 15, y: 60))
+    }
+
     func testHiddenScrollerKeepsItsLayerWithoutFlashingAnIndicator() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
