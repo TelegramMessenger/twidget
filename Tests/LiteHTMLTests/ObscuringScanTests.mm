@@ -91,8 +91,8 @@ static uint64_t Signature(BOOL disabled)
 
 - (void)testObscuringResultsMatchReference
 {
-    XCTAssertEqual(Signature(NO), 6961146370578556114ULL);
-    XCTAssertEqual(Signature(YES), 6961146370578556114ULL);
+    XCTAssertEqual(Signature(NO), 14463270941434942152ULL);
+    XCTAssertEqual(Signature(YES), 14463270941434942152ULL);
 }
 
 static NSString *ScrollHtml(uint32_t &seed, int count, int &scrollers)

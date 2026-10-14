@@ -631,6 +631,7 @@ static bool DependsOnViewport(const std::string& text)
 }
 
 static CGRect BorderBox(const lh::render_item *ri);
+static CGRect ClippedBorderBox(const lh::render_item *ri);
 
 struct LHCoverEntry
 {
@@ -842,7 +843,7 @@ struct LHCoverVisit
     if(!_coverBoxesValid || _coverLayoutEpoch != _doc->layout_epoch() || !(viewport == _coverViewport))
     {
         for(LHCoverEntry &entry : _coverEntries)
-            entry.box = BorderBox(entry.item);
+            entry.box = ClippedBorderBox(entry.item);
         _coverLayoutEpoch = _doc->layout_epoch();
         _coverViewport    = viewport;
         _coverBoxesValid  = YES;
@@ -1921,6 +1922,24 @@ static CGRect BorderBox(const std::shared_ptr<lh::render_item> &ri)
     return BorderBox(ri.get());
 }
 
+static CGRect ClippedBorderBox(const lh::render_item *ri)
+{
+    CGRect box = BorderBox(ri);
+    bool escaped = ri->src_el()->css().get_position() == lh::element_position_fixed;
+    for(auto p = ri->parent(); p && !CGRectIsNull(box); p = p->parent())
+    {
+        if(escaped || !p->parent())
+            break;
+        escaped = p->src_el()->css().get_position() == lh::element_position_fixed;
+        if(!p->src_el()->css().clips_contents())
+            continue;
+        CGRect border = BorderBox(p);
+        CGFloat bl = p->border_left().value(), bt = p->border_top().value(), br = p->border_right().value(), bb = p->border_bottom().value();
+        box = CGRectIntersection(box, CGRectMake(border.origin.x + bl, border.origin.y + bt, border.size.width - bl - br, border.size.height - bt - bb));
+    }
+    return CGRectIsNull(box) ? CGRectZero : box;
+}
+
 static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 {
     static const bool disabled = getenv("LH_NO_TIGHT_INK") != nullptr;
@@ -2278,7 +2297,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     for(auto it = std::next(self_it); it != trace.end(); ++it)
     {
         const lh::render_item *item = *it;
-        CGRect box = BorderBox(item);
+        CGRect box = ClippedBorderBox(item);
         if(!(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect)))
             continue;
         bool descendant = false;

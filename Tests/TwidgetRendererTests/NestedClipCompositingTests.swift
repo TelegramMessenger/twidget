@@ -85,4 +85,14 @@ final class NestedClipCompositingTests: XCTestCase {
             XCTAssertLessThanOrEqual(differing, 400, "step=\(step) composited=\(compositor.ids.count)")
         }
     }
+
+    func testElementsClippedAwayByTheirOwnContainerDoNotObscure() {
+        let html = "<html><body style=\"margin:0;width:300px;height:300px\"><div data-lh-id=\"1\" style=\"position:absolute;left:0;top:0;width:100px;height:50px;background:#f00\"></div><div data-lh-id=\"2\" style=\"position:absolute;left:0;top:60px;width:100px;height:40px;overflow:hidden\"><div data-lh-id=\"3\" style=\"position:relative;top:-40px;width:100px;height:60px;background:#00f\"></div></div><div data-lh-id=\"4\" style=\"position:absolute;left:0;top:30px;width:100px;height:40px;background:#0f0\"></div></body></html>"
+        let document = LHDocument(html: html, css: nil, previous: nil)
+        document.layout(maxWidth: side, preferredWidth: side)
+        let below = document.elementsObscuring(attribute: WidgetDOM.idAttribute, value: "1", in: CGRect(x: 0, y: 0, width: 100, height: 25), ignoringSet: NSSet(), clipped: false) ?? ["nil"]
+        XCTAssertEqual(below, [])
+        let overlapped = document.elementsObscuring(attribute: WidgetDOM.idAttribute, value: "1", in: CGRect(x: 0, y: 0, width: 100, height: 50), ignoringSet: NSSet(), clipped: false) ?? ["nil"]
+        XCTAssertEqual(overlapped, ["4"])
+    }
 }
