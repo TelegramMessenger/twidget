@@ -42,7 +42,7 @@ input[type=radio]{border-radius:50%}
 input[type=range]{border:none;background:transparent;padding:0}
 input[type=color]{width:50px;height:27px;padding:2px}
 input[type=hidden]{display:none}
-textarea{display:block;min-height:3em;white-space:pre-wrap}
+textarea{display:block;min-height:3em;white-space:pre-wrap;overflow-wrap:break-word}
 progress,meter{display:inline-block;width:10em;height:1em;background:#e6e6e6;border-radius:2px}
 canvas{display:inline-block;background:transparent}
 svg{display:inline-block}
@@ -199,6 +199,85 @@ struct Renderer::Node {
     Node* parent = nullptr;
     std::vector<Node*> children;
 };
+
+#ifdef TW_LITEHTML_TWIDGET
+/// Where overflow-wrap may break a word that does not fit: between user-perceived characters, measured
+/// through the container like any other text. Clusters are approximated from code points (combining
+/// marks, variation selectors, skin tones, tags and ZWJ sequences stay together; regional indicators
+/// pair up), which is all the fork asks of a platform without a grapheme API.
+class TextBreaker final : public litehtml::text_breaker {
+public:
+    TextBreaker(litehtml::document_container& measure, const std::string& text, litehtml::uint_ptr font)
+        : measure_(measure), text_(text), font_(font) {
+        boundaries_.push_back(0);
+        bool ascii = std::all_of(text.begin(), text.end(), [](unsigned char c) { return c >= 0x20 && c < 0x7f; });
+        if (ascii) {
+            for (size_t i = 1; i <= text.size(); i++) boundaries_.push_back(i);
+            return;
+        }
+        auto decode = [&](size_t at, uint32_t& cp) {
+            unsigned char c = (unsigned char)text[at];
+            size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+            if (at + n > text.size()) n = 1;
+            cp = n == 1 ? c : n == 2 ? c & 0x1f : n == 3 ? c & 0x0f : c & 0x07;
+            for (size_t k = 1; k < n; k++) cp = (cp << 6) | ((unsigned char)text[at + k] & 0x3f);
+            return n;
+        };
+        auto extends = [](uint32_t cp) {
+            return (cp >= 0x300 && cp <= 0x36f) || (cp >= 0x483 && cp <= 0x489) || (cp >= 0x591 && cp <= 0x5bd) || (cp >= 0x610 && cp <= 0x61a) ||
+                   (cp >= 0x64b && cp <= 0x65f) || (cp >= 0x900 && cp <= 0x903) || (cp >= 0x93a && cp <= 0x94f) || (cp >= 0x1ab0 && cp <= 0x1aff) ||
+                   (cp >= 0x1dc0 && cp <= 0x1dff) || (cp >= 0x200c && cp <= 0x200d) || (cp >= 0x20d0 && cp <= 0x20ff) || (cp >= 0xfe00 && cp <= 0xfe0f) ||
+                   (cp >= 0xfe20 && cp <= 0xfe2f) || (cp >= 0x1f3fb && cp <= 0x1f3ff) || (cp >= 0xe0020 && cp <= 0xe007f) || (cp >= 0xe0100 && cp <= 0xe01ef);
+        };
+        auto regional = [](uint32_t cp) { return cp >= 0x1f1e6 && cp <= 0x1f1ff; };
+        uint32_t previous = 0;
+        int regionals = 0;
+        for (size_t at = 0; at < text.size();) {
+            uint32_t cp = 0;
+            size_t n = decode(at, cp);
+            bool joined = at > 0 && (extends(cp) || previous == 0x200d || (regional(cp) && regionals % 2 == 1));
+            regionals = regional(cp) ? regionals + 1 : 0;
+            if (at > 0 && !joined) boundaries_.push_back(at);
+            previous = cp;
+            at += n;
+        }
+        boundaries_.push_back(text.size());
+    }
+
+    size_t fit(size_t start, litehtml::pixel_t width) override {
+        auto first = std::lower_bound(boundaries_.begin(), boundaries_.end(), start);
+        if (first == boundaries_.end() || first + 1 == boundaries_.end()) return start;
+        // At least one character goes on the line, however narrow it is.
+        size_t lo = size_t(first - boundaries_.begin()) + 1, hi = boundaries_.size() - 1;
+        if (float(width) <= 0 || measure(start, boundaries_[lo]) > float(width)) return boundaries_[lo];
+        while (lo < hi) {
+            size_t mid = (lo + hi + 1) / 2;
+            if (measure(start, boundaries_[mid]) <= float(width)) lo = mid;
+            else hi = mid - 1;
+        }
+        return boundaries_[lo];
+    }
+
+    litehtml::pixel_t minimum_width() override {
+        if (minimum_ < 0) {
+            minimum_ = 0;
+            for (size_t i = 1; i < boundaries_.size(); i++) minimum_ = std::max(minimum_, measure(boundaries_[i - 1], boundaries_[i]));
+        }
+        return litehtml::pixel_t(minimum_);
+    }
+
+private:
+    float measure(size_t from, size_t to) {
+        return float(measure_.text_width(text_.substr(from, to - from).c_str(), font_));
+    }
+
+    litehtml::document_container& measure_;
+    std::string text_;
+    litehtml::uint_ptr font_;
+    std::vector<size_t> boundaries_;
+    float minimum_ = -1;
+};
+#endif
 
 // ───────────────────────── litehtml container ─────────────────────────
 
@@ -584,6 +663,11 @@ public:
         backend_.delete_font(it->second.handle);
         fonts_.erase(it);
     }
+#ifdef TW_LITEHTML_TWIDGET
+    std::shared_ptr<litehtml::text_breaker> create_text_breaker(const std::string& text, litehtml::uint_ptr font) override {
+        return fonts_.count(font) ? std::make_shared<TextBreaker>(*this, text, font) : nullptr;
+    }
+#endif
     litehtml::pixel_t text_width(const char* text, litehtml::uint_ptr h) override {
         auto it = fonts_.find(h);
         if (it == fonts_.end() || !text) return 0;

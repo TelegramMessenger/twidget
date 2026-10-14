@@ -576,6 +576,24 @@ int main() {
         check(actions, "a click asks the sandbox for its default actions");
     }
 
+    // ── overflow-wrap ──
+    {
+        StubBackend wb;
+        Renderer w(300, 1, false, wb);
+        w.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font-size:10px;line-height:10px"]]},
+            {"op":"el","id":5,"tag":"div","attrs":[["style","width:40px;overflow-wrap:anywhere"]]},{"op":"ins","parent":4,"id":5,"before":null},
+            {"op":"text","id":6,"data":"aaaaaaaaaaaa"},{"op":"ins","parent":5,"id":6,"before":null},
+            {"op":"el","id":7,"tag":"div","attrs":[["style","width:40px;overflow-wrap:anywhere"]]},{"op":"ins","parent":4,"id":7,"before":null},
+            {"op":"text","id":8,"data":"ááááá"},{"op":"ins","parent":7,"id":8,"before":null}]})"));
+        auto height = [&](int id) {
+            return w.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["height"].asNumber();
+        };
+        check(height(5) == 30, "a word wider than its box breaks into lines of what fits (got " + std::to_string(height(5)) + ")");
+        // Five a + combining acute: 3 bytes, 24 px each in the stub, so one per line, the accent kept with its letter.
+        check(height(7) == 50, "a break never splits a letter from its combining mark (got " + std::to_string(height(7)) + ")");
+    }
+
     // ── viewport units ──
     {
         StubBackend vb;
