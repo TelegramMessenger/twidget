@@ -1,4 +1,5 @@
 #include <unordered_set>
+#include <atomic>
 #include <cstring>
 #include <cmath>
 #include <cctype>
@@ -14,6 +15,13 @@
 
 namespace litehtml
 {
+    static std::atomic<bool> svg_group_cache_enabled{getenv("LH_NO_SVG_GROUP_CACHE") == nullptr};
+
+    void svg_set_group_cache_enabled(bool enabled)
+    {
+        svg_group_cache_enabled.store(enabled, std::memory_order_relaxed);
+    }
+
     bool has_var(const css_token_vector& tokens);
     void subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el);
 
@@ -759,6 +767,48 @@ namespace litehtml
             return true;
         }
 
+        bool svg_group_key(const element::ptr& root, uint64_t& key)
+        {
+            uint64_t hash = 0x67726f7570ULL;
+            int count = 0;
+            auto include = [&](const element::ptr& el) {
+                for(const char* attribute : {"fill", "stroke", "style", "mask", "clip-path", "filter", "marker-start", "marker-mid", "marker-end"})
+                {
+                    if(const char* value = el->get_attr(attribute); value && lowcase(value).find("url(") != std::string::npos)
+                        return false;
+                }
+                if(const auto tag = dynamic_cast<const html_tag*>(el.get()))
+                {
+                    for(const auto name : {_fill_, _stroke_})
+                    {
+                        if(const auto tokens = tag->get_token_property(name); tokens && (has_var(*tokens) || !svg_url_id(*tokens).empty()))
+                            return false;
+                    }
+                }
+                for(const char* attribute : {"fill", "stroke"})
+                    if(const char* value = el->get_attr(attribute); value && lowcase(value).find("var(") != std::string::npos)
+                        return false;
+                hash = (hash ^ el->paint_signature()) * 1099511628211ULL;
+                return true;
+            };
+            std::function<bool(const element::ptr&)> visit = [&](const element::ptr& el) {
+                if(++count > 4000 || !include(el))
+                    return false;
+                const std::string name = lowcase(el->get_tagName() ? el->get_tagName() : "");
+                if(name == "use" || name == "image" || name == "foreignobject" || name == "canvas" || name == "img")
+                    return false;
+                for(const auto& child : el->children())
+                    if(!visit(child)) return false;
+                return true;
+            };
+            if(!visit(root) || count < 8)
+                return false;
+            for(auto parent = root->parent(); parent; parent = parent->parent())
+                if(!include(parent)) return false;
+            key = hash;
+            return true;
+        }
+
         class svg_painter
         {
             document_container* m_container;
@@ -769,6 +819,8 @@ namespace litehtml
             float               m_py       = 0;
             transform_matrix    m_matrix;
             element::ptr        m_hit;
+            bool                m_cache_groups = false;
+            position            m_cache_bounds;
 
             bool hits(float x0, float y0, float x1, float y1, float slop) const
             {
@@ -931,11 +983,16 @@ namespace litehtml
             }
 
           public:
-            svg_painter(document_container* container, uint_ptr hdc, const float view[4]) :
+            svg_painter(document_container* container, uint_ptr hdc, const float view[4], const position* cache_bounds = nullptr) :
                 m_container(container),
                 m_hdc(hdc)
             {
                 std::copy(view, view + 4, m_view);
+                if(cache_bounds)
+                {
+                    m_cache_groups = svg_group_cache_enabled.load(std::memory_order_relaxed);
+                    m_cache_bounds = *cache_bounds;
+                }
             }
 
             svg_painter(document_container* container, const float view[4], const transform_matrix& matrix, float x, float y) :
@@ -978,7 +1035,7 @@ namespace litehtml
                 return v == "none";
             }
 
-            void draw_children(const element::ptr& el, int inherited = -1)
+            void draw_children(const element::ptr& el, int inherited = -1, int depth = 0)
             {
                 float diag = std::sqrt((m_view[2] * m_view[2] + m_view[3] * m_view[3]) / 2);
                 for(const auto& child : el->children())
@@ -1026,7 +1083,21 @@ namespace litehtml
                     path_builder builder(path);
                     if(name == "g" || name == "a" || name == "svg" || name == "switch")
                     {
-                        draw_children(child, visibility);
+                        bool cached = false;
+                        uint64_t key = 0;
+                        if(m_cache_groups && depth == 0 && name == "g" && !grouped && svg_group_key(child, key))
+                        {
+                            for(float value : {m_view[0], m_view[1], m_view[2], m_view[3], m_cache_bounds.x.value(), m_cache_bounds.y.value(), m_cache_bounds.width.value(), m_cache_bounds.height.value()})
+                            {
+                                uint32_t bits;
+                                memcpy(&bits, &value, sizeof(bits));
+                                key = (key ^ bits) * 1099511628211ULL;
+                            }
+                            cached = m_container->draw_cached(m_hdc, m_cache_bounds, key, [&](uint_ptr target) {
+                                svg_painter(m_container, target, m_view).draw_children(child, visibility, depth + 1);
+                            });
+                        }
+                        if(!cached) draw_children(child, visibility, depth + 1);
                     } else if(hidden)
                     {
                     } else if(name == "circle")
@@ -1414,9 +1485,11 @@ namespace litehtml
         auto            container = doc_ptr()->container();
         border_radiuses no_radius{};
         container->set_clip(pos, no_radius);
+        const position cache_bounds(pixel_t((pos.x.value() - group.matrix.tx) / sx), pixel_t((pos.y.value() - group.matrix.ty) / sy),
+                                    pixel_t(pos.width.value() / sx), pixel_t(pos.height.value() / sy));
         auto paint = [&](uint_ptr target) {
             container->begin_group(target, group);
-            svg_painter(container, target, view).draw_children(shared_from_this());
+            svg_painter(container, target, view, m_group_cache_eligible ? &cache_bounds : nullptr).draw_children(shared_from_this());
             container->end_group(target);
         };
         uint64_t key    = 0;
@@ -1455,8 +1528,11 @@ namespace litehtml
         const uint32_t generation = doc_ptr()->paint_generation();
         if(m_content_generation != generation)
         {
+            const bool previous_cacheable = m_content_cacheable;
+            const uint64_t previous_key = m_content_key;
             m_content_generation = generation;
             m_content_cacheable  = cacheable_paint_key(m_content_key);
+            m_group_cache_eligible = m_group_cache_eligible || (previous_cacheable && m_content_cacheable && previous_key != m_content_key);
         }
         key = m_content_key;
         return m_content_cacheable;

@@ -2611,6 +2611,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     LHContainer::s_source_filter_cache.store(enabled, std::memory_order_relaxed);
 }
 
++ (void)setSVGGroupCacheEnabled:(BOOL)enabled
+{
+    lh::svg_set_group_cache_enabled(enabled);
+}
+
 + (long)shadowLineBatches
 {
     return LHContainer::s_shadow_line_batches.load(std::memory_order_relaxed);

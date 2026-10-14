@@ -8,6 +8,7 @@ namespace litehtml
 {
     bool  svg_geometry(const element::ptr& el, vector_path& path);
     float svg_path_length(const vector_path& path, float at, float* x, float* y);
+    void svg_set_group_cache_enabled(bool enabled);
 
     class el_svg : public html_tag
     {
@@ -18,6 +19,7 @@ namespace litehtml
         uint64_t m_content_key    = 0;
         uint32_t m_content_generation = 0;
         bool     m_content_cacheable  = false;
+        bool     m_group_cache_eligible = false;
         bool     cacheable_paint_key(uint64_t& key) const;
         bool     cached_paint_key(uint64_t& key);
 

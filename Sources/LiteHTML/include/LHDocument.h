@@ -52,6 +52,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (long)shadowLineBatches;
 + (long)sourceFilterCacheHits;
 + (void)setSourceFilterCacheEnabled:(BOOL)enabled;
++ (void)setSVGGroupCacheEnabled:(BOOL)enabled;
 /// Vector shapes of the <svg> whose `attribute` equals `value`, in document coordinates, or nil when the SVG uses
 /// anything beyond solid or axis linear-gradient fills and plain strokes.
 - (nullable LHSVGShapes *)svgShapesWithAttribute:(NSString *)attribute value:(NSString *)value maxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(svgShapes(attribute:value:maxWidth:));
