@@ -62,9 +62,11 @@ static NSString *PropertyMarkup(NSString *child, NSString *cls, NSString *style,
     NSArray<NSString *> *others = @[@"width:110px", @"color:#ff2d55", @"padding:3px", @"left:60px", @"background:#0a84ff", @"transform-origin:0 0", @"--x:1", @"background-color:var(--tint)", @"opacity:.7!important", @"transform:translate(3px,3px) !important", @"box-shadow:0 2px 6px #000", @"all:initial"];
     NSArray<NSString *> *children = @[@"", @"transform:inherit", @"opacity:inherit", @"background-color:inherit", @"background:inherit"];
     NSArray<NSString *> *names = @[@"transform", @"opacity", @"background-color"];
+    NSArray<NSDictionary<NSString *, NSString *> *> *casings = @[@{}, @{@"transform": @"Transform", @"opacity": @"OPACITY", @"background-color": @"Background-Color"}, @{@"transform": @"tRaNsFoRm", @"background-color": @"background-COLOR"}];
+    for(NSDictionary<NSString *, NSString *> *casing in casings)
     for(NSString *child in children)
     {
-        std::mt19937 random(static_cast<unsigned>(child.length * 7919 + 17));
+        std::mt19937 random(static_cast<unsigned>(child.length * 7919 + 17 + casing.count * 104729));
         auto pick = [&random](NSArray *list) { return list[random() % list.count]; };
         NSMutableDictionary<NSString *, NSString *> *props = [@{@"transform": transforms[0], @"opacity": @"1", @"background-color": backgrounds[0]} mutableCopy];
         NSMutableArray<NSString *> *extra = [NSMutableArray array];
@@ -74,7 +76,7 @@ static NSString *PropertyMarkup(NSString *child, NSString *cls, NSString *style,
             NSMutableArray<NSString *> *parts = [NSMutableArray array];
             for(NSString *name in names)
                 if(props[name])
-                    [parts addObject:[NSString stringWithFormat:@"%@:%@", name, props[name]]];
+                    [parts addObject:[NSString stringWithFormat:@"%@:%@", casing[name] ?: name, props[name]]];
             [parts addObjectsFromArray:extra];
             return [parts componentsJoinedByString:@";"];
         };
@@ -113,6 +115,43 @@ static NSString *PropertyMarkup(NSString *child, NSString *cls, NSString *style,
             XCTAssertEqualObjects(PropertyPixels(patched), PropertyPixels(fresh), @"child=%@ step=%d %@", child, step, html);
             previous = patched;
         }
+    }
+}
+
+- (void)testCapitalisedPropertyNamesWithInheritingChildMatchFreshDocuments
+{
+    NSArray<NSString *> *styles = @[@"Transform:scale(2)", @"Transform:scale(1)", @"TRANSFORM:rotate(10deg);Background-Color:#34c759", @"transform:scale(2);Opacity:.5", @"Background-Color:#ff2d55", @"Opacity:.3;Transform:translate(4px,2px)", @"Transform:scale(2)"];
+    for(NSString *first in @[@"transform", @"Transform"])
+    {
+        NSString *a = [NSString stringWithFormat:@"%@:scale(1.4);opacity:0;width:110px;transform:translate(3px,3px) !important", first];
+        NSString *b = [NSString stringWithFormat:@"%@:scale(1.4);opacity:0;width:110px", first];
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:PropertyMarkup(@"", @"t", b, @"opacity:1") css:nil previous:PropertyPage(PropertyMarkup(@"", @"t", a, @"opacity:1"))];
+        XCTAssertEqualObjects(PropertyState(patched), PropertyState(PropertyPage(PropertyMarkup(@"", @"t", b, @"opacity:1"))), @"duplicate %@", first);
+    }
+    for(NSString *child in @[@"background:inherit", @"background-color:inherit", @"opacity:inherit", @"transform:inherit"])
+    {
+        LHDocument *previous = PropertyPage(PropertyMarkup(child, @"t", @"transform:none", @"opacity:1"));
+        for(NSString *style in styles)
+        {
+            NSString *html = PropertyMarkup(child, @"t", style, @"opacity:1");
+            LHDocument *patched = [[LHDocument alloc] initWithHTML:html css:nil previous:previous];
+            LHDocument *fresh = PropertyPage(html);
+            XCTAssertEqualObjects(PropertyState(patched), PropertyState(fresh), @"child=%@ %@", child, style);
+            XCTAssertEqualObjects(PropertyPixels(patched), PropertyPixels(fresh), @"child=%@ %@", child, style);
+            previous = patched;
+        }
+    }
+}
+
+- (void)testRemovingTransformOriginRestoresTheDefaultOrigin
+{
+    for(NSArray<NSString *> *pair in @[@[@"tRaNsFoRm", @"background-COLOR"], @[@"transform", @"background-color"], @[@"Transform", @"background-color"], @[@"transform", @"Background-color"]])
+    for(NSString *cls in @[@"t alt", @"t"])
+    {
+        NSString *a = [NSString stringWithFormat:@"%@:translate(12.5px, -4px) rotate(30deg) scale(.8);opacity:inherit;%@:invalid;transform-origin:0 0", pair[0], pair[1]];
+        NSString *b = [NSString stringWithFormat:@"%@:translate(12.5px, -4px) rotate(30deg) scale(.8);opacity:inherit;%@:invalid", pair[0], pair[1]];
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:PropertyMarkup(@"", cls, b, @"opacity:1") css:nil previous:PropertyPage(PropertyMarkup(@"", cls, a, @"opacity:1"))];
+        XCTAssertEqualObjects(PropertyState(patched), PropertyState(PropertyPage(PropertyMarkup(@"", cls, b, @"opacity:1"))), @"%@ %@ %@", pair[0], pair[1], cls);
     }
 }
 

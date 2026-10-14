@@ -914,6 +914,8 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
     }
 
     compute_transform(el, doc);
+    m_transform_origin_x = css_length(50, css_units_percentage);
+    m_transform_origin_y = css_length(50, css_units_percentage);
     if(const auto* tokens = el->get_token_property(_transform_origin_))
     {
         if(parse_transform_origin(*tokens, m_transform_origin_x, m_transform_origin_y))
