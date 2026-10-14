@@ -43,6 +43,9 @@ add_library(twidget::litehtml ALIAS litehtml)
 target_include_directories(litehtml
     PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
     PRIVATE "${TW_LITEHTML}/src")
+if(APPLE)
+    target_link_libraries(litehtml PUBLIC "-framework CoreFoundation")
+endif()
 if(MSVC)
     # gumbo expects POSIX strings.h; litehtml is compiled as it comes, without its warnings.
     target_include_directories(litehtml PRIVATE "$<$<COMPILE_LANGUAGE:C>:${TW_LITEHTML}/src/gumbo/visualc/include>")

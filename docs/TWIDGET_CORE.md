@@ -98,17 +98,54 @@ build-qt/twidget-qt-demo [corpus folder or .html file]
 ```
 
 `tools/macos-demo` is the same demo for macOS on `CGBackend`, with the compositor's layers on Core
-Animation. It has not been compiled yet; its README says what was checked.
+Animation. Its README records the build and visual checks.
+
+## Portability check, 2026-10-14
+
+Checked on Apple Silicon with Xcode's AppleClang and Emscripten 6.0.12:
+
+| Target | Result |
+|---|---|
+| macOS Release core and CoreGraphics backend | Built; both CTest suites passed |
+| macOS demo | Built and launched with the canvas-market stress widget |
+| iOS arm64, deployment target 16.3 | Static libraries built; no device execution |
+| WebAssembly | JavaScript module and Wasm binary built; 11 web painter checks passed against recording fakes, not a browser pixel test |
+| Android, Windows, Qt | Not built or run in this check |
+
+The Mac build needed CoreFoundation linked by the litehtml target: its date input implementation
+uses that framework. The demo now defaults to macOS 13.3, matching the floating-point
+`std::to_chars` requirement already recorded in `tools/build-apple.sh`.
+
+This is not yet a replacement for Telegram's Swift renderer. The three fixtures in Telegram's
+`tools/perflab/widget-stress` expose gaps beyond the existing unit coverage:
+
+- The canvas-market replay and the live Mac demo show a flat fill in place of the chart content.
+- Live-board and orbit-wall output stops at the core's fixed 900 CSS px height limit. A chat host
+  needs a configurable bounded height so the outer chat can scroll the complete widget.
+- `Renderer::update_composition` admits at most 64 layers and rejects nested animated elements.
+  The Swift compositor supports 256 layers and can promote the orbit fixture's nested motion
+  together with its overlapping labels. Raising the number alone does not provide that behavior.
+- The CoreGraphics backend creates text lines and gradients repeatedly. The bounded canvas text
+  and compiled-gradient caches added to `WidgetCanvas.swift` are not shared with it.
+- The Qt demo paints a new QImage for each repaint and does not enable composition. It cannot
+  inherit the Swift renderer's render-server animation savings through the current adapter.
+- The core has no input focus model; its focus and selection operations are ignored.
+
+The path to one implementation is to move renderer decisions into this core while retaining
+platform painting, text, input, and compositor playback adapters. Port and verify the existing
+fast paths before switching production clients. Compare the shared core and Swift renderer on
+the same Mac first, using deterministic pixels, interactions, CPU, memory, and idle wakeups;
+then run the same fixtures on actual target devices. A build or a passing protocol test does not
+establish visual or performance parity. Shared algorithms can avoid duplicated work, but equal
+CPU percentages across different hardware and drawing backends are not a meaningful guarantee.
 
 ## Not yet here
 
 - **The Composition player for Windows** (layers on `Windows.UI.Composition`) lives in a Windows
   spike with its host adapter.
-- **Only MSVC has built this tree.** The Qt backend and its demo were built against Qt 6.8 and draw
-  the corpus on Windows. The Apple, Android and Emscripten targets have not been built
-  here. The Apple and Android glue was type-checked against stub headers and the JDK's `jni.h`, the
-  Kotlin compiled against `android.jar`, and the TypeScript checked by `tsc` and
-  `Tests/TwidgetCoreTests/web_painter_test.ts`; none of them has drawn a widget yet.
+- **Platform validation is incomplete.** The Qt backend and its demo were previously built against
+  Qt 6.8 on Windows. Apple and Emscripten build results are recorded above. Android still has only
+  the earlier JNI stub-header and Kotlin `android.jar` checks; device rendering remains unverified.
 - **The hosts still use widget-sandbox's renderer copy.** Its Android and web demos build their own
   renderer against upstream litehtml; moving them onto this tree means building `libtwidget_litehtml`
   from here and replacing their painters with the ones in `platform/`.

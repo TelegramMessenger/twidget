@@ -28,9 +28,12 @@ widget-sandbox must be checked out next to twidget, or its path given in `TWIDGE
 
 ## State
 
-**Never compiled.** It was written on Windows. The C++ (`mac_renderer.cpp`) was type-checked against
-stub Apple headers; the Objective-C++ (`widget_view.mm`, `main.mm`) was not checked at all. Expect a
-few fixes on the first build. Parts worth a look when something is off:
+Built and launched on Apple Silicon on 2026-10-14 after adding the litehtml CoreFoundation link
+and setting the demo's minimum macOS version to 13.3. The core and Apple CTest suites pass.
+The canvas-market stress widget still displays a flat fill instead of its charts, reproduced in
+both message replay and the live demo. This is an experimental comparison app, not a production
+replacement for the Swift renderer. See [the portability check](../../docs/TWIDGET_CORE.md#portability-check-2026-10-14)
+for remaining behavior and performance gaps. Other areas that still need visual verification:
 
 - **Coordinates:** the view hosts its own layer tree (y up). A `stage` layer's `sublayerTransform`
   turns document coordinates (y down) into the view's. Each layer's transform is the track's matrix

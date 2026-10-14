@@ -4,8 +4,7 @@
 #   open build-macos/twidget-macos-demo.app        (or -G Xcode to work on it in Xcode)
 # widget-sandbox is found as twidget's own build finds it: next to twidget, or TWIDGET_WIDGET_SANDBOX.
 cmake_minimum_required(VERSION 3.22)
-# CGContextDrawConicGradient, which the CoreGraphics backend draws conic gradients with.
-set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "")
+set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3 CACHE STRING "")
 project(twidget-macos-demo C CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
