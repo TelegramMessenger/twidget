@@ -3,6 +3,7 @@
 #include <ImageIO/ImageIO.h>
 
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <vector>
 
@@ -140,6 +141,7 @@ CGBackend::CGBackend() : rgb_(CGColorSpaceCreateDeviceRGB()) {}
 CGBackend::~CGBackend() {
     for (auto& [_, f] : fonts_) if (f.font) CFRelease(f.font);
     for (auto& [_, i] : images_) if (i) CGImageRelease(i);
+    for (auto& [_, c] : canvases_) if (c.ctx) CGContextRelease(c.ctx);
     CGColorSpaceRelease(rgb_);
 }
 
@@ -263,6 +265,149 @@ CGColorRef CGBackend::cg_color(const Color& c) {
     return CGColorCreate(rgb_, comps);
 }
 
+CGGradientRef CGBackend::gradient(const std::vector<Stop>& stops) {
+    if (stops.empty()) return nullptr;
+    std::vector<CGFloat> comps, locs;
+    for (const Stop& s : stops) {
+        comps.insert(comps.end(), {s.color.r / 255.0, s.color.g / 255.0, s.color.b / 255.0, s.color.a / 255.0});
+        locs.push_back(std::clamp(s.offset, 0.0f, 1.0f));
+    }
+    return CGGradientCreateWithColorComponents(rgb_, comps.data(), locs.data(), stops.size());
+}
+
+namespace {
+
+void set_line_style(CGContextRef ctx, float width, int cap, int join, float miter, const std::vector<float>& dashes, float offset) {
+    CGContextSetLineWidth(ctx, width);
+    CGContextSetLineCap(ctx, cap == 1 ? kCGLineCapRound : cap == 2 ? kCGLineCapSquare : kCGLineCapButt);
+    CGContextSetLineJoin(ctx, join == 1 ? kCGLineJoinRound : join == 2 ? kCGLineJoinBevel : kCGLineJoinMiter);
+    CGContextSetMiterLimit(ctx, miter);
+    bool dashed = false;
+    for (float d : dashes) dashed = dashed || d > 0;
+    if (dashed) {
+        std::vector<CGFloat> lengths(dashes.begin(), dashes.end());
+        CGContextSetLineDash(ctx, offset, lengths.data(), lengths.size());
+    } else {
+        CGContextSetLineDash(ctx, 0, nullptr, 0);
+    }
+}
+
+CGBlendMode blend_mode(Composite c) {
+    static const CGBlendMode modes[] = {
+        kCGBlendModeNormal, kCGBlendModeSourceIn, kCGBlendModeSourceOut, kCGBlendModeSourceAtop,
+        kCGBlendModeDestinationOver, kCGBlendModeDestinationIn, kCGBlendModeDestinationOut, kCGBlendModeDestinationAtop,
+        kCGBlendModePlusLighter, kCGBlendModeCopy, kCGBlendModeXOR, kCGBlendModeMultiply, kCGBlendModeScreen,
+        kCGBlendModeOverlay, kCGBlendModeDarken, kCGBlendModeLighten, kCGBlendModeColorDodge, kCGBlendModeColorBurn,
+        kCGBlendModeHardLight, kCGBlendModeSoftLight, kCGBlendModeDifference, kCGBlendModeExclusion, kCGBlendModeHue,
+        kCGBlendModeSaturation, kCGBlendModeColor, kCGBlendModeLuminosity,
+    };
+    size_t i = size_t(c);
+    return i < std::size(modes) ? modes[i] : kCGBlendModeNormal;
+}
+
+} // namespace
+
+void CGBackend::draw_path(CGContextRef ctx, const Path& p) {
+    CGPathRef shape = vector_path(p);
+    if (p.fill && p.gradient != 0 && !p.stops.empty()) {
+        if (CGGradientRef g = gradient(p.stops)) {
+            CGContextSaveGState(ctx);
+            CGContextAddPath(ctx, shape);
+            if (p.evenodd) CGContextEOClip(ctx);
+            else CGContextClip(ctx);
+            const auto extend = kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation;
+            if (p.gradient == 1) CGContextDrawLinearGradient(ctx, g, CGPointMake(p.x1, p.y1), CGPointMake(p.x2, p.y2), extend);
+            else CGContextDrawRadialGradient(ctx, g, CGPointMake(p.fx, p.fy), 0, CGPointMake(p.x1, p.y1), p.r, extend);
+            CGContextRestoreGState(ctx);
+            CGGradientRelease(g);
+        }
+    } else if (p.fill && p.fill_color.a > 0) {
+        CGColorRef col = cg_color(p.fill_color);
+        CGContextSetFillColorWithColor(ctx, col);
+        CGContextAddPath(ctx, shape);
+        if (p.evenodd) CGContextEOFillPath(ctx);
+        else CGContextFillPath(ctx);
+        CGColorRelease(col);
+    }
+    if (p.stroke && p.stroke_color.a > 0 && p.stroke_width > 0) {
+        CGContextSaveGState(ctx);
+        set_line_style(ctx, p.stroke_width, p.line_cap, p.line_join, p.miter_limit, p.dashes, p.dash_offset);
+        CGColorRef col = cg_color(p.stroke_color);
+        CGContextSetStrokeColorWithColor(ctx, col);
+        CGContextAddPath(ctx, shape);
+        CGContextStrokePath(ctx);
+        CGColorRelease(col);
+        CGContextRestoreGState(ctx);
+    }
+    CGPathRelease(shape);
+}
+
+// CSS box-shadow as LHContainer::paint_box_shadow draws it: the shape is filled far outside the clip and
+// only its shadow, offset back, lands next to the box.
+void CGBackend::draw_shadow(CGContextRef ctx, const Command& c) {
+    if (c.rect.empty() || c.color.a == 0) return;
+    float dx = c.ax, dy = c.ay, blur = std::max(c.bx, 0.0f), spread = c.by;
+    float reach = blur + std::fabs(spread) + std::max(std::fabs(dx), std::fabs(dy)) + 2;
+    CGRect r = CGRectMake(c.rect.x, c.rect.y, c.rect.w, c.rect.h);
+    CGRect ink = c.inset ? r : CGRectInset(r, -reach, -reach);
+    auto grow = [](const Radii& q, float by) {
+        auto g = [by](float v) { return std::max(v + by, 0.0f); };
+        return Radii{g(q.tlx), g(q.tly), g(q.trx), g(q.try_), g(q.brx), g(q.bry), g(q.blx), g(q.bly)};
+    };
+    Rect shape = c.inset ? Rect{c.rect.x + spread, c.rect.y + spread, c.rect.w - spread * 2, c.rect.h - spread * 2}
+                         : Rect{c.rect.x - spread, c.rect.y - spread, c.rect.w + spread * 2, c.rect.h + spread * 2};
+    Radii shape_radii = c.inset ? grow(c.radii, -spread) : c.radii.any() ? grow(c.radii, spread) : c.radii;
+
+    CGContextSaveGState(ctx);
+    float far = float(CGRectGetWidth(ink)) + reach * 4 + 1000;
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGMutablePathRef clip = CGPathCreateMutable();
+    CGPathRef box = rounded_path(c.rect, c.radii);
+    if (c.inset) {
+        CGContextAddPath(ctx, box);
+        CGContextClip(ctx);
+        CGRect frame = CGRectInset(r, -reach * 2, -reach * 2);
+        CGPathAddRect(path, nullptr, CGRectOffset(frame, far, 0));
+        if (!shape.empty()) {
+            CGPathRef inner = rounded_path(Rect{shape.x + far, shape.y, shape.w, shape.h}, shape_radii);
+            CGPathAddPath(path, nullptr, inner);
+            CGPathRelease(inner);
+        }
+    } else {
+        CGPathAddRect(clip, nullptr, CGRectInset(ink, -1, -1));
+        CGPathAddPath(clip, nullptr, box);
+        CGContextAddPath(ctx, clip);
+        CGContextEOClip(ctx);
+        if (!shape.empty()) {
+            CGPathRef outer = rounded_path(Rect{shape.x + far, shape.y, shape.w, shape.h}, shape_radii);
+            CGPathAddPath(path, nullptr, outer);
+            CGPathRelease(outer);
+        }
+    }
+    // Shadow offsets and blur are in device space, whatever the CTM.
+    CGAffineTransform ctm = CGContextGetCTM(ctx);
+    CGSize offset = CGSizeApplyAffineTransform(CGSizeMake(dx - far, dy), ctm);
+    CGFloat scale = std::sqrt(std::fabs(ctm.a * ctm.d - ctm.b * ctm.c));
+    CGColorRef col = cg_color(c.color);
+    CGContextSetShadowWithColor(ctx, offset, blur * scale, col);
+    CGColorRelease(col);
+    CGContextSetRGBFillColor(ctx, 0, 0, 0, 1);
+    CGContextAddPath(ctx, path);
+    if (c.inset) CGContextEOFillPath(ctx);
+    else CGContextFillPath(ctx);
+    CGPathRelease(box);
+    CGPathRelease(clip);
+    CGPathRelease(path);
+    CGContextRestoreGState(ctx);
+}
+
+CGImageRef CGBackend::canvas_image(int id) {
+    auto it = canvases_.find(id);
+    if (it == canvases_.end() || !it->second.ctx) return nullptr;
+    // A copy-on-write snapshot: drawing a canvas onto itself reads the pixels from before the draw.
+    return CGBitmapContextCreateImage(it->second.ctx);
+}
+
 void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint32_t h, double dpr) {
     if (!buffer || w == 0 || h == 0) return;
     std::fill(buffer, buffer + size_t(w) * h * 4, 0);
@@ -276,28 +421,27 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
     CGContextSetShouldSmoothFonts(ctx, false);
     CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
 
-    int clip_depth = 0;
+    // Clips and groups nest together in paint order, so one stack unwinds both; a group with opacity
+    // is a transparency layer.
+    std::vector<bool> stack;
+    auto pop = [&] {
+        if (stack.empty()) return;
+        if (stack.back()) CGContextEndTransparencyLayer(ctx);
+        CGContextRestoreGState(ctx);
+        stack.pop_back();
+    };
     auto clip_to = [&](const Rect& r, const Radii& q) {
         CGPathRef p = rounded_path(r, q);
         CGContextAddPath(ctx, p);
         CGContextClip(ctx);
         CGPathRelease(p);
     };
-    auto gradient = [&](const std::vector<Stop>& stops) -> CGGradientRef {
-        if (stops.empty()) return nullptr;
-        std::vector<CGFloat> comps, locs;
-        for (const Stop& s : stops) {
-            comps.insert(comps.end(), {s.color.r / 255.0, s.color.g / 255.0, s.color.b / 255.0, s.color.a / 255.0});
-            locs.push_back(std::clamp(s.offset, 0.0f, 1.0f));
-        }
-        return CGGradientCreateWithColorComponents(rgb_, comps.data(), locs.data(), stops.size());
-    };
 
     for (const Command& c : list) {
         switch (c.kind) {
         case Cmd::ClipPush:
             CGContextSaveGState(ctx);
-            clip_depth++;
+            stack.push_back(false);
             if (c.path) {
                 CGPathRef p = vector_path(*c.path);
                 CGContextAddPath(ctx, p);
@@ -309,10 +453,28 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
             }
             break;
         case Cmd::ClipPop:
-            if (clip_depth > 0) {
-                CGContextRestoreGState(ctx);
-                clip_depth--;
+        case Cmd::GroupPop:
+            pop();
+            break;
+        case Cmd::GroupPush: {
+            CGContextSaveGState(ctx);
+            CGContextConcatCTM(ctx, CGAffineTransformMake(c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]));
+            bool layer = false;
+            if (c.hidden) {
+                CGContextClipToRect(ctx, CGRectZero);
+            } else if (c.opacity < 1) {
+                CGContextSetAlpha(ctx, std::max(c.opacity, 0.0f));
+                CGContextBeginTransparencyLayer(ctx, nullptr);
+                layer = true;
             }
+            stack.push_back(layer);
+            break;
+        }
+        case Cmd::Path:
+            if (c.path) draw_path(ctx, *c.path);
+            break;
+        case Cmd::Shadow:
+            draw_shadow(ctx, c);
             break;
         case Cmd::FillRect: {
             CGContextSaveGState(ctx);
@@ -367,8 +529,17 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
             break;
         }
         case Cmd::Image: {
-            auto it = images_.find(c.image);
-            if (it == images_.end() || !it->second || c.rect.empty()) break;
+            CGImageRef image = nullptr;
+            if (c.canvas) {
+                image = canvas_image(c.canvas);
+            } else {
+                auto it = images_.find(c.image);
+                if (it != images_.end() && it->second) image = CGImageRetain(it->second);
+            }
+            if (!image || c.rect.empty()) {
+                if (image) CGImageRelease(image);
+                break;
+            }
             CGContextSaveGState(ctx);
             if (c.has_clip) CGContextClipToRect(ctx, CGRectMake(c.clip.x, c.clip.y, c.clip.w, c.clip.h));
             if (c.radii.any()) {
@@ -379,8 +550,9 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
             // CGContextDrawImage draws y-up: flip around the destination
             CGContextTranslateCTM(ctx, 0, c.rect.y + c.rect.h);
             CGContextScaleCTM(ctx, 1, -1);
-            CGContextDrawImage(ctx, CGRectMake(c.rect.x, 0, c.rect.w, c.rect.h), it->second);
+            CGContextDrawImage(ctx, CGRectMake(c.rect.x, 0, c.rect.w, c.rect.h), image);
             CGContextRestoreGState(ctx);
+            CGImageRelease(image);
             break;
         }
         case Cmd::Linear:
@@ -408,9 +580,251 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
         }
         }
     }
-    while (clip_depth-- > 0) CGContextRestoreGState(ctx);
+    while (!stack.empty()) pop();
     CGContextFlush(ctx);
     CGContextRelease(ctx);
+}
+
+// ───────────────────────── canvas ─────────────────────────
+
+void CGBackend::canvas_run(int id, int w, int h, const std::vector<CanvasOp>& ops) {
+    Canvas& target = canvases_[id];
+    if (w <= 0 || h <= 0) {
+        canvas_release(id);
+        return;
+    }
+    if (!target.ctx || target.w != w || target.h != h) {
+        if (target.ctx) CGContextRelease(target.ctx);
+        // No buffer: CoreGraphics allocates it zeroed, which is the transparent bitmap a new canvas starts as.
+        target.ctx = CGBitmapContextCreate(nullptr, size_t(w), size_t(h), 8, 0, rgb_, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        target.w = target.ctx ? w : 0;
+        target.h = target.ctx ? h : 0;
+        if (!target.ctx) return;
+        CGContextTranslateCTM(target.ctx, 0, h);
+        CGContextScaleCTM(target.ctx, 1, -1);
+        CGContextSetTextMatrix(target.ctx, CGAffineTransformMakeScale(1, -1));
+        CGContextSetShouldAntialias(target.ctx, true);
+    }
+    for (const CanvasOp& op : ops) canvas_op(target, op);
+}
+
+void CGBackend::canvas_op(Canvas& target, const CanvasOp& op) {
+    CGContextRef ctx = target.ctx;
+    if (op.kind == CanvasOp::Reset) {
+        CGContextClearRect(ctx, CGRectMake(0, 0, target.w, target.h));
+        return;
+    }
+    if (op.kind == CanvasOp::PutImage) {
+        // Raw pixels, outside drawing: straight RGBA to premultiplied, clipped to the bitmap.
+        auto* pixels = static_cast<uint8_t*>(CGBitmapContextGetData(ctx));
+        size_t stride = CGBitmapContextGetBytesPerRow(ctx);
+        int x0 = std::max(0, int(op.dx)), y0 = std::max(0, int(op.dy));
+        int x1 = std::min(target.w, int(op.dx) + op.w), y1 = std::min(target.h, int(op.dy) + op.h);
+        if (!pixels || !op.rgba || x1 <= x0 || y1 <= y0) return;
+        for (int y = y0; y < y1; y++) {
+            const uint8_t* src = op.rgba->data() + (size_t(y - int(op.dy)) * op.w + (x0 - int(op.dx))) * 4;
+            uint8_t* dst = pixels + size_t(y) * stride + size_t(x0) * 4;
+            for (int x = x0; x < x1; x++, src += 4, dst += 4) {
+                uint32_t a = src[3];
+                dst[0] = uint8_t(src[0] * a / 255);
+                dst[1] = uint8_t(src[1] * a / 255);
+                dst[2] = uint8_t(src[2] * a / 255);
+                dst[3] = uint8_t(a);
+            }
+        }
+        return;
+    }
+    CGContextSaveGState(ctx);
+    if (op.clips) {
+        for (const CanvasClip& clip : *op.clips) {
+            Path p;
+            p.ops = clip.path.ops;
+            p.points = clip.path.points;
+            CGPathRef shape = vector_path(p);
+            CGContextAddPath(ctx, shape);
+            if (clip.evenodd) CGContextEOClip(ctx);
+            else CGContextClip(ctx);
+            CGPathRelease(shape);
+        }
+    }
+    if (op.kind == CanvasOp::Clear) {
+        Path p;
+        p.ops = op.path.ops;
+        p.points = op.path.points;
+        CGPathRef shape = vector_path(p);
+        CGContextSetBlendMode(ctx, kCGBlendModeClear);
+        CGContextAddPath(ctx, shape);
+        CGContextFillPath(ctx);
+        CGPathRelease(shape);
+        CGContextRestoreGState(ctx);
+        return;
+    }
+    CGContextSetAlpha(ctx, std::clamp(op.alpha, 0.0f, 1.0f));
+    CGContextSetBlendMode(ctx, blend_mode(op.composite));
+    if (op.has_shadow()) {
+        // The bitmap's base space is y-up and unscaled: the offset is in canvas px with y flipped.
+        CGColorRef col = cg_color(op.shadow_color);
+        CGContextSetShadowWithColor(ctx, CGSizeMake(op.shadow_x, -op.shadow_y), std::max(op.shadow_blur, 0.0f), col);
+        CGColorRelease(col);
+        // The shadow is cast by the whole operation, not by each primitive inside it.
+        CGContextBeginTransparencyLayer(ctx, nullptr);
+        canvas_paint(ctx, op);
+        CGContextEndTransparencyLayer(ctx);
+    } else {
+        canvas_paint(ctx, op);
+    }
+    CGContextRestoreGState(ctx);
+}
+
+// One operation's content, under the clip and compositing canvas_op has set.
+void CGBackend::canvas_paint(CGContextRef ctx, const CanvasOp& op) {
+    CGAffineTransform m = CGAffineTransformMake(op.matrix[0], op.matrix[1], op.matrix[2], op.matrix[3], op.matrix[4], op.matrix[5]);
+    // Fills a shape (canvas px, already on the context's path or clip) with the paint, whose geometry is in user space.
+    auto paint_area = [&] {
+        const CanvasPaint& paint = op.paint;
+        if (paint.kind == CanvasPaint::Solid || paint.stops.empty()) {
+            Color c = paint.kind == CanvasPaint::Solid || paint.stops.empty() ? paint.color : paint.stops.front().color;
+            CGColorRef col = cg_color(c);
+            CGContextSetFillColorWithColor(ctx, col);
+            CGContextFillRect(ctx, CGRectInfinite);
+            CGColorRelease(col);
+            return;
+        }
+        CGGradientRef g = gradient(paint.stops);
+        if (!g) return;
+        CGContextConcatCTM(ctx, m);
+        const auto extend = kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation;
+        const float* a = paint.args;
+        if (paint.kind == CanvasPaint::Linear) CGContextDrawLinearGradient(ctx, g, CGPointMake(a[0], a[1]), CGPointMake(a[2], a[3]), extend);
+        else if (paint.kind == CanvasPaint::Radial) CGContextDrawRadialGradient(ctx, g, CGPointMake(a[0], a[1]), a[2], CGPointMake(a[3], a[4]), a[5], extend);
+        else CGContextDrawConicGradient(ctx, g, CGPointMake(a[1], a[2]), a[0]);
+        CGGradientRelease(g);
+    };
+
+    switch (op.kind) {
+    case CanvasOp::Fill: {
+        Path p;
+        p.ops = op.path.ops;
+        p.points = op.path.points;
+        CGPathRef shape = vector_path(p);
+        CGContextSaveGState(ctx);
+        CGContextAddPath(ctx, shape);
+        if (op.evenodd) CGContextEOClip(ctx);
+        else CGContextClip(ctx);
+        paint_area();
+        CGContextRestoreGState(ctx);
+        CGPathRelease(shape);
+        return;
+    }
+    case CanvasOp::Stroke: {
+        // The path is in canvas px but the line style in user space: stroke it back in user space.
+        if (std::fabs(m.a * m.d - m.b * m.c) < 1e-12) return;
+        CGAffineTransform inverse = CGAffineTransformInvert(m);
+        Path p;
+        p.ops = op.path.ops;
+        p.points = op.path.points;
+        CGPathRef device = vector_path(p);
+        CGPathRef user = CGPathCreateCopyByTransformingPath(device, &inverse);
+        CGPathRelease(device);
+        if (!user) return;
+        CGContextSaveGState(ctx);
+        CGContextConcatCTM(ctx, m);
+        set_line_style(ctx, op.line_width, op.line_cap, op.line_join, op.miter_limit, op.dashes, op.dash_offset);
+        CGContextAddPath(ctx, user);
+        CGContextReplacePathWithStrokedPath(ctx);
+        CGContextClip(ctx);
+        CGContextConcatCTM(ctx, inverse);
+        paint_area();
+        CGContextRestoreGState(ctx);
+        CGPathRelease(user);
+        return;
+    }
+    case CanvasOp::Text: {
+        auto it = fonts_.find(op.font);
+        if (it == fonts_.end() || op.scale_x == 0 || std::fabs(m.a * m.d - m.b * m.c) < 1e-12) return;
+        CTLineRef line = make_line(it->second, op.text, nullptr);
+        if (!line) return;
+        CGContextSaveGState(ctx);
+        CGContextConcatCTM(ctx, m);
+        CGContextTranslateCTM(ctx, op.x, op.y);
+        CGContextScaleCTM(ctx, op.scale_x, 1);
+        CGContextSetTextPosition(ctx, op.text_dx, 0);
+        if (op.stroke_text) {
+            set_line_style(ctx, op.line_width, op.line_cap, op.line_join, op.miter_limit, op.dashes, op.dash_offset);
+            CGContextSetTextDrawingMode(ctx, kCGTextStrokeClip);
+        } else {
+            CGContextSetTextDrawingMode(ctx, kCGTextClip);
+        }
+        CTLineDraw(line, ctx);
+        CFRelease(line);
+        // The glyphs are now the clip: the paint fills them, in canvas px.
+        CGContextScaleCTM(ctx, 1 / op.scale_x, 1);
+        CGContextTranslateCTM(ctx, -op.x, -op.y);
+        CGContextConcatCTM(ctx, CGAffineTransformInvert(m));
+        paint_area();
+        CGContextRestoreGState(ctx);
+        return;
+    }
+    case CanvasOp::Image: {
+        CGImageRef image = nullptr;
+        if (op.canvas) {
+            image = canvas_image(op.canvas);
+        } else {
+            auto it = images_.find(op.image);
+            if (it != images_.end() && it->second) image = CGImageRetain(it->second);
+        }
+        if (!image) return;
+        if (op.sw >= 0) {
+            CGImageRef part = CGImageCreateWithImageInRect(image, CGRectMake(op.sx, op.sy, op.sw, op.sh));
+            CGImageRelease(image);
+            image = part;
+            if (!image) return;
+        }
+        CGContextSaveGState(ctx);
+        CGContextConcatCTM(ctx, m);
+        CGContextSetInterpolationQuality(ctx, op.smoothing ? kCGInterpolationHigh : kCGInterpolationNone);
+        // CGContextDrawImage draws y-up: flip around the destination
+        CGContextTranslateCTM(ctx, 0, op.dy + op.dh);
+        CGContextScaleCTM(ctx, 1, -1);
+        CGContextDrawImage(ctx, CGRectMake(op.dx, 0, op.dw, op.dh), image);
+        CGContextRestoreGState(ctx);
+        CGImageRelease(image);
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+bool CGBackend::canvas_read(int id, int x, int y, int w, int h, std::vector<uint8_t>& rgba) {
+    rgba.assign(size_t(std::max(w, 0)) * std::max(h, 0) * 4, 0);
+    auto it = canvases_.find(id);
+    if (it == canvases_.end() || !it->second.ctx || w <= 0 || h <= 0) return true;
+    const Canvas& canvas = it->second;
+    const auto* pixels = static_cast<const uint8_t*>(CGBitmapContextGetData(canvas.ctx));
+    size_t stride = CGBitmapContextGetBytesPerRow(canvas.ctx);
+    int x0 = std::max(0, x), y0 = std::max(0, y), x1 = std::min(canvas.w, x + w), y1 = std::min(canvas.h, y + h);
+    if (!pixels || x1 <= x0 || y1 <= y0) return true;
+    for (int row = y0; row < y1; row++) {
+        const uint8_t* src = pixels + size_t(row) * stride + size_t(x0) * 4;
+        uint8_t* dst = rgba.data() + (size_t(row - y) * w + (x0 - x)) * 4;
+        for (int col = x0; col < x1; col++, src += 4, dst += 4) {
+            uint32_t a = src[3];
+            // getImageData is straight alpha.
+            dst[0] = a ? uint8_t(std::min<uint32_t>(255, src[0] * 255 / a)) : 0;
+            dst[1] = a ? uint8_t(std::min<uint32_t>(255, src[1] * 255 / a)) : 0;
+            dst[2] = a ? uint8_t(std::min<uint32_t>(255, src[2] * 255 / a)) : 0;
+            dst[3] = uint8_t(a);
+        }
+    }
+    return true;
+}
+
+void CGBackend::canvas_release(int id) {
+    auto it = canvases_.find(id);
+    if (it == canvases_.end()) return;
+    if (it->second.ctx) CGContextRelease(it->second.ctx);
+    canvases_.erase(it);
 }
 
 } // namespace twlite
