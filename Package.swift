@@ -131,7 +131,7 @@ let package = Package(
 if optimizesDebug {
     for target in package.targets where target.type == .regular {
         target.cSettings = (target.cSettings ?? []) + [.unsafeFlags(["-O3"])]
-        target.cxxSettings = (target.cxxSettings ?? []) + [.unsafeFlags(["-O3"])]
+        target.cxxSettings = (target.cxxSettings ?? []) + [.unsafeFlags(["-O3"]), .define("_LIBCPP_HARDENING_MODE", to: "_LIBCPP_HARDENING_MODE_FAST", .when(configuration: .debug))]
         target.swiftSettings = (target.swiftSettings ?? []) + [.unsafeFlags(["-O"], .when(configuration: .debug))]
     }
 }
