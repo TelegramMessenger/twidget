@@ -181,6 +181,11 @@ private:
         double start = 0;
         int iteration = 0;
         bool ended = false;
+        // animation-play-state: paused stops the timeline where it is; running resumes it from there.
+        std::optional<double> paused_at;
+        double paused_duration = 0;
+        double timeline_start() const { return start + paused_duration; }
+        double local_time(double now) const { return paused_at.value_or(now) - timeline_start(); }
     };
     struct Transition {
         std::string from, to;

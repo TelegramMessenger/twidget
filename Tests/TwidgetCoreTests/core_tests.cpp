@@ -576,6 +576,26 @@ int main() {
         check(actions, "a click asks the sandbox for its default actions");
     }
 
+    // ── animation-play-state ──
+    {
+        StubBackend pb;
+        Renderer p(300, 1, false, pb);
+        p.receive(parse(PAGE));
+        auto current = [&] {
+            Json q = p.receive(parse(R"({"type":"query","qid":1,"query":{"q":"anims","id":12}})"))[0];
+            return q["result"]["list"].arr().empty() ? -1.0 : q["result"]["list"].arr()[0]["currentTime"].asNumber();
+        };
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":12,"name":"class","value":"spin"}]})"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":12,"name":"animation-play-state","value":"paused"}]})"));
+        double paused = current();
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        check(paused >= 50 && current() == paused, "a paused animation's time stands still (" + std::to_string(paused) + " then " + std::to_string(current()) + ")");
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":12,"name":"animation-play-state","value":"running"}]})"));
+        double resumed = current();
+        check(resumed >= paused && resumed < paused + 40, "resumed, it carries on from where it paused (" + std::to_string(resumed) + ")");
+    }
+
     // ── overflow-wrap ──
     {
         StubBackend wb;

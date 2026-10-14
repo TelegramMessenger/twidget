@@ -966,12 +966,21 @@ void Animator::update(const std::unordered_map<int64_t, Declared>& declarations,
             for (auto& spec : specs) {
                 auto existing = std::find_if(previous.begin(), previous.end(), [&](const Running& r) { return r.spec.name == spec.name; });
                 if (existing != previous.end()) {
-                    if (existing->spec == spec) next.push_back(*existing);
-                    else next.push_back(Running{spec, existing->start, existing->iteration, false});
+                    if (existing->spec == spec) {
+                        next.push_back(*existing);
+                        continue;
+                    }
+                    Running changed{spec, existing->start, existing->iteration, false};
+                    changed.paused_duration = existing->paused_duration;
+                    if (spec.paused) changed.paused_at = existing->paused_at.value_or(now);
+                    else if (existing->paused_at) changed.paused_duration += now - *existing->paused_at;
+                    next.push_back(changed);
                     continue;
                 }
                 if (keyframes_.count(spec.name)) events_.push_back({"animationstart", id, spec.name, 0});
-                next.push_back(Running{spec, now, 0, false});
+                Running fresh{spec, now, 0, false};
+                if (spec.paused) fresh.paused_at = now;
+                next.push_back(fresh);
             }
         }
         auto transition_specs = TransitionSpec::list(values);
@@ -1057,7 +1066,7 @@ StyleValues Animator::values(const std::vector<Keyframe>& frames, const Declared
 
 std::optional<StyleValues> Animator::sample_animation(int64_t id, Running& item, const std::vector<Keyframe>& frames, double now, std::vector<AnimationEvent>* events) const {
     const AnimationSpec& spec = item.spec;
-    double local = now - item.start - spec.delay;
+    double local = item.local_time(now) - spec.delay;
     if (auto o = overrides_.find(id); o != overrides_.end()) {
         if (auto it = o->second.find("animation:" + spec.name); it != o->second.end()) {
             if (it->second.cancelled) return std::nullopt;
@@ -1294,7 +1303,7 @@ std::optional<Animator::Plan> Animator::plan(int64_t id, double now, bool iterat
         for (const Running& item : r->second) {
             if (item.ended || !keyframes_.count(item.spec.name)) continue;
             const AnimationSpec& spec = item.spec;
-            double origin = item.start, rate = 1;
+            double origin = item.timeline_start(), rate = 1;
             if (const Override* o = override_of(id, "animation:" + spec.name)) {
                 if (o->cancelled || o->hold) continue;
                 origin = *o->start;
@@ -1368,7 +1377,7 @@ uint64_t Animator::signature(int64_t id) const {
         for (const Running& item : r->second) {
             const AnimationSpec& spec = item.spec;
             text(spec.name);
-            num(item.start);
+            num(item.timeline_start());
             num(spec.duration);
             text(spec.timing_text);
             num(spec.delay);
@@ -1544,7 +1553,7 @@ Json Animator::css_animations(const std::vector<int64_t>& ids, double now) const
                 if (o && o->cancelled) continue;
                 Json e = Json::object();
                 e.set("kind", "animation").set("id", double(id)).set("name", item.spec.name).set("index", i);
-                e.set("origin", item.start * 1000).set("currentTime", (o ? o->local(now) : now - item.start) * 1000);
+                e.set("origin", item.start * 1000).set("currentTime", (o ? o->local(now) : item.local_time(now)) * 1000);
                 e.set("playbackRate", o ? o->rate : 1).set("paused", o ? o->hold.has_value() : item.spec.paused);
                 e.set("duration", item.spec.duration * 1000).set("delay", item.spec.delay * 1000);
                 e.set("direction", item.spec.direction).set("fill", item.spec.fill).set("easing", item.spec.timing_text);
