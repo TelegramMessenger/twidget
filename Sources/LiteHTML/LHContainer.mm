@@ -2665,6 +2665,13 @@ void LHContainer::apply_clips(CGContextRef ctx, CGRect bounds) const
             continue;
         }
         CGAffineTransform t = CGAffineTransformConcat(c.matrix, CGAffineTransformInvert(matrix));
+        if(m_clip_culling && !CGRectIsNull(bounds) && !CGRectIsInfinite(bounds) && std::fabs(t.a * t.d - t.b * t.c) > 1e-9)
+        {
+            CGRect local = CGRectInset(CGRectApplyAffineTransform(bounds, CGAffineTransformInvert(t)), -1, -1);
+            if(std::isfinite(local.origin.x) && std::isfinite(local.origin.y) && std::isfinite(local.size.width) && std::isfinite(local.size.height) &&
+               InsideRoundedRect(box, c.radius, local))
+                continue;
+        }
         CGContextConcatCTM(ctx, t);
         ClipToRoundedRect(ctx, box, c.radius);
         CGContextConcatCTM(ctx, CGAffineTransformInvert(t));
