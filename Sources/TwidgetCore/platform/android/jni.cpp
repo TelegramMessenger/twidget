@@ -31,16 +31,67 @@ struct EnvScope {
     ~EnvScope() { g_env = prev; }
 };
 
+// JNI's *StringUTF* functions speak modified UTF-8, which writes characters outside the BMP (emoji) as
+// surrogate pairs and NUL as two bytes; the core speaks standard UTF-8. Strings cross as UTF-16 instead.
 std::string get_string(JNIEnv* env, jstring s) {
     if (!s) return {};
-    const char* chars = env->GetStringUTFChars(s, nullptr);
-    std::string out = chars ? chars : "";
-    if (chars) env->ReleaseStringUTFChars(s, chars);
+    const jchar* chars = env->GetStringChars(s, nullptr);
+    jsize n = env->GetStringLength(s);
+    std::string out;
+    out.reserve(size_t(n));
+    for (jsize i = 0; chars && i < n; i++) {
+        uint32_t c = chars[i];
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < n && chars[i + 1] >= 0xDC00 && chars[i + 1] < 0xE000) {
+            c = 0x10000 + ((c - 0xD800) << 10) + (chars[i + 1] - 0xDC00);
+            i++;
+        } else if (c >= 0xD800 && c < 0xE000) {
+            c = 0xFFFD;
+        }
+        if (c < 0x80) {
+            out.push_back(char(c));
+        } else if (c < 0x800) {
+            out.push_back(char(0xC0 | (c >> 6)));
+            out.push_back(char(0x80 | (c & 0x3F)));
+        } else if (c < 0x10000) {
+            out.push_back(char(0xE0 | (c >> 12)));
+            out.push_back(char(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back(char(0x80 | (c & 0x3F)));
+        } else {
+            out.push_back(char(0xF0 | (c >> 18)));
+            out.push_back(char(0x80 | ((c >> 12) & 0x3F)));
+            out.push_back(char(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back(char(0x80 | (c & 0x3F)));
+        }
+    }
+    if (chars) env->ReleaseStringChars(s, chars);
     return out;
 }
 
 jstring new_string(JNIEnv* env, const std::string& s) {
-    return env->NewStringUTF(s.c_str());
+    std::u16string units;
+    units.reserve(s.size());
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    size_t n = s.size(), i = 0;
+    while (i < n) {
+        uint32_t c = p[i];
+        size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+        if (len == 0 || i + len > n) {
+            units.push_back(char16_t(0xFFFD));
+            i++;
+            continue;
+        }
+        if (len > 1) c &= 0xFFu >> (len + 1);
+        for (size_t k = 1; k < len; k++) c = (c << 6) | (p[i + k] & 0x3F);
+        i += len;
+        if (c >= 0x10000) {
+            c -= 0x10000;
+            units.push_back(char16_t(0xD800 + (c >> 10)));
+            units.push_back(char16_t(0xDC00 + (c & 0x3FF)));
+        } else {
+            units.push_back(char16_t(c));
+        }
+    }
+    return env->NewString(reinterpret_cast<const jchar*>(units.data()), jsize(units.size()));
 }
 
 /// Fonts, text metrics and images through LitehtmlBackend.kt.
