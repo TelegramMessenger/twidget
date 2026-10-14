@@ -64,6 +64,8 @@ final class WidgetScrollLayer {
     private var rasterLifetime = WidgetRasterLifetime()
     static let tileSize = CGSize(width: 512, height: 256)
     static let queue = DispatchQueue(label: "twidget.scroll.raster", qos: .userInitiated)
+    static let batchesCommits = ProcessInfo.processInfo.environment["TW_SCROLL_BATCH_COMMITS"] != "0"
+    static let skipsObsoleteRaster = ProcessInfo.processInfo.environment["TW_SCROLL_SKIP_OBSOLETE"] != "0"
     private(set) var rasterCount = 0
 
     init(id: Int, geometry: WidgetScrollGeometry) {
@@ -243,7 +245,12 @@ final class WidgetScrollLayer {
             }
             pending.insert(index)
             WidgetScrollLayer.queue.async { [weak self] in
-                let image = lifetime.isActive ? document.copyScrollContent(attribute: attribute, value: value, rect: rasterRect, scale: scale) : nil
+                let image: CGImage?
+                if Self.skipsObsoleteRaster {
+                    image = document.copyScrollContentIfCurrent(attribute: attribute, value: value, rect: rasterRect, scale: scale, shouldContinue: { lifetime.isActive })
+                } else {
+                    image = lifetime.isActive ? document.copyScrollContent(attribute: attribute, value: value, rect: rasterRect, scale: scale) : nil
+                }
                 DispatchQueue.main.async {
                     guard let self = self else {
                         return
@@ -255,7 +262,13 @@ final class WidgetScrollLayer {
                         }
                         return
                     }
-                    self.install(image, in: layer, rect: tileRect, scale: scale)
+                    guard let image = image else {
+                        if let source = self.rasterSource, source.document !== document {
+                            self.ensureTiles(document: source.document, scale: source.scale, attribute: source.attribute)
+                        }
+                        return
+                    }
+                    self.install(image, in: layer, rect: tileRect, scale: scale, implicit: WidgetScrollLayer.batchesCommits)
                     self.tiles[index] = (layer, signature)
                     self.rasterCount += 1
                 }
@@ -263,16 +276,25 @@ final class WidgetScrollLayer {
         }
     }
 
-    private func install(_ image: CGImage?, in layer: CALayer, rect: CGRect, scale: CGFloat) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
+    func refresh(document: LHDocument, scale: CGFloat, attribute: String) {
+        guard rasterSource?.document !== document else { return }
+        ensureTiles(document: document, scale: scale, attribute: attribute)
+    }
+
+    private func install(_ image: CGImage?, in layer: CALayer, rect: CGRect, scale: CGFloat, implicit: Bool = false) {
+        if !implicit {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+        }
         layer.frame = rect
         layer.contentsScale = scale
         if let image = image {
             layer.contentsRect = CGRect(x: 1 / CGFloat(image.width), y: 1 / CGFloat(image.height), width: rect.width * scale / CGFloat(image.width), height: rect.height * scale / CGFloat(image.height))
         }
         layer.contents = image
-        CATransaction.commit()
+        if !implicit {
+            CATransaction.commit()
+        }
     }
 
     private func makeTile(_ rect: CGRect) -> CALayer {
@@ -282,7 +304,7 @@ final class WidgetScrollLayer {
         layer.contentsGravity = .resize
         layer.allowsEdgeAntialiasing = false
         layer.edgeAntialiasingMask = []
-        layer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull()]
+        layer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull(), "contentsScale": NSNull(), "contentsRect": NSNull()]
         content.twAddSublayer(layer)
         return layer
     }
@@ -445,6 +467,12 @@ final class WidgetScrolling {
         }
         CATransaction.commit()
         return changed
+    }
+
+    func refresh(document: LHDocument, scale: CGFloat) {
+        for layer in layers.values {
+            layer.refresh(document: document, scale: scale, attribute: WidgetDOM.idAttribute)
+        }
     }
 
     func didScroll(_ id: Int, dom: WidgetDOM, document: LHDocument, scale: CGFloat) -> Bool {

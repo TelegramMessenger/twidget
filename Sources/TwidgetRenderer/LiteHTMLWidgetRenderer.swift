@@ -1207,6 +1207,9 @@ public final class LiteHTMLWidgetRenderer {
             layout(overrides)
         }
         applyPendingScrollRequests()
+        if WidgetScrollLayer.skipsObsoleteRaster, let document = document {
+            scrolling.refresh(document: document, scale: documentView.scale)
+        }
         scheduleDrivenEnds(now: now)
         updateCanvasPresentation()
         if needsFrames && !frozen {

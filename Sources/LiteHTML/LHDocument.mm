@@ -1788,6 +1788,19 @@ static std::string MasterWithCSS(NSString *css)
 {
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
+    return [self copyScrollContentLockedWithAttribute:attribute value:value rect:rect scale:scale];
+}
+
+- (CGImageRef)copyScrollContentIfCurrentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale shouldContinue:(BOOL (NS_NOESCAPE ^)(void))shouldContinue
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    if(_consumed || !_doc || !shouldContinue())
+        return nullptr;
+    return [self copyScrollContentLockedWithAttribute:attribute value:value rect:rect scale:scale];
+}
+
+- (CGImageRef)copyScrollContentLockedWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale
+{
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
     if(!ri || !ri->get_scroll_view())
         return nullptr;

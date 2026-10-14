@@ -20,6 +20,16 @@ final class ScrollLayerTests: XCTestCase {
             countLock.unlock()
             return super.copyScrollContent(attribute: attribute, value: value, rect: rect, scale: scale)
         }
+
+        override func copyScrollContentIfCurrent(attribute: String, value: String, rect: CGRect, scale: CGFloat, shouldContinue: () -> Bool) -> CGImage? {
+            return super.copyScrollContentIfCurrent(attribute: attribute, value: value, rect: rect, scale: scale, shouldContinue: {
+                guard shouldContinue() else { return false }
+                countLock.lock()
+                count += 1
+                countLock.unlock()
+                return true
+            })
+        }
     }
 
     func testRevealAlignmentAndNearestEdges() {
