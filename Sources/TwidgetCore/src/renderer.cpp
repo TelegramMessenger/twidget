@@ -4,6 +4,7 @@
 
 #include <litehtml.h>
 #include <litehtml/html_tag.h>
+#include <litehtml/render_inline_context.h>
 #include <litehtml/render_item.h>
 #ifdef TW_LITEHTML_TWIDGET
 #include <litehtml/css_effects.h>
@@ -114,6 +115,64 @@ Rect border_box_of(const litehtml::element::ptr& el) {
     }
     return r;
 }
+
+/// Where an element's border box shows: its transform and its ancestors', as a bounding box.
+Rect visual_box_of(const litehtml::element::ptr& el) {
+    Rect r = border_box_of(el);
+#ifdef TW_LITEHTML_TWIDGET
+    litehtml::transform_matrix m;
+    for (auto ri = el->get_render_item(); ri; ri = ri->parent()) m = m.then(ri->get_visual_transform());
+    if (m.is_identity()) return r;
+    float xs[4] = {r.x, r.x + r.w, r.x, r.x + r.w}, ys[4] = {r.y, r.y, r.y + r.h, r.y + r.h};
+    float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+    for (int i = 0; i < 4; i++) {
+        float x = m.a * xs[i] + m.c * ys[i] + m.tx, y = m.b * xs[i] + m.d * ys[i] + m.ty;
+        x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y);
+    }
+    return Rect{x0, y0, x1 - x0, y1 - y0};
+#else
+    return r;
+#endif
+}
+
+#ifdef TW_LITEHTML_TWIDGET
+/// offsetLeft/offsetTop and offsetParent: from the border box to the padding edge of the nearest
+/// positioned, transformed or contained ancestor (a table cell for a static element), else the body.
+void offsets_of(const std::shared_ptr<litehtml::render_item>& ri, double& left, double& top, int64_t& parent) {
+    auto origin = [](std::shared_ptr<litehtml::render_item> item, double& x, double& y) {
+        x = y = 0;
+        for (; item; item = item->parent()) {
+            auto sticky = item->sticky_offset();
+            x += float(item->pos().x) + float(sticky.x);
+            y += float(item->pos().y) + float(sticky.y);
+            if (item->css().get_position() == litehtml::element_position_fixed) break;
+        }
+    };
+    origin(ri, left, top);
+    left -= float(ri->padding_left()) + float(ri->border_left());
+    top -= float(ri->padding_top()) + float(ri->border_top());
+    parent = 0;
+    auto tag = ri->src_el()->tag();
+    if (ri->css().get_position() == litehtml::element_position_fixed || tag == litehtml::_body_ || tag == litehtml::_html_) return;
+    for (auto p = ri->parent(); p; p = p->parent()) {
+        const auto& css = p->css();
+        auto ptag = p->src_el()->tag();
+        bool positioned = css.get_position() != litehtml::element_position_static || !css.get_transform().empty() || css.contains(litehtml::contain_layout | litehtml::contain_paint);
+        bool table = ri->css().get_position() == litehtml::element_position_static && (ptag == litehtml::_table_ || ptag == litehtml::_td_ || ptag == litehtml::_th_);
+        if (!positioned && !table && ptag != litehtml::_body_) continue;
+        if (const char* id = p->src_el()->get_attr("data-twid")) parent = std::strtoll(id, nullptr, 10);
+        if (positioned || table) {
+            double x, y;
+            origin(p, x, y);
+            left -= x - float(p->padding_left());
+            top -= y - float(p->padding_top());
+        }
+        break;
+    }
+    left = std::round(left);
+    top = std::round(top);
+}
+#endif
 
 Radii radii_of(const litehtml::border_radiuses& r) {
     return Radii{float(r.top_left_x), float(r.top_left_y), float(r.top_right_x), float(r.top_right_y),
@@ -1459,6 +1518,8 @@ void Renderer::serialize_node(const Node* n, std::string& out) const {
         while ((p = css.find("</", p)) != std::string::npos) { css.replace(p, 2, "<\\/"); p += 3; }
         out += css;
     } else if (n->tag == "textarea") {
+        // The parser drops a newline right after <textarea>: a value that starts with one needs a second.
+        if (!n->data.empty() && n->data[0] == '\n') out += '\n';
         escape_text(n->data, out);
         for (const Node* c : n->children) serialize_node(c, out);
     } else {
@@ -2027,20 +2088,37 @@ Json Renderer::answer(const Json& q) {
         if (!shadow || shadow->kind != Node::Element) return Json::object().set("error", "no such element");
     }
     auto placement = [&]() -> Rect { return el ? border_box_of(el) : Rect{}; };
-    if (kind == "rect") return rect_json(placement());
-    if (kind == "rects") return el ? Json::array().push(rect_json(placement())) : Json::array();
+    // getBoundingClientRect is where the element shows, transforms included; the offset and client
+    // sizes below are layout sizes, which transforms leave alone.
+    if (kind == "rect") return rect_json(el ? visual_box_of(el) : Rect{});
+    if (kind == "rects") return el ? Json::array().push(rect_json(visual_box_of(el))) : Json::array();
     if (kind == "box") {
         Rect r = placement();
         float bl = 0, bt = 0, br = 0, bb = 0;
-        if (auto ri = el ? el->get_render_item() : nullptr) {
+        auto ri = el ? el->get_render_item() : nullptr;
+        if (ri) {
             const auto& bd = ri->get_borders();
             bl = float(bd.left); bt = float(bd.top); br = float(bd.right); bb = float(bd.bottom);
         }
-        int64_t parent = shadow && shadow->parent ? shadow->parent->id : 0;
         Json o = Json::object();
-        o.set("offsetWidth", r.w).set("offsetHeight", r.h).set("offsetTop", r.y).set("offsetLeft", r.x).set("offsetParent", double(parent));
-        o.set("clientWidth", std::max(0.0f, r.w - bl - br)).set("clientHeight", std::max(0.0f, r.h - bt - bb)).set("clientTop", bt).set("clientLeft", bl);
-        o.set("scrollWidth", std::max(0.0f, r.w - bl - br)).set("scrollHeight", std::max(0.0f, r.h - bt - bb)).set("scrollTop", 0).set("scrollLeft", 0);
+        double left = r.x, top = r.y;
+        int64_t parent = 0;
+#ifdef TW_LITEHTML_TWIDGET
+        if (ri) offsets_of(ri, left, top, parent);
+#endif
+        o.set("offsetWidth", r.w).set("offsetHeight", r.h).set("offsetTop", top).set("offsetLeft", left).set("offsetParent", double(parent));
+        float cw = std::max(0.0f, r.w - bl - br), ch = std::max(0.0f, r.h - bt - bb), sw = cw, sh = ch;
+#ifdef TW_LITEHTML_TWIDGET
+        // A textarea's text can outgrow its rows: scrollHeight is the text's, clientHeight the box's.
+        if (auto text = std::dynamic_pointer_cast<litehtml::render_item_inline_context>(ri); text && shadow && shadow->tag == "textarea") {
+            const auto& pad = ri->get_paddings();
+            auto content = text->text_content_size();
+            sw = std::max(cw, float(content.width) + float(pad.left) + float(pad.right));
+            sh = std::max(ch, float(content.height) + float(pad.top) + float(pad.bottom));
+        }
+#endif
+        o.set("clientWidth", cw).set("clientHeight", ch).set("clientTop", bt).set("clientLeft", bl);
+        o.set("scrollWidth", sw).set("scrollHeight", sh).set("scrollTop", 0).set("scrollLeft", 0);
         return o;
     }
     if (kind == "cs") {

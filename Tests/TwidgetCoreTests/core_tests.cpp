@@ -576,6 +576,29 @@ int main() {
         check(actions, "a click asks the sandbox for its default actions");
     }
 
+    // ── layout queries ──
+    {
+        StubBackend lb;
+        Renderer l(300, 1, false, lb);
+        l.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font-size:10px;line-height:10px"]]},
+            {"op":"el","id":5,"tag":"div","attrs":[["style","position:relative;margin-left:20px;padding:5px;border:1px solid red"]]},{"op":"ins","parent":4,"id":5,"before":null},
+            {"op":"el","id":6,"tag":"div","attrs":[["style","margin-left:7px;width:50px;height:10px"]]},{"op":"ins","parent":5,"id":6,"before":null},
+            {"op":"el","id":7,"tag":"div","attrs":[["style","width:50px;height:10px;transform:scale(2)"]]},{"op":"ins","parent":4,"id":7,"before":null},
+            {"op":"el","id":8,"tag":"textarea","attrs":[["style","height:20px;padding:0;border:0;min-height:0;font-size:10px;line-height:10px"]]},{"op":"ins","parent":4,"id":8,"before":null},
+            {"op":"prop","id":8,"name":"value","value":"\na\nb\nc\nd"}]})J"));
+        auto query = [&](const char* q, int id) {
+            return l.receive(parse(std::string(R"({"type":"query","qid":1,"query":{"q":")") + q + R"(","id":)" + std::to_string(id) + "}}"))[0]["result"];
+        };
+        Json box = query("box", 6);
+        check(box["offsetLeft"].asNumber() == 12 && box["offsetTop"].asNumber() == 5 && box["offsetParent"].asNumber() == 5,
+              "offsets are from the positioned parent's padding edge (got " + std::to_string(box["offsetLeft"].asNumber()) + ", " + std::to_string(box["offsetTop"].asNumber()) + ", parent " + std::to_string(box["offsetParent"].asNumber()) + ")");
+        check(query("rect", 7)["width"].asNumber() == 100 && query("box", 7)["offsetWidth"].asNumber() == 50, "a transform scales the rect but not the layout size");
+        Json area = query("box", 8);
+        check(area["clientHeight"].asNumber() == 20 && area["scrollHeight"].asNumber() == 50, "a textarea's scrollHeight is its text's (got " + std::to_string(area["scrollHeight"].asNumber()) + ")");
+        check(l.last_html().find("\n\na\nb") != std::string::npos, "a textarea value starting with a newline keeps it through the parser");
+    }
+
     // ── animation-play-state ──
     {
         StubBackend pb;
