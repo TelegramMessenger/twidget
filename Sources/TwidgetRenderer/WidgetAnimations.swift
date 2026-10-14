@@ -78,6 +78,7 @@ enum CSSKeyframes {
 }
 
 struct CSSTiming {
+    var breakpoints: [Double] = []
     let function: (Double) -> Double
 
     static let linear = CSSTiming { $0 }
@@ -199,7 +200,7 @@ struct CSSTiming {
             index += 1
         }
         let resolved = points.map { (input: $0.input!, output: $0.output) }
-        return CSSTiming { x in
+        return CSSTiming(breakpoints: resolved.map(\.input)) { x in
             if x <= resolved[0].input {
                 let a = resolved[0], b = resolved[1]
                 return b.input == a.input ? a.output : a.output + (b.output - a.output) * (x - a.input) / (b.input - a.input)
@@ -543,7 +544,7 @@ struct CSSTransitionSpec {
 enum CSSInterpolate {
     private static let identityValues: [String: String] = ["scale": "1", "scalex": "1", "scaley": "1", "scale3d": "1,1,1", "brightness": "1", "contrast": "1", "opacity": "1", "saturate": "1"]
 
-    static func mix(_ a: String, _ b: String, _ t: Double) -> String {
+    static func mix(_ a: String, _ b: String, _ t: Double, quantized: Bool = true) -> String {
         if t == 0 || !t.isFinite {
             return a
         }
@@ -558,11 +559,11 @@ enum CSSInterpolate {
             switch (x, y) {
             case let (.number(p, unitP), .number(q, unitQ)) where unitP == unitQ || p == 0 || q == 0:
                 let value = p + (q - p) * t
-                out += format(value) + (unitP.isEmpty ? unitQ : unitP)
+                out += (quantized ? format(value) : String(value)) + (unitP.isEmpty ? unitQ : unitP)
             case let (.text(p), .text(q)) where p == q:
                 out += p
             default:
-                return translations(a, b, t) ?? (t < 0.5 ? a : b)
+                return translations(a, b, t, quantized: quantized) ?? (t < 0.5 ? a : b)
             }
         }
         return out
@@ -570,7 +571,7 @@ enum CSSInterpolate {
 
     private static let translationList = try! NSRegularExpression(pattern: "^\\s*(translate[xy]?\\([^()]*\\)\\s*)+$", options: [.caseInsensitive])
 
-    private static func translations(_ a: String, _ b: String, _ t: Double) -> String? {
+    private static func translations(_ a: String, _ b: String, _ t: Double, quantized: Bool) -> String? {
         for text in [a, b] where translationList.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) == nil {
             return nil
         }
@@ -578,7 +579,7 @@ enum CSSInterpolate {
             return tokenize(text).map { token -> String in
                 switch token {
                 case let .number(value, unit):
-                    return format(value * factor) + unit
+                    return (quantized ? format(value * factor) : String(value * factor)) + unit
                 case let .text(text):
                     return text
                 }
@@ -1032,27 +1033,47 @@ final class WidgetAnimator {
         let spec: CSSAnimationSpec
         let start: CFTimeInterval
         let value: (Double) -> Sample
+        var geometryTolerance: CGFloat = 0.05
+        var opacityTolerance: Float = 0.002
+        var breakpoints: [Double] = []
     }
 
     func bakeable(_ id: Int) -> Baked? {
         if let list = transitions[id] {
-            guard list.count == 1, let (property, transition) = list.first,
-                  property == "transform" || property == "opacity",
+            guard !list.isEmpty, list.keys.allSatisfy({ $0 == "transform" || $0 == "opacity" }),
                   web.animations(id).isEmpty, cssOverrides[id] == nil,
                   running[id]?.contains(where: { keyframes[$0.spec.name] != nil }) != true else {
                 return nil
             }
             let base = bases[id] ?? [:]
+            let start = list.values.map(\.start).min()!
+            let begin = list.values.map { $0.start + $0.spec.delay }.min()!
+            let end = list.values.map { $0.start + $0.spec.delay + $0.spec.duration }.max()!
             var spec = CSSAnimationSpec()
-            spec.name = "transition|\(property)|\(transition.from)|\(transition.to)|\(base["transform"] ?? "")|\(base["opacity"] ?? "")"
-            spec.duration = transition.spec.duration
-            spec.delay = transition.spec.delay
-            spec.timingText = transition.spec.timingText
+            spec.name = "transition|" + list.keys.sorted().map { property in
+                let transition = list[property]!
+                return "\(property)|\(transition.from)|\(transition.to)|\(transition.start)|\(transition.spec.duration)|\(transition.spec.delay)|\(transition.spec.timingText)"
+            }.joined(separator: "|") + "|\(base["transform"] ?? "")|\(base["opacity"] ?? "")"
+            spec.duration = end - begin
+            spec.delay = begin - start
+            spec.timingText = "linear"
             spec.fill = "both"
-            return Baked(spec: spec, start: transition.start, value: { progress in
-                let value = progress <= 0 ? transition.from : progress >= 1 ? transition.to : CSSInterpolate.mix(transition.from, transition.to, transition.spec.timing.function(progress))
-                return (property == "transform" ? value : base["transform"], property == "opacity" ? value : base["opacity"], base["filter"], base["box-shadow"])
-            })
+            let breakpoints = list.values.flatMap { transition in
+                ([0, 1] + transition.spec.timing.breakpoints).map { progress in
+                    (transition.start + transition.spec.delay + progress * transition.spec.duration - begin) / spec.duration
+                }
+            }
+            return Baked(spec: spec, start: start, value: { progress in
+                let now = begin + progress * (end - begin)
+                func value(_ property: String) -> String? {
+                    guard let transition = list[property] else { return base[property] }
+                    let elapsed = now - transition.start - transition.spec.delay
+                    if elapsed <= 0 { return transition.from }
+                    if elapsed >= transition.spec.duration { return transition.to }
+                    return CSSInterpolate.mix(transition.from, transition.to, transition.spec.timing.function(elapsed / transition.spec.duration), quantized: false)
+                }
+                return (value("transform"), value("opacity"), base["filter"], base["box-shadow"])
+            }, geometryTolerance: 0.0001, opacityTolerance: 0.0001, breakpoints: breakpoints)
         }
         guard transitions[id] == nil, web.animations(id).isEmpty, cssOverrides[id] == nil, let list = running[id] else {
             return nil

@@ -925,7 +925,8 @@ final class WidgetCompositor {
         var failed = false
         var jumpBudget = maxBakeJumps
         func subdivide(_ t0: Double, _ s0: BakeSample, _ t1: Double, _ s1: BakeSample, _ depth: Int) {
-            if failed {
+            if failed || times.count >= 4096 {
+                failed = true
                 return
             }
             let tm = (t0 + t1) / 2
@@ -934,7 +935,7 @@ final class WidgetCompositor {
                 return
             }
             let (geometry, alpha, effect) = error(s0, s1, sm)
-            if geometry <= bakeTolerance && alpha <= 0.002 && effect <= effectTolerance {
+            if geometry <= baked.geometryTolerance && alpha <= baked.opacityTolerance && effect <= effectTolerance {
                 times.append(t1)
                 samples.append(s1)
                 return
@@ -959,13 +960,20 @@ final class WidgetCompositor {
             subdivide(tm, sm, t1, s1, depth + 1)
         }
         let initial = 8
+        let boundaries = Set((0...initial).map { Double($0) / Double(initial) } + baked.breakpoints.filter { $0.isFinite && $0 > 0 && $0 < 1 }).sorted()
+        guard boundaries.count <= 4096 else {
+            return nil
+        }
         guard var previous = eval(0) else {
             return nil
         }
         times.append(0)
         samples.append(previous)
-        for step in 1...initial {
-            let t0 = Double(step - 1) / Double(initial), t1 = Double(step) / Double(initial)
+        for step in 1..<boundaries.count {
+            if failed {
+                return nil
+            }
+            let t0 = boundaries[step - 1], t1 = boundaries[step]
             guard let next = eval(t1) else {
                 return nil
             }
