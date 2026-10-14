@@ -130,8 +130,8 @@ let package = Package(
 
 if optimizesDebug {
     for target in package.targets where target.type == .regular {
-        target.cSettings = (target.cSettings ?? []) + [.unsafeFlags(["-O3"], .when(configuration: .debug))]
-        target.cxxSettings = (target.cxxSettings ?? []) + [.unsafeFlags(["-O3"], .when(configuration: .debug))]
+        target.cSettings = (target.cSettings ?? []) + [.unsafeFlags(["-O3"])]
+        target.cxxSettings = (target.cxxSettings ?? []) + [.unsafeFlags(["-O3"])]
         target.swiftSettings = (target.swiftSettings ?? []) + [.unsafeFlags(["-O"], .when(configuration: .debug))]
     }
 }
