@@ -755,7 +755,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     static let presamples = ProcessInfo.processInfo.environment["TW_NO_PRESAMPLE"] == nil
-    static let declarationGates = WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow"]
+    static let declarationGates = WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow", "transform-origin"]
     static let coalescesHeld = ProcessInfo.processInfo.environment["TW_HELD_RENDER_NOW"] == nil
     private var deferringRender = false
 
@@ -2910,7 +2910,12 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func applyScrollOffset(_ id: Int, _ offset: CGPoint) {
-        if scrolling.setOffset(id, offset, document: document) {
+        let needsLayer = scrolling.needsLayerForFirstScroll(id)
+        let changed = scrolling.setOffset(id, offset, document: document)
+        if needsLayer {
+            setNeedsRender()
+        }
+        if changed {
             if let layer = scrolling.layers[id], let document = document {
                 layer.ensureTiles(document: document, scale: documentView.scale, attribute: WidgetDOM.idAttribute)
             }

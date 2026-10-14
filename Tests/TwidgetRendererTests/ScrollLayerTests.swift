@@ -234,6 +234,84 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertNotNil(layer.thumb.animation(forKey: "tw.fade"))
     }
 
+    func testResizingClipsStopRetilingAndRecoverLayersForScriptedScrolling() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 240, height: 240)
+        var scheduled: [() -> Void] = []
+        renderer.schedule = { scheduled.append($0) }
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+        }
+        func redAtTop() throws -> Int {
+            let image = try XCTUnwrap(renderer.snapshot())
+            let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+            return red(cgImage, 20, scale: cgImage.width / 240)
+        }
+        renderer.load()
+        try send([
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:120px;height:80px;overflow:hidden;border-radius:8px"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "height:400px;background:blue"]]], ["op": "ins", "id": 4, "parent": 3],
+            ["op": "el", "id": 7, "tag": "div", "attrs": [["style", "height:80px;background:red"]]], ["op": "ins", "id": 7, "parent": 4],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["style", "width:120px;height:80px;overflow:hidden"]]], ["op": "ins", "id": 5, "parent": 1],
+            ["op": "el", "id": 6, "tag": "div", "attrs": [["style", "height:400px;background:blue"]]], ["op": "ins", "id": 6, "parent": 5],
+        ])
+        XCTAssertNotNil(renderer.scrolling.layers[3])
+        let stableLayer = try XCTUnwrap(renderer.scrolling.layers[5])
+        try send([["op": "style", "id": 5, "name": "width", "value": "100px"]])
+        XCTAssertTrue(renderer.scrolling.layers[5] === stableLayer)
+        for height in [40, 0, 60, 100, 40] {
+            try send([["op": "style", "id": 3, "name": "height", "value": "\(height)px"]])
+            XCTAssertNil(renderer.scrolling.layers[3])
+            XCTAssertTrue(renderer.scrolling.layers[5] === stableLayer)
+            XCTAssertEqual(renderer.scrolling.geometries[3]?.viewport.height, CGFloat(height))
+            XCTAssertEqual(renderer.scrolling.offset(3), .zero)
+            if height > 0 { XCTAssertEqual(try redAtTop(), 255) }
+        }
+        try send([["op": "prop", "id": 3, "name": "scrollTop", "value": 0]])
+        let scrollingLayer = try XCTUnwrap(renderer.scrolling.layers[3])
+        XCTAssertTrue(scrollingLayer.thumb.isHidden)
+        let count = renderer.layoutCount
+        try send([["op": "prop", "id": 3, "name": "scrollTop", "value": 120]])
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 120)
+        XCTAssertEqual(renderer.layoutCount, count)
+        XCTAssertEqual(try redAtTop(), 0)
+        try send([["op": "style", "id": 3, "name": "height", "value": "60px"]])
+        XCTAssertTrue(renderer.scrolling.layers[3] === scrollingLayer)
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 120)
+        XCTAssertEqual(try redAtTop(), 0)
+    }
+
+    func testResizedClipRestoresWheelScrollingWithoutAProgrammaticOffset() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 240, height: 200)
+        var scheduled: [() -> Void] = []
+        renderer.schedule = { scheduled.append($0) }
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+        }
+        renderer.load()
+        try send([
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:120px;height:80px;overflow:hidden"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "height:400px;background:red"]]], ["op": "ins", "id": 4, "parent": 3],
+        ])
+        try send([["op": "style", "id": 3, "name": "height", "value": "40px"]])
+        XCTAssertNil(renderer.scrolling.layers[3])
+        XCTAssertNil(renderer.scrolling.hitViewports[3])
+        try send([["op": "style", "id": 3, "name": "overflow", "value": "auto"]])
+        XCTAssertNotNil(renderer.scrolling.layers[3])
+        XCTAssertFalse(try XCTUnwrap(renderer.scrolling.layers[3]).thumb.isHidden)
+        let box = try XCTUnwrap(renderer.elementBounds()[3])
+        XCTAssertEqual(renderer.scrolling.scroller(at: CGPoint(x: box.midX, y: box.midY), delta: CGPoint(x: 0, y: -20)), 3)
+    }
+
     func testScrollTileSamplingPreservesTranslucentContentAtTileBoundaries() throws {
         let document = LHDocument(html: "<body style='margin:0'><div id='3' style='width:300px;height:100px;overflow:hidden'><div style='width:900px;height:300px;background:rgba(80,160,200,.5)'></div></div></body>", css: nil)
         _ = document.layout(maxWidth: 340, preferredWidth: 340)

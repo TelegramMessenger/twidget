@@ -310,10 +310,12 @@ final class WidgetScrolling {
     private(set) var layers: [Int: WidgetScrollLayer] = [:]
     private(set) var offsets: [Int: CGPoint] = [:]
     private(set) var geometries: [Int: WidgetScrollGeometry] = [:]
+    private var resizedClips = Set<Int>()
     private var depths: [Int: Int] = [:]
     private(set) var hitViewports: [Int: CGRect] = [:]
     private weak var host: CALayer?
     static let enabled = ProcessInfo.processInfo.environment["TW_NO_SCROLL_LAYERS"] == nil
+    static let resizeAwareClips = ProcessInfo.processInfo.environment["TW_NO_RESIZE_AWARE_CLIPS"] == nil
 
     struct Gesture {
         var id: Int?
@@ -342,6 +344,7 @@ final class WidgetScrolling {
             layer.clip.twRemoveFromSuperlayer()
         }
         layers.removeAll()
+        resizedClips.removeAll()
     }
 
     func update(document: LHDocument, dom: WidgetDOM, animated: Set<Int>, promoted: Set<Int>, styleKey: Int, scale: CGFloat) -> Bool {
@@ -360,6 +363,12 @@ final class WidgetScrolling {
             }
             let radii = ((info["radii"] as? [NSNumber]) ?? []).map { CGFloat($0.doubleValue) }
             found[id] = WidgetScrollGeometry(viewport: viewport, content: content, radii: radii.count == 8 ? radii : [CGFloat](repeating: 0, count: 8))
+        }
+        resizedClips = resizedClips.intersection(found.keys)
+        for (id, geometry) in found where Self.resizeAwareClips && hits[id] == nil && offsets[id] == nil {
+            if let previous = geometries[id], previous.viewport.width == geometry.viewport.width, previous.viewport.height != geometry.viewport.height {
+                resizedClips.insert(id)
+            }
         }
         geometries = found
         hitViewports = hits
@@ -384,6 +393,9 @@ final class WidgetScrolling {
         if WidgetScrolling.enabled, let host = host {
             _ = host
             for (id, geometry) in found where geometry.maxOffset.y > 0.5 || geometry.maxOffset.x > 0.5 {
+                guard hits[id] != nil || offsets[id] != nil || !resizedClips.contains(id) else {
+                    continue
+                }
                 guard !sticky.contains(id), let node = dom.node(id), node.tag.lowercased() != "textarea", geometry.viewport.width > 0, geometry.viewport.height > 0, geometry.viewport.width * geometry.viewport.height < 4_000_000 else {
                     continue
                 }
@@ -492,6 +504,10 @@ final class WidgetScrolling {
 
     func offset(_ id: Int) -> CGPoint {
         return offsets[id] ?? .zero
+    }
+
+    func needsLayerForFirstScroll(_ id: Int) -> Bool {
+        return WidgetScrolling.enabled && resizedClips.contains(id) && offsets[id] == nil
     }
 
     enum Outcome {
