@@ -415,7 +415,12 @@ final class WidgetCompositor {
     private(set) var bakes = 0
     var scriptedCandidates: Set<Int> = []
     private var promotedClips: [Int: Clip] = [:]
-    private var ignoredIDs: Set<String> = []
+    private var ignoredIDs: Set<String> = [] {
+        didSet {
+            ignoredSet = NSSet(set: ignoredIDs)
+        }
+    }
+    private var ignoredSet = NSSet()
     static let rereachEnabled = ProcessInfo.processInfo.environment["TW_NO_REREACH"] == nil
     private var scripted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
 
@@ -437,12 +442,12 @@ final class WidgetCompositor {
 
     private(set) var rereaches = 0
 
-    static func unobscured(_ document: LHDocument, _ id: Int, _ reach: CGRect, clip: Clip?, ignoring: Set<String>) -> Bool {
+    static func unobscured(_ document: LHDocument, _ id: Int, _ reach: CGRect, clip: Clip?, ignoring: NSSet) -> Bool {
         if let clip = clip {
             let clipped = reach.intersection(clip.rect)
-            return !clipped.isNull && document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: clipped, ignoring: ignoring, clipped: true)
+            return !clipped.isNull && document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: clipped, ignoringSet: ignoring, clipped: true)
         }
-        return document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach, ignoring: ignoring)
+        return document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: reach, ignoringSet: ignoring, clipped: false)
     }
 
     static let reachMargins: [CGFloat] = [192, 48, 16, 2]
@@ -464,17 +469,17 @@ final class WidgetCompositor {
 
     private func rereach(_ id: Int, item: Promoted, moved: CGRect, scale: CGFloat, document: LHDocument) -> CGRect? {
         if let clip = containerClip(id) {
-            return ([clip.rect] + WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }).first { covers($0, moved, container: clip) && WidgetCompositor.unobscured(document, id, $0, clip: clip, ignoring: ignoredIDs) }
+            return ([clip.rect] + WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }).first { covers($0, moved, container: clip) && WidgetCompositor.unobscured(document, id, $0, clip: clip, ignoring: ignoredSet) }
         }
         guard let clip = promotedClips[id] else {
-            return WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }.first { WidgetCompositor.unobscured(document, id, $0, clip: nil, ignoring: ignoredIDs) }
+            return WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }.first { WidgetCompositor.unobscured(document, id, $0, clip: nil, ignoring: ignoredSet) }
         }
         guard item.layer.superlayer === host else {
             return nil
         }
         let bands = WidgetCompositor.cornerFreeBands(clip, containing: moved)
         let candidates = (bands + WidgetCompositor.reachMargins.map { moved.insetBy(dx: -$0, dy: -$0) }).compactMap { reach in bands.map { reach.intersection($0) }.max { $0.width * $0.height < $1.width * $1.height } }
-        if let reach = candidates.first(where: { $0.contains(moved) && WidgetCompositor.clipIsInert(clip, reach: $0, box: item.box, ink: item.ink, scale: scale) && WidgetCompositor.unobscured(document, id, $0, clip: clip, ignoring: ignoredIDs) }) {
+        if let reach = candidates.first(where: { $0.contains(moved) && WidgetCompositor.clipIsInert(clip, reach: $0, box: item.box, ink: item.ink, scale: scale) && WidgetCompositor.unobscured(document, id, $0, clip: clip, ignoring: ignoredSet) }) {
             return reach
         }
         guard contain(clip) else {
@@ -1186,6 +1191,7 @@ final class WidgetCompositor {
         }
         var unobscuredMemo: [UnobscuredKey: Bool] = [:]
         var ignoringTags: [(set: Set<String>, tag: Int)] = []
+        var ignoringSets: [Int: NSSet] = [:]
         func tag(for ignoring: Set<String>) -> Int {
             if let known = ignoringTags.first(where: { $0.set == ignoring }) {
                 return known.tag
@@ -1198,7 +1204,16 @@ final class WidgetCompositor {
             if let known = unobscuredMemo[key] {
                 return known
             }
-            let result = WidgetCompositor.unobscured(document, id, reach, clip: clips[id], ignoring: ignoring)
+            let set: NSSet
+            if tag > 0, let known = ignoringSets[tag] {
+                set = known
+            } else {
+                set = NSSet(set: ignoring)
+                if tag > 0 {
+                    ignoringSets[tag] = set
+                }
+            }
+            let result = WidgetCompositor.unobscured(document, id, reach, clip: clips[id], ignoring: set)
             unobscuredMemo[key] = result
             return result
         }
