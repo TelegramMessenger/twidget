@@ -5,6 +5,9 @@
 #include <litehtml.h>
 #include <litehtml/html_tag.h>
 #include <litehtml/render_item.h>
+#ifdef TW_LITEHTML_TWIDGET
+#include <litehtml/el_svg.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -1978,7 +1981,36 @@ Json Renderer::answer(const Json& q) {
         if (method == "toDataURL") return Json::object().set("error", "toDataURL unsupported by the litehtml renderer");
         return it->second->call(method, q["args"]);
     }
+#ifdef TW_LITEHTML_TWIDGET
+    if (kind == "svg") {
+        const std::string& method = q["method"].asString();
+        litehtml::vector_path path;
+        if (!el || !litehtml::svg_geometry(el, path)) return Json::object().set("error", "unsupported");
+        if (method == "getTotalLength") return double(litehtml::svg_path_length(path, -1, nullptr, nullptr));
+        if (method == "getPointAtLength") {
+            double at = q["args"][size_t(0)].asNumber();
+            float x = 0, y = 0;
+            litehtml::svg_path_length(path, std::isfinite(at) ? float(std::max(0.0, at)) : 0.0f, &x, &y);
+            return Json::object().set("x", x).set("y", y);
+        }
+        if (method == "getBBox") {
+            // Sampled along the outline, as the Apple renderer does, so curves bound by their ink rather than their control points.
+            const int steps = 512;
+            float total = litehtml::svg_path_length(path, -1, nullptr, nullptr);
+            float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+            for (int i = 0; i <= steps; i++) {
+                float x = 0, y = 0;
+                litehtml::svg_path_length(path, total * float(i) / steps, &x, &y);
+                x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y);
+            }
+            if (!std::isfinite(x0)) return Json::object().set("error", "unsupported");
+            return Json::object().set("x", x0).set("y", y0).set("width", x1 - x0).set("height", y1 - y0);
+        }
+        return Json::object().set("error", "unsupported");
+    }
+#else
     if (kind == "svg") return Json::object().set("error", kind + " unsupported by the litehtml renderer");
+#endif
     return Json::object().set("error", "unknown query");
 }
 
