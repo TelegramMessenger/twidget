@@ -216,10 +216,14 @@ namespace litehtml
                 scratch.add(tokens, baseurl, container);
                 recorded_ops = nullptr;
                 suppress_raw = suppressed;
-                std::lock_guard<std::mutex> guard(declaration_cache_lock);
-                if(declaration_cache.size() > 50000)
-                    declaration_cache.clear();
-                declaration_cache.emplace(key, ops);
+                // Viewport lengths fold to px at the current viewport, so their result holds for this parse only.
+                if(!has_viewport_units(tokens))
+                {
+                    std::lock_guard<std::mutex> guard(declaration_cache_lock);
+                    if(declaration_cache.size() > 50000)
+                        declaration_cache.clear();
+                    declaration_cache.emplace(key, ops);
+                }
             }
             for(const auto& op : ops)
             {

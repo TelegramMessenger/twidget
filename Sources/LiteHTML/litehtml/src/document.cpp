@@ -2348,7 +2348,8 @@ namespace litehtml
             bool                                        styles_cacheable = !m_css.empty();
             for(const auto& css : m_css)
             {
-                if(css.media != "" || css.text.find("@media") != std::string::npos || css.text.find("@import") != std::string::npos)
+                // Viewport lengths are folded to px while parsing, so such a sheet holds for one viewport.
+                if(css.media != "" || css.text.find("@media") != std::string::npos || css.text.find("@import") != std::string::npos || has_viewport_units(css.text))
                 {
                     styles_cacheable = false;
                     break;

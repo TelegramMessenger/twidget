@@ -104,6 +104,10 @@ namespace litehtml
     float filter_reach(const filter_vector& filters);
     bool  fold_math(css_token_vector& tokens, document_container* container, int depth = 0);
     bool  has_foldable_math(const css_token_vector& tokens);
+    bool  has_viewport_units(const css_token_vector& tokens);
+    /// Whether CSS or HTML text may hold a viewport length (`50vw`, `10svh`, `2vmin`): a quick scan
+    /// that can answer yes for text that is not CSS, never no for text that is.
+    bool  has_viewport_units(const std::string& text);
 
     struct paint_group
     {

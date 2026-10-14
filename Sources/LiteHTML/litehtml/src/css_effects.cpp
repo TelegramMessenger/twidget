@@ -561,6 +561,52 @@ namespace litehtml
         return false;
     }
 
+    bool has_viewport_units(const css_token_vector& tokens)
+    {
+        for(const auto& tok : tokens)
+        {
+            if(viewport_axis(tok))
+                return true;
+            if(tok.is_component_value() && has_viewport_units(tok.value))
+                return true;
+        }
+        return false;
+    }
+
+    bool has_viewport_units(const std::string& text)
+    {
+        const size_t count = text.size();
+        auto word = [&](size_t at, const char* w) {
+            for(size_t k = 0; w[k]; k++)
+                if(at + k >= count || std::tolower(static_cast<unsigned char>(text[at + k])) != w[k])
+                    return false;
+            return true;
+        };
+        for(size_t i = 1; i + 1 < count; i++)
+        {
+            if(text[i] != 'v' && text[i] != 'V')
+                continue;
+            size_t     number = i - 1;
+            const char prefix = static_cast<char>(std::tolower(static_cast<unsigned char>(text[number])));
+            if((prefix == 's' || prefix == 'l' || prefix == 'd') && number > 0)
+                number--;
+            const unsigned char digit = static_cast<unsigned char>(text[number]);
+            if(!std::isdigit(digit) && digit != '.')
+                continue;
+            size_t     end  = i + 1;
+            const char unit = static_cast<char>(std::tolower(static_cast<unsigned char>(text[end])));
+            if(unit == 'w' || unit == 'h')
+                end += 1;
+            else if(word(end, "min") || word(end, "max"))
+                end += 3;
+            else
+                continue;
+            if(end >= count || !std::isalpha(static_cast<unsigned char>(text[end])))
+                return true;
+        }
+        return false;
+    }
+
     float filter_reach(const filter_vector& filters)
     {
         float reach = 0;
