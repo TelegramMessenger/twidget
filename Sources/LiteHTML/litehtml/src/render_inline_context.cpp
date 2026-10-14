@@ -4,6 +4,7 @@
 #include "types.h"
 #include "el_text.h"
 #include "document_container.h"
+#include <string_view>
 
 namespace
 {
@@ -121,8 +122,23 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
         m_trailing            = 0_px;
         if(item_type == iterator_item_type_child)
         {
-            for(size_t next = index + 1; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
+            size_t next = index + 1;
+            for(; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
                 m_trailing += lbi_end(events[next].first).width();
+            if(next > index + 1 && next < events.size() && events[next].second == iterator_item_type_child &&
+               el->src_el()->is_text() && !el->src_el()->is_white_space() && !el->src_el()->is_break())
+            {
+                auto text = std::dynamic_pointer_cast<el_text>(events[next].first->src_el());
+                if(text && !text->display_text().empty() &&
+                   std::string_view(",.;:!?%)]}").find(text->display_text().front()) != std::string_view::npos)
+                {
+                    size measured;
+                    events[next].first->src_el()->get_content_size(measured, self_size.render_width);
+                    m_trailing += measured.width;
+                    for(next++; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
+                        m_trailing += lbi_end(events[next].first).width();
+                }
+            }
         }
         [&]() {
         switch(item_type)

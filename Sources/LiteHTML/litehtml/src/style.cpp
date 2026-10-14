@@ -2291,10 +2291,16 @@ namespace litehtml
 
     void style::combine(const style& src)
     {
+        const int order_offset = m_counter;
         for(const auto& property : src.m_properties)
         {
+            const int order = property.second.m_order;
+            const int before = m_counter;
             add_parsed_property(property.first, property.second);
+            if(m_counter != before)
+                m_properties[property.first].m_order = order_offset + order;
         }
+        m_counter = std::max(m_counter, order_offset + src.m_counter);
     }
 
     const property_value& style::get_property(string_id name) const
