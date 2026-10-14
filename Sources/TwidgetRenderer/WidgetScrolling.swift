@@ -51,6 +51,23 @@ struct WidgetScrollGeometry: Equatable {
 }
 
 final class WidgetScrollLayer {
+    private final class RasterLifetime {
+        private let lock = NSLock()
+        private var active = true
+
+        var isActive: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return active
+        }
+
+        func cancel() {
+            lock.lock()
+            active = false
+            lock.unlock()
+        }
+    }
+
     let id: Int
     let clip = CALayer()
     let content = CALayer()
@@ -61,6 +78,7 @@ final class WidgetScrollLayer {
     private var rasterSource: (document: LHDocument, scale: CGFloat, attribute: String)?
     private var signature = 0
     private var generation = 0
+    private var rasterLifetime = RasterLifetime()
     static let tileSize = CGSize(width: 512, height: 256)
     static let queue = DispatchQueue(label: "twidget.scroll.raster", qos: .userInitiated)
     private(set) var rasterCount = 0
@@ -83,6 +101,10 @@ final class WidgetScrollLayer {
         thumb.actions = ["position": NSNull(), "bounds": NSNull(), "opacity": NSNull()]
         clip.twAddSublayer(thumb)
         apply(geometry)
+    }
+
+    deinit {
+        rasterLifetime.cancel()
     }
 
     func apply(_ geometry: WidgetScrollGeometry) {
@@ -159,6 +181,8 @@ final class WidgetScrollLayer {
 
     func invalidate() {
         generation += 1
+        rasterLifetime.cancel()
+        rasterLifetime = RasterLifetime()
         for (index, tile) in tiles {
             tiles[index] = (tile.layer, 0)
         }
@@ -219,12 +243,13 @@ final class WidgetScrollLayer {
             }
             pending.insert(index)
             let generation = self.generation, signature = self.signature, value = String(id)
+            let lifetime = rasterLifetime
             let layer = tiles[index]?.layer ?? makeTile(tileRect)
             if tiles[index] == nil {
                 tiles[index] = (layer, 0)
             }
             WidgetScrollLayer.queue.async { [weak self] in
-                let image = document.copyScrollContent(attribute: attribute, value: value, rect: tileRect, scale: scale)
+                let image = lifetime.isActive ? document.copyScrollContent(attribute: attribute, value: value, rect: tileRect, scale: scale) : nil
                 DispatchQueue.main.async {
                     guard let self = self else {
                         return

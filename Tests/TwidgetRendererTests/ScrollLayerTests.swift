@@ -4,6 +4,24 @@ import LiteHTML
 @testable import TwidgetRenderer
 
 final class ScrollLayerTests: XCTestCase {
+    private final class CountingDocument: LHDocument {
+        private let countLock = NSLock()
+        private var count = 0
+
+        var scrollRasterCount: Int {
+            countLock.lock()
+            defer { countLock.unlock() }
+            return count
+        }
+
+        override func copyScrollContent(attribute: String, value: String, rect: CGRect, scale: CGFloat) -> CGImage? {
+            countLock.lock()
+            count += 1
+            countLock.unlock()
+            return super.copyScrollContent(attribute: attribute, value: value, rect: rect, scale: scale)
+        }
+    }
+
     func testRevealAlignmentAndNearestEdges() {
         let geometry = WidgetScrollGeometry(viewport: CGRect(x: 10, y: 20, width: 100, height: 100), content: CGSize(width: 500, height: 600), radii: [])
         let current = CGPoint(x: 150, y: 150)
@@ -156,8 +174,8 @@ final class ScrollLayerTests: XCTestCase {
     }
 
     func testInvalidatedPendingScrollTileRetriesWithLatestDocument() throws {
-        let before = LHDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:red'></div></div></body>", css: nil)
-        let after = LHDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:blue'></div></div></body>", css: nil)
+        let before = CountingDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:red'></div></div></body>", css: nil)
+        let after = CountingDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:blue'></div></div></body>", css: nil)
         for document in [before, after] { _ = document.layout(maxWidth: 120, preferredWidth: 120) }
         let geometry = WidgetScrollGeometry(viewport: CGRect(x: 0, y: 0, width: 120, height: 100), content: CGSize(width: 120, height: 500), radii: [])
         let layer = WidgetScrollLayer(id: 3, geometry: geometry)
@@ -171,6 +189,8 @@ final class ScrollLayerTests: XCTestCase {
         pump(2, until: { layer.rasterCount >= layer.tileCount })
         XCTAssertGreaterThan(layer.tileCount, 0)
         XCTAssertEqual(layer.rasterCount, layer.tileCount)
+        XCTAssertEqual(before.scrollRasterCount, 0)
+        XCTAssertEqual(after.scrollRasterCount, layer.tileCount)
         for tile in layer.content.sublayers ?? [] {
             let image = try XCTUnwrap(tile.contents) as! CGImage
             XCTAssertEqual(red(image, 10, scale: 1), 0)
@@ -185,6 +205,25 @@ final class ScrollLayerTests: XCTestCase {
             XCTAssertEqual((info["viewport"] as? NSValue)?.rectValue, CGRect(x: 14, y: 14, width: 240, height: 200))
             XCTAssertEqual((info["hitViewport"] as? NSValue)?.rectValue, CGRect(x: 14, y: 14, width: 110, height: 90), clipping)
         }
+    }
+
+    func testRemovedScrollLayerSkipsQueuedRasterWork() {
+        let document = CountingDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:red'></div></div></body>", css: nil)
+        _ = document.layout(maxWidth: 120, preferredWidth: 120)
+        let geometry = WidgetScrollGeometry(viewport: CGRect(x: 0, y: 0, width: 120, height: 100), content: CGSize(width: 120, height: 500), radii: [])
+        var layer: WidgetScrollLayer? = WidgetScrollLayer(id: 3, geometry: geometry)
+        weak var removed = layer
+        let gate = DispatchSemaphore(value: 0)
+        WidgetScrollLayer.queue.async { gate.wait() }
+        layer?.update(signature: 1)
+        layer?.ensureTiles(document: document, scale: 1, attribute: "id")
+        layer = nil
+        XCTAssertNil(removed)
+        gate.signal()
+        let finished = expectation(description: "scroll raster queue drained")
+        WidgetScrollLayer.queue.async { finished.fulfill() }
+        wait(for: [finished], timeout: 2)
+        XCTAssertEqual(document.scrollRasterCount, 0)
     }
 
     func testFixedScrollerEscapesOrdinaryAncestorOverflowClip() throws {
