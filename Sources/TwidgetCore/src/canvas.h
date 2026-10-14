@@ -10,6 +10,7 @@
 #include "twidget/json.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -113,8 +114,10 @@ private:
     State state_;
     std::vector<State> stack_;
     Builder path_;
-    std::unordered_map<int, Gradient> gradients_;
-    std::unordered_map<int, Builder> paths_;
+    // By id, which the sandbox only ever increases: at the cap the oldest object goes, as a browser
+    // collects the ones a widget dropped, rather than the newest being refused.
+    std::map<int, Gradient> gradients_;
+    std::map<int, Builder> paths_;
 };
 
 /// Appends an SVG path (`d`) to a geometry, arcs as cubic béziers. Shared with Path2D.

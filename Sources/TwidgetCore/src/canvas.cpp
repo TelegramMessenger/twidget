@@ -292,7 +292,8 @@ void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
             resize(list[1].asInt(), list.size() > 2 ? list[2].asInt() : 0, out);
         } else if (kind == "g") {
             int gid = list[1].asInt();
-            if (list.size() < 3 || !list[2].isString() || (!gradients_.count(gid) && gradients_.size() >= MAX_OBJECTS)) continue;
+            if (list.size() < 3 || !list[2].isString()) continue;
+            if (!gradients_.count(gid) && gradients_.size() >= MAX_OBJECTS) gradients_.erase(gradients_.begin());
             Gradient g;
             g.kind = list[2].asString();
             for (size_t i = 3; i < list.size(); i++) g.args.push_back(float(list[i].asNumber()));
@@ -306,7 +307,7 @@ void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
             stops.insert(std::upper_bound(stops.begin(), stops.end(), stop, [](const Stop& a, const Stop& b) { return a.offset < b.offset; }), stop);
         } else if (kind == "pn") {
             int pid = list[1].asInt();
-            if (!paths_.count(pid) && paths_.size() >= MAX_OBJECTS) continue;
+            if (!paths_.count(pid) && paths_.size() >= MAX_OBJECTS) paths_.erase(paths_.begin());
             Builder b;
             if (list.size() > 2 && list[2].isString() && list[2].asString().size() <= (1u << 20)) {
                 append_svg_path(list[2].asString(), b.geometry);

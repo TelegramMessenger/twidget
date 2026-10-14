@@ -220,6 +220,14 @@ int main() {
     check(q["result"].arr().size() == 6 && q["result"].arr()[4].asNumber() == 10, "getTransform");
     q = r.receive(parse(R"({"type":"query","qid":4,"query":{"q":"imageData","id":30,"x":0,"y":0,"w":2,"h":1}})"))[0];
     check(q["binaryBase64"].asString() == "BwcHBwcHBwc=" && q["result"]["width"].asNumber() == 2, "getImageData returns the backend's pixels as base64");
+    {
+        // A widget that makes gradients every frame keeps drawing them once there are more than the cap.
+        std::string cmds;
+        for (int g = 2; g <= 5001; g++) cmds += "[\"g\"," + std::to_string(g) + ",\"linear\",0,0,10,0],[\"gs\"," + std::to_string(g) + ",0,\"red\"],";
+        r.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":30,"cmds":[)" + cmds + R"(["s","fillStyle",{"g":5001}],["c","fillRect",0,0,5,5]]}]})"));
+        const auto& ops = backend.runs.back();
+        check(!ops.empty() && ops.back().kind == CanvasOp::Fill && ops.back().paint.kind == CanvasPaint::Linear, "the newest gradient still paints past the object cap");
+    }
     r.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":30}]})"));
     check(r.last_html().find("tw-canvas") == std::string::npos, "a removed canvas is gone");
 
