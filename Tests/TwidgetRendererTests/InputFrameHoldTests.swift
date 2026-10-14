@@ -50,7 +50,7 @@ final class InputFrameHoldTests: XCTestCase {
         pump(10, until: { !renderer.isPreparingTiles && renderer.heldOpBatches == 0 && renderer.layoutCount > 0 })
         pump(0.3)
 
-        func click(open: Int, close: Int?) -> Int {
+        func click(open: Int, close: Int?) -> (layouts: Int, animating: Bool) {
             renderer.noteUserInput()
             renderer.send("{\"type\":\"requestFrame\"}")
             var ops: [[String: Any]] = [["op": "attr", "id": 3, "name": "class", "value": "faq"], ["op": "rattr", "id": open, "name": "hidden"]]
@@ -70,14 +70,19 @@ final class InputFrameHoldTests: XCTestCase {
             pump(0.003)
             layoutsEarly = renderer.layoutCount - before
             let answered = renderer.layoutCount
+            XCTAssertTrue(renderer.holdsForFrame)
             send(renderer, [["op": "attr", "id": 3, "name": "class", "value": "faq slide-down"]])
+            pump(0.03)
+            let animating = renderer.animatedElementIDs.contains(3)
             pump(0.6)
             XCTAssertGreaterThan(renderer.layoutCount, answered)
-            return layoutsEarly
+            return (layoutsEarly, animating)
         }
 
-        XCTAssertEqual(click(open: 5, close: nil), 0)
-        XCTAssertEqual(click(open: 7, close: 5), 0)
+        let first = click(open: 5, close: nil)
+        XCTAssertEqual(first.layouts, 0)
+        XCTAssertTrue(first.animating)
+        XCTAssertEqual(click(open: 7, close: 5).layouts, 0)
         pump(0.3)
         renderer.noteUserInput()
         renderer.send("{\"type\":\"requestFrame\"}")

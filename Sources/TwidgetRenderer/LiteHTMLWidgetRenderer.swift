@@ -1000,6 +1000,10 @@ public final class LiteHTMLWidgetRenderer {
         return frameHoldStart != nil
     }
 
+    var animatedElementIDs: Set<Int> {
+        return animator.animatedIDs()
+    }
+
     private func render() {
         if frameHoldStart != nil && !destroyed && !frozen {
             frameHoldRender = true
