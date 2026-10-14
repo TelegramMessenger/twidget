@@ -23,6 +23,9 @@ public:
     void delete_font(int font) override;
     float text_width(int font, const std::string& text) override;
     bool load_image(int id, const std::string& url, float& w, float& h) override;
+    void canvas_run(int id, int w, int h, const std::vector<CanvasOp>& ops) override;
+    bool canvas_read(int id, int x, int y, int w, int h, std::vector<uint8_t>& rgba) override;
+    void canvas_release(int id) override;
 
     /// Paints `list` (CSS px) into `buffer` (premultiplied RGBA8, `w`×`h` physical px, scale `dpr`).
     void paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint32_t h, double dpr);
@@ -32,13 +35,26 @@ private:
         CTFontRef font = nullptr;
         FontMetrics metrics;
     };
+    /// A canvas bitmap: premultiplied RGBA8, its context y-down in canvas px.
+    struct Canvas {
+        CGContextRef ctx = nullptr;
+        int w = 0, h = 0;
+    };
     CTLineRef make_line(const Font& f, const std::string& text, CGColorRef color);
     CGColorRef cg_color(const Color& c);
+    CGGradientRef gradient(const std::vector<Stop>& stops);
+    void draw_path(CGContextRef ctx, const Path& p);
+    void draw_shadow(CGContextRef ctx, const Command& c);
+    void canvas_op(Canvas& target, const CanvasOp& op);
+    void canvas_paint(CGContextRef ctx, const CanvasOp& op);
+    /// An image of canvas `id`'s current pixels, or of a decoded image; the caller releases it.
+    CGImageRef canvas_image(int id);
 
     CGColorSpaceRef rgb_;
     std::unordered_map<int, Font> fonts_;
     int next_font_ = 0;
     std::unordered_map<int, CGImageRef> images_;
+    std::unordered_map<int, Canvas> canvases_;
 };
 
 } // namespace twlite
