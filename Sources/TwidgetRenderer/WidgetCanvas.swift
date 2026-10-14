@@ -29,6 +29,13 @@ final class WidgetCanvas {
         let kind: String
         let args: [CGFloat]
         var stops: [(CGFloat, CGColor)] = []
+        var compiled: CGGradient?
+        var lastColor: CGColor?
+    }
+
+    private struct TextKey: Hashable {
+        let text: String
+        let font: String
     }
 
     static let maxPixels = 4096 * 4096
@@ -36,6 +43,7 @@ final class WidgetCanvas {
     static let maxStops = 256
     static let maxStack = 512
     static let maxText = 4096
+    static let maxCachedTextLines = 1024
 
     private(set) var width = 300
     private(set) var height = 150
@@ -50,6 +58,9 @@ final class WidgetCanvas {
     private var gradients: [Int: Gradient] = [:]
     private var paths: [Int: CGMutablePath] = [:]
     private var cachedImage: CGImage?
+    private var textLines: [TextKey: CTLine] = [:]
+    private var textKeys: [TextKey] = []
+    private var textCursor = 0
     private let space = CGColorSpace(name: CGColorSpace.sRGB)!
     var resolveImage: ((Int) -> CGImage?)?
 
@@ -60,6 +71,10 @@ final class WidgetCanvas {
 
     var pixelCount: Int {
         return width * height
+    }
+
+    var cachedTextLineCount: Int {
+        return textLines.count
     }
 
     var image: CGImage? {
@@ -128,6 +143,9 @@ final class WidgetCanvas {
         context = nil
         storage = nil
         cachedImage = nil
+        textLines.removeAll(keepingCapacity: true)
+        textKeys.removeAll(keepingCapacity: true)
+        textCursor = 0
         version += 1
         backend?.resized(canvas: self)
         guard width > 0, height > 0 else {
@@ -188,6 +206,7 @@ final class WidgetCanvas {
                 let id = WidgetCanvas.int(op.ident)
                 if rest.count >= 2, (gradients[id]?.stops.count ?? 0) < WidgetCanvas.maxStops, case let .string(text) = rest[rest.startIndex + 1], let color = CSSColor.parse(text) {
                     gradients[id]?.stops.append((WidgetCanvas.value(rest[rest.startIndex]), color))
+                    gradients[id]?.compiled = nil
                 }
             case .pathNew:
                 let id = WidgetCanvas.int(op.ident)
@@ -598,11 +617,16 @@ final class WidgetCanvas {
     }
 
     private func drawGradient(_ ctx: CGContext, _ id: Int) {
-        guard let gradient = gradients[id], !gradient.stops.isEmpty else {
+        guard var gradient = gradients[id], !gradient.stops.isEmpty else {
             return
         }
-        let stops = gradient.stops.sorted { $0.0 < $1.0 }
-        guard let cg = CGGradient(colorsSpace: space, colors: stops.map { $0.1 } as CFArray, locations: stops.map { min(1, max(0, $0.0)) }) else {
+        if gradient.compiled == nil {
+            let stops = gradient.stops.sorted { $0.0 < $1.0 }
+            gradient.compiled = CGGradient(colorsSpace: space, colors: stops.map { $0.1 } as CFArray, locations: stops.map { min(1, max(0, $0.0)) })
+            gradient.lastColor = stops.last?.1
+            gradients[id] = gradient
+        }
+        guard let cg = gradient.compiled else {
             return
         }
         let g = gradient.args
@@ -613,7 +637,7 @@ final class WidgetCanvas {
         case "radial" where g.count >= 6:
             ctx.drawRadialGradient(cg, startCenter: CGPoint(x: g[0], y: g[1]), startRadius: g[2], endCenter: CGPoint(x: g[3], y: g[4]), endRadius: g[5], options: options)
         default:
-            ctx.setFillColor(stops.last!.1)
+            ctx.setFillColor(gradient.lastColor!)
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height).applying(currentTransform.inverted()))
         }
     }
@@ -626,18 +650,31 @@ final class WidgetCanvas {
         ctx.restoreGState()
     }
 
-    private func line(_ text: String, color: CGColor?) -> CTLine {
-        var attributes: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): CSSFont.make(state.font)]
-        if let color = color {
-            attributes[NSAttributedString.Key(kCTForegroundColorAttributeName as String)] = color
-        } else {
-            attributes[NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String)] = true
+    private func line(_ text: String) -> CTLine {
+        let key = TextKey(text: text, font: state.font)
+        if let cached = textLines[key] {
+            return cached
         }
-        return CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
+        let attributes: [NSAttributedString.Key: Any] = [
+            NSAttributedString.Key(kCTFontAttributeName as String): CSSFont.make(state.font),
+            NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true
+        ]
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
+        if text.utf8.count + state.font.utf8.count <= 256 {
+            if textKeys.count < WidgetCanvas.maxCachedTextLines {
+                textKeys.append(key)
+            } else {
+                textLines.removeValue(forKey: textKeys[textCursor])
+                textKeys[textCursor] = key
+                textCursor = (textCursor + 1) % WidgetCanvas.maxCachedTextLines
+            }
+            textLines[key] = line
+        }
+        return line
     }
 
     func measure(_ text: String) -> CGFloat {
-        return CGFloat(CTLineGetTypographicBounds(line(text, color: nil), nil, nil, nil))
+        return CGFloat(CTLineGetTypographicBounds(line(text), nil, nil, nil))
     }
 
     private func drawText(_ ctx: CGContext, _ text: String, x: CGFloat, y: CGFloat, maxWidth: CGFloat?, stroke: Bool) {
@@ -649,7 +686,7 @@ final class WidgetCanvas {
         case let .gradient(id):
             paintColor = gradients[id]?.stops.first?.1 ?? CGColor(red: 0, green: 0, blue: 0, alpha: 1)
         }
-        let ctLine = line(text, color: nil)
+        let ctLine = line(text)
         var ascent: CGFloat = 0, descent: CGFloat = 0
         let lineWidth = CGFloat(CTLineGetTypographicBounds(ctLine, &ascent, &descent, nil))
         var dx: CGFloat = 0

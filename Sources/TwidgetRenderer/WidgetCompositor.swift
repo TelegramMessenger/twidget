@@ -866,7 +866,6 @@ final class WidgetCompositor {
 
     static let log = ProcessInfo.processInfo.environment["TW_COMPOSITE_LOG"] != nil
     static let overlapPromotion = ProcessInfo.processInfo.environment["TW_NO_OVERLAP"] == nil
-    static let overlapBudget = 24
     static var handoffEnabled = ProcessInfo.processInfo.environment["TW_NO_HANDOFF"] == nil
     static let effectsEnabled = ProcessInfo.processInfo.environment["TW_NO_EFFECTS"] == nil
     static let bakeTolerance: CGFloat = 0.05
@@ -1274,7 +1273,7 @@ final class WidgetCompositor {
             var ignoringAll = Set(wanted.keys.map { String($0) })
             var allTag = tag(for: ignoringAll)
             var queue = wanted.keys.sorted()
-            var budget = WidgetCompositor.overlapBudget
+            var budget = max(0, WidgetCompositor.maxLayers - wanted.count)
             while let id = queue.popLast(), budget > 0 {
                 guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll, tag: allTag) else {
                     continue
@@ -1284,7 +1283,7 @@ final class WidgetCompositor {
                     continue
                 }
                 let others = obscuring.compactMap { Int($0) }
-                guard others.count == obscuring.count, others.allSatisfy({ other in
+                guard others.count <= budget, others.count == obscuring.count, others.allSatisfy({ other in
                     wanted[other] == nil && !animated.contains(other) && dom.node(other).map { !$0.svg || $0.tag == "svg" } == true && !isAncestor(other, of: id, dom: dom) && !isAncestor(id, of: other, dom: dom) && boxes[other] != nil
                 }) else {
                     continue
