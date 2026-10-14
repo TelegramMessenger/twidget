@@ -97,6 +97,9 @@ cmake --build build-qt
 build-qt/twidget-qt-demo [corpus folder or .html file]
 ```
 
+`tools/macos-demo` is the same demo for macOS on `CGBackend`, with the compositor's layers on Core
+Animation. It has not been compiled yet; its README says what was checked.
+
 ## Not yet here
 
 - **The Composition player for Windows** (layers on `Windows.UI.Composition`) lives in a Windows
