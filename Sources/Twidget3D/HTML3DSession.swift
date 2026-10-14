@@ -95,6 +95,7 @@ final class HTML3DGPU {
     static let depthFormat: MTLPixelFormat = .depth32Float
 
     let device: MTLDevice
+    let commandQueue: MTLCommandQueue
     let dummyBuffer: MTLBuffer
     let dummyDepth: MTLTexture
     let shadowSampler: MTLSamplerState
@@ -142,7 +143,7 @@ final class HTML3DGPU {
     }
 
     private init?() {
-        guard let device = MTLCreateSystemDefaultDevice() else {
+        guard let device = MTLCreateSystemDefaultDevice(), let commandQueue = device.makeCommandQueue() else {
             return nil
         }
         let ones = [Float](repeating: 1, count: 16)
@@ -169,6 +170,7 @@ final class HTML3DGPU {
             memoryless = device.supportsFamily(.apple7)
         }
         self.device = device
+        self.commandQueue = commandQueue
         self.dummyBuffer = dummyBuffer
         self.dummyDepth = dummyDepth
         self.shadowSampler = shadowSampler
@@ -373,7 +375,9 @@ public final class HTML3DSession {
     private var depthTarget: MTLTexture?
     private var shadowMap: MTLTexture?
     private var targetBytes = 0
-    private lazy var queue: MTLCommandQueue? = gpu?.device.makeCommandQueue()
+    private var queue: MTLCommandQueue? {
+        return gpu?.commandQueue
+    }
 
     public static var isAvailable: Bool {
         return HTML3DGPU.shared != nil
