@@ -11,9 +11,6 @@ let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || w
 let cQuickJS: Target.Dependency = .product(name: "CQuickJS", package: "WidgetSandbox")
 let widgetProtocol: Target.Dependency = .product(name: "WidgetSandboxProtocol", package: "WidgetSandbox")
 let optimizesDebug = !#filePath.contains("/checkouts/") && ProcessInfo.processInfo.environment["TWIDGET_DEBUG_UNOPTIMIZED"] == nil
-let optimizedDebugC: [CSetting] = optimizesDebug ? [.unsafeFlags(["-O2"], .when(configuration: .debug))] : []
-let optimizedDebugCXX: [CXXSetting] = optimizesDebug ? [.unsafeFlags(["-O2"], .when(configuration: .debug))] : []
-let optimizedDebugSwift: [SwiftSetting] = optimizesDebug ? [.unsafeFlags(["-O"], .when(configuration: .debug))] : []
 
 
 let package = Package(
@@ -57,14 +54,14 @@ let package = Package(
                 .headerSearchPath("litehtml/src"),
                 .headerSearchPath("litehtml/gumbo-include"),
                 .headerSearchPath("core"),
-            ] + optimizedDebugC,
+            ],
             cxxSettings: [
                 .headerSearchPath("litehtml/include"),
                 .headerSearchPath("litehtml/include/litehtml"),
                 .headerSearchPath("litehtml/src"),
                 .headerSearchPath("litehtml/gumbo-include"),
                 .headerSearchPath("core"),
-            ] + optimizedDebugCXX,
+            ],
             linkerSettings: [
                 .linkedFramework("Cocoa"),
                 .linkedFramework("CoreText"),
@@ -99,7 +96,6 @@ let package = Package(
             name: "TwidgetRenderer",
             dependencies: ["LiteHTML", widgetProtocol],
             path: "Sources/TwidgetRenderer",
-            swiftSettings: optimizedDebugSwift,
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(
             name: "TwidgetRendererTests",
@@ -131,3 +127,11 @@ let package = Package(
     ],
     cxxLanguageStandard: .gnucxx17
 )
+
+if optimizesDebug {
+    for target in package.targets where target.type == .regular {
+        target.cSettings = (target.cSettings ?? []) + [.unsafeFlags(["-O3"], .when(configuration: .debug))]
+        target.cxxSettings = (target.cxxSettings ?? []) + [.unsafeFlags(["-O3"], .when(configuration: .debug))]
+        target.swiftSettings = (target.swiftSettings ?? []) + [.unsafeFlags(["-O"], .when(configuration: .debug))]
+    }
+}
