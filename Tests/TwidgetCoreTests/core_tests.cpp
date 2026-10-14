@@ -555,6 +555,25 @@ int main() {
         }
     }
 
+    // ── viewport units ──
+    {
+        StubBackend vb;
+        Renderer v(400, 1, false, vb);
+        v.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"div","attrs":[["style","width:50vw;height:10px"]]},{"op":"ins","parent":4,"id":5,"before":null},
+            {"op":"el","id":6,"tag":"style"},{"op":"css","id":6,"text":".q{width:25vw;height:10px}"},{"op":"ins","parent":3,"id":6,"before":null},
+            {"op":"el","id":7,"tag":"div","attrs":[["class","q"]]},{"op":"ins","parent":4,"id":7,"before":null}]})"));
+        auto width = [&](int id) {
+            return v.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(5) == 200 && width(7) == 100, "50vw and 25vw of 400 are 200 and 100");
+        std::vector<Json> out;
+        v.set_width(200, out);
+        check(width(5) == 100, "a resize refolds viewport units in a style attribute (got " + std::to_string(width(5)) + ")");
+        check(width(7) == 50, "and in a style sheet (got " + std::to_string(width(7)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

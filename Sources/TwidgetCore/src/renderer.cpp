@@ -6,6 +6,7 @@
 #include <litehtml/html_tag.h>
 #include <litehtml/render_item.h>
 #ifdef TW_LITEHTML_TWIDGET
+#include <litehtml/css_effects.h>
 #include <litehtml/el_svg.h>
 #endif
 
@@ -220,11 +221,18 @@ public:
         vp_height_ = vp_height;
         patched_ = false;
 #ifdef TW_LITEHTML_TWIDGET
+        // The fork folds viewport lengths to px as it parses, so a resize needs a fresh parse of a
+        // document that has one. Media queries need no such care: a patched document re-evaluates them.
+        bool viewport_units = litehtml::has_viewport_units(html);
+        bool stale = (viewport_changed || float(r_.width_) != rendered_width_) && (viewport_units || viewport_units_);
+        viewport_units_ = viewport_units;
+#endif
+#ifdef TW_LITEHTML_TWIDGET
         // twidget's litehtml fork patches a document made by createUpdatableFromString in place when the
         // new HTML only changes what it can patch (styles, text, classes, attributes, child lists), and
         // refuses otherwise, leaving the document as it was.
         bool changed = true;
-        if (doc_ && doc_->update_from_string(html, &changed)) {
+        if (doc_ && !stale && doc_->update_from_string(html, &changed)) {
             patched_ = true;
             if (viewport_changed) doc_->media_changed();
             float width = float(r_.width_);
@@ -1016,6 +1024,7 @@ private:
 #endif
     int vp_height_ = int(MIN_HEIGHT);
     float rendered_width_ = 0;
+    bool viewport_units_ = false;  // the current document has lengths folded from the viewport
     uint64_t layouts_ = 0;
     bool patched_ = false;
     std::unordered_map<int64_t, litehtml::element::ptr> elements_;
