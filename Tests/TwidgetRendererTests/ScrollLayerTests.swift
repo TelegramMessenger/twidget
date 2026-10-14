@@ -364,6 +364,23 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertEqual(tileRed(), 0)
     }
 
+    func testNewScrollLayerShowsVisibleTilesInItsFirstCommit() throws {
+        let document = CountingDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:blue'></div></div></body>", css: nil)
+        _ = document.layout(maxWidth: 120, preferredWidth: 120)
+        let geometry = WidgetScrollGeometry(viewport: CGRect(x: 0, y: 0, width: 120, height: 100), content: CGSize(width: 120, height: 500), radii: [])
+        let layer = WidgetScrollLayer(id: 3, geometry: geometry)
+        let gate = DispatchSemaphore(value: 0)
+        WidgetScrollLayer.queue.async { gate.wait() }
+        defer { gate.signal() }
+        layer.update(signature: 1)
+        layer.ensureTiles(document: document, scale: 1, attribute: "id")
+        let visible = (layer.content.sublayers ?? []).filter { $0.frame.intersects(CGRect(x: 0, y: 0, width: 120, height: 100)) }
+        XCTAssertFalse(visible.isEmpty)
+        for tile in visible {
+            XCTAssertNotNil(tile.contents)
+        }
+    }
+
     func testInvalidatedPendingScrollTileRetriesWithLatestDocument() throws {
         let before = CountingDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:red'></div></div></body>", css: nil)
         let after = CountingDocument(html: "<body style='margin:0'><div id='3' style='width:120px;height:100px;overflow:auto'><div style='height:500px;background:blue'></div></div></body>", css: nil)
@@ -374,13 +391,14 @@ final class ScrollLayerTests: XCTestCase {
         WidgetScrollLayer.queue.async { gate.wait() }
         layer.update(signature: 1)
         layer.ensureTiles(document: before, scale: 1, attribute: "id")
+        let firstFill = layer.rasterCount
         layer.update(signature: 2)
         layer.ensureTiles(document: after, scale: 1, attribute: "id")
         gate.signal()
-        pump(2, until: { layer.rasterCount >= layer.tileCount })
+        pump(2, until: { layer.rasterCount >= layer.tileCount + firstFill })
         XCTAssertGreaterThan(layer.tileCount, 0)
-        XCTAssertEqual(layer.rasterCount, layer.tileCount)
-        XCTAssertEqual(before.scrollRasterCount, 0)
+        XCTAssertEqual(layer.rasterCount, layer.tileCount + firstFill)
+        XCTAssertEqual(before.scrollRasterCount, firstFill)
         XCTAssertEqual(after.scrollRasterCount, layer.tileCount)
         for tile in layer.content.sublayers ?? [] {
             let image = try XCTUnwrap(tile.contents) as! CGImage
@@ -408,13 +426,14 @@ final class ScrollLayerTests: XCTestCase {
         WidgetScrollLayer.queue.async { gate.wait() }
         layer?.update(signature: 1)
         layer?.ensureTiles(document: document, scale: 1, attribute: "id")
+        let firstFill = document.scrollRasterCount
         layer = nil
         XCTAssertNil(removed)
         gate.signal()
         let finished = expectation(description: "scroll raster queue drained")
         WidgetScrollLayer.queue.async { finished.fulfill() }
         wait(for: [finished], timeout: 2)
-        XCTAssertEqual(document.scrollRasterCount, 0)
+        XCTAssertEqual(document.scrollRasterCount, firstFill)
     }
 
     func testFixedScrollerEscapesOrdinaryAncestorOverflowClip() throws {

@@ -202,6 +202,7 @@ final class WidgetScrollLayer {
         let keep = visible.insetBy(dx: -geometry.viewport.width * 2, dy: -geometry.viewport.height * 3)
         let width = max(geometry.viewport.width, geometry.content.width), height = max(geometry.viewport.height, geometry.content.height)
         let rows = max(1, Int(ceil(height / size.height)))
+        let firstFill = tiles.isEmpty
         for index in Array(tiles.keys) where !rect(index).intersects(keep) {
             tiles[index]?.layer.twRemoveFromSuperlayer()
             tiles[index] = nil
@@ -228,13 +229,19 @@ final class WidgetScrollLayer {
             guard tileRect.width > 0, tileRect.height > 0 else {
                 continue
             }
-            pending.insert(index)
             let generation = self.generation, signature = self.signature, value = String(id)
             let lifetime = rasterLifetime
             let layer = tiles[index]?.layer ?? makeTile(tileRect)
             if tiles[index] == nil {
                 tiles[index] = (layer, 0)
             }
+            if firstFill, tileRect.intersects(visible) {
+                install(document.copyScrollContent(attribute: attribute, value: value, rect: rasterRect, scale: scale), in: layer, rect: tileRect, scale: scale)
+                tiles[index] = (layer, signature)
+                rasterCount += 1
+                continue
+            }
+            pending.insert(index)
             WidgetScrollLayer.queue.async { [weak self] in
                 let image = lifetime.isActive ? document.copyScrollContent(attribute: attribute, value: value, rect: rasterRect, scale: scale) : nil
                 DispatchQueue.main.async {
@@ -248,20 +255,24 @@ final class WidgetScrollLayer {
                         }
                         return
                     }
-                    CATransaction.begin()
-                    CATransaction.setDisableActions(true)
-                    layer.frame = tileRect
-                    layer.contentsScale = scale
-                    if let image = image {
-                        layer.contentsRect = CGRect(x: 1 / CGFloat(image.width), y: 1 / CGFloat(image.height), width: tileRect.width * scale / CGFloat(image.width), height: tileRect.height * scale / CGFloat(image.height))
-                    }
-                    layer.contents = image
-                    CATransaction.commit()
+                    self.install(image, in: layer, rect: tileRect, scale: scale)
                     self.tiles[index] = (layer, signature)
                     self.rasterCount += 1
                 }
             }
         }
+    }
+
+    private func install(_ image: CGImage?, in layer: CALayer, rect: CGRect, scale: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.frame = rect
+        layer.contentsScale = scale
+        if let image = image {
+            layer.contentsRect = CGRect(x: 1 / CGFloat(image.width), y: 1 / CGFloat(image.height), width: rect.width * scale / CGFloat(image.width), height: rect.height * scale / CGFloat(image.height))
+        }
+        layer.contents = image
+        CATransaction.commit()
     }
 
     private func makeTile(_ rect: CGRect) -> CALayer {
