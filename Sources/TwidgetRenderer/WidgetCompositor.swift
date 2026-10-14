@@ -1130,11 +1130,17 @@ final class WidgetCompositor {
         var scriptedWanted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
         var scriptedBases: [Int: CGRect] = [:]
         scriptedCandidates = scriptedCandidates.filter { dom.node($0) != nil }
+        var related: Set<Int> = []
+        var relatedAncestors: Set<Int>?
         for id in scriptedCandidates where wanted[id] == nil && !animated.contains(id) && !animator.hasCSSMotion(id) {
             guard let node = dom.node(id), !node.svg, let box = boxes[id], box.width > 0, box.height > 0, box.width * box.height < 2_000_000 else {
                 continue
             }
-            if wanted.keys.contains(where: { isAncestor(id, of: $0, dom: dom) || isAncestor($0, of: id, dom: dom) }) || scriptedCandidates.contains(where: { $0 != id && (isAncestor(id, of: $0, dom: dom) || isAncestor($0, of: id, dom: dom)) }) {
+            if relatedAncestors == nil {
+                related = Set(wanted.keys).union(scriptedCandidates)
+                relatedAncestors = WidgetCompositor.ancestorUnion(related) { self.ancestors(of: $0, dom: dom) }
+            }
+            if WidgetCompositor.conflicts(id, related: related, relatedAncestors: relatedAncestors!, ancestors: ancestors(of: id, dom: dom)) {
                 continue
             }
             let style = WidgetCompositor.style(node)
@@ -1860,6 +1866,18 @@ final class WidgetCompositor {
     }
 
     private var ancestorCache: [Int: Set<Int>] = [:]
+
+    static func ancestorUnion(_ ids: Set<Int>, ancestors: (Int) -> Set<Int>) -> Set<Int> {
+        var union = Set<Int>()
+        for id in ids {
+            union.formUnion(ancestors(id))
+        }
+        return union
+    }
+
+    static func conflicts(_ id: Int, related: Set<Int>, relatedAncestors: Set<Int>, ancestors: Set<Int>) -> Bool {
+        return relatedAncestors.contains(id) || !ancestors.isDisjoint(with: related)
+    }
 
     private func ancestors(of id: Int, dom: WidgetDOM) -> Set<Int> {
         if let known = ancestorCache[id] {
