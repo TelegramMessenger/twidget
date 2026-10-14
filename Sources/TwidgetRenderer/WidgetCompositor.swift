@@ -1229,20 +1229,22 @@ final class WidgetCompositor {
             ignoringTags.append((ignoring, ignoringTags.count + 1))
             return ignoringTags.count
         }
+        func nsSet(_ ignoring: Set<String>, tag: Int) -> NSSet {
+            if tag > 0, let known = ignoringSets[tag] {
+                return known
+            }
+            let set = NSSet(set: ignoring)
+            if tag > 0 {
+                ignoringSets[tag] = set
+            }
+            return set
+        }
         func unobscured(_ id: Int, _ reach: CGRect, _ ignoring: Set<String>, tag: Int) -> Bool {
             let key = UnobscuredKey(id: id, x: reach.minX, y: reach.minY, width: reach.width, height: reach.height, tag: tag)
             if let known = unobscuredMemo[key] {
                 return known
             }
-            let set: NSSet
-            if tag > 0, let known = ignoringSets[tag] {
-                set = known
-            } else {
-                set = NSSet(set: ignoring)
-                if tag > 0 {
-                    ignoringSets[tag] = set
-                }
-            }
+            let set = nsSet(ignoring, tag: tag)
             let result = WidgetCompositor.unobscured(document, id, reach, clip: clips[id], ignoring: set)
             unobscuredMemo[key] = result
             return result
@@ -1270,14 +1272,15 @@ final class WidgetCompositor {
         var overlapAdded: Set<Int> = []
         if WidgetCompositor.overlapPromotion {
             var ignoringAll = Set(wanted.keys.map { String($0) })
+            var allTag = tag(for: ignoringAll)
             var queue = wanted.keys.sorted()
             var budget = WidgetCompositor.overlapBudget
             while let id = queue.popLast(), budget > 0 {
-                guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll, tag: -1) else {
+                guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll, tag: allTag) else {
                     continue
                 }
                 let clipped = clips[id].map { reach.intersection($0.rect) } ?? reach
-                guard !clipped.isNull, let obscuring = document.elementsObscuring(attribute: WidgetDOM.idAttribute, value: String(id), in: clipped, ignoring: ignoringAll, clipped: clips[id] != nil), !obscuring.isEmpty, obscuring.count <= 3 else {
+                guard !clipped.isNull, let obscuring = document.elementsObscuring(attribute: WidgetDOM.idAttribute, value: String(id), in: clipped, ignoringSet: nsSet(ignoringAll, tag: allTag), clipped: clips[id] != nil), !obscuring.isEmpty, obscuring.count <= 3 else {
                     continue
                 }
                 let others = obscuring.compactMap { Int($0) }
@@ -1305,6 +1308,7 @@ final class WidgetCompositor {
                     }
                     overlapAdded.insert(other)
                     ignoringAll.insert(String(other))
+                    allTag = tag(for: ignoringAll)
                     budget -= 1
                     if effectTemplates[other] != nil {
                         queue.append(other)
