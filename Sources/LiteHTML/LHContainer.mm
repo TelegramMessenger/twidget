@@ -3345,6 +3345,18 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
         auto drawSides = [&](CGRect o, CGRect i, int pass) {
             CGFloat ox0 = CGRectGetMinX(o), oy0 = CGRectGetMinY(o), ox1 = CGRectGetMaxX(o), oy1 = CGRectGetMaxY(o);
             CGFloat ix0 = CGRectGetMinX(i), iy0 = CGRectGetMinY(i), ix1 = CGRectGetMaxX(i), iy1 = CGRectGetMaxY(i);
+            CGFloat px0 = ix0, py0 = iy0, px1 = ix1, py1 = iy1;
+            if(HasRadius(orad))
+            {
+                CGFloat horizontal = (ix0 - ox0) + (ox1 - ix1);
+                CGFloat vertical = (iy0 - oy0) + (oy1 - iy1);
+                CGFloat extent = std::min(horizontal > 0 ? (ox1 - ox0) / horizontal : CGFLOAT_MAX,
+                                          vertical > 0 ? (oy1 - oy0) / vertical : CGFLOAT_MAX);
+                px0 = ox0 + (ix0 - ox0) * extent;
+                py0 = oy0 + (iy0 - oy0) * extent;
+                px1 = ox1 - (ox1 - ix1) * extent;
+                py1 = oy1 - (oy1 - iy1) * extent;
+            }
             struct Side
             {
                 const lh::border* b;
@@ -3353,10 +3365,10 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
                 CGPoint           a, z;
                 bool              topLeft;
             } list[4] = {
-                {&borders.top, iy0 - oy0, {{ox0, oy0}, {ox1, oy0}, {ix1, iy0}, {ix0, iy0}}, {ox0, (oy0 + iy0) / 2}, {ox1, (oy0 + iy0) / 2}, true},
-                {&borders.right, ox1 - ix1, {{ox1, oy0}, {ox1, oy1}, {ix1, iy1}, {ix1, iy0}}, {(ox1 + ix1) / 2, oy0}, {(ox1 + ix1) / 2, oy1}, false},
-                {&borders.bottom, oy1 - iy1, {{ox1, oy1}, {ox0, oy1}, {ix0, iy1}, {ix1, iy1}}, {ox0, (oy1 + iy1) / 2}, {ox1, (oy1 + iy1) / 2}, false},
-                {&borders.left, ix0 - ox0, {{ox0, oy1}, {ox0, oy0}, {ix0, iy0}, {ix0, iy1}}, {(ox0 + ix0) / 2, oy0}, {(ox0 + ix0) / 2, oy1}, true},
+                {&borders.top, iy0 - oy0, {{ox0, oy0}, {ox1, oy0}, {px1, py0}, {px0, py0}}, {ox0, (oy0 + iy0) / 2}, {ox1, (oy0 + iy0) / 2}, true},
+                {&borders.right, ox1 - ix1, {{ox1, oy0}, {ox1, oy1}, {px1, py1}, {px1, py0}}, {(ox1 + ix1) / 2, oy0}, {(ox1 + ix1) / 2, oy1}, false},
+                {&borders.bottom, oy1 - iy1, {{ox1, oy1}, {ox0, oy1}, {px0, py1}, {px1, py1}}, {ox0, (oy1 + iy1) / 2}, {ox1, (oy1 + iy1) / 2}, false},
+                {&borders.left, ix0 - ox0, {{ox0, oy1}, {ox0, oy0}, {px0, py0}, {px0, py1}}, {(ox0 + ix0) / 2, oy0}, {(ox0 + ix0) / 2, oy1}, true},
             };
             for(auto& s : list)
             {
@@ -3402,6 +3414,8 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
                 else
                 {
                     SetFill(ctx, c);
+                    if(HasRadius(orad))
+                        CGContextSetShouldAntialias(ctx, false);
                     CGContextFillPath(ctx);
                 }
                 CGContextRestoreGState(ctx);
