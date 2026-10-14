@@ -7,3 +7,4 @@ Lab/results/
 Lab/out/
 *.profraw
 /build/
+/build-*/

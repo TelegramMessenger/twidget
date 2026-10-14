@@ -55,6 +55,7 @@ Every platform draws the same display list commands and runs canvases:
 | Android | `android/jni.cpp` over `android/kotlin/` | `DisplayListPainter`, `CanvasBitmaps` on `android.graphics` | `libtwidget_litehtml.so`, plus the Kotlin sources for the host's Gradle build |
 | Web | `web/wasm.cpp` over `web/painter.ts` | `DisplayListPainter`, `CanvasBitmaps` on canvas 2D | `twidget_litehtml.js` and `.wasm`, plus the TypeScript for the host's bundle |
 | Windows | `windows/`: DirectWrite, WIC and Direct2D | `D2DBackend::paint` | `twidget::d2d`, which a host paints with |
+| Qt (any desktop) | `qt/`: QFont, QImage and QPainter, canvas included | `QtBackend::paint` into a QImage | `twidget::qt` with `-DTWIDGET_QT=ON` |
 
 Android and the web paint from JSON (`to_json` of the display list, the canvas ops and the
 composition, in `src/encode.cpp`); the keys are documented next to each `to_json`.
@@ -86,11 +87,22 @@ backend; Android and Emscripten builds go through their toolchain files. With `T
 and on macOS the CoreGraphics tests and `twidget-core-run`, which turns a message log into a PNG.
 TwidgetCore is C++20. Apple's SwiftPM build does not use TwidgetCore yet.
 
+`-DTWIDGET_QT=ON` adds the QPainter backend and, with the tests, `twidget_qt_tests`, which checks its
+pixels on Qt's offscreen platform. `tools/qt-demo` is a desktop demo on it: widget-sandbox's corpus
+in a feed, each widget a `WidgetHost` from widget-sandbox's desktop core over TwidgetCore.
+
+```sh
+cmake -S tools/qt-demo -B build-qt -G Ninja -DCMAKE_PREFIX_PATH=<Qt 6>/<compiler>
+cmake --build build-qt
+build-qt/twidget-qt-demo [corpus folder or .html file]
+```
+
 ## Not yet here
 
 - **The Composition player for Windows** (layers on `Windows.UI.Composition`) lives in a Windows
   spike with its host adapter.
-- **Only MSVC has built this tree.** The Apple, Android and Emscripten targets have not been built
+- **Only MSVC has built this tree.** The Qt backend and its demo were built against Qt 6.8 and draw
+  the corpus on Windows. The Apple, Android and Emscripten targets have not been built
   here. The Apple and Android glue was type-checked against stub headers and the JDK's `jni.h`, the
   Kotlin compiled against `android.jar`, and the TypeScript checked by `tsc` and
   `Tests/TwidgetCoreTests/web_painter_test.ts`; none of them has drawn a widget yet.
