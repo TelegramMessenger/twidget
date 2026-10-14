@@ -615,6 +615,40 @@ namespace litehtml
         return h;
     }
 
+    bool html_tag::background_color_is_local() const
+    {
+        if(m_anonymous_style)
+            return false;
+        for(const auto& child : m_children)
+        {
+            if(auto tag = std::dynamic_pointer_cast<html_tag>(child))
+            {
+                if(tag->m_style.get_property(_background_color_).is<inherit>())
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    void html_tag::compute_background_style()
+    {
+        auto doc = get_document();
+        doc->note_style_change();
+        const char* style = get_attr("style");
+        if(style)
+        {
+            if(!m_has_style_base)
+            {
+                m_style_base = m_style;
+                m_has_style_base = true;
+            }
+            m_style.add(style, "", doc->container());
+        }
+        m_style.subst_vars(this);
+        m_css.compute_background_color(this);
+        m_css.set_shared_id(doc->next_share_id());
+    }
+
     void litehtml::html_tag::compute_styles(bool recursive)
     {
         document::ptr doc = get_document();

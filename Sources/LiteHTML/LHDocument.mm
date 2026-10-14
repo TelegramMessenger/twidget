@@ -1874,6 +1874,40 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return [self isElementWithAttribute:attribute value:value unobscuredInRect:rect ignoring:[NSSet set]];
 }
 
+- (BOOL)backgroundColorIsLocalWithAttribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    auto tag = ri ? dynamic_cast<lh::html_tag *>(ri->src_el().get()) : nullptr;
+    if(!tag || !tag->background_color_is_local())
+        return NO;
+    switch(tag->tag())
+    {
+    case lh::_input_:
+    case lh::_select_:
+    case lh::_textarea_:
+    case lh::_button_:
+    case lh::_meter_:
+    case lh::_progress_:
+    case lh::_fieldset_:
+        return NO;
+    default:
+        break;
+    }
+    std::vector<const lh::element *> pending{tag};
+    while(!pending.empty())
+    {
+        const lh::element *el = pending.back();
+        pending.pop_back();
+        if(!el->css().get_backdrop_filter().empty())
+            return NO;
+        for(const auto& child : el->children())
+            pending.push_back(child.get());
+    }
+    return YES;
+}
+
 - (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values
 {
     std::lock_guard<std::mutex> guard(_lock);

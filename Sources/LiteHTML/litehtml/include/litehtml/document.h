@@ -317,7 +317,8 @@ namespace litehtml
         int      selector_scope();
         void     restyle_after_patch(const std::vector<std::shared_ptr<element>>& restyle,
                                      const std::vector<std::shared_ptr<element>>& new_text, bool keep_tree = false,
-                                     const std::vector<std::shared_ptr<element>>& retext = {});
+                                     const std::vector<std::shared_ptr<element>>& retext = {},
+                                     const std::unordered_set<const element*>& background_only = {});
         bool     retag_allowed(const std::shared_ptr<element>& el, std::string name, bool svg, string_map& attrs,
                                bool blocked);
         bool     apply_retag(const std::shared_ptr<element>& el, const string_map& attrs, bool check, int* region = nullptr);

@@ -1012,6 +1012,9 @@ final class WidgetCompositor {
         }
         currentDOM = dom
         let animated = animator.animatedIDs()
+        let independentBackgrounds = Set(animated.filter {
+            animator.animatesOnly($0, ["background-color"]) && document.backgroundColorIsLocal(attribute: WidgetDOM.idAttribute, value: String($0))
+        })
         var measured: [String: NSValue]?
         var boxes: [String: NSValue] {
             if let known = measured {
@@ -1271,7 +1274,7 @@ final class WidgetCompositor {
             let ignoringTag = tag(for: ignoring)
             var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
             for (id, want) in accepted {
-                if ancestors(of: id, dom: dom).contains(where: { accepted[$0] == nil && animated.contains($0) }) {
+                if ancestors(of: id, dom: dom).contains(where: { accepted[$0] == nil && animated.contains($0) && !independentBackgrounds.contains($0) }) {
                     continue
                 }
                 if log, !(reaches[id]?.contains(where: { unobscured(id, $0, ignoring, tag: ignoringTag) }) ?? false) {
@@ -1303,7 +1306,7 @@ final class WidgetCompositor {
                 break
             }
         }
-        while let orphan = accepted.keys.first(where: { id in ancestors(of: id, dom: dom).contains(where: { accepted[$0] == nil && animated.contains($0) }) }) {
+        while let orphan = accepted.keys.first(where: { id in ancestors(of: id, dom: dom).contains(where: { accepted[$0] == nil && animated.contains($0) && !independentBackgrounds.contains($0) }) }) {
             accepted[orphan] = nil
         }
         if accepted.count > 1 {

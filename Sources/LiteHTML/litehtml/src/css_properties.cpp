@@ -594,9 +594,14 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
     m_font = doc->get_font(descr, &m_font_metrics);
 }
 
-void litehtml::css_properties::compute_background(const html_tag* el, const document::ptr& doc)
+void litehtml::css_properties::compute_background_color(const html_tag* el)
 {
     m_bg.m_color = get_color_property(el, _background_color_, false, web_color::transparent, offset(m_bg.m_color));
+}
+
+void litehtml::css_properties::compute_background(const html_tag* el, const document::ptr& doc)
+{
+    compute_background_color(el);
 
     const css_size auto_auto(css_length::predef_value(background_size_auto),
                              css_length::predef_value(background_size_auto));

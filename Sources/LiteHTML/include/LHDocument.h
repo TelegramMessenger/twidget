@@ -135,6 +135,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring clipped:(BOOL)clipped NS_SWIFT_NAME(isElement(attribute:value:unobscuredIn:ignoring:clipped:));
 - (nullable NSArray<NSString *> *)elementsObscuringAttribute:(NSString *)attribute value:(NSString *)value inRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring clipped:(BOOL)clipped NS_SWIFT_NAME(elementsObscuring(attribute:value:in:ignoring:clipped:));
 - (BOOL)clipOfElementWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect *)rect radii:(CGFloat *)radii NS_SWIFT_NAME(clipOfElement(attribute:value:rect:radii:));
+- (BOOL)backgroundColorIsLocalWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(backgroundColorIsLocal(attribute:value:));
 - (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values NS_SWIFT_NAME(paintOrder(attribute:values:));
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point NS_SWIFT_NAME(attribute(_:at:));
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point withinAttribute:(nullable NSString *)attribute value:(nullable NSString *)value NS_SWIFT_NAME(attribute(_:at:withinAttribute:value:));

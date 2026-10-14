@@ -9,15 +9,16 @@
 
 @implementation ShadowRasterTests
 
-static NSData *RenderShadow(LHDocument *document, CGRect rect, CGFloat scale)
+static NSData *RenderShadow(LHDocument *document, CGRect rect, CGFloat scale, bool flipped = true)
 {
     size_t width = (size_t)std::llround(rect.size.width * scale);
     size_t height = (size_t)std::llround(rect.size.height * scale);
     CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGContextRef context = CGBitmapContextCreate(nullptr, width, height, 8, width * 4, space, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(space);
-    CGContextTranslateCTM(context, 0, height);
-    CGContextScaleCTM(context, scale, -scale);
+    if(flipped)
+        CGContextTranslateCTM(context, 0, height);
+    CGContextScaleCTM(context, scale, flipped ? -scale : scale);
     CGContextTranslateCTM(context, -rect.origin.x, -rect.origin.y);
     CGContextSetAllowsFontSmoothing(context, false);
     [document drawInContext:context origin:CGPointZero clip:rect];
@@ -88,6 +89,35 @@ static LHDocument *ShadowDocument(NSString *style)
                 XCTAssertLessThanOrEqual(frameMaximum, 1u, @"scale %g %@", scale, style);
             }
     NSLog(@"SHADOW_PARITY max=%lu differing=%lu total=%lu", (unsigned long)maximum, (unsigned long)differing, (unsigned long)total);
+}
+
+- (void)testTallSlicedShadowsMatchFullRaster
+{
+    NSUInteger maximum = 0, differing = 0, total = 0;
+    for(bool flipped : {false, true})
+        for(CGFloat scale : {1.0, 1.5, 2.0})
+            for(NSString *variant in @[@"", @"border-radius:12px 21px 7px 3px / 9px 24px 11px 18px;box-shadow:-11px 7px 9px 3px #bf528ecc", @"box-shadow:7px -17px 14px #15c8", @"box-shadow:0 3px 12px -2px #ae68", @"transform:scale(1.03,-1.02)"])
+                for(int step = 0; step <= 12; step++)
+                {
+                    NSString *style = [NSString stringWithFormat:@"left:80px;top:50px;width:%gpx;height:%gpx;box-shadow:8px 0 24px #08f7;transform:translate(%gpx,%gpx) scale(%g);%@", 28 + step * 2.25, 210 + step * 5.5, step * .03125, step * .0625, 1 + step * .00125, variant];
+                    LHDocument *document = ShadowDocument(style);
+                    setenv("LH_NO_SHADOW_SLICES", "1", 1);
+                    NSData *expected = RenderShadow(document, CGRectMake(0, 0, 640, 420), scale, flipped);
+                    unsetenv("LH_NO_SHADOW_SLICES");
+                    NSData *actual = RenderShadow(document, CGRectMake(0, 0, 640, 420), scale, flipped);
+                    NSUInteger frameMaximum = 0;
+                    const uint8_t *a = (const uint8_t *)expected.bytes, *b = (const uint8_t *)actual.bytes;
+                    for(NSUInteger i = 0; i < actual.length; i++)
+                    {
+                        NSUInteger delta = abs((int)a[i] - (int)b[i]);
+                        frameMaximum = MAX(frameMaximum, delta);
+                        differing += delta != 0;
+                    }
+                    maximum = MAX(maximum, frameMaximum);
+                    total += actual.length;
+                    XCTAssertLessThanOrEqual(frameMaximum, 1u, @"flipped=%d scale=%g %@", flipped, scale, style);
+                }
+    NSLog(@"TALL_SHADOW_PARITY max=%lu differing=%lu total=%lu", (unsigned long)maximum, (unsigned long)differing, (unsigned long)total);
 }
 
 - (void)testFractionalPositionAndShadowChangesKeepDistinctCacheEntries
