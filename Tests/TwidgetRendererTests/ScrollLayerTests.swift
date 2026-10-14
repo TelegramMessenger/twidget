@@ -74,6 +74,39 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertEqual(renderer.scrolling.offset(3), CGPoint(x: 230, y: 220))
     }
 
+    func testHiddenOverflowAcceptsScriptsAndPassesWheelGesturesToItsParent() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 240, height: 200)
+        var scheduled: [() -> Void] = []
+        renderer.schedule = { scheduled.append($0) }
+        defer { renderer.destroy() }
+        func send(_ ops: [[String: Any]]) throws {
+            renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+        }
+        renderer.load()
+        try send([
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:160px;height:140px;overflow:auto"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "width:120px;height:80px;overflow:hidden"]]], ["op": "ins", "id": 4, "parent": 3],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["style", "height:400px;padding-top:200px;box-sizing:border-box"]]], ["op": "ins", "id": 5, "parent": 4],
+            ["op": "el", "id": 6, "tag": "div", "attrs": [["style", "height:20px"]]], ["op": "ins", "id": 6, "parent": 5],
+            ["op": "el", "id": 7, "tag": "div", "attrs": [["style", "height:400px"]]], ["op": "ins", "id": 7, "parent": 3],
+        ])
+        XCTAssertEqual(renderer.scrolling.geometries[4]?.content.height, 400)
+        XCTAssertNil(renderer.scrolling.hitViewports[4])
+        try send([["op": "prop", "id": 4, "name": "scrollTop", "value": 90]])
+        XCTAssertEqual(renderer.scrolling.offset(4).y, 90)
+        let box = try XCTUnwrap(renderer.elementBounds()[4])
+        XCTAssertEqual(renderer.scrolling.scroller(at: CGPoint(x: box.midX, y: box.midY), delta: CGPoint(x: 0, y: -20)), 3)
+        try send([["op": "call", "id": 6, "method": "scrollIntoView", "args": [3, 3, 1, 0]]])
+        XCTAssertEqual(renderer.scrolling.offset(4).y, 140)
+        XCTAssertEqual(renderer.scrolling.offset(3).y, 0)
+        try send([["op": "prop", "id": 3, "name": "scrollTop", "value": 20]])
+        XCTAssertNil(renderer.scrolling.hitViewports[4])
+    }
+
     func testSmoothRevealMovesDocumentAndCanBeInterrupted() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 180), styleMask: [.borderless], backing: .buffered, defer: false)

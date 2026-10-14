@@ -1054,8 +1054,7 @@ void litehtml::render_item::calc_document_size(litehtml::size& sz, pixel_t x /*=
                 sz.height = std::max(sz.height, y + bottom());
             }
 
-            if(is_one_of(src_el()->css().get_overflow(), overflow_scroll, overflow_auto) ||
-               (src_el()->tag() == _textarea_ && src_el()->css().get_overflow() == overflow_hidden))
+            if(is_one_of(src_el()->css().get_overflow(), overflow_scroll, overflow_auto, overflow_hidden))
             {
                 size child_size;
                 auto text = src_el()->tag() == _textarea_ ? dynamic_cast<render_item_inline_context*>(this) : nullptr;

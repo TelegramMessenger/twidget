@@ -349,7 +349,9 @@ final class WidgetScrolling {
             guard let id = Int(key), let viewport = (info["viewport"] as? NSValue)?.rectValue, let content = (info["content"] as? NSValue)?.sizeValue else {
                 continue
             }
-            hits[id] = (info["hitViewport"] as? NSValue)?.rectValue ?? viewport
+            if (info["wheel"] as? NSNumber)?.boolValue != false {
+                hits[id] = (info["hitViewport"] as? NSValue)?.rectValue ?? viewport
+            }
             if (info["sticky"] as? NSNumber)?.boolValue == true {
                 sticky.insert(id)
             }
@@ -385,7 +387,9 @@ final class WidgetScrolling {
                 var walk = node.parent
                 var nested = false
                 while let parent = walk {
-                    if promoted.contains(dom.publicId(parent)) || found[dom.publicId(parent)] != nil {
+                    let parentId = dom.publicId(parent)
+                    let parentScrolls = found[parentId].map { $0.maxOffset.x > 0.5 || $0.maxOffset.y > 0.5 } ?? false
+                    if promoted.contains(parentId) || parentScrolls {
                         nested = true
                         break
                     }
@@ -439,7 +443,11 @@ final class WidgetScrolling {
         for descendant in Array(geometries.keys) where Self.isDescendant(descendant, of: node, dom: dom) {
             if let viewport = (info[String(descendant)]?["viewport"] as? NSValue)?.rectValue {
                 geometries[descendant]?.viewport = viewport
-                hitViewports[descendant] = (info[String(descendant)]?["hitViewport"] as? NSValue)?.rectValue ?? viewport
+                if (info[String(descendant)]?["wheel"] as? NSNumber)?.boolValue != false {
+                    hitViewports[descendant] = (info[String(descendant)]?["hitViewport"] as? NSValue)?.rectValue ?? viewport
+                } else {
+                    hitViewports[descendant] = nil
+                }
             }
         }
         return true

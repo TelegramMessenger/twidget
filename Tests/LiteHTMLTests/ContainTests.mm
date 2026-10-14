@@ -93,6 +93,57 @@ static CGRect Box(LHDocument *document, NSString *value)
     }
 }
 
+- (void)testRemovingScrollableOverflowClearsThePreviousOffset
+{
+    NSString *(^page)(NSString *) = ^NSString *(NSString *overflow) {
+        return [NSString stringWithFormat:@"<div data-k='box' style='width:160px;height:80px;overflow:%@'><div style='height:80px;background:red'>First</div><div style='height:200px;background:blue'>Second</div></div>", overflow];
+    };
+    for(NSString *overflow in @[@"clip", @"visible"])
+    {
+        LHDocument *previous = [[LHDocument alloc] initWithHTML:page(@"auto") css:@"body{margin:0;font:12px -apple-system}" previous:nil];
+        [previous layoutWithMaxWidth:240 preferredWidth:240];
+        XCTAssertEqual([previous setScrollOffset:CGPointMake(0, 80) attribute:@"data-k" value:@"box"].y, 80);
+        LHDocument *patched = [[LHDocument alloc] initWithHTML:page(overflow) css:@"body{margin:0;font:12px -apple-system}" previous:previous];
+        XCTAssertTrue(patched.reusedPrevious);
+        LHDocument *fresh = Laid(page(overflow), 240);
+        XCTAssertEqualObjects(Pixels(patched, 240), Pixels(fresh, 240), @"%@", overflow);
+        XCTAssertNil([patched scrollersByAttribute:@"data-k"][@"box"], @"%@", overflow);
+        XCTAssertEqual([patched setScrollOffset:CGPointMake(0, 80) attribute:@"data-k" value:@"box"].y, 0, @"%@", overflow);
+    }
+}
+
+- (void)testHiddenOverflowSupportsScriptScrollingWithoutWheelScrolling
+{
+    LHDocument *document = Laid(@"<div data-k='box' style='width:160px;height:80px;padding:4px;overflow:hidden'><div data-k='child' style='height:280px;background:linear-gradient(red,blue)'>Scrollable</div></div>", 240);
+    NSDictionary *info = [document scrollersByAttribute:@"data-k"][@"box"];
+    XCTAssertNotNil(info);
+    XCTAssertEqual([info[@"content"] sizeValue].height, 288);
+    XCTAssertEqual([info[@"viewport"] rectValue].size.height, 88);
+    XCTAssertEqualObjects(info[@"wheel"], @NO);
+    XCTAssertEqual([document setScrollOffset:CGPointMake(0, 999) attribute:@"data-k" value:@"box"].y, 200);
+    XCTAssertEqual(Box(document, @"child").origin.y, -196);
+}
+
+- (void)testLayoutChangesInsideScrolledHiddenOverflowInvalidateVisiblePixels
+{
+    NSString *(^page)(int) = ^NSString *(int height) {
+        return [NSString stringWithFormat:@"<div data-k='box' style='width:160px;height:80px;overflow:hidden'><div style='height:80px'></div><div data-k='edit' style='height:%dpx;background:red'>Text</div><div style='height:200px;background:blue'></div></div>", height];
+    };
+    NSString *css = @"body{margin:0;height:1000px;font:12px -apple-system}";
+    LHDocument *before = [[LHDocument alloc] initWithHTML:page(20) css:css previous:nil];
+    [before layoutWithMaxWidth:240 preferredWidth:240];
+    [before setScrollOffset:CGPointMake(0, 80) attribute:@"data-k" value:@"box"];
+    LHDocument *after = [[LHDocument alloc] initWithHTML:page(40) css:css previous:before];
+    XCTAssertTrue(after.reusedPrevious);
+    [after layoutWithMaxWidth:240 preferredWidth:240];
+    [after setScrollOffset:CGPointMake(0, 80) attribute:@"data-k" value:@"box"];
+    NSArray<NSValue *> *rects = after.layoutDirtyRects;
+    BOOL covered = rects == nil;
+    for(NSValue *rect in rects)
+        covered = covered || CGRectContainsPoint(rect.rectValue, CGPointMake(20, 30));
+    XCTAssertTrue(covered, @"Visible changed pixels are outside %@", rects);
+}
+
 - (void)testSizeContainmentIgnoresContent
 {
     LHDocument *document = Laid(@"<div data-k=\"a\" style=\"contain:size;padding:3px\"><p>one</p><p>two</p></div>"
