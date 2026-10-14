@@ -2768,6 +2768,7 @@ class WidgetDocumentView: NSView {
     weak var owner: LiteHTMLWidgetRenderer?
     var formEditor: WidgetTextEditor?
     var document: LHDocument?
+    private let rasterLifetime = WidgetRasterLifetime()
     private var tracking: NSTrackingArea?
 
     override var isFlipped: Bool {
@@ -2991,7 +2992,7 @@ class WidgetDocumentView: NSView {
     }
 
     func prepareTiles(completion: @escaping () -> Void) -> Bool {
-        guard WidgetDocumentView.layerTiles, !WidgetDocumentView.backingStore, !preparing, let layer = rootLayer, let document = document else {
+        guard rasterLifetime.isActive, WidgetDocumentView.layerTiles, !WidgetDocumentView.backingStore, !preparing, let layer = rootLayer, let document = document else {
             return false
         }
         tilesTrimmed = false
@@ -3016,6 +3017,7 @@ class WidgetDocumentView: NSView {
         preparing = true
         let epoch = invalidations
         let syncEpoch = syncInvalidations
+        let lifetime = rasterLifetime
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
         let schedule = owner?.scheduleUrgent
@@ -3023,6 +3025,10 @@ class WidgetDocumentView: NSView {
             let start = CACurrentMediaTime()
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
             for job in jobs {
+                guard lifetime.isActive else {
+                    made.removeAll()
+                    break
+                }
                 let rect = job.rect
                 let width = max(1, Int(ceil(rect.width * scale)))
                 let height = max(1, Int(ceil(rect.height * scale)))
@@ -3058,7 +3064,7 @@ class WidgetDocumentView: NSView {
                 }
                 self.preparing = false
                 self.preparedMilliseconds += spent
-                if self.document === document && ((detached && self.detached) || (self.invalidations == epoch && self.syncInvalidations == syncEpoch)) && !self.tilesTrimmed && self.tileScale == scale {
+                if lifetime.isActive && self.document === document && ((detached && self.detached) || (self.invalidations == epoch && self.syncInvalidations == syncEpoch)) && !self.tilesTrimmed && self.tileScale == scale {
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
                     for item in made where item.index < self.tiles.count {
@@ -3496,7 +3502,7 @@ class WidgetDocumentView: NSView {
     }
 
     private func rasterDirtyTiles() {
-        guard !preparing, !asyncDirty.isEmpty, let document = document, windowState.inWindow, !tilesTrimmed else {
+        guard rasterLifetime.isActive, !preparing, !asyncDirty.isEmpty, let document = document, windowState.inWindow, !tilesTrimmed else {
             return
         }
         let scale = self.scale
@@ -3540,6 +3546,7 @@ class WidgetDocumentView: NSView {
         asyncCounts.jobs += 1
         drawStatsLock.unlock()
         let syncEpoch = syncInvalidations
+        let lifetime = rasterLifetime
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
         let schedule = owner?.scheduleUrgent
@@ -3549,6 +3556,10 @@ class WidgetDocumentView: NSView {
             var stats = WidgetTileStats.Snapshot()
             stats.batches = 1
             for job in jobs {
+                guard lifetime.isActive else {
+                    aborted = true
+                    break
+                }
                 var mark = WidgetTileStats.threadMilliseconds()
                 let rect = job.rect
                 let width = max(1, Int(ceil(rect.width * scale)))
@@ -3629,7 +3640,7 @@ class WidgetDocumentView: NSView {
                 }
                 self.preparing = false
                 var installed = Set<Int>()
-                if aborted || self.syncInvalidations != syncEpoch {
+                if aborted || !lifetime.isActive || self.syncInvalidations != syncEpoch {
                 } else if self.windowState.inWindow && !self.tilesTrimmed && self.tileScale == scale {
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
@@ -3847,6 +3858,7 @@ class WidgetDocumentView: NSView {
     }
 
     func retire() -> [AnyObject] {
+        rasterLifetime.cancel()
         var retired: [AnyObject] = []
         if let document = document {
             retired.append(document)
@@ -4259,6 +4271,7 @@ class WidgetDocumentView: NSView {
     }
 
     deinit {
+        rasterLifetime.cancel()
         keyObservers.forEach { NotificationCenter.default.removeObserver($0) }
         if let screenObserver = screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)

@@ -1,13 +1,96 @@
 import XCTest
 import AppKit
+import LiteHTML
 @testable import TwidgetRenderer
 
 final class HiddenTileTests: XCTestCase {
+    private final class CountingDocument: LHDocument {
+        private let drawLock = NSLock()
+        private var draws = 0
+        var beforeDraw: ((Int) -> Void)?
+
+        var rasterCount: Int {
+            drawLock.lock()
+            defer { drawLock.unlock() }
+            return draws
+        }
+
+        override func drawIfCurrent(in context: CGContext, origin: CGPoint, clip: CGRect) -> Bool {
+            drawLock.lock()
+            draws += 1
+            let count = draws
+            drawLock.unlock()
+            beforeDraw?(count)
+            return super.drawIfCurrent(in: context, origin: origin, clip: clip)
+        }
+    }
+
     private func pump(_ seconds: TimeInterval, until done: () -> Bool = { false }) {
         let deadline = Date().addingTimeInterval(seconds)
         while !done() && Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
+    }
+
+    func testRetiredViewDoesNotRasterizeQueuedTiles() {
+        _ = NSApplication.shared
+        let document = CountingDocument(html: "<body style='margin:0;height:600px;background:red'></body>", css: nil)
+        _ = document.layout(maxWidth: 400, preferredWidth: 400)
+        let view = WidgetDocumentView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        view.document = document
+        let gate = DispatchSemaphore(value: 0)
+        WidgetDocumentView.prepareQueue.async(flags: .barrier) { gate.wait() }
+        var completed = false
+        XCTAssertTrue(view.prepareTiles { completed = true })
+        _ = view.retire()
+        gate.signal()
+        pump(2, until: { completed })
+        XCTAssertTrue(completed)
+        XCTAssertEqual(document.rasterCount, 0)
+        XCTAssertEqual(view.preparedTiles, 0)
+    }
+
+    func testLiveViewStillRasterizesQueuedTiles() {
+        _ = NSApplication.shared
+        let document = CountingDocument(html: "<body style='margin:0;height:600px;background:red'></body>", css: nil)
+        _ = document.layout(maxWidth: 400, preferredWidth: 400)
+        let view = WidgetDocumentView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        view.document = document
+        let gate = DispatchSemaphore(value: 0)
+        WidgetDocumentView.prepareQueue.async(flags: .barrier) { gate.wait() }
+        var completed = false
+        XCTAssertTrue(view.prepareTiles { completed = true })
+        gate.signal()
+        pump(2, until: { completed })
+        XCTAssertTrue(completed)
+        XCTAssertGreaterThan(document.rasterCount, 0)
+        XCTAssertEqual(view.preparedTiles, document.rasterCount)
+        _ = view.retire()
+    }
+
+    func testRetiringDuringRasterStopsTheRemainingTiles() {
+        _ = NSApplication.shared
+        let document = CountingDocument(html: "<body style='margin:0;height:600px;background:red'></body>", css: nil)
+        _ = document.layout(maxWidth: 400, preferredWidth: 400)
+        let started = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        document.beforeDraw = { count in
+            if count == 1 {
+                started.signal()
+                resume.wait()
+            }
+        }
+        let view = WidgetDocumentView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        view.document = document
+        var completed = false
+        XCTAssertTrue(view.prepareTiles { completed = true })
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        _ = view.retire()
+        resume.signal()
+        pump(2, until: { completed })
+        XCTAssertTrue(completed)
+        XCTAssertEqual(document.rasterCount, 1)
+        XCTAssertEqual(view.preparedTiles, 0)
     }
 
     func testHiddenRendererDropsItsTilesAndRedrawsThemWhenShown() {

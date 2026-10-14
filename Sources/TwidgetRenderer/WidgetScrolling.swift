@@ -51,23 +51,6 @@ struct WidgetScrollGeometry: Equatable {
 }
 
 final class WidgetScrollLayer {
-    private final class RasterLifetime {
-        private let lock = NSLock()
-        private var active = true
-
-        var isActive: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return active
-        }
-
-        func cancel() {
-            lock.lock()
-            active = false
-            lock.unlock()
-        }
-    }
-
     let id: Int
     let clip = CALayer()
     let content = CALayer()
@@ -78,7 +61,7 @@ final class WidgetScrollLayer {
     private var rasterSource: (document: LHDocument, scale: CGFloat, attribute: String)?
     private var signature = 0
     private var generation = 0
-    private var rasterLifetime = RasterLifetime()
+    private var rasterLifetime = WidgetRasterLifetime()
     static let tileSize = CGSize(width: 512, height: 256)
     static let queue = DispatchQueue(label: "twidget.scroll.raster", qos: .userInitiated)
     private(set) var rasterCount = 0
@@ -182,7 +165,7 @@ final class WidgetScrollLayer {
     func invalidate() {
         generation += 1
         rasterLifetime.cancel()
-        rasterLifetime = RasterLifetime()
+        rasterLifetime = WidgetRasterLifetime()
         for (index, tile) in tiles {
             tiles[index] = (tile.layer, 0)
         }
