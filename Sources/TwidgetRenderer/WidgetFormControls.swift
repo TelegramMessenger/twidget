@@ -82,6 +82,7 @@ struct WidgetFormState {
     var lastActivation: CFTimeInterval = -.infinity
     var menuOpen = false
     var focusedSelect = 0
+    var pointerSelectionId = 0
 }
 
 struct WidgetEditorSpec {
@@ -136,6 +137,7 @@ extension LiteHTMLWidgetRenderer {
     func formMouseDown(_ id: Int, point: CGPoint, event: NSEvent) {
         form.lastActivation = CACurrentMediaTime()
         form.focusedSelect = 0
+        form.pointerSelectionId = 0
         guard !frozen, !destroyed, let node = formControl(from: id) else {
             return
         }
@@ -152,7 +154,29 @@ extension LiteHTMLWidgetRenderer {
             form.rangeInitialValue = currentValue(node)
             dragRange(to: point)
         } else if isEditable(node) {
-            focusControl(node)
+            focusControl(node, pointer: (point, event.clickCount))
+            form.pointerSelectionId = control
+        }
+    }
+
+    func dragEditorSelection(to point: CGPoint, event: NSEvent) {
+        guard form.pointerSelectionId != 0, form.pointerSelectionId == form.focusedId else { return }
+        let generation = form.generation
+        let view = documentView
+        DispatchQueue.main.async { [weak view] in
+            guard let view = view, let editor = view.formEditor, editor.generation == generation else { return }
+            editor.dragSelection(to: point, from: view, event: event)
+        }
+    }
+
+    func finishEditorSelection() {
+        guard form.pointerSelectionId != 0 else { return }
+        form.pointerSelectionId = 0
+        let generation = form.generation
+        let view = documentView
+        DispatchQueue.main.async { [weak view] in
+            guard let editor = view?.formEditor, editor.generation == generation else { return }
+            editor.finishSelection()
         }
     }
 
@@ -316,7 +340,7 @@ extension LiteHTMLWidgetRenderer {
         return node.attribute("value") ?? ""
     }
 
-    func focusControl(_ node: WidgetNode) {
+    func focusControl(_ node: WidgetNode, pointer: (CGPoint, Int)? = nil) {
         guard isEditable(node), !frozen, !destroyed, isOnScreen else {
             return
         }
@@ -326,7 +350,7 @@ extension LiteHTMLWidgetRenderer {
             if let spec = editorSpec(node, id: id) {
                 let view = documentView
                 DispatchQueue.main.async { [weak view] in
-                    view?.beginEditing(spec)
+                    view?.beginEditing(spec, pointer: pointer)
                 }
             }
             return
@@ -345,7 +369,7 @@ extension LiteHTMLWidgetRenderer {
         }
         let view = documentView
         DispatchQueue.main.async { [weak view] in
-            view?.beginEditing(spec)
+            view?.beginEditing(spec, pointer: pointer)
         }
     }
 
@@ -678,6 +702,8 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate,
     private var pendingEnter: (token: Int, modifiers: Int)?
     private var insertingLineBreak = false
     private var settingScrollOffset = false
+    private var pointerSelection: NSRange?
+    private var pointerGranularity: NSSelectionGranularity = .selectByCharacter
     var onChange: ((String, String?) -> Void)?
     var onCommand: ((String) -> Void)?
     var onEnter: ((Int, Int) -> Void)?
@@ -779,6 +805,33 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate,
         }
         scroll.contentView.scroll(to: offset)
         scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    private var selectionView: NSTextView? {
+        return textView ?? field?.currentEditor() as? NSTextView
+    }
+
+    func beginSelection(at point: CGPoint, from parent: NSView, clicks: Int) {
+        guard let text = selectionView else { return }
+        let index = text.characterIndexForInsertion(at: text.convert(point, from: parent))
+        pointerGranularity = clicks >= 3 ? .selectByParagraph : clicks == 2 ? .selectByWord : .selectByCharacter
+        let range = text.selectionRange(forProposedRange: NSRange(location: index, length: 0), granularity: pointerGranularity)
+        pointerSelection = range
+        text.setSelectedRange(range)
+    }
+
+    func dragSelection(to point: CGPoint, from parent: NSView, event: NSEvent) {
+        guard let anchor = pointerSelection, let text = selectionView else { return }
+        _ = text.autoscroll(with: event)
+        let index = text.characterIndexForInsertion(at: text.convert(point, from: parent))
+        let start = min(anchor.location, index)
+        let end = max(NSMaxRange(anchor), index)
+        let range = text.selectionRange(forProposedRange: NSRange(location: start, length: end - start), granularity: pointerGranularity)
+        text.setSelectedRange(range)
+    }
+
+    func finishSelection() {
+        pointerSelection = nil
     }
 
     var responder: NSResponder? {
@@ -966,7 +1019,7 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate,
 }
 
 extension WidgetDocumentView {
-    func beginEditing(_ spec: WidgetEditorSpec) {
+    func beginEditing(_ spec: WidgetEditorSpec, pointer: (CGPoint, Int)? = nil) {
         endEditing()
         guard owner != nil, window != nil else {
             toOwner { $0.editorEnded(generation: spec.generation) }
@@ -996,9 +1049,15 @@ extension WidgetDocumentView {
         if let responder = editor.responder {
             window?.makeFirstResponder(responder)
         }
+        if let field = editor.field, field.isSelectable, field.currentEditor() == nil {
+            field.selectText(nil)
+        }
         editor.setScrollOffset(spec.scrollOffset)
         editor.onScroll = { [weak self] offset in
             self?.toOwner { $0.editorScrolled(generation: generation, offset: offset) }
+        }
+        if let pointer = pointer {
+            editor.beginSelection(at: pointer.0, from: self, clicks: pointer.1)
         }
     }
 

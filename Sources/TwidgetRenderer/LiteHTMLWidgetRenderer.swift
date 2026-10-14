@@ -2647,6 +2647,7 @@ public final class LiteHTMLWidgetRenderer {
         dispatch("pointermove", target: pressId != 0 ? pointerTarget(at: point) : 0, point: point, event: event, buttons: 1)
         dispatch("mousemove", target: target(at: point), point: point, event: event, buttons: 1)
         dragRange(to: point)
+        dragEditorSelection(to: point, event: event)
         lastPointer = point
     }
 
@@ -2665,6 +2666,7 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         finishRange(at: point)
+        finishEditorSelection()
         setPointerCapture(0)
         pressId = 0
         lastPointer = point

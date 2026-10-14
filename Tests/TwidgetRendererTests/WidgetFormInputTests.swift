@@ -74,6 +74,26 @@ final class WidgetFormInputTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === view.formEditor?.textView)
     }
 
+    func testFirstTextareaClickPlacesCaretAtTheClickedLine() throws {
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "display:block;width:200px;height:96px;padding:10px;border:0;font:16px/24px Courier"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": "alpha\nbravo\ncharlie"]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        let box = try XCTUnwrap(renderer.elementBounds()[10])
+        let point = CGPoint(x: box.minX + 12, y: box.minY + 46)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: renderer.view.convert(point, to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        renderer.handleMouseDown(point, event: event)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor?.textView != nil })
+        let text = try XCTUnwrap(view.formEditor?.textView)
+        XCTAssertEqual(text.selectedRange(), NSRange(location: 6, length: 0))
+        text.insertText("!", replacementRange: text.selectedRange())
+        pump(1, until: { renderer.dom.node(10)?.formValue == "alpha\n!bravo\ncharlie" })
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "alpha\n!bravo\ncharlie")
+    }
+
     func testTextareaTrailingNewlineKeepsLastLineScrollable() throws {
         let value = (1...16).map { "Line \($0)" }.joined(separator: "\n") + "\n"
         let (renderer, window, _) = make([
@@ -92,6 +112,75 @@ final class WidgetFormInputTests: XCTestCase {
         text.moveToEndOfDocument(nil)
         text.scrollRangeToVisible(text.selectedRange())
         XCTAssertEqual(try XCTUnwrap(text.enclosingScrollView).contentView.bounds.origin.y, 312, accuracy: 0.5)
+    }
+
+    func testFirstPointerDragSelectsTextInInputsAndTextareas() throws {
+        for tag in ["input", "textarea"] {
+            let (renderer, window, _) = make([
+                ["op": "el", "id": 10, "tag": tag, "attrs": [["style", "display:block;width:240px;height:48px;padding:10px;border:0;font:16px/24px Courier"]]],
+                ["op": "ins", "parent": 7, "id": 10],
+                ["op": "prop", "id": 10, "name": "value", "value": "alpha bravo charlie"]
+            ])
+            defer { renderer.destroy(); window.orderOut(nil) }
+            let box = try XCTUnwrap(renderer.elementBounds()[10])
+            let advance = ("a" as NSString).size(withAttributes: [.font: NSFont(name: "Courier", size: 16)!]).width
+            let start = CGPoint(x: box.minX + 10 + 6 * advance, y: tag == "input" ? box.midY : box.minY + 22)
+            let end = CGPoint(x: box.minX + 10 + 11 * advance, y: start.y)
+            func event(_ type: NSEvent.EventType, _ point: CGPoint) -> NSEvent {
+                return NSEvent.mouseEvent(with: type, location: renderer.view.convert(point, to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            renderer.handleMouseDown(start, event: event(.leftMouseDown, start))
+            let view = renderer.view as! WidgetDocumentView
+            pump(2, until: { view.formEditor != nil })
+            let editor = try XCTUnwrap(view.formEditor)
+            let text = try XCTUnwrap(editor.textView ?? editor.field?.currentEditor() as? NSTextView)
+            renderer.handleMouseDragged(end, event: event(.leftMouseDragged, end))
+            pump(1, until: { text.selectedRange().length > 0 })
+            renderer.handleMouseUp(end, event: event(.leftMouseUp, end))
+            XCTAssertEqual(text.selectedRange(), NSRange(location: 6, length: 5), tag)
+            text.insertText("DRAG", replacementRange: text.selectedRange())
+            pump(1, until: { renderer.dom.node(10)?.formValue == "alpha DRAG charlie" })
+            XCTAssertEqual(renderer.dom.node(10)?.formValue, "alpha DRAG charlie", tag)
+        }
+    }
+
+    func testReadOnlyInputAllowsPointerSelection() throws {
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 10, "tag": "input", "attrs": [["readonly", ""], ["style", "display:block;width:200px;height:32px;font:16px/24px Courier"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": "select this text"]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor != nil })
+        let field = try XCTUnwrap(view.formEditor?.field)
+        XCTAssertTrue(field.isSelectable)
+        XCTAssertFalse(field.isEditable)
+        let text = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        XCTAssertFalse(text.isEditable)
+        XCTAssertTrue(window.firstResponder === text)
+    }
+
+    func testInitialMultipleClicksSelectWordsAndParagraphs() throws {
+        for clicks in [2, 3] {
+            let value = "alpha bravo charlie\ndelta echo foxtrot"
+            let (renderer, window, _) = make([
+                ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "display:block;width:240px;height:96px;padding:10px;border:0;font:16px/24px Courier"]]],
+                ["op": "ins", "parent": 7, "id": 10],
+                ["op": "prop", "id": 10, "name": "value", "value": value]
+            ])
+            defer { renderer.destroy(); window.orderOut(nil) }
+            let box = try XCTUnwrap(renderer.elementBounds()[10])
+            let advance = ("a" as NSString).size(withAttributes: [.font: NSFont(name: "Courier", size: 16)!]).width
+            let point = CGPoint(x: box.minX + 10 + 8 * advance, y: box.minY + 22)
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: renderer.view.convert(point, to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1))
+            renderer.handleMouseDown(point, event: event)
+            let view = renderer.view as! WidgetDocumentView
+            pump(2, until: { view.formEditor?.textView != nil })
+            let text = try XCTUnwrap(view.formEditor?.textView)
+            XCTAssertEqual((text.string as NSString).substring(with: text.selectedRange()), clicks == 2 ? "bravo" : "alpha bravo charlie\n")
+        }
     }
 
     func testTextareaScrollClampsAfterContentShrinks() throws {
