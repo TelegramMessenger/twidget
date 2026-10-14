@@ -72,6 +72,12 @@ struct Composition {
 /// to what is left. `duration` gets the span the returned keys cover; one key means hold it.
 std::vector<LayerKey> resume_track(const LayerTrack& track, double elapsed, double& duration);
 
+/// JSON for compositors outside C++, without the layers' content (to_json of `Layer::content`
+/// gives that): `{"v": version, "l": [{"id", "b" bounds, "cv" content_version, "rs" raster_scale,
+/// "l" clip and "q" its radii when clipped, "tv" track_version, "ts" start, "td" duration, "tr" 1
+/// when it repeats, "k" keys flat as t, a, b, c, d, e, f, opacity}]}`.
+std::string to_json(const Composition& composition);
+
 /// A digest of everything `list` paints: equal digests paint equal pixels.
 uint64_t paint_digest(const DisplayList& list);
 
