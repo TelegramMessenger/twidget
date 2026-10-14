@@ -758,6 +758,45 @@ public final class LiteHTMLWidgetRenderer {
     static let coalescesFrames = ProcessInfo.processInfo.environment["TW_OPS_RENDER_NOW"] == nil
     private var renderAtTick = false
     public private(set) var tickRenders = 0
+    static var silentPresentDeadline: TimeInterval = 1.0 / 60
+    private var silentRendering = false
+    private var silentPending = false
+    private var opsSinceSilent = false
+    private var silentEpoch = 0
+    private var silentDebt: [CGRect] = []
+
+    private var holdsSilentState: Bool {
+        return silentPending && !opsSinceSilent && !destroyed && !frozen
+    }
+
+    private func renderForQuery() {
+        if frozen || destroyed {
+            render()
+            return
+        }
+        needsRender = false
+        renderAtTick = false
+        let before = document
+        silentRendering = true
+        metered { renderBody() }
+        silentRendering = false
+        guard document !== before || silentPending else {
+            return
+        }
+        silentPending = true
+        opsSinceSilent = false
+        silentEpoch += 1
+        let epoch = silentEpoch
+        scheduleAfter(LiteHTMLWidgetRenderer.silentPresentDeadline) { [weak self] in
+            guard let self = self, self.silentPending, self.silentEpoch == epoch else {
+                return
+            }
+            self.silentPending = false
+            if !self.destroyed && !self.frozen {
+                self.render()
+            }
+        }
+    }
 
     private func releaseTickRender() {
         if renderAtTick {
@@ -808,6 +847,9 @@ public final class LiteHTMLWidgetRenderer {
         defer {
             applyingOps = outer
             pacer.answered(CACurrentMediaTime())
+        }
+        if silentPending && !ops.isEmpty {
+            opsSinceSilent = true
         }
         if !frozen, !pendingGeometry, !needsRender, !renderAtTick, pendingScrollRequests.isEmpty, document != nil, !ops.isEmpty,
            ops.allSatisfy({ op in
@@ -1041,11 +1083,22 @@ public final class LiteHTMLWidgetRenderer {
             renderAtTick = false
             return
         }
+        if holdsSilentState {
+            needsRender = false
+            renderAtTick = false
+            return
+        }
+        silentPending = false
         renderAtTick = false
         metered { renderBody() }
         if form.focusedId != 0 {
             syncEditor()
         }
+    }
+
+    private func unpromoted(_ overrides: [Int: [(String, String)]]) -> [Int: [(String, String)]] {
+        let promoted = compositor.ids
+        return promoted.isEmpty ? overrides : overrides.filter { !promoted.contains($0.key) }
     }
 
     private func renderBody() {
@@ -1067,9 +1120,13 @@ public final class LiteHTMLWidgetRenderer {
         stageMilliseconds["sheets", default: 0] += (CACurrentMediaTime() - sheetsStart) * 1000
         compositor.styleKey = (key + "\u{2}" + theme + "\u{2}\(hoverId)\u{2}\(pressId)").hashValue
         if LiteHTMLWidgetRenderer.presamples, animator.isActive, !frozen {
-            var presampled = compositor.apply(animator.sample(now: now), bases: { [animator] in animator.base($0) })
-            shimmers.apply(&presampled)
-            overrides = presampled
+            if silentRendering {
+                overrides = unpromoted(animator.sample(now: now))
+            } else {
+                var presampled = compositor.apply(animator.sample(now: now), bases: { [animator] in animator.base($0) })
+                shimmers.apply(&presampled)
+                overrides = presampled
+            }
         }
         layout(overrides)
         let scanStart = CACurrentMediaTime()
@@ -1114,6 +1171,14 @@ public final class LiteHTMLWidgetRenderer {
         stageMilliseconds["declarations", default: 0] += (CACurrentMediaTime() - scanStart) * 1000
         animator.update(declarations: declarations, now: now)
         let sampled = animator.sample(now: now)
+        if silentRendering {
+            let rest = unpromoted(sampled)
+            if !LiteHTMLWidgetRenderer.same(rest, overrides) {
+                overrides = rest
+                layout(overrides)
+            }
+            return
+        }
         let before = compositor.ids
         let svgAdded = svgLayers.observe(dom.takeSVGTouched())
         var scrollersChanged = svgAdded
@@ -1344,6 +1409,9 @@ public final class LiteHTMLWidgetRenderer {
             frameHoldRender = true
             return
         }
+        if holdsSilentState {
+            return
+        }
         let sampled = animator.sample(now: animationNow)
         if WidgetDocumentView.verify && !compositor.drivenIDs.isEmpty {
             let error = compositor.handoffError(animator: animator, now: animationNow)
@@ -1531,9 +1599,11 @@ public final class LiteHTMLWidgetRenderer {
             textExcluded.insert(form.focusedId)
         }
         let exclusionsChanged = excluded != lastExclusions || scrollExcluded != lastScrollExclusions || textExcluded != lastTextExclusions
-        lastExclusions = excluded
-        lastScrollExclusions = scrollExcluded
-        lastTextExclusions = textExcluded
+        if !silentRendering {
+            lastExclusions = excluded
+            lastScrollExclusions = scrollExcluded
+            lastTextExclusions = textExcluded
+        }
         if !textExcluded.isEmpty {
             next.setTextPaintExclusions(Set(textExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
         }
@@ -1609,6 +1679,14 @@ public final class LiteHTMLWidgetRenderer {
             }
         }
         defer { stage("report") }
+        if silentRendering {
+            silentLayout(next)
+            return
+        }
+        if !silentDebt.isEmpty, documentView.document != nil {
+            documentView.invalidate(silentDebt.map { $0.insetBy(dx: -1, dy: -1) })
+        }
+        silentDebt.removeAll()
         if LiteHTMLWidgetRenderer.patchRegions, next.reusedPrevious, !exclusionsChanged, displayList != nil, documentView.document != nil, let regions = (next.reusedLayout ? next.patchDirtyRects : next.layoutDirtyRects)?.map({ $0.rectValue }).filter({ !svgLayers.covers($0) }) {
             stage("diff-list")
             stageMilliseconds["regions", default: 0] += 1
@@ -1674,6 +1752,29 @@ public final class LiteHTMLWidgetRenderer {
         placeSurfaces()
         schedulePrepare()
         documentView.flushIfDetached()
+    }
+
+    private func silentLayout(_ next: LHDocument) {
+        if LiteHTMLWidgetRenderer.patchRegions, next.reusedPrevious, displayList != nil, documentView.document != nil, let regions = (next.reusedLayout ? next.patchDirtyRects : next.layoutDirtyRects)?.map({ $0.rectValue }) {
+            if listDebt.count + regions.count > 32 {
+                listDebt = [(listDebt + regions).reduce(CGRect.null) { $0.union($1) }]
+            } else {
+                listDebt += regions
+            }
+            silentDebt += regions
+        } else {
+            let list = next.displayList(maxWidth: width, scale: documentView.scale)
+            if let previous = displayList {
+                silentDebt += list.changedRects(since: previous).map { $0.rectValue } + listDebt
+                displayList = list
+                listDebt.removeAll()
+            }
+        }
+        if silentDebt.count > 32 {
+            silentDebt = [silentDebt.reduce(CGRect.null) { $0.union($1) }]
+        }
+        document = next
+        boundsValid = false
     }
 
     private static let scriptedProperties: Set<String> = ["transform", "opacity"]
@@ -2110,12 +2211,9 @@ public final class LiteHTMLWidgetRenderer {
 
     private func query(_ q: [String: Any]) -> Any {
         let kind = (q["q"] as? String) ?? ""
-        if frameHoldRender {
-            releaseFrameHold()
-        }
-        if needsRender || renderAtTick {
+        if needsRender || renderAtTick || frameHoldRender {
             if !(kind == "box" && !pendingGeometry && document != nil) {
-                render()
+                renderForQuery()
             }
         }
         var rect: CGRect?
@@ -2217,11 +2315,8 @@ public final class LiteHTMLWidgetRenderer {
 
     private func binaryQuery(_ q: [String: Any]) -> (result: [String: Any], data: Data)? {
         guard (q["q"] as? String) == "imageData" else { return nil }
-        if frameHoldRender {
-            releaseFrameHold()
-        }
-        if needsRender || renderAtTick {
-            render()
+        if needsRender || renderAtTick || frameHoldRender {
+            renderForQuery()
         }
         guard let id = (q["id"] as? NSNumber)?.intValue, let node = dom.node(id), node.tag == "canvas" else {
             return nil
