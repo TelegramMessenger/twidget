@@ -1819,6 +1819,14 @@ public final class LiteHTMLWidgetRenderer {
     private func noteScriptedTransforms(_ ops: [WidgetOp]) {
         opsBatch += 1
         let now = CACurrentMediaTime()
+        var moving: Set<Int> = []
+        for op in ops where op.kind == .style && LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()) {
+            moving.insert(op.id)
+        }
+        if moving.count > WidgetCompositor.maxLayers {
+            compositor.scriptedCandidates.subtract(moving)
+            return
+        }
         for op in ops {
             guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()) else {
                 continue
