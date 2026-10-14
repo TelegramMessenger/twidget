@@ -148,6 +148,8 @@ namespace litehtml
       public:
         void compute(const html_tag* el, const std::shared_ptr<document>& doc);
         void compute_background_color(const html_tag* el);
+        void compute_opacity(const html_tag* el);
+        void compute_transform(const html_tag* el, const std::shared_ptr<document>& doc);
 
         std::vector<std::tuple<std::string, std::string>> dump_get_attrs();
 

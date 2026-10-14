@@ -128,6 +128,7 @@ namespace litehtml
         void compute_styles(bool recursive = true) override;
         bool background_color_is_local() const;
         void compute_background_style();
+        bool patch_inline_properties(const std::vector<string_id>& names, const std::string& patch);
         void draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                   const std::shared_ptr<render_item>& ri) override;
         void draw_background(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,

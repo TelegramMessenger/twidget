@@ -7,6 +7,7 @@
 #include "document_container.h"
 #include "html_microsyntaxes.h"
 #include "html_tag.h"
+#include "css_parser.h"
 #include <set>
 #include "internal.h"
 #include "iterators.h"
@@ -647,6 +648,55 @@ namespace litehtml
         m_style.subst_vars(this);
         m_css.compute_background_color(this);
         m_css.set_shared_id(doc->next_share_id());
+    }
+
+    bool html_tag::patch_inline_properties(const std::vector<string_id>& names, const std::string& patch)
+    {
+        if(m_anonymous_style || !m_has_style_base || m_style.has_var_property() || m_style_base.has_var_property())
+            return false;
+        for(const auto& child : m_children)
+        {
+            if(auto tag = dynamic_cast<const html_tag*>(child.get()))
+            {
+                for(string_id name : names)
+                    if(tag->m_style.get_property(name).is<inherit>())
+                        return false;
+            }
+        }
+        auto  doc = get_document();
+        style scratch;
+        scratch.add(normalize(patch, f_componentize), "", doc->container());
+        std::vector<string_id> ids;
+        for(string_id name : names)
+        {
+            ids.push_back(name);
+            if(string_id raw = raw_declaration_id(name); raw != empty_id)
+                ids.push_back(raw);
+        }
+        if(scratch.has_var_property() ||
+           !scratch.only_declares([&ids](string_id id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); }))
+            return false;
+        const bool group     = m_css.is_paint_group();
+        const bool transform = m_css.get_transform().empty();
+        doc->note_style_change();
+        m_style.replace_properties(ids, m_style_base, scratch);
+        for(string_id name : names)
+        {
+            if(name == _transform_)
+                m_css.compute_transform(this, doc);
+            else if(name == _opacity_)
+                m_css.compute_opacity(this);
+            else
+                m_css.compute_background_color(this);
+        }
+        if(m_css.is_paint_group() != group || m_css.get_transform().empty() != transform)
+        {
+            restore_base_style();
+            compute_styles(true);
+            return true;
+        }
+        m_css.set_shared_id(doc->next_share_id());
+        return true;
     }
 
     void litehtml::html_tag::compute_styles(bool recursive)

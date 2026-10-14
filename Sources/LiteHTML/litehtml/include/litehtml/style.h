@@ -103,6 +103,7 @@ namespace litehtml
         }
 
         void subst_vars(const html_tag* el);
+        void replace_properties(const std::vector<string_id>& names, const style& base, style& patch);
 
       private:
         void inherit_property(string_id name, bool important);
@@ -141,7 +142,7 @@ namespace litehtml
         void parse_flex(const css_token_vector& tokens, bool important);
         void parse_align_self(string_id name, const css_token_vector& tokens, bool important);
 
-        void add_parsed_property(string_id name, const property_value& propval);
+        void add_parsed_property(string_id name, property_value propval);
         void add_length_property(string_id name, const css_token& val, const css_values& keywords, int options,
                                  bool important);
         template <class T> void add_four_properties(string_id top_name, T val[4], int n, bool important);

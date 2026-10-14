@@ -453,6 +453,61 @@ namespace litehtml
         return a == b;
     }
 
+    static bool style_change_property_patch(const std::string& before, const std::string& after, document::property_patch& patch)
+    {
+        static const bool disabled = getenv("LH_NO_PROPERTY_PATCH") != nullptr;
+        if(disabled)
+            return false;
+        for(const std::string* text : {&before, &after})
+        {
+            if(text->find_first_of("\\{}!\"'") != std::string::npos || text->find("/*") != std::string::npos ||
+               text->find("var(") != std::string::npos || text->find("--") != std::string::npos ||
+               text->find("counter") != std::string::npos || text->find("-lh-") != std::string::npos ||
+               text->find("url(") != std::string::npos)
+                return false;
+        }
+        auto a = split_style_declarations(before), b = split_style_declarations(after);
+        std::map<std::string, std::string> left, right;
+        auto collect = [](const std::vector<std::pair<std::string, std::string>>& list, std::map<std::string, std::string>& out) {
+            for(const auto& d : list)
+            {
+                if(d.first.empty() || d.first == "all" || d.first == "background" ||
+                   d.first.find_first_not_of("abcdefghijklmnopqrstuvwxyz-") != std::string::npos ||
+                   !out.emplace(d.first, d.second).second)
+                    return false;
+            }
+            return true;
+        };
+        if(!collect(a, left) || !collect(b, right))
+            return false;
+        for(const auto& d : left)
+            if(!right.count(d.first))
+                return false;
+        for(const auto& d : b)
+        {
+            auto it = left.find(d.first);
+            if(it != left.end() && it->second == d.second)
+                continue;
+            string_id id;
+            if(d.first == "transform")
+                id = _transform_;
+            else if(d.first == "opacity")
+                id = _opacity_;
+            else if(d.first == "background-color")
+                id = _background_color_;
+            else
+                return false;
+            if(id != _background_color_)
+                patch.box = false;
+            patch.names.push_back(id);
+            patch.text += d.first;
+            patch.text += ':';
+            patch.text += d.second;
+            patch.text += ';';
+        }
+        return !patch.names.empty();
+    }
+
     static bool style_change_is_paint_only(const std::string& before, const std::string& after)
     {
         auto a = split_style_declarations(before), b = split_style_declarations(after);
@@ -1000,6 +1055,7 @@ namespace litehtml
         invalidate_paint();
         std::vector<size_t>                             dirty;
         std::vector<bool> background_changes(changes.size(), false);
+        std::vector<property_patch> property_patches(changes.size());
         std::vector<std::pair<size_t, string_map>>      classes;
         for(const auto& change : changes)
         {
@@ -1023,10 +1079,15 @@ namespace litehtml
                     return -1;
             } else if(!m_holes[i].src && m_holes[i].attr.empty())
             {
-                const bool background = style_change_is_background_color(m_holes[i].value, v);
-                background_changes[&change - changes.data()] = background;
-                if(!background && !style_change_is_local(m_holes[i].value, v))
-                    return -1;
+                property_patch& patch = property_patches[&change - changes.data()];
+                if(!style_change_property_patch(m_holes[i].value, v, patch))
+                {
+                    patch.names.clear();
+                    const bool background = style_change_is_background_color(m_holes[i].value, v);
+                    background_changes[&change - changes.data()] = background;
+                    if(!background && !style_change_is_local(m_holes[i].value, v))
+                        return -1;
+                }
             }
             if(m_holes[i].text && !m_holes[i].text_elements.front()->parent())
                 return -1;
@@ -1050,6 +1111,7 @@ namespace litehtml
 
         std::vector<element::ptr> restyle;
         std::unordered_set<const element*> background_only;
+        std::unordered_map<const element*, const property_patch*> patched;
         std::vector<element::ptr> new_text;
         std::vector<element::ptr> retext;
         std::vector<std::string>  words;
@@ -1095,9 +1157,10 @@ namespace litehtml
             html_hole&         hole    = m_holes[changes[k].first];
             const bool         inplace = hole.text && retext_in_place(hole.text_elements, value.c_str(), words);
             const bool         background = background_changes[k];
+            const property_patch* patch   = property_patches[k].names.empty() ? nullptr : &property_patches[k];
             if(!hole.text && !hole.src)
             {
-                const int kind = hole.attr.empty() ? (background ? 1 : style_change_region(hole.value, value)) : 2;
+                const int kind = hole.attr.empty() ? (background ? 1 : patch ? (patch->box ? 1 : 0) : style_change_region(hole.value, value)) : 2;
                 if(kind == 1)
                     m_restyle_regions.push_back(hole.owner);
                 else if(kind == 2 && outermost_svg(hole.owner))
@@ -1112,7 +1175,7 @@ namespace litehtml
                 bool         continue_region = false;
                 if(!hole.text && !hole.src)
                 {
-                    const int kind = hole.attr.empty() ? (background ? 1 : style_change_region(hole.value, value)) : 2;
+                    const int kind = hole.attr.empty() ? (background ? 1 : patch ? (patch->box ? 1 : 0) : style_change_region(hole.value, value)) : 2;
                     if(kind == 1)
                         region = hole.owner;
                     else if(kind == 2)
@@ -1157,7 +1220,7 @@ namespace litehtml
                     paint_only = inside_svg;
                 } else if(!hole.text)
                 {
-                    paint_only = background || style_change_is_paint_only(hole.value, value);
+                    paint_only = background || patch || style_change_is_paint_only(hole.value, value);
                 }
             }
             if(inplace)
@@ -1174,7 +1237,7 @@ namespace litehtml
                 continue;
             }
             if(keep_tree && (hole.src ||
-                             (!hole.text && hole.attr.empty() && !background && !tree_neutral_change(hole.value, value, hole.owner->css().get_display() == display_inline,
+                             (!hole.text && hole.attr.empty() && !background && !patch && !tree_neutral_change(hole.value, value, hole.owner->css().get_display() == display_inline,
                                                                          table_part(hole.owner->css().get_display())))))
                 keep_tree = false;
             if(background)
@@ -1209,6 +1272,8 @@ namespace litehtml
             {
                 hole.owner->set_attr("style", hole.value.c_str());
                 restyle.push_back(hole.owner);
+                if(patch && !outermost_svg(hole.owner))
+                    patched[hole.owner.get()] = patch;
                 continue;
             }
             elements_list created;
@@ -1222,24 +1287,33 @@ namespace litehtml
             hole.text_elements.assign(created.begin(), created.end());
             new_text.insert(new_text.end(), created.begin(), created.end());
         }
-        std::vector<bool> groups;
+        std::vector<std::pair<bool, bool>> groups;
         if(paint_only)
         {
             groups.reserve(restyle.size());
             for(const auto& el : restyle)
-                groups.push_back(el->css().is_paint_group());
+                groups.emplace_back(el->css().is_paint_group(), el->css().get_transform().empty());
         }
         for(const auto& entry : classes)
+        {
             background_only.erase(m_holes[changes[entry.first].first].owner.get());
+            patched.erase(m_holes[changes[entry.first].first].owner.get());
+        }
         std::unordered_set<const element*> seen;
         for(const auto& el : restyle)
             if(!seen.insert(el.get()).second)
+            {
                 background_only.erase(el.get());
+                patched.erase(el.get());
+            }
         for(const auto* list : {&restyle, &new_text, &retext})
             for(const auto& el : *list)
                 for(auto parent = el->parent(); parent; parent = parent->parent())
+                {
                     background_only.erase(parent.get());
-        restyle_after_patch(restyle, new_text, keep_tree, retext, background_only);
+                    patched.erase(parent.get());
+                }
+        restyle_after_patch(restyle, new_text, keep_tree, retext, background_only, patched);
         for(size_t k = 0; k < measured.size() && paint_only; k++)
         {
             size after;
@@ -1251,7 +1325,7 @@ namespace litehtml
         {
             for(size_t k = 0; k < restyle.size() && paint_only; k++)
             {
-                if(restyle[k]->css().is_paint_group() != groups[k])
+                if(restyle[k]->css().is_paint_group() != groups[k].first || restyle[k]->css().get_transform().empty() != groups[k].second)
                     paint_only = false;
             }
         }
@@ -1379,17 +1453,14 @@ namespace litehtml
 
     void document::restyle_after_patch(const std::vector<element::ptr>& restyle, const std::vector<element::ptr>& new_text,
                                        bool keep_tree, const std::vector<element::ptr>& retext,
-                                       const std::unordered_set<const element*>& background_only)
+                                       const std::unordered_set<const element*>& background_only,
+                                       const std::unordered_map<const element*, const property_patch*>& patched)
     {
         invalidate_paint();
         m_share_cache.clear();
         std::unordered_set<const element*> pending;
         for(const auto& el : restyle)
-        {
-            if(auto tag = std::dynamic_pointer_cast<html_tag>(el))
-                tag->restore_base_style();
             pending.insert(el.get());
-        }
         for(const auto& el : new_text)
             pending.insert(el.get());
         for(const auto& el : retext)
@@ -1402,6 +1473,15 @@ namespace litehtml
             }
             return false;
         };
+        std::unordered_map<const element*, const property_patch*> fast;
+        for(const auto& el : restyle)
+        {
+            auto it = patched.find(el.get());
+            if(it != patched.end() && !covered(el))
+                fast[el.get()] = it->second;
+            else if(auto tag = std::dynamic_pointer_cast<html_tag>(el))
+                tag->restore_base_style();
+        }
         if(!keep_tree || !new_text.empty())
             m_layout_before_valid = false;
         const bool positioned_fresh = keep_tree && new_text.empty() && m_positioned_epoch == m_style_epoch &&
@@ -1434,7 +1514,16 @@ namespace litehtml
         }
         for(const auto& el : roots)
         {
-            if(background_only.count(el.get()))
+            auto patch = fast.find(el.get());
+            if(patch != fast.end())
+            {
+                auto tag = std::static_pointer_cast<html_tag>(el);
+                if(!tag->patch_inline_properties(patch->second->names, patch->second->text))
+                {
+                    tag->restore_base_style();
+                    tag->compute_styles(true);
+                }
+            } else if(background_only.count(el.get()))
                 std::static_pointer_cast<html_tag>(el)->compute_background_style();
             else
                 el->compute_styles(true);

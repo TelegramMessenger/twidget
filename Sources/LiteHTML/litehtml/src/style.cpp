@@ -2237,7 +2237,25 @@ namespace litehtml
         }
     }
 
-    void style::add_parsed_property(string_id name, const property_value& propval)
+    void style::replace_properties(const std::vector<string_id>& names, const style& base, style& patch)
+    {
+        for(string_id name : names)
+        {
+            auto from = base.m_properties.find(name);
+            if(from == base.m_properties.end())
+                m_properties.erase(name);
+            else
+                m_properties[name] = from->second;
+        }
+        for(string_id name : names)
+        {
+            auto from = patch.m_properties.find(name);
+            if(from != patch.m_properties.end())
+                add_parsed_property(name, std::move(from->second));
+        }
+    }
+
+    void style::add_parsed_property(string_id name, property_value propval)
     {
         if(recorded_ops)
             recorded_ops->push_back({false, false, name, propval});
@@ -2246,13 +2264,14 @@ namespace litehtml
         {
             if(!prop->second.m_important || (propval.m_important && prop->second.m_important))
             {
-                prop->second         = propval;
+                prop->second         = std::move(propval);
                 prop->second.m_order = ++m_counter;
             }
         } else
         {
-            m_properties[name]         = propval;
-            m_properties[name].m_order = ++m_counter;
+            auto& slot   = m_properties[name];
+            slot         = std::move(propval);
+            slot.m_order = ++m_counter;
         }
     }
 

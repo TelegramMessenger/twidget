@@ -283,6 +283,12 @@ namespace litehtml
         // checks and restyle as update_from_string. Fails, leaving the document unchanged, when an element has
         // no style attribute in the source or a value could not have come from serialized HTML.
         bool update_styles(const std::vector<std::pair<std::shared_ptr<element>, std::string>>& styles, bool* changed);
+        struct property_patch
+        {
+            std::vector<string_id> names;
+            std::string            text;
+            bool                   box = true;
+        };
         struct hole_change
         {
             std::shared_ptr<element> owner;
@@ -318,7 +324,8 @@ namespace litehtml
         void     restyle_after_patch(const std::vector<std::shared_ptr<element>>& restyle,
                                      const std::vector<std::shared_ptr<element>>& new_text, bool keep_tree = false,
                                      const std::vector<std::shared_ptr<element>>& retext = {},
-                                     const std::unordered_set<const element*>& background_only = {});
+                                     const std::unordered_set<const element*>& background_only = {},
+                                     const std::unordered_map<const element*, const property_patch*>& patched = {});
         bool     retag_allowed(const std::shared_ptr<element>& el, std::string name, bool svg, string_map& attrs,
                                bool blocked);
         bool     apply_retag(const std::shared_ptr<element>& el, const string_map& attrs, bool check, int* region = nullptr);

@@ -599,6 +599,27 @@ void litehtml::css_properties::compute_background_color(const html_tag* el)
     m_bg.m_color = get_color_property(el, _background_color_, false, web_color::transparent, offset(m_bg.m_color));
 }
 
+void litehtml::css_properties::compute_opacity(const html_tag* el)
+{
+    m_opacity = el->get_property<float>(_opacity_, false, 1.f, offset(m_opacity));
+}
+
+void litehtml::css_properties::compute_transform(const html_tag* el, const std::shared_ptr<document>& doc)
+{
+    m_transform.clear();
+    if(const auto* tokens = el->get_token_property(_transform_))
+    {
+        if(parse_transform(*tokens, m_transform))
+        {
+            for(auto& fn : m_transform)
+            {
+                doc->cvt_units(fn.x, m_font_metrics, 0_px);
+                doc->cvt_units(fn.y, m_font_metrics, 0_px);
+            }
+        }
+    }
+}
+
 void litehtml::css_properties::compute_background(const html_tag* el, const document::ptr& doc)
 {
     compute_background_color(el);
@@ -804,7 +825,7 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
         }
     }
 
-    m_opacity         = el->get_property<float>(_opacity_, false, 1.f, offset(m_opacity));
+    compute_opacity(el);
     m_aspect_ratio    = el->get_property<float>(_aspect_ratio_, false, 0.f, offset(m_aspect_ratio));
     m_backface_hidden = el->get_property<int>(_backface_visibility_, false, 0, offset(m_backface_hidden));
     m_contain         = el->get_property<int>(_contain_, false, 0, offset(m_contain));
@@ -892,18 +913,7 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
         }
     }
 
-    m_transform.clear();
-    if(const auto* tokens = el->get_token_property(_transform_))
-    {
-        if(parse_transform(*tokens, m_transform))
-        {
-            for(auto& fn : m_transform)
-            {
-                doc->cvt_units(fn.x, m_font_metrics, 0_px);
-                doc->cvt_units(fn.y, m_font_metrics, 0_px);
-            }
-        }
-    }
+    compute_transform(el, doc);
     if(const auto* tokens = el->get_token_property(_transform_origin_))
     {
         if(parse_transform_origin(*tokens, m_transform_origin_x, m_transform_origin_y))
