@@ -112,7 +112,7 @@ static NSString *ScrollHtml(uint32_t &seed, int count, int &scrollers)
         case 1: extra = @"visibility:hidden;"; break;
         case 2: extra = @"overflow:hidden;"; break;
         case 3: case 4: extra = @"overflow:auto;"; scroller = true; break;
-        case 5: extra = @"position:sticky;"; break;
+        case 5: extra = [NSString stringWithFormat:@"position:sticky;top:%upx;", next(30)]; break;
         case 6: extra = @"position:fixed;"; break;
         case 7: extra = @"opacity:0.5;"; break;
         default: break;
