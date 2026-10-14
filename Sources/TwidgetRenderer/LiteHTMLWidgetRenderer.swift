@@ -100,7 +100,7 @@ public final class LiteHTMLWidgetRenderer {
             hiddenSince = CACurrentMediaTime()
         }
     }
-    private var pendingMoves: [String: [String: Any]] = [:]
+    private var pendingMoves: [String: String] = [:]
     private var bounds: [Int: CGRect] = [:]
     private var scannedDeclarations: (generation: UInt64, values: [Int: [String: String]]) = (0, [:])
     private var visualBounds: [Int: CGRect]?
@@ -843,9 +843,27 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func post(_ message: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: message), let json = String(data: data, encoding: .utf8) else {
+        if let json = WidgetJSONWriter.encode(message) {
+            deliver(json)
             return
         }
+        guard JSONSerialization.isValidJSONObject(message), let data = try? JSONSerialization.data(withJSONObject: message), let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        deliver(json)
+    }
+
+    func postFrame(time: Double) {
+        if let json = WidgetJSONWriter.frame(time: time) {
+            deliver(json)
+        }
+    }
+
+    func postEvent(_ event: String) {
+        deliver("{\"type\":\"event\",\"ev\":" + event + "}")
+    }
+
+    private func deliver(_ json: String) {
         if let onMessage = onMessage {
             onMessage(json)
         } else {
@@ -2408,7 +2426,7 @@ public final class LiteHTMLWidgetRenderer {
             let moves = pendingMoves.values
             pendingMoves.removeAll()
             for event in moves {
-                post(["type": "event", "ev": event])
+                postEvent(event)
             }
         }
         if renderAtTick && !frozen {
@@ -2425,7 +2443,7 @@ public final class LiteHTMLWidgetRenderer {
                 frameRequested = false
                 lastFramePost = now
                 pacer.posted(now)
-                post(["type": "frame", "time": (now - timeOrigin) * 1000])
+                postFrame(time: (now - timeOrigin) * 1000)
                 framesPosted += 1
             } else {
                 scriptFramesPaced += 1
@@ -2442,32 +2460,54 @@ public final class LiteHTMLWidgetRenderer {
         return (flags.contains(.option) ? 1 : 0) | (flags.contains(.control) ? 2 : 0) | (flags.contains(.command) ? 4 : 0) | (flags.contains(.shift) ? 8 : 0)
     }
 
-    private func mouseEvent(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int) -> [String: Any] {
+    private func mouseEvent(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int) -> String? {
         let box = elementBounds()[target] ?? .zero
         var movement = CGPoint.zero
         if let last = lastPointer {
             movement = CGPoint(x: point.x - last.x, y: point.y - last.y)
         }
-        return [
-            "type": type,
-            "targetId": target,
-            "clientX": Double(point.x),
-            "clientY": Double(point.y),
-            "offsetX": Double(point.x - box.minX),
-            "offsetY": Double(point.y - box.minY),
-            "pageX": Double(point.x),
-            "pageY": Double(point.y),
-            "movementX": Double(movement.x),
-            "movementY": Double(movement.y),
-            "button": 0,
-            "buttons": buttons,
-            "detail": type.hasSuffix("click") ? clickCount : 0,
-            "pointerId": 1,
-            "pointerType": "mouse",
-            "isPrimary": true,
-            "pressure": buttons != 0 ? 0.5 : 0,
-            "modifiers": modifiers(event.modifierFlags),
-        ]
+        return LiteHTMLWidgetRenderer.mouseEventJSON(type, target: target, point: point, offset: CGPoint(x: point.x - box.minX, y: point.y - box.minY), movement: movement, buttons: buttons, detail: type.hasSuffix("click") ? clickCount : 0, modifiers: modifiers(event.modifierFlags), defaultActions: type == "click")
+    }
+
+    static func mouseEventJSON(_ type: String, target: Int, point: CGPoint, offset: CGPoint, movement: CGPoint, buttons: Int, detail: Int, modifiers: Int, defaultActions: Bool) -> String? {
+        var writer = WidgetJSONWriter(capacity: 384)
+        writer.raw("{\"type\":")
+        writer.string(type)
+        writer.raw(",\"targetId\":")
+        writer.integer(Int64(target))
+        writer.raw(",\"clientX\":")
+        guard writer.number(Double(point.x)) else { return nil }
+        writer.raw(",\"clientY\":")
+        guard writer.number(Double(point.y)) else { return nil }
+        writer.raw(",\"offsetX\":")
+        guard writer.number(Double(offset.x)) else { return nil }
+        writer.raw(",\"offsetY\":")
+        guard writer.number(Double(offset.y)) else { return nil }
+        writer.raw(",\"pageX\":")
+        guard writer.number(Double(point.x)) else { return nil }
+        writer.raw(",\"pageY\":")
+        guard writer.number(Double(point.y)) else { return nil }
+        writer.raw(",\"movementX\":")
+        guard writer.number(Double(movement.x)) else { return nil }
+        writer.raw(",\"movementY\":")
+        guard writer.number(Double(movement.y)) else { return nil }
+        writer.raw(",\"button\":0,\"buttons\":")
+        writer.integer(Int64(buttons))
+        writer.raw(",\"detail\":")
+        writer.integer(Int64(detail))
+        writer.raw(",\"pointerId\":1,\"pointerType\":\"mouse\",\"isPrimary\":true,\"pressure\":")
+        if buttons != 0 {
+            writer.raw("0.5")
+        } else {
+            writer.raw("0")
+        }
+        writer.raw(",\"modifiers\":")
+        writer.integer(Int64(modifiers))
+        if defaultActions {
+            writer.raw(",\"defaultActions\":true")
+        }
+        writer.raw("}")
+        return writer.string
     }
 
     private func dispatch(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int) {
@@ -2478,9 +2518,8 @@ public final class LiteHTMLWidgetRenderer {
         if !LiteHTMLWidgetRenderer.alwaysSent.contains(type) && !listened.contains(type) {
             return
         }
-        var payload = mouseEvent(type, target: target, point: point, event: event, buttons: buttons)
-        if type == "click" {
-            payload["defaultActions"] = true
+        guard let payload = mouseEvent(type, target: target, point: point, event: event, buttons: buttons) else {
+            return
         }
         if LiteHTMLWidgetRenderer.coalesced.contains(type) {
             pendingMoves[type + ":1"] = payload
@@ -2491,10 +2530,10 @@ public final class LiteHTMLWidgetRenderer {
             let moves = pendingMoves.values
             pendingMoves.removeAll()
             for move in moves {
-                post(["type": "event", "ev": move])
+                postEvent(move)
             }
         }
-        post(["type": "event", "ev": payload])
+        postEvent(payload)
     }
 
     func handleScroll(_ point: CGPoint, event: NSEvent) -> Bool {
@@ -2531,7 +2570,7 @@ public final class LiteHTMLWidgetRenderer {
             documentView.invalidate(geometry.viewport.insetBy(dx: -1, dy: -1))
         }
         if listened.contains("scroll") && !frozen {
-            pendingMoves["scroll:\(id)"] = ["type": "scroll", "targetId": id, "bubbles": false]
+            pendingMoves["scroll:\(id)"] = "{\"type\":\"scroll\",\"targetId\":\(id),\"bubbles\":false}"
             startClock()
         }
     }
