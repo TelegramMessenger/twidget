@@ -801,7 +801,7 @@ public final class HTML3DSession {
             lock.unlock()
             inFlight.wait()
             let committed = autoreleasepool { () -> Bool in
-                guard let gpu = gpu, let drawable = layer.nextDrawable(), let commandBuffer = queue?.makeCommandBuffer() else {
+                guard gpu != nil, let drawable = layer.nextDrawable(), let commandBuffer = queue?.makeCommandBuffer() else {
                     return false
                 }
                 guard drawable.texture.width * drawable.texture.height <= limits.maxDrawablePixels else {

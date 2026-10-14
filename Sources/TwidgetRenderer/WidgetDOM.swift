@@ -426,6 +426,22 @@ final class WidgetDOM {
         }
     }
 
+    private static func sameOverrides(_ before: [(String, String)]?, _ after: [(String, String)]?) -> Bool {
+        let lhs: [(String, String)] = before ?? []
+        let rhs: [(String, String)] = after ?? []
+        if before == nil || after == nil || lhs.count != rhs.count {
+            return before == nil && after == nil
+        }
+        for index in 0 ..< lhs.count {
+            let left: (String, String) = lhs[index]
+            let right: (String, String) = rhs[index]
+            if left.0 != right.0 || left.1 != right.1 {
+                return false
+            }
+        }
+        return true
+    }
+
     func patchChanges(theme: String, overrides: [Int: [(String, String)]], previous: [Int: [(String, String)]]) -> [UInt8]? {
         guard patchLog.valid else {
             return nil
@@ -446,7 +462,7 @@ final class WidgetDOM {
         }
         for id in Set(previous.keys).union(overrides.keys) {
             let before = previous[id], after = overrides[id]
-            if before?.count == after?.count, zip(before ?? [], after ?? []).allSatisfy({ $0.0 == $1.0 && $0.1 == $1.1 }) {
+            if WidgetDOM.sameOverrides(before, after) {
                 continue
             }
             guard let node = nodes[id], let value = WidgetDOM.styleValue(node, animated: after, theme: theme), put(id, "style", value) else {

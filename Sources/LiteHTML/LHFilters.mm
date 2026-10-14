@@ -10,7 +10,6 @@ static CIContext* FilterContext()
     static CIContext* context = [CIContext contextWithOptions:@{
         kCIContextWorkingColorSpace: (__bridge id)CGColorSpaceCreateWithName(kCGColorSpaceSRGB),
         kCIContextCacheIntermediates: @NO,
-        kCIContextName: @"LiteHTMLFilters",
     }];
     return context;
 }
