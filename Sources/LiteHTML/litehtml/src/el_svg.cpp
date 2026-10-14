@@ -1545,6 +1545,19 @@ namespace litehtml
         std::vector<std::string>        references;
         int                             count = 0;
         bool                            ok    = true;
+        auto collect_paint_references = [&](const element::ptr& el) {
+            const auto* tag = dynamic_cast<const html_tag*>(el.get());
+            if(!tag) return;
+            for(const auto name : {_fill_, _stroke_})
+            {
+                std::string id;
+                if(const auto* tokens = tag->get_token_property(name))
+                    id = svg_url_id(*tokens);
+                else if(const char* value = tag->get_attr(_s(name).c_str()); value && strchr(value, '('))
+                    id = svg_url_id(svg_property(el, name, false));
+                if(!id.empty()) references.push_back(std::move(id));
+            }
+        };
         std::function<void(const element::ptr&)> visit = [&](const element::ptr& el) {
             if(!ok)
                 return;
@@ -1562,6 +1575,7 @@ namespace litehtml
             }
             if(const char* id = el->get_attr("id"))
                 ids.insert(id);
+            collect_paint_references(el);
             for(const char* attribute : {"fill", "stroke", "style", "mask", "clip-path", "filter", "marker-start", "marker-mid", "marker-end"})
             {
                 if(const char* value = el->get_attr(attribute))
@@ -1588,13 +1602,16 @@ namespace litehtml
         visit(std::const_pointer_cast<element>(shared_from_this()));
         if(!ok)
             return false;
+        for(auto p = parent(); p; p = p->parent())
+        {
+            collect_paint_references(p);
+            h = (h ^ p->paint_signature()) * 1099511628211ULL;
+        }
         for(const auto& ref : references)
         {
             if(!ids.count(ref))
                 return false;
         }
-        for(auto p = parent(); p; p = p->parent())
-            h = (h ^ p->paint_signature()) * 1099511628211ULL;
         key = h;
         return true;
     }

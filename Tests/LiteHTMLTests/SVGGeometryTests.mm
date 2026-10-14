@@ -150,6 +150,27 @@ static LHDocument *SVGCacheWarmDocument(NSString *html)
     XCTAssertEqual([LHDocument rasterCacheBytes], plainBytes);
 }
 
+- (void)testSVGCacheTracksExternalGradientChanges
+{
+    for(NSString *paint in @[@"fill='url(#paint)'", @"fill='URL(#paint)'", @"class='filled'", @"style='fill:var(--paint)'", @"fill='var(--paint)'", @""])
+    {
+        NSString *inherited = paint.length ? @"" : @"fill:url(#paint);";
+        NSString *first = [NSString stringWithFormat:@"<style>body{margin:0;background:white;%@--paint:url(#paint)}.filled{fill:url(#paint)}</style><svg width='0' height='0'><defs><linearGradient id='paint'><stop id='external-stop' stop-color='#ff0000'/><stop offset='1' stop-color='#0000ff'/></linearGradient></defs></svg><svg width='200' height='100'><rect %@ x='10' y='10' width='180' height='80'/></svg>", inherited, paint];
+        NSString *next = [first stringByReplacingOccurrencesOfString:@"stop-color='#ff0000'" withString:@"stop-color='#00ff00'"];
+        [LHDocument purgeCaches];
+        LHDocument *document = [[LHDocument alloc] initWithHTML:first css:nil previous:nil];
+        NSData *initial = SVGCachePixels(document);
+        const char changes[] = "external-stop\0stop-color\0#00ff00\0";
+        LHDocument *updated = [[LHDocument alloc] initWithPrevious:document changes:[NSData dataWithBytes:changes length:sizeof(changes) - 1] attribute:@"id" css:nil];
+        XCTAssertNotNil(updated);
+        NSData *cached = SVGCachePixels(updated);
+        XCTAssertNotEqualObjects(initial, cached, @"%@", paint);
+        [LHDocument purgeCaches];
+        LHDocument *reference = [[LHDocument alloc] initWithHTML:next css:nil];
+        [self assertPixels:cached match:SVGCachePixels(reference)];
+    }
+}
+
 - (LHDocument*)document
 {
     NSString* html = @"<!doctype html><svg width='200' height='100' viewBox='0 0 200 100'>"
