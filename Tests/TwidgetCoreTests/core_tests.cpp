@@ -601,6 +601,25 @@ int main() {
             {"op":"el","id":42,"tag":"div","attrs":[["style","overflow:hidden;height:10px"]]},{"op":"ins","parent":4,"id":42,"before":null},
             {"op":"el","id":43,"tag":"div","attrs":[["style","position:relative;top:-200px;height:60px;background:blue"]]},{"op":"ins","parent":42,"id":43,"before":null})J");
         check(clipped.size() == 1 && clipped[0].id == 40, "a box clipped away by its own parent does not cover a layer (" + std::to_string(clipped.size()) + " layers)");
+        // An ancestor animating only its own background still lets its child be a layer.
+        auto glowing = layers_of(R"J({"op":"el","id":21,"tag":"style"},{"op":"css","id":21,"text":"@keyframes glow{from{background-color:#000}to{background-color:#fff}} .g{padding:20px;animation:glow 1s infinite}"},
+            {"op":"ins","parent":3,"id":21,"before":null},
+            {"op":"el","id":30,"tag":"div","attrs":[["class","g"]]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":40,"tag":"div","attrs":[["class","s"]]},{"op":"ins","parent":30,"id":40,"before":null})J");
+        check(glowing.size() == 1 && glowing[0].id == 40, "a parent's background animation leaves its child a layer (" + std::to_string(glowing.size()) + " layers)");
+        // Past the layer cap the topmost spinners are composited and the rest painted.
+        std::string many;
+        for (int i = 0; i < 70; i++)
+            many += R"J({"op":"el","id":)J" + std::to_string(100 + i) + R"J(,"tag":"div","attrs":[["class","s"],["style","display:inline-block;width:10px;height:10px;margin:10px"]]},{"op":"ins","parent":4,"id":)J" +
+                    std::to_string(100 + i) + R"J(,"before":null},)J";
+        many.pop_back();
+        auto capped = layers_of(many.c_str());
+        bool top = false, bottom = false;
+        for (const Layer& layer : capped) {
+            top = top || layer.id == 169;
+            bottom = bottom || layer.id == 100;
+        }
+        check(capped.size() == 64 && top && !bottom, "past the cap, the topmost layers win (" + std::to_string(capped.size()) + " layers)");
     }
 
     // ── layout queries ──

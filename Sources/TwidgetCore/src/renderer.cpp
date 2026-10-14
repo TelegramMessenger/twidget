@@ -520,6 +520,27 @@ public:
         }
         return true;
     }
+    /// An animated background-color on `id` repaints `id` alone: no child inherits it, and nothing it
+    /// holds samples what is behind it. Its descendants can still be layers.
+    bool background_is_local(int64_t id) const {
+        auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(element(id));
+        if (!tag || !tag->background_color_is_local()) return false;
+        switch (tag->tag()) {
+        case litehtml::_input_: case litehtml::_select_: case litehtml::_textarea_: case litehtml::_button_:
+        case litehtml::_meter_: case litehtml::_progress_: case litehtml::_fieldset_:
+            return false;
+        default:
+            break;
+        }
+        std::vector<const litehtml::element*> pending{tag.get()};
+        while (!pending.empty()) {
+            const litehtml::element* el = pending.back();
+            pending.pop_back();
+            if (!el->css().get_backdrop_filter().empty()) return false;
+            for (const auto& child : el->children()) pending.push_back(child.get());
+        }
+        return true;
+    }
     /// Render items in the order a full paint draws them.
     std::vector<const litehtml::render_item*> paint_order() {
         std::vector<const litehtml::render_item*> trace;
@@ -1842,6 +1863,11 @@ void Renderer::update_composition(double now) {
     bool iterations = interest_.count("animationiteration") > 0;
     auto ids = animator_.animated_ids(now);
     uint64_t key = container_->layouts() * 0x9E3779B97F4A7C15ull ^ std::hash<double>()(width_);
+    std::unordered_set<int64_t> local_backgrounds;
+    for (int64_t id : ids) {
+        auto properties = animator_.animated_properties(id);
+        if (properties.size() == 1 && properties[0] == "background-color" && container_->background_is_local(id)) local_backgrounds.insert(id);
+    }
     for (int64_t id : ids) {
         auto plan = animator_.plan(id, now, iterations);
         if (!plan) continue;
@@ -1853,8 +1879,11 @@ void Renderer::update_composition(double now) {
         auto el = container_->element(id);
         Rect box;
         if (!n || n->svg || n->tag == "svg" || !el || !container_->layer_candidate(el, box)) continue;
-        // A layer holds a still picture: nothing inside or around it may animate.
-        if (std::any_of(ids.begin(), ids.end(), [&](int64_t other) { return other != id && (is_ancestor(other, id) || is_ancestor(id, other)); })) continue;
+        // A layer holds a still picture: nothing inside or around it may animate, but for an ancestor
+        // that only repaints its own background.
+        if (std::any_of(ids.begin(), ids.end(), [&](int64_t other) {
+                return other != id && ((is_ancestor(other, id) && !local_backgrounds.count(other)) || is_ancestor(id, other));
+            })) continue;
         uint64_t signature = animator_.signature(id);
         key = (key * 1099511628211ull) ^ uint64_t(id) ^ (signature << 1) ^ uint64_t(plan->repeat);
         wanted.emplace_back(id, Want{std::move(el), *plan, box, signature});
@@ -1932,32 +1961,39 @@ void Renderer::update_composition(double now) {
     }
 
     // Only a layer nothing paints over can go above the document. Dropping one can uncover
-    // another's neighbour, so this settles over a few rounds.
+    // another's neighbour or put back what covered another, so this runs until nothing changes.
     auto trace = container_->paint_order();
-    for (int round = 0; round < 4 && !next.empty(); round++) {
+    for (auto& [id, p] : next) {
+        auto ri = elements[id]->get_render_item();
+        p.order = size_t(std::find(trace.begin(), trace.end(), ri.get()) - trace.begin());
+    }
+    size_t rounds = next.size() + 1;
+    for (size_t round = 0; round < rounds && !next.empty(); round++) {
         std::unordered_set<const litehtml::element*> ignore;
         for (const auto& [id, p] : next) ignore.insert(elements[id].get());
         std::vector<std::pair<int64_t, double>> uncovered;
+        double total = 0;
         for (const auto& [id, p] : next) {
             if (p.reach.empty() || container_->covered(elements[id], p.reach, trace, ignore)) continue;
             double s = dpr_ * p.raster_scale;
-            uncovered.emplace_back(id, double(p.box.w + 2 * LAYER_MARGIN) * (p.box.h + 2 * LAYER_MARGIN) * s * s);
+            double cost = double(p.box.w + 2 * LAYER_MARGIN) * (p.box.h + 2 * LAYER_MARGIN) * s * s;
+            uncovered.emplace_back(id, cost);
+            total += cost;
         }
-        std::sort(uncovered.begin(), uncovered.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+        // Over the budget, the topmost layers go first and the first that does not fit ends it: a
+        // skipped layer would leave the ones under it composited out of order with it.
+        bool all = uncovered.size() <= MAX_LAYERS && total <= MAX_LAYER_PIXELS;
+        if (!all) std::sort(uncovered.begin(), uncovered.end(), [&](const auto& a, const auto& b) { return std::make_pair(next[a.first].order, a.first) > std::make_pair(next[b.first].order, b.first); });
         std::map<int64_t, Promotion> admitted;
         double pixels = 0;
         for (const auto& [id, cost] : uncovered) {
-            if (admitted.size() >= MAX_LAYERS || pixels + cost > MAX_LAYER_PIXELS) continue;
+            if (!all && (admitted.size() >= MAX_LAYERS || pixels + cost > MAX_LAYER_PIXELS)) break;
             pixels += cost;
             admitted.emplace(id, std::move(next[id]));
         }
         bool stable = admitted.size() == next.size();
         next = std::move(admitted);
         if (stable) break;
-    }
-    for (auto& [id, p] : next) {
-        auto ri = elements[id]->get_render_item();
-        p.order = size_t(std::find(trace.begin(), trace.end(), ri.get()) - trace.begin());
     }
 
     bool changed = next.size() != promoted_.size();
