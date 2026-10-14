@@ -5,6 +5,7 @@
 // litehtml.
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -32,6 +33,13 @@ struct Affine {
     static Affine translate(float x, float y) { return Affine{1, 0, 0, 1, x, y}; }
     float apply_x(float x, float y) const { return a * x + c * y + e; }
     float apply_y(float x, float y) const { return b * x + d * y + f; }
+    /// False when the map flattens the plane and has no inverse.
+    bool invert(Affine& out) const {
+        float det = a * d - b * c;
+        if (!(det != 0) || !std::isfinite(det)) return false;
+        out = Affine{d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det};
+        return true;
+    }
     bool operator==(const Affine&) const = default;
 };
 

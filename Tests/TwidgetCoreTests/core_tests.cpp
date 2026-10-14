@@ -620,6 +620,19 @@ int main() {
             bottom = bottom || layer.id == 100;
         }
         check(capped.size() == 64 && top && !bottom, "past the cap, the topmost layers win (" + std::to_string(capped.size()) + " layers)");
+        // A layer is hit where its track shows it: half way through a 200 px slide, 100 px along.
+        StubBackend hb;
+        Renderer h(300, 1, false, hb);
+        h.set_compositing(true);
+        h.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":20,"tag":"style"},
+            {"op":"css","id":20,"text":"@keyframes slide{from{transform:translateX(0)}to{transform:translateX(200px)}} .m{width:40px;height:40px;background:red;animation:slide 1s linear infinite}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":40,"tag":"div","attrs":[["class","m"]]},{"op":"ins","parent":4,"id":40,"before":null}]})J"));
+        h.paint();
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        auto at = [&](int x) { return h.receive(parse(R"({"type":"query","qid":1,"query":{"q":"elementFromPoint","x":)" + std::to_string(x) + R"(,"y":20}})"))[0]["result"].asNumber(); };
+        check(h.composition().layers.size() == 1 && at(120) == 40, "a moving layer is hit where it shows");
     }
 
     // ── layout queries ──

@@ -659,6 +659,17 @@ public:
         auto px = litehtml::pixel_t(float(x)), py = litehtml::pixel_t(float(y));
         return doc_->root_render()->get_element_by_point(px, py, px, py, nullptr);
     }
+    /// What is at (x, y) in document coordinates, looking only inside `el`.
+    litehtml::element::ptr element_at_within(const litehtml::element::ptr& el, double x, double y) const {
+        auto ri = el ? el->get_render_item() : nullptr;
+        if (!doc_ || !ri) return nullptr;
+        // get_element_by_point takes the point relative to the item's parent content box.
+        auto placement = ri->get_placement();
+        auto sticky = ri->sticky_offset();
+        auto px = litehtml::pixel_t(float(x)) - (placement.x - ri->pos().x - sticky.x);
+        auto py = litehtml::pixel_t(float(y)) - (placement.y - ri->pos().y - sticky.y);
+        return ri->get_element_by_point(px, py, litehtml::pixel_t(float(x)), litehtml::pixel_t(float(y)), nullptr);
+    }
     /// Pointer state for :hover / :active; true when something must repaint. A lifted finger leaves
     /// :hover; a mouse released over the view keeps it.
     bool mouse(int action, double x, double y, bool hovers = false) {
@@ -2317,6 +2328,27 @@ bool Renderer::match_media(const std::string& query) const {
 }
 
 int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
+#ifdef TW_LITEHTML_TWIDGET
+    // A layer shows where its track has it now, not where layout put it: the topmost layer under the
+    // point takes it, mapped back into the document.
+    if (!promoted_.empty()) {
+        std::vector<std::pair<size_t, int64_t>> order;
+        for (const auto& [id, p] : promoted_) order.emplace_back(p.order, id);
+        std::sort(order.rbegin(), order.rend());
+        double now = now_s();
+        for (const auto& [rank, id] : order) {
+            const Promotion& p = promoted_.at(id);
+            if (p.has_clip && !(x >= p.clip.x && y >= p.clip.y && x < p.clip.x + p.clip.w && y < p.clip.y + p.clip.h)) continue;
+            double span = 0;
+            auto keys = resume_track(p.track, now - p.track.start, span);
+            Affine inverse;
+            if (keys.empty() || keys.front().opacity <= 0 || !keys.front().matrix.invert(inverse)) continue;
+            float mx = inverse.apply_x(float(x), float(y)), my = inverse.apply_y(float(x), float(y));
+            if (!(mx >= p.box.x && my >= p.box.y && mx < p.box.x + p.box.w && my < p.box.y + p.box.h)) continue;
+            if (int64_t hit = container_->widget_id(container_->element_at_within(container_->element(id), mx, my), placement)) return hit;
+        }
+    }
+#endif
     return container_->widget_id(container_->element_at(x, y), placement);
 }
 
