@@ -205,4 +205,15 @@ namespace
     }
 }
 
+- (void)testTextareaHasScrollableContentIncludingTrailingEmptyLines
+{
+    LHDocument *document = Make(@"<textarea id='field' style='height:48px;padding:10px'>one\ntwo\nthree\nfour\n</textarea>");
+    NSDictionary *info = [document scrollersByAttribute:@"id"][@"field"];
+    XCTAssertNotNil(info);
+    XCTAssertEqual([info[@"content"] sizeValue].height, 140);
+    XCTAssertEqual([info[@"viewport"] rectValue].size.height, 68);
+    CGPoint offset = [document setScrollOffset:CGPointMake(0, 1000) attribute:@"id" value:@"field"];
+    XCTAssertEqual(offset.y, 72);
+}
+
 @end

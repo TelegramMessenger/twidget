@@ -40,6 +40,84 @@ final class WidgetFormInputTests: XCTestCase {
         renderer.handleMouseDown(point, event: event)
     }
 
+    func testTextareaScrollSurvivesBlurAndRefocusAndAcceptsScriptUpdates() throws {
+        let value = (1...16).map { String(format: "Line %02d — scroll test", $0) }.joined(separator: "\n")
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "display:block;box-sizing:border-box;width:260px;height:120px;padding:10px;border:2px solid blue;margin-top:97.92px;font:16px/24px Courier"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": value]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor?.textView != nil })
+        let editor = try XCTUnwrap(view.formEditor?.textView)
+        editor.moveToEndOfDocument(nil)
+        editor.scrollRangeToVisible(editor.selectedRange())
+        let scroll = try XCTUnwrap(editor.enclosingScrollView)
+        let offset = scroll.contentView.bounds.origin.y
+        XCTAssertEqual(offset, 288, accuracy: 0.5)
+        pump(1, until: { abs(renderer.scrolling.offset(10).y - offset) < 0.5 })
+        XCTAssertEqual(renderer.scrolling.offset(10).y, offset, accuracy: 0.5)
+        renderer.endEditing()
+        pump(1, until: { view.formEditor == nil })
+        XCTAssertEqual(renderer.scrolling.offset(10).y, offset, accuracy: 0.5)
+        click(renderer, 10)
+        pump(2, until: { view.formEditor?.textView != nil })
+        let restored = try XCTUnwrap(view.formEditor?.textView?.enclosingScrollView)
+        pump(0.1)
+        XCTAssertEqual(restored.contentView.bounds.origin.y, offset, accuracy: 0.5)
+        XCTAssertEqual(renderer.scrolling.offset(10).y, offset, accuracy: 0.5)
+        renderer.send("{\"type\":\"ops\",\"ops\":[{\"op\":\"prop\",\"id\":10,\"name\":\"scrollTop\",\"value\":24}]}")
+        pump(1, until: { abs(restored.contentView.bounds.origin.y - 24) < 0.5 })
+        XCTAssertEqual(restored.contentView.bounds.origin.y, 24, accuracy: 0.5)
+        XCTAssertTrue(window.firstResponder === view.formEditor?.textView)
+    }
+
+    func testTextareaTrailingNewlineKeepsLastLineScrollable() throws {
+        let value = (1...16).map { "Line \($0)" }.joined(separator: "\n") + "\n"
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "display:block;width:200px;height:96px;padding:10px;font:16px/24px Courier"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": value]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        renderer.send("{\"type\":\"ops\",\"ops\":[{\"op\":\"prop\",\"id\":10,\"name\":\"scrollTop\",\"value\":1000}]}")
+        pump(1, until: { renderer.scrolling.offset(10).y > 300 })
+        XCTAssertEqual(renderer.scrolling.offset(10).y, 312, accuracy: 0.5)
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor?.textView != nil })
+        let text = try XCTUnwrap(view.formEditor?.textView)
+        text.moveToEndOfDocument(nil)
+        text.scrollRangeToVisible(text.selectedRange())
+        XCTAssertEqual(try XCTUnwrap(text.enclosingScrollView).contentView.bounds.origin.y, 312, accuracy: 0.5)
+    }
+
+    func testTextareaScrollClampsAfterContentShrinks() throws {
+        let value = (1...16).map { "Line \($0)" }.joined(separator: "\n")
+        let (renderer, window, _) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "display:block;width:200px;height:96px;padding:10px;font:16px/24px Courier"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": value]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        renderer.send("{\"type\":\"ops\",\"ops\":[{\"op\":\"prop\",\"id\":10,\"name\":\"scrollTop\",\"value\":1000}]}")
+        pump(1, until: { renderer.scrolling.offset(10).y > 200 })
+        XCTAssertEqual(renderer.scrolling.offset(10).y, 288, accuracy: 0.5)
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor?.textView != nil })
+        let text = try XCTUnwrap(view.formEditor?.textView)
+        text.selectAll(nil)
+        text.insertText("Short text", replacementRange: text.selectedRange())
+        pump(1, until: { renderer.scrolling.offset(10).y == 0 })
+        XCTAssertEqual(renderer.scrolling.offset(10).y, 0)
+        XCTAssertEqual(text.enclosingScrollView?.contentView.bounds.origin.y, 0)
+        XCTAssertTrue(window.firstResponder === text)
+        XCTAssertEqual(renderer.dom.node(10)?.formValue, "Short text")
+    }
+
     func testNativeClicksRequestSandboxDefaultActions() throws {
         let (renderer, window, events) = make([
             ["op": "el", "id": 10, "tag": "button", "attrs": [["type", "submit"], ["style", "width:100px;height:40px"]]],

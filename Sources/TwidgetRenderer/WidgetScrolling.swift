@@ -379,7 +379,7 @@ final class WidgetScrolling {
         if WidgetScrolling.enabled, let host = host {
             _ = host
             for (id, geometry) in found where geometry.maxOffset.y > 0.5 || geometry.maxOffset.x > 0.5 {
-                guard !sticky.contains(id), let node = dom.node(id), geometry.viewport.width > 0, geometry.viewport.height > 0, geometry.viewport.width * geometry.viewport.height < 4_000_000 else {
+                guard !sticky.contains(id), let node = dom.node(id), node.tag.lowercased() != "textarea", geometry.viewport.width > 0, geometry.viewport.height > 0, geometry.viewport.width * geometry.viewport.height < 4_000_000 else {
                     continue
                 }
                 var walk = node.parent
@@ -567,6 +567,15 @@ final class WidgetScrolling {
             }
         }
         return offsets[id] == current ? .unchanged : .moved(id)
+    }
+
+    func rememberEditorOffset(_ id: Int, _ offset: CGPoint, document: LHDocument?) -> Bool {
+        guard offset.x.isFinite, offset.y.isFinite else { return false }
+        let next = CGPoint(x: max(0, offset.x), y: max(0, offset.y))
+        guard offsets[id] != next else { return false }
+        offsets[id] = next
+        _ = document?.setScrollOffset(next, attribute: WidgetDOM.idAttribute, value: String(id))
+        return true
     }
 
     func setOffset(_ id: Int, _ offset: CGPoint, document: LHDocument?) -> Bool {

@@ -1,4 +1,5 @@
 #include "render_item.h"
+#include "render_inline_context.h"
 #include "document.h"
 #include "document_container.h"
 #include "types.h"
@@ -1053,12 +1054,20 @@ void litehtml::render_item::calc_document_size(litehtml::size& sz, pixel_t x /*=
                 sz.height = std::max(sz.height, y + bottom());
             }
 
-            if(is_one_of(src_el()->css().get_overflow(), overflow_scroll, overflow_auto))
+            if(is_one_of(src_el()->css().get_overflow(), overflow_scroll, overflow_auto) ||
+               (src_el()->tag() == _textarea_ && src_el()->css().get_overflow() == overflow_hidden))
             {
                 size child_size;
-                for(const auto& el : m_children)
+                auto text = src_el()->tag() == _textarea_ ? dynamic_cast<render_item_inline_context*>(this) : nullptr;
+                if(text)
                 {
-                    el->calc_document_size(child_size, 0_px, 0_px);
+                    child_size = text->text_content_size();
+                } else
+                {
+                    for(const auto& el : m_children)
+                    {
+                        el->calc_document_size(child_size, 0_px, 0_px);
+                    }
                 }
                 position padding_box = m_pos;
                 padding_box         += m_padding;

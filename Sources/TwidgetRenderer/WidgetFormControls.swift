@@ -99,6 +99,7 @@ struct WidgetEditorSpec {
     let maxLength: Int
     let readOnly: Bool
     let numeric: Bool
+    let scrollOffset: CGPoint
 }
 
 extension LiteHTMLWidgetRenderer {
@@ -481,6 +482,14 @@ extension LiteHTMLWidgetRenderer {
         }
     }
 
+    func editorScrolled(generation: Int, offset: CGPoint) {
+        guard generation == form.generation, form.focusedId != 0,
+              dom.node(form.focusedId)?.tag.lowercased() == "textarea" else { return }
+        if scrolling.rememberEditorOffset(form.focusedId, offset, document: document) {
+            scrolled(form.focusedId)
+        }
+    }
+
     func editorEnded(generation: Int) {
         guard generation == form.generation else {
             return
@@ -576,7 +585,7 @@ extension LiteHTMLWidgetRenderer {
             alignment = .left
         }
         let color = WidgetCSSColor.parse(style["color"] ?? "") ?? .textColor
-        return WidgetEditorSpec(generation: form.generation, multiline: multiline, frame: content.integral.width > 0 ? content : box, clip: clip, font: font, lineHeight: lineHeight, baseline: baseline, color: color, alignment: alignment, text: currentValue(node), placeholder: node.attribute("placeholder") ?? "", maxLength: Int(node.attribute("maxlength") ?? "") ?? 0, readOnly: node.attribute("readonly") != nil, numeric: type == "number" || ["numeric", "decimal"].contains((node.attribute("inputmode") ?? "").lowercased()))
+        return WidgetEditorSpec(generation: form.generation, multiline: multiline, frame: content.integral.width > 0 ? content : box, clip: clip, font: font, lineHeight: lineHeight, baseline: baseline, color: color, alignment: alignment, text: currentValue(node), placeholder: node.attribute("placeholder") ?? "", maxLength: Int(node.attribute("maxlength") ?? "") ?? 0, readOnly: node.attribute("readonly") != nil, numeric: type == "number" || ["numeric", "decimal"].contains((node.attribute("inputmode") ?? "").lowercased()), scrollOffset: scrolling.offset(id))
     }
 }
 
@@ -605,6 +614,21 @@ final class WidgetTextFieldCell: NSTextFieldCell {
             }
         }
         return editor
+    }
+}
+
+final class WidgetTextClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        guard let text = documentView as? NSTextView else { return super.constrainBoundsRect(proposedBounds) }
+        var height = text.frame.height
+        if let layout = text.layoutManager, let container = text.textContainer,
+           layout.firstUnlaidCharacterIndex() >= text.string.utf16.count {
+            height = max(layout.usedRect(for: container).maxY, layout.extraLineFragmentRect.maxY)
+        }
+        var bounds = proposedBounds
+        bounds.origin.x = min(max(0, bounds.origin.x), max(0, text.frame.width - bounds.width))
+        bounds.origin.y = min(max(0, bounds.origin.y), max(0, height - bounds.height))
+        return bounds
     }
 }
 
@@ -653,11 +677,13 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate,
     private var nextCommand = 0
     private var pendingEnter: (token: Int, modifiers: Int)?
     private var insertingLineBreak = false
+    private var settingScrollOffset = false
     var onChange: ((String, String?) -> Void)?
     var onCommand: ((String) -> Void)?
     var onEnter: ((Int, Int) -> Void)?
     var onEnterCompleted: ((Int) -> Void)?
     var onEnd: (() -> Void)?
+    var onScroll: ((CGPoint) -> Void)?
 
     init(_ spec: WidgetEditorSpec) {
         generation = spec.generation
@@ -666,6 +692,7 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate,
         lastText = spec.text
         if spec.multiline {
             let scroll = NSScrollView(frame: spec.frame)
+            scroll.contentView = WidgetTextClipView(frame: scroll.bounds)
             scroll.drawsBackground = false
             scroll.hasVerticalScroller = false
             scroll.hasHorizontalScroller = false
@@ -726,6 +753,32 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate,
         applyStyle(spec)
         container.addSubview(view)
         place(spec.frame, clip: spec.clip)
+        if let scroll = view as? NSScrollView {
+            scroll.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(scrollBoundsChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func scrollBoundsChanged() {
+        guard !removing, !settingScrollOffset, let scroll = view as? NSScrollView else { return }
+        onScroll?(scroll.contentView.bounds.origin)
+    }
+
+    func setScrollOffset(_ offset: CGPoint) {
+        guard let scroll = view as? NSScrollView, let text = textView else { return }
+        settingScrollOffset = true
+        defer { settingScrollOffset = false }
+        if let layout = text.layoutManager, let container = text.textContainer {
+            layout.ensureLayout(for: container)
+            let height = max(scroll.contentView.bounds.height, max(layout.usedRect(for: container).maxY, layout.extraLineFragmentRect.maxY))
+            text.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentView.bounds.width, height: height))
+        }
+        scroll.contentView.scroll(to: offset)
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     var responder: NSResponder? {
@@ -942,6 +995,10 @@ extension WidgetDocumentView {
         addSubview(editor.container)
         if let responder = editor.responder {
             window?.makeFirstResponder(responder)
+        }
+        editor.setScrollOffset(spec.scrollOffset)
+        editor.onScroll = { [weak self] offset in
+            self?.toOwner { $0.editorScrolled(generation: generation, offset: offset) }
         }
     }
 

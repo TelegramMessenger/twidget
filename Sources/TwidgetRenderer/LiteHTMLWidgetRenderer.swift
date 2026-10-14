@@ -2480,7 +2480,7 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
-    private func scrolled(_ id: Int) {
+    func scrolled(_ id: Int) {
         boundsValid = false
         if let document = document, scrolling.didScroll(id, dom: dom, document: document, scale: documentView.scale) {
             documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
@@ -2590,6 +2590,15 @@ public final class LiteHTMLWidgetRenderer {
                 layer.ensureTiles(document: document, scale: documentView.scale, attribute: WidgetDOM.idAttribute)
             }
             scrolled(id)
+            if id == form.focusedId {
+                let generation = form.generation
+                let applied = scrolling.offset(id)
+                let view = documentView
+                DispatchQueue.main.async { [weak view] in
+                    guard let editor = view?.formEditor, editor.generation == generation else { return }
+                    editor.setScrollOffset(applied)
+                }
+            }
         }
     }
 
