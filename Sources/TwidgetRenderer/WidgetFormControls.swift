@@ -657,13 +657,16 @@ final class WidgetTextClipView: NSClipView {
 }
 
 final class WidgetEditorTextView: NSTextView {
+    static let maxQueuedKeys = 256
     var waitingForCommand = false
     private(set) var keyModifiers: NSEvent.ModifierFlags?
     private var queuedKeys: [NSEvent] = []
 
     override func keyDown(with event: NSEvent) {
         if waitingForCommand {
-            queuedKeys.append(event)
+            if queuedKeys.count < WidgetEditorTextView.maxQueuedKeys {
+                queuedKeys.append(event)
+            }
         } else {
             keyModifiers = event.modifierFlags
             defer { keyModifiers = nil }
@@ -680,6 +683,7 @@ final class WidgetEditorTextView: NSTextView {
 }
 
 final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate, NSLayoutManagerDelegate {
+    static var enterReplyTimeout: TimeInterval = 0.25
     private struct TextStyle: Equatable {
         let font: NSFont
         let lineHeight: CGFloat
@@ -977,7 +981,11 @@ final class WidgetTextEditor: NSObject, NSTextFieldDelegate, NSTextViewDelegate,
             nextCommand += 1
             pendingEnter = (nextCommand, modifiers)
             text.waitingForCommand = true
-            onEnter(nextCommand, modifiers)
+            let token = nextCommand
+            onEnter(token, modifiers)
+            DispatchQueue.main.asyncAfter(deadline: .now() + WidgetTextEditor.enterReplyTimeout) { [weak self] in
+                self?.completeEnter(token: token, allowed: true)
+            }
             return true
         case #selector(NSResponder.insertNewline(_:)) where !multiline:
             onCommand?("Enter")

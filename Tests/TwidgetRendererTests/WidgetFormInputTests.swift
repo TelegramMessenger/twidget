@@ -258,6 +258,29 @@ final class WidgetFormInputTests: XCTestCase {
         XCTAssertEqual(text.string, "hello")
     }
 
+    func testTextareaEnterFallsBackWhenTheScriptNeverReplies() throws {
+        let (renderer, window, events) = make([
+            ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "width:200px;height:80px"]]],
+            ["op": "ins", "parent": 7, "id": 10],
+            ["op": "prop", "id": 10, "name": "value", "value": "hello"]
+        ])
+        defer { renderer.destroy(); window.orderOut(nil) }
+        click(renderer, 10)
+        let view = renderer.view as! WidgetDocumentView
+        pump(2, until: { view.formEditor != nil })
+        let editor = try XCTUnwrap(view.formEditor)
+        let text = try XCTUnwrap(editor.textView as? WidgetEditorTextView)
+        text.setSelectedRange(NSRange(location: 5, length: 0))
+        XCTAssertTrue(editor.textView(text, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        XCTAssertTrue(text.waitingForCommand)
+        let token = try XCTUnwrap(events().last { $0["type"] as? String == "keydown" }?["editorCommand"] as? Int)
+        pump(2, until: { !text.waitingForCommand })
+        XCTAssertFalse(text.waitingForCommand)
+        XCTAssertEqual(text.string, "hello\n")
+        editor.completeEnter(token: token, allowed: true)
+        XCTAssertEqual(text.string, "hello\n")
+    }
+
     func testTextareaEnterReplacesSelectionBeforeQueuedTyping() throws {
         let (renderer, window, events) = make([
             ["op": "el", "id": 10, "tag": "textarea", "attrs": [["style", "width:200px;height:80px"]]],
