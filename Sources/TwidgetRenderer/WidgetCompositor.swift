@@ -424,6 +424,7 @@ final class WidgetCompositor {
     private var ignoredSet = NSSet()
     static let rereachEnabled = ProcessInfo.processInfo.environment["TW_NO_REREACH"] == nil
     private var scripted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
+    private var scriptedOrigins: (generation: UInt64, values: [String: [String: String]]) = (0, [:])
 
     var scriptedIDs: Set<Int> {
         return Set(scripted.keys)
@@ -1152,6 +1153,10 @@ final class WidgetCompositor {
         var scriptedWanted: [Int: (reach: CGRect, scale: CGFloat)] = [:]
         var scriptedBases: [Int: CGRect] = [:]
         scriptedCandidates = scriptedCandidates.filter { dom.node($0) != nil }
+        var originGeneration: UInt64 = 0
+        if !scriptedCandidates.isEmpty, let origins = document.declarations(["transform-origin"], byAttribute: WidgetDOM.idAttribute, requiringAny: [], changedSince: scriptedOrigins.generation, generation: &originGeneration) {
+            scriptedOrigins = (originGeneration, origins)
+        }
         var related: Set<Int> = []
         var relatedAncestors: Set<Int>?
         for id in scriptedCandidates where wanted[id] == nil && !animated.contains(id) && !animator.hasCSSMotion(id) {
@@ -1169,7 +1174,7 @@ final class WidgetCompositor {
             guard let transform = parse(style["transform"], box: box.size, id: id), style["opacity"].map({ Double($0.trimmingCharacters(in: .whitespaces)) != nil }) ?? true else {
                 continue
             }
-            let origin = CSSTransform.origin(declarations[id]?["transform-origin"] ?? style["transform-origin"], box: box.size)
+            let origin = CSSTransform.origin(scriptedOrigins.values[String(id)]?["transform-origin"] ?? style["transform-origin"], box: box.size)
             let current = CGRect(origin: .zero, size: box.size).applying(WidgetCompositor.anchored(transform, box: box, origin: origin))
             let rotated = abs(transform.b) > 0.0001 || abs(transform.c) > 0.0001
             let translating = transform.a == 1 && transform.b == 0 && transform.c == 0 && transform.d == 1

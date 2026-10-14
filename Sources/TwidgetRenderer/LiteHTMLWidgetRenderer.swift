@@ -755,7 +755,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     static let presamples = ProcessInfo.processInfo.environment["TW_NO_PRESAMPLE"] == nil
-    static let declarationGates = WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow", "transform-origin"]
+    static let declarationGates = WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow"]
     static let coalescesHeld = ProcessInfo.processInfo.environment["TW_HELD_RENDER_NOW"] == nil
     private var deferringRender = false
 
