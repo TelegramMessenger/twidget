@@ -630,6 +630,34 @@ static bool DependsOnViewport(const std::string& text)
     return false;
 }
 
+static CGRect BorderBox(const lh::render_item *ri);
+
+struct LHCoverEntry
+{
+    const lh::render_item *item;
+    CGRect                 box;
+    int                    pre;
+    int                    post;
+    int                    owner;
+    bool                   eligible;
+};
+
+struct LHCoverNode
+{
+    int value;
+    int parent;
+    int pre;
+    int post;
+};
+
+struct LHCoverVisit
+{
+    int  pre;
+    int  post;
+    int  owner;
+    bool transparent;
+};
+
 @implementation LHDocument
 {
     std::mutex                   _lock;
@@ -678,6 +706,22 @@ static bool DependsOnViewport(const std::string& text)
     BOOL                         _itemIndexValid;
     NSString                    *_scrollAttribute;
     std::vector<LHDeclarationsEntry> _declarations;
+    uint64_t                     _paintTraceGeneration;
+    std::vector<LHCoverEntry>    _coverEntries;
+    std::vector<LHCoverNode>     _coverNodes;
+    std::vector<std::string>     _coverValues;
+    std::unordered_map<std::string, int> _coverValueIds;
+    std::string                  _coverAttribute;
+    uint64_t                     _coverGeneration;
+    uint64_t                     _coverStyleEpoch;
+    uint64_t                     _coverLayoutEpoch;
+    lh::position                 _coverViewport;
+    BOOL                         _coverValid;
+    BOOL                         _coverUsable;
+    BOOL                         _coverBoxesValid;
+    BOOL                         _coverDisabled;
+    std::vector<uint8_t>         _coverIgnored;
+    NSSet                       *_coverIgnoredKey;
 }
 
 - (BOOL)ensurePaintTraceLocked
@@ -700,6 +744,109 @@ static bool DependsOnViewport(const std::string& text)
     _doc->skip_paint  = saved;
     CGContextRelease(ctx);
     _paintTraceValid = YES;
+    _paintTraceGeneration++;
+    return YES;
+}
+
+- (void)setObscuringCacheDisabled:(BOOL)disabled
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _coverDisabled = disabled;
+}
+
+- (BOOL)ensureCoverLocked:(const char *)key
+{
+    if(_coverDisabled || !_doc || !_doc->root_render())
+        return NO;
+    if(!_coverValid || _coverGeneration != _paintTraceGeneration || _coverStyleEpoch != _doc->style_epoch() || _coverAttribute != key)
+    {
+        _coverValid      = NO;
+        _coverUsable     = NO;
+        _coverBoxesValid = NO;
+        _coverIgnoredKey = nil;
+        _coverEntries.clear();
+        _coverNodes.clear();
+        _coverValues.clear();
+        _coverValueIds.clear();
+        std::unordered_map<const lh::render_item *, size_t> visits;
+        std::vector<LHCoverVisit> infos;
+        visits.reserve(_paintTrace.size() * 2);
+        infos.reserve(_paintTrace.size() * 2);
+        int  counter    = 0;
+        bool consistent = true;
+        std::function<void(lh::render_item *, int, bool)> visit = [&](lh::render_item *node, int owner, bool transparent) {
+            transparent    = transparent || node->src_el()->css().get_opacity() <= 0;
+            const int pre  = counter++;
+            int       mine = -1;
+            if(const char *v = node->src_el()->get_attr(key))
+            {
+                auto inserted = _coverValueIds.emplace(v, static_cast<int>(_coverValues.size()));
+                if(inserted.second)
+                    _coverValues.emplace_back(v);
+                _coverNodes.push_back({inserted.first->second, owner, pre, 0});
+                mine  = static_cast<int>(_coverNodes.size()) - 1;
+                owner = mine;
+            }
+            const size_t slot = infos.size();
+            if(!visits.emplace(node, slot).second)
+                consistent = false;
+            infos.push_back({pre, 0, owner, transparent});
+            for(auto &child : node->children())
+            {
+                if(!child || child->parent().get() != node)
+                {
+                    consistent = false;
+                    continue;
+                }
+                visit(child.get(), owner, transparent);
+            }
+            const int post   = counter++;
+            infos[slot].post = post;
+            if(mine >= 0)
+                _coverNodes[mine].post = post;
+        };
+        auto root = _doc->root_render();
+        if(root->parent())
+            consistent = false;
+        visit(root.get(), -1, false);
+        _coverEntries.reserve(_paintTrace.size());
+        for(const lh::render_item *item : _paintTrace)
+        {
+            auto found = visits.find(item);
+            if(found == visits.end())
+            {
+                consistent = false;
+                break;
+            }
+            const LHCoverVisit &info = infos[found->second];
+            const bool eligible = !info.transparent && item->src_el()->css().get_visibility() == lh::visibility_visible && !dynamic_cast<const lh::el_space *>(item->src_el().get());
+            _coverEntries.push_back({item, CGRectNull, info.pre, info.post, info.owner, eligible});
+        }
+        if(!consistent)
+        {
+            _coverEntries.clear();
+            _coverNodes.clear();
+            _coverValues.clear();
+            _coverValueIds.clear();
+        }
+        _coverGeneration  = _paintTraceGeneration;
+        _coverStyleEpoch  = _doc->style_epoch();
+        _coverAttribute   = key;
+        _coverValid       = YES;
+        _coverUsable      = consistent;
+    }
+    if(!_coverUsable)
+        return NO;
+    lh::position viewport;
+    _container->get_viewport(viewport);
+    if(!_coverBoxesValid || _coverLayoutEpoch != _doc->layout_epoch() || !(viewport == _coverViewport))
+    {
+        for(LHCoverEntry &entry : _coverEntries)
+            entry.box = BorderBox(entry.item);
+        _coverLayoutEpoch = _doc->layout_epoch();
+        _coverViewport    = viewport;
+        _coverBoxesValid  = YES;
+    }
     return YES;
 }
 
@@ -1607,6 +1754,7 @@ static std::string MasterWithCSS(NSString *css)
     if(!ri || !ri->get_scroll_view())
         return CGPointZero;
     ri->scroll_to(lh::pixel_t(static_cast<float>(offset.x)), lh::pixel_t(static_cast<float>(offset.y)));
+    _coverBoxesValid = NO;
     return CGPointMake(ri->get_scroll_left().value(), ri->get_scroll_top().value());
 }
 
@@ -1662,6 +1810,7 @@ static std::string MasterWithCSS(NSString *css)
     _doc->set_culls_paint(savedCull);
     _doc->unclipped_scroll = savedUnclipped;
     ri->scroll_to(left, top);
+    _coverBoxesValid = NO;
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
     return image;
@@ -2100,8 +2249,10 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     }
     if(![self ensurePaintTraceLocked])
         return nil;
-    const std::vector<const lh::render_item *> &trace = _paintTrace;
     const char *key = attribute.UTF8String;
+    if([self ensureCoverLocked:key])
+        return [self coveringLockedWithItem:ri.get() rect:rect ignoring:ignoring];
+    const std::vector<const lh::render_item *> &trace = _paintTrace;
     NSMutableOrderedSet<NSString *> *found = [NSMutableOrderedSet orderedSet];
     std::unordered_set<std::string> local;
     const std::unordered_set<std::string> *ignoredRef = nullptr;
@@ -2190,6 +2341,70 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         }
     }
     return found.array;
+}
+
+- (nullable NSArray<NSString *> *)coveringLockedWithItem:(const lh::render_item *)ri rect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring
+{
+    const LHCoverEntry *begin = _coverEntries.data(), *end = begin + _coverEntries.size();
+    const LHCoverEntry *self_it = begin;
+    while(self_it != end && self_it->item != ri)
+        ++self_it;
+    if(self_it == end)
+        return nil;
+    const int rpre = self_it->pre, rpost = self_it->post;
+    NSMutableOrderedSet<NSString *> *found = nil;
+    std::vector<uint8_t> local;
+    const std::vector<uint8_t> *marks = nullptr;
+    bool anyIgnored = false;
+    for(const LHCoverEntry *entry = self_it + 1; entry != end; ++entry)
+    {
+        const CGRect box = entry->box;
+        if(!(box.size.width > 0 && box.size.height > 0 && CGRectIntersectsRect(box, rect)))
+            continue;
+        if(entry->pre > rpre && entry->post < rpost)
+            continue;
+        if(!entry->eligible)
+            continue;
+        if(!marks)
+        {
+            const bool reusable = ![ignoring isKindOfClass:[NSMutableSet class]];
+            std::vector<uint8_t> &target = reusable ? _coverIgnored : local;
+            if(!(reusable && ignoring == _coverIgnoredKey))
+            {
+                target.assign(_coverValues.size(), 0);
+                for(NSString *value in ignoring)
+                {
+                    auto id = _coverValueIds.find(value.UTF8String ?: "");
+                    if(id != _coverValueIds.end())
+                        target[id->second] = 1;
+                }
+                if(reusable)
+                    _coverIgnoredKey = ignoring;
+            }
+            marks      = &target;
+            anyIgnored = std::find(target.begin(), target.end(), 1) != target.end();
+        }
+        if(anyIgnored)
+        {
+            bool skipped = false;
+            for(int node = entry->owner; node >= 0 && !skipped; node = _coverNodes[node].parent)
+                skipped = (*marks)[_coverNodes[node].value] != 0;
+            if(skipped)
+                continue;
+        }
+        const int owner = entry->owner;
+        if(owner < 0)
+            return nil;
+        const LHCoverNode &node = _coverNodes[owner];
+        if(node.pre < rpre && rpost < node.post)
+            return nil;
+        if(!found)
+            found = [NSMutableOrderedSet orderedSet];
+        [found addObject:@(_coverValues[node.value].c_str())];
+        if(found.count > 8)
+            return nil;
+    }
+    return found ? found.array : @[];
 }
 
 - (void)drawLockedInContext:(CGContextRef)ctx origin:(CGPoint)origin clip:(CGRect)clip
