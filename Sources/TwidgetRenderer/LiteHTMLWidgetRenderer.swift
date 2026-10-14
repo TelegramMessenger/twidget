@@ -387,7 +387,7 @@ public final class LiteHTMLWidgetRenderer {
         charge(spent, tile: true)
     }
 
-    private func charge(_ spent: CFTimeInterval, tile: Bool = false) {
+    func charge(_ spent: CFTimeInterval, tile: Bool = false) {
         guard spent > 0 else {
             return
         }
@@ -659,6 +659,13 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         if !destroyed, !flushingHeld, !answersInput, throttled, json.hasPrefix("{\"type\":\"ops\"") {
+            if json.utf8.count <= 32768,
+               let data = json.data(using: .utf8),
+               let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let values = message["ops"] as? [[String: Any]],
+               applyCompositedWhileThrottled(values.map(WidgetOp.init)) {
+                return
+            }
             holdThrottled(.json(json))
             return
         }
@@ -674,7 +681,12 @@ public final class LiteHTMLWidgetRenderer {
         }
         switch type {
         case "ops":
-            applyMeasured(((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map(WidgetOp.init) }, held: false)
+            let ops = ((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map(WidgetOp.init) }
+            if !flushingHeld, !answersInput, throttled {
+                if !applyCompositedWhileThrottled(ops) { holdThrottled(.ops(ops)) }
+                return
+            }
+            applyMeasured(ops, held: false)
         case "query":
             let qid = message["qid"] ?? NSNull()
             let q = (message["query"] as? [String: Any]) ?? [:]
@@ -730,7 +742,9 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         if throttled && !answersInput {
-            holdThrottled(.ops(ops))
+            if !applyCompositedWhileThrottled(ops) {
+                holdThrottled(.ops(ops))
+            }
             return
         }
         applyMeasured(ops, held: false)
@@ -1652,6 +1666,18 @@ public final class LiteHTMLWidgetRenderer {
     private var opsBatch = 0
     static let scriptedStreakGap: CFTimeInterval = 0.12
     static let scriptedStreakBatches = 4
+
+    private func applyCompositedWhileThrottled(_ ops: [WidgetOp]) -> Bool {
+        guard !frozen, !pendingGeometry, !needsRender, !renderAtTick, document != nil,
+              ops.count <= WidgetCompositor.maxLayers * 2,
+              scriptedOnly(ops) != nil,
+              ops.allSatisfy({ $0.value.utf8.count <= 256 }),
+              compositor.canApplyScripted(ops, dom: dom) else {
+            return false
+        }
+        applyMeasured(ops, held: false)
+        return true
+    }
 
     private func scriptedOnly(_ ops: [WidgetOp]) -> Set<Int>? {
         let promoted = compositor.scriptedIDs

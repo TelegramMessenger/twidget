@@ -506,6 +506,25 @@ void litehtml::render_item::render_positioned(render_type rt)
                 return width;
             };
 
+            if(is_one_of(el->css().get_display(), display_flex, display_inline_flex) &&
+               (el_width.is_predefined() || el_height.is_predefined()))
+            {
+                pixel_t available_width = containing_block_size.width;
+                if(!css_left.is_predefined())
+                    available_width -= css_left.calc_percent(containing_block_size.width);
+                if(!css_right.is_predefined())
+                    available_width -= css_right.calc_percent(containing_block_size.width);
+                available_width = std::max(0_px, available_width);
+                auto measured = el->render(el->left(), el->top(),
+                                           containing_block_size.new_width(available_width), nullptr);
+                if(el_width.is_predefined() && (css_left.is_predefined() || css_right.is_predefined()))
+                {
+                    pixel_t fitted_width = std::min(std::max(measured.min_width, available_width), measured.natural_width);
+                    if(fitted_width != el->width())
+                        el->render(el->left(), el->top(), containing_block_size.new_width(fitted_width), nullptr);
+                }
+            }
+
             pixel_t bottom = 0_px;
             pixel_t top    = 0_px;
             pixel_t height = 0_px;

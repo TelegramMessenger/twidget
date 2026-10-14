@@ -1,5 +1,6 @@
 import AppKit
 import LiteHTML
+import WidgetSandboxProtocol
 
 enum CSSTransform {
     private static let translatePrefix = Array("translate(".utf8)
@@ -506,6 +507,28 @@ final class WidgetCompositor {
         let layers = Set(promoted.values.map { ObjectIdentifier($0.layer) }).union(containers.values.map { ObjectIdentifier($0) })
         WidgetCompositor.orderSublayers(of: container, members: layers)
         WidgetCompositor.orderSublayers(of: host, members: layers)
+        return true
+    }
+
+    func canApplyScripted(_ ops: [WidgetOp], dom: WidgetDOM) -> Bool {
+        var styles: [Int: [String: String]] = [:]
+        for op in ops {
+            guard let node = dom.node(op.id) else { return false }
+            if styles[op.id] == nil { styles[op.id] = WidgetCompositor.style(node) }
+            styles[op.id]?[op.name.lowercased()] = op.value
+        }
+        for (id, style) in styles {
+            guard let item = promoted[id], let limits = scripted[id],
+                  let transform = parse(style["transform"], box: item.box.size, id: id),
+                  sqrt(abs(transform.a * transform.d - transform.b * transform.c)) <= limits.scale + 0.001 else {
+                return false
+            }
+            if let text = style["opacity"], Double(text.trimmingCharacters(in: .whitespaces))?.isFinite != true {
+                return false
+            }
+            let moved = CGRect(origin: .zero, size: item.box.size).applying(WidgetCompositor.anchored(transform, box: item.box, origin: item.origin))
+            guard covers(limits.reach, moved, container: containerClip(id)) else { return false }
+        }
         return true
     }
 
@@ -1150,7 +1173,8 @@ final class WidgetCompositor {
             let origin = CSSTransform.origin(style["transform-origin"], box: box.size)
             let current = CGRect(origin: .zero, size: box.size).applying(WidgetCompositor.anchored(transform, box: box, origin: origin))
             let rotated = abs(transform.b) > 0.0001 || abs(transform.c) > 0.0001
-            let scale: CGFloat = min(3, max(rotated ? 2 : 1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
+            let translating = transform.a == 1 && transform.b == 0 && transform.c == 0 && transform.d == 1
+            let scale: CGFloat = translating ? 1 : min(3, max(rotated ? 2 : 1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
             wanted[id] = (box, origin, scale)
             reaches[id] = [max(48, max(box.width, box.height) / 2), 16, 2].map { current.insetBy(dx: -$0, dy: -$0) }
             scriptedBases[id] = current
