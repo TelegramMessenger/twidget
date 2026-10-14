@@ -1916,7 +1916,7 @@ litehtml::position litehtml::render_item::sticky_offset() const
     if(!parent_item) return shift;
     auto scroller = parent_item;
     pixel_t local_x = m_pos.x, local_y = m_pos.y;
-    while(scroller && scroller->css().get_overflow() == overflow_visible)
+    while(scroller && is_one_of(scroller->css().get_overflow(), overflow_visible, overflow_clip))
     {
         local_x += scroller->m_pos.x;
         local_y += scroller->m_pos.y;

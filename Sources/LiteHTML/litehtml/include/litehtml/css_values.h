@@ -442,7 +442,7 @@ namespace litehtml
     // ==========================================================
     // CSS Property: overflow
     // ==========================================================
-    inline constexpr auto overflow_strings = split_css_values<6>("visible;hidden;scroll;auto;no-display;no-content");
+    inline constexpr auto overflow_strings = split_css_values<7>("visible;hidden;scroll;auto;no-display;no-content;clip");
 
     enum overflow
     {
@@ -451,7 +451,8 @@ namespace litehtml
         overflow_scroll,
         overflow_auto,
         overflow_no_display,
-        overflow_no_content
+        overflow_no_content,
+        overflow_clip
     };
 
     // ==========================================================

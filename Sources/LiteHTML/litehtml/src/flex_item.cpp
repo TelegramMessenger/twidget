@@ -150,7 +150,7 @@ void litehtml::flex_item_row_direction::direction_specific_init(const litehtml::
     def_value<pixel_t> content_size(0_px);
     if(el->css().get_min_width().is_predefined())
     {
-        if(el->css().get_overflow() != overflow_visible)
+        if(!is_one_of(el->css().get_overflow(), overflow_visible, overflow_clip))
         {
             min_size = el->render_offset_width();
         } else
@@ -361,7 +361,7 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
         content_height = el->measure_height(0_px, 0_px,
                                             self_size.new_width(self_size.render_width, containing_block_context::size_mode_content),
                                             fmt_ctx);
-        min_size = el->css().get_overflow() != overflow_visible &&
+        min_size = !is_one_of(el->css().get_overflow(), overflow_visible, overflow_clip) &&
                            self_size.height.type != containing_block_context::cbc_value_type_auto
                        ? el->render_offset_height()
                        : static_cast<pixel_t>(content_height);

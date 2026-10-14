@@ -177,6 +177,64 @@ final class ScrollLayerTests: XCTestCase {
         }
     }
 
+    func testScrollHitViewportRespectsEveryClippingAncestor() throws {
+        for clipping in ["overflow:hidden", "overflow:clip", "contain:paint"] {
+            let document = LHDocument(html: "<body style='margin:0'><div style='width:120px;height:100px;border:4px solid red;\(clipping)'><div style='width:200px;height:160px;overflow:hidden;margin:10px'><div id='list' style='width:240px;height:200px;overflow:auto'><div style='height:500px'></div></div></div></div></body>", css: nil)
+            _ = document.layout(maxWidth: 400, preferredWidth: 400)
+            let info = try XCTUnwrap(document.scrollers(byAttribute: "id")["list"])
+            XCTAssertEqual((info["viewport"] as? NSValue)?.rectValue, CGRect(x: 14, y: 14, width: 240, height: 200))
+            XCTAssertEqual((info["hitViewport"] as? NSValue)?.rectValue, CGRect(x: 14, y: 14, width: 110, height: 90), clipping)
+        }
+    }
+
+    func testFixedScrollerEscapesOrdinaryAncestorOverflowClip() throws {
+        let document = LHDocument(html: "<body style='margin:0'><div style='width:50px;height:50px;overflow:hidden'><div id='list' style='position:fixed;left:150px;top:150px;width:100px;height:100px;overflow:auto'><div style='height:500px'></div></div></div></body>", css: nil)
+        _ = document.layout(maxWidth: 400, preferredWidth: 400)
+        let info = try XCTUnwrap(document.scrollers(byAttribute: "id")["list"])
+        XCTAssertEqual((info["hitViewport"] as? NSValue)?.rectValue, (info["viewport"] as? NSValue)?.rectValue)
+    }
+
+    func testWheelOutsideClippedScrollerLeavesItsOffsetUnchanged() throws {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        renderer.view.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+        defer { renderer.destroy() }
+        renderer.load()
+        let ops: [[String: Any]] = [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [], "adopt": "body"],
+            ["op": "el", "id": 2, "tag": "style", "attrs": []],
+            ["op": "css", "id": 2, "text": "body{margin:0}#clip{width:120px;height:100px;overflow:hidden;border:4px solid red}#list{width:240px;height:200px;overflow:auto}#rows{height:800px}"],
+            ["op": "ins", "id": 2, "parent": 1],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["id", "clip"]]], ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["id", "list"]]], ["op": "ins", "id": 4, "parent": 3],
+            ["op": "el", "id": 5, "tag": "div", "attrs": [["id", "rows"]]], ["op": "ins", "id": 5, "parent": 4],
+        ]
+        renderer.send(String(data: try JSONSerialization.data(withJSONObject: ["type": "ops", "ops": ops]), encoding: .utf8)!)
+        pump(1, until: { renderer.scrolling.geometries[4] != nil })
+        XCTAssertEqual(renderer.scrolling.hitViewports[4], CGRect(x: 4, y: 4, width: 120, height: 100))
+        XCTAssertFalse(renderer.handleScroll(CGPoint(x: 200, y: 50), event: wheel(-20)))
+        XCTAssertFalse(renderer.handleScroll(CGPoint(x: 50, y: 150), event: wheel(-20)))
+        XCTAssertEqual(renderer.scrolling.offset(4), .zero)
+        XCTAssertTrue(renderer.handleScroll(CGPoint(x: 50, y: 50), event: wheel(-20)))
+        XCTAssertEqual(renderer.scrolling.offset(4).y, 20)
+    }
+
+    func testClipOverflowDoesNotBecomeAScrollContainerForStickyContent() throws {
+        let document = LHDocument(html: "<body style='margin:0'><div id='outer' style='width:120px;height:100px;overflow:auto'><div id='clip' style='overflow:clip;height:300px'><div id='sticky' style='position:sticky;top:0;height:20px'>sticky</div><div style='height:500px'></div></div></div></body>", css: nil)
+        _ = document.layout(maxWidth: 200, preferredWidth: 200)
+        XCTAssertNil(document.scrollers(byAttribute: "id")["clip"])
+        XCTAssertEqual(document.setScrollOffset(CGPoint(x: 0, y: 50), attribute: "id", value: "clip"), .zero)
+        XCTAssertEqual(document.setScrollOffset(CGPoint(x: 0, y: 50), attribute: "id", value: "outer").y, 50)
+        XCTAssertEqual(document.bounds(byAttribute: "id")["sticky"]?.rectValue.minY, 0)
+    }
+
+    func testFixedScrollerInsideTransformStaysWithinOuterClip() throws {
+        let document = LHDocument(html: "<body style='margin:0'><div style='width:50px;height:50px;overflow:hidden'><div style='transform:translateX(0)'><div id='list' style='position:fixed;left:150px;top:150px;width:100px;height:100px;overflow:auto'><div style='height:500px'></div></div></div></div></body>", css: nil)
+        _ = document.layout(maxWidth: 400, preferredWidth: 400)
+        let info = try XCTUnwrap(document.scrollers(byAttribute: "id")["list"])
+        XCTAssertEqual((info["hitViewport"] as? NSValue)?.rectValue, .zero)
+    }
+
     private func list(rows: Int = 100) -> LHDocument {
         let items = (0..<rows).map { "<div style='height:20px;background:\($0 % 2 == 0 ? "#f00" : "#00f")'>\($0)</div>" }.joined()
         let document = LHDocument(html: "<body style='margin:0;background:#fff'><div style='height:10px'></div><div id='list' style='height:100px;overflow:auto'>\(items)</div></body>", css: nil)

@@ -1395,7 +1395,25 @@ static std::string MasterWithCSS(NSString *css)
             lh::border_radiuses radius = css.get_borders().radius.calc_percents(border.width, border.height);
             radius -= ri->get_borders();
             const lh::size &content = view->get_scroll_size();
+            CGRect hitViewport = CGRectMake(placement.x.value(), placement.y.value(), placement.width.value(), placement.height.value());
+            bool escaped = css.get_position() == lh::element_position_fixed;
+            for(auto parent = ri->parent(); parent; parent = parent->parent())
+            {
+                if(!parent->css().get_transform().empty() || parent->css().contains(lh::contain_layout | lh::contain_paint))
+                    escaped = false;
+                const bool viewportClip = escaped || !parent->parent();
+                escaped = escaped || parent->css().get_position() == lh::element_position_fixed;
+                if(parent->css().clips_contents() && !viewportClip)
+                {
+                    lh::position clip = parent->get_placement();
+                    clip += parent->get_paddings();
+                    hitViewport = CGRectIntersection(hitViewport, CGRectMake(clip.x.value(), clip.y.value(), clip.width.value(), clip.height.value()));
+                }
+            }
+            if(CGRectIsNull(hitViewport))
+                hitViewport = CGRectZero;
             result[@(v)] = @{
+                @"hitViewport": [NSValue valueWithRect:hitViewport],
                 @"viewport": [NSValue valueWithRect:NSMakeRect(placement.x.value(), placement.y.value(), placement.width.value(), placement.height.value())],
                 @"content": [NSValue valueWithSize:NSMakeSize(content.width.value(), content.height.value())],
                 @"sticky": @(hasSticky(ri)),

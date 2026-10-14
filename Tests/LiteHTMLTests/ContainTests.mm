@@ -56,6 +56,43 @@ static CGRect Box(LHDocument *document, NSString *value)
     XCTAssertNotEqualObjects(Pixels(Laid(page(@"contain:paint"), 240), 240), Pixels(Laid(page(@""), 240), 240));
 }
 
+- (void)testClipOverflowClipsWithoutStartingAFormattingContext
+{
+    NSString *(^page)(NSString *) = ^NSString *(NSString *style) {
+        return [NSString stringWithFormat:@"<div data-k='box' style='%@'><div style='float:left;width:20px;height:60px;background:red'></div></div><div data-k='after'>after</div>", style];
+    };
+    LHDocument *clipped = Laid(page(@"overflow:clip"), 200);
+    LHDocument *visible = Laid(page(@"overflow:visible"), 200);
+    LHDocument *hidden = Laid(page(@"overflow:hidden"), 200);
+    XCTAssertEqual(Box(clipped, @"box").size.height, Box(visible, @"box").size.height);
+    XCTAssertEqual(Box(clipped, @"after").origin.y, Box(visible, @"after").origin.y);
+    XCTAssertNotEqual(Box(clipped, @"box").size.height, Box(hidden, @"box").size.height);
+    NSString *paint = @"<div style='overflow:%@;width:80px;height:30px;padding:4px;background:#eee'><div style='width:160px;height:90px;background:#c00'></div></div><p>below</p>";
+    XCTAssertEqualObjects(Pixels(Laid([NSString stringWithFormat:paint, @"clip"], 240), 240), Pixels(Laid([NSString stringWithFormat:paint, @"hidden"], 240), 240));
+}
+
+- (void)testClipOverflowPreservesContentMinimumInFlexItems
+{
+    for(NSString *direction in @[@"row", @"column"])
+    {
+        NSString *(^page)(NSString *) = ^NSString *(NSString *overflow) {
+            return [NSString stringWithFormat:@"<div style='display:flex;flex-direction:%@;width:80px;height:80px'><div data-k='item' style='flex:1;overflow:%@'><div style='width:160px;height:200px'></div></div></div>", direction, overflow];
+        };
+        CGRect clipped = Box(Laid(page(@"clip"), 240), @"item");
+        CGRect visible = Box(Laid(page(@"visible"), 240), @"item");
+        CGRect hidden = Box(Laid(page(@"hidden"), 240), @"item");
+        if([direction isEqualToString:@"row"])
+        {
+            XCTAssertEqual(clipped.size.width, visible.size.width);
+            XCTAssertNotEqual(clipped.size.width, hidden.size.width);
+        } else
+        {
+            XCTAssertEqual(clipped.size.height, visible.size.height);
+            XCTAssertNotEqual(clipped.size.height, hidden.size.height);
+        }
+    }
+}
+
 - (void)testSizeContainmentIgnoresContent
 {
     LHDocument *document = Laid(@"<div data-k=\"a\" style=\"contain:size;padding:3px\"><p>one</p><p>two</p></div>"

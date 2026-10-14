@@ -376,7 +376,7 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
 
     rendered_width ret;
     ret.natural_width = ret_width + content_offset_width();
-    if(css().get_overflow() > overflow_visible && css().get_width().is_predefined() &&
+    if(!is_one_of(css().get_overflow(), overflow_visible, overflow_clip) && css().get_width().is_predefined() &&
        css().get_display() != display_table_cell)
     {
         ret.min_width = content_offset_left() + content_offset_right();

@@ -283,6 +283,7 @@ final class WidgetScrolling {
     private(set) var offsets: [Int: CGPoint] = [:]
     private(set) var geometries: [Int: WidgetScrollGeometry] = [:]
     private var depths: [Int: Int] = [:]
+    private(set) var hitViewports: [Int: CGRect] = [:]
     private weak var host: CALayer?
     static let enabled = ProcessInfo.processInfo.environment["TW_NO_SCROLL_LAYERS"] == nil
 
@@ -317,11 +318,13 @@ final class WidgetScrolling {
 
     func update(document: LHDocument, dom: WidgetDOM, animated: Set<Int>, promoted: Set<Int>, styleKey: Int, scale: CGFloat) -> Bool {
         var found: [Int: WidgetScrollGeometry] = [:]
+        var hits: [Int: CGRect] = [:]
         var sticky = Set<Int>()
         for (key, info) in document.scrollers(byAttribute: WidgetDOM.idAttribute) {
             guard let id = Int(key), let viewport = (info["viewport"] as? NSValue)?.rectValue, let content = (info["content"] as? NSValue)?.sizeValue else {
                 continue
             }
+            hits[id] = (info["hitViewport"] as? NSValue)?.rectValue ?? viewport
             if (info["sticky"] as? NSNumber)?.boolValue == true {
                 sticky.insert(id)
             }
@@ -329,6 +332,7 @@ final class WidgetScrolling {
             found[id] = WidgetScrollGeometry(viewport: viewport, content: content, radii: radii.count == 8 ? radii : [CGFloat](repeating: 0, count: 8))
         }
         geometries = found
+        hitViewports = hits
         depths.removeAll(keepingCapacity: true)
         for id in found.keys {
             var depth = 0
@@ -410,6 +414,7 @@ final class WidgetScrolling {
         for descendant in Array(geometries.keys) where Self.isDescendant(descendant, of: node, dom: dom) {
             if let viewport = (info[String(descendant)]?["viewport"] as? NSValue)?.rectValue {
                 geometries[descendant]?.viewport = viewport
+                hitViewports[descendant] = (info[String(descendant)]?["hitViewport"] as? NSValue)?.rectValue ?? viewport
             }
         }
         return true
@@ -429,7 +434,7 @@ final class WidgetScrolling {
     }
 
     func scroller(at point: CGPoint, delta: CGPoint) -> Int? {
-        let candidates = geometries.filter { $0.value.viewport.contains(point) && ($0.value.maxOffset.y > 0.5 || $0.value.maxOffset.x > 0.5) }
+        let candidates = geometries.filter { hitViewports[$0.key]?.contains(point) == true && ($0.value.maxOffset.y > 0.5 || $0.value.maxOffset.x > 0.5) }
         for (id, geometry) in candidates.sorted(by: {
             let leftDepth = depths[$0.key] ?? 0, rightDepth = depths[$1.key] ?? 0
             if leftDepth != rightDepth { return leftDepth > rightDepth }
