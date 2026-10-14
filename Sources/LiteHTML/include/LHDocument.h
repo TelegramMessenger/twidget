@@ -62,6 +62,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous;
 - (instancetype)initWithHTML:(NSString *)html css:(nullable NSString *)css previous:(nullable LHDocument *)previous viewportSize:(CGSize)viewportSize NS_DESIGNATED_INITIALIZER;
 @property (readonly) CGSize viewportSize;
+@property (readonly) BOOL dependsOnViewport;
 /// Patches `previous` in place with new inline style values, keyed by the value of `attribute`, without parsing HTML.
 /// Each value must be the exact `style` attribute text the full HTML would carry, and every element must already have a
 /// style attribute. Runs the same checks as an HTML patch and returns nil, leaving `previous` usable, when it can't apply.

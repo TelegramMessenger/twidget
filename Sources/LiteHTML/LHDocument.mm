@@ -567,6 +567,37 @@ static uint64_t LHPackSize(CGSize size)
     return static_cast<uint64_t>(lo) | (static_cast<uint64_t>(hi) << 32);
 }
 
+static bool DependsOnViewport(const std::string& text)
+{
+    const size_t count = text.size();
+    if(strcasestr(text.c_str(), "@media"))
+        return true;
+    for(size_t i = 1; i + 1 < count; i++)
+    {
+        const char v = text[i];
+        if(v != 'v' && v != 'V')
+            continue;
+        size_t number = i - 1;
+        const char prefix = static_cast<char>(std::tolower(static_cast<unsigned char>(text[number])));
+        if((prefix == 's' || prefix == 'l' || prefix == 'd') && number > 0)
+            number--;
+        const unsigned char digit = static_cast<unsigned char>(text[number]);
+        if(!std::isdigit(digit) && digit != '.')
+            continue;
+        size_t end = i + 1;
+        const char unit = static_cast<char>(std::tolower(static_cast<unsigned char>(text[end])));
+        if(unit == 'w' || unit == 'h')
+            end += 1;
+        else if(count - end >= 3 && (strncasecmp(text.c_str() + end, "min", 3) == 0 || strncasecmp(text.c_str() + end, "max", 3) == 0))
+            end += 3;
+        else
+            continue;
+        if(end >= count || !std::isalpha(static_cast<unsigned char>(text[end])))
+            return true;
+    }
+    return false;
+}
+
 @implementation LHDocument
 {
     std::mutex                   _lock;
@@ -581,6 +612,7 @@ static uint64_t LHPackSize(CGSize size)
     CGFloat                      _preferredWidth;
     CGSize                       _size;
     CGSize                       _viewportSize;
+    BOOL                         _dependsOnViewport;
     std::atomic<uint64_t>        _sizeMirror;
     BOOL                         _paintOnly;
     BOOL                         _pointerRestyled;
@@ -750,10 +782,11 @@ static std::string MasterWithCSS(NSString *css)
 
         double            t0   = NowMs();
         const std::string body = html.UTF8String ?: "";
+        _dependsOnViewport = DependsOnViewport(body) || DependsOnViewport(css.UTF8String ?: "");
         if(previous)
         {
             std::lock_guard<std::mutex> guard(previous->_lock);
-            if(previous->_doc && previous->_updatable && previous->_master == _master && CGSizeEqualToSize(previous->_viewportSize, _viewportSize) &&
+            if(previous->_doc && previous->_updatable && previous->_master == _master && (CGSizeEqualToSize(previous->_viewportSize, _viewportSize) || (!previous->_dependsOnViewport && !_dependsOnViewport)) &&
                previous->_doc->update_from_string(body, nullptr))
             {
                 _doc       = std::move(previous->_doc);
@@ -1128,6 +1161,11 @@ static std::string MasterWithCSS(NSString *css)
 - (CGSize)viewportSize
 {
     return _viewportSize;
+}
+
+- (BOOL)dependsOnViewport
+{
+    return _dependsOnViewport;
 }
 
 - (CGSize)size

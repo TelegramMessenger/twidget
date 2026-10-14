@@ -36,6 +36,28 @@ final class ViewportLayoutTests: XCTestCase {
         XCTAssertEqual(resized.bounds(matching: "#box").width, 315, accuracy: 0.1)
     }
 
+    func testViewportResizeReusesDocumentsThatDoNotDependOnIt() throws {
+        let plain = "<style>body{margin:0}</style><div id=box style='height:84px;width:70%;background:red'></div><div style='position:fixed;bottom:0;height:10px;width:10px'></div>"
+        let original = LHDocument(html: plain, css: nil, previous: nil, viewportSize: CGSize(width: 420, height: 760))
+        _ = original.layout(maxWidth: 420, preferredWidth: 420)
+        let resized = LHDocument(html: plain, css: nil, previous: original, viewportSize: CGSize(width: 300, height: 540))
+        XCTAssertTrue(resized.reusedPrevious)
+        XCTAssertFalse(resized.dependsOnViewport)
+        _ = resized.layout(maxWidth: 300, preferredWidth: 300)
+        let fresh = LHDocument(html: plain, css: nil, previous: nil, viewportSize: CGSize(width: 300, height: 540))
+        _ = fresh.layout(maxWidth: 300, preferredWidth: 300)
+        XCTAssertEqual(resized.bounds(matching: "#box"), fresh.bounds(matching: "#box"))
+        XCTAssertEqual(resized.size, fresh.size)
+        for dependent in ["<div style='height:10vh'></div>", "<div style='width:calc(2.5svmin + 1px)'></div>", "<style>@media(max-height:600px){div{color:red}}</style><div></div>"] {
+            let first = LHDocument(html: dependent, css: nil, previous: nil, viewportSize: CGSize(width: 420, height: 760))
+            XCTAssertTrue(first.dependsOnViewport, dependent)
+            XCTAssertFalse(LHDocument(html: dependent, css: nil, previous: first, viewportSize: CGSize(width: 420, height: 540)).reusedPrevious, dependent)
+        }
+        for independent in ["<div>avwh 1vwx</div>", "<div style='width:12px'>review</div>"] {
+            XCTAssertFalse(LHDocument(html: independent, css: nil).dependsOnViewport, independent)
+        }
+    }
+
     func testFixedViewportDoesNotStretchIntrinsicContent() {
         let html = "<style>body{margin:0}</style><div style='height:84px;background:red'></div>"
         let intrinsic = LHDocument(html: html, css: nil)
