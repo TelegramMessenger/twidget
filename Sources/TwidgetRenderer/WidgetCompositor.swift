@@ -1246,7 +1246,7 @@ final class WidgetCompositor {
         var overlapAdded: Set<Int> = []
         if WidgetCompositor.overlapPromotion {
             var ignoringAll = Set(wanted.keys.map { String($0) })
-            var queue = Array(wanted.keys)
+            var queue = wanted.keys.sorted()
             var budget = WidgetCompositor.overlapBudget
             while let id = queue.popLast(), budget > 0 {
                 guard let reach = reaches[id]?.first, !unobscured(id, reach, ignoringAll, tag: -1) else {
@@ -1290,7 +1290,8 @@ final class WidgetCompositor {
         }
         var accepted = wanted
         var chosenReach: [Int: CGRect] = [:]
-        for _ in 0..<4 {
+        var paintRank: [Int: Int]?
+        for _ in 0...wanted.count {
             let ignoring = Set(accepted.keys.map { String($0) })
             let ignoringTag = tag(for: ignoring)
             var next: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
@@ -1309,16 +1310,28 @@ final class WidgetCompositor {
                     }
                 }
             }
-            var budget = WidgetCompositor.maxPixels
-            var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
-            for (id, want) in next.sorted(by: { $0.value.box.width * $0.value.box.height < $1.value.box.width * $1.value.box.height }) {
+            func pixels(_ want: (box: CGRect, origin: CGPoint, maxScale: CGFloat)) -> Int {
                 let factor = WidgetCompositor.rasterScale(scale, want.maxScale)
-                let pixels = Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
-                if admitted.count >= WidgetCompositor.maxLayers || pixels > budget {
-                    continue
+                return Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
+            }
+            var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
+            if next.count <= WidgetCompositor.maxLayers && next.values.reduce(0, { $0 + pixels($1) }) <= WidgetCompositor.maxPixels {
+                admitted = next
+            } else {
+                if paintRank == nil {
+                    let order = document.paintOrder(attribute: WidgetDOM.idAttribute, values: Set(wanted.keys.map { String($0) }))
+                    paintRank = Dictionary(order.compactMap { key, value in Int(key).map { ($0, value.intValue) } }, uniquingKeysWith: { max($0, $1) })
                 }
-                budget -= pixels
-                admitted[id] = want
+                let rank = paintRank ?? [:]
+                var budget = WidgetCompositor.maxPixels
+                for (id, want) in next.sorted(by: { (rank[$0.key] ?? -1, $0.key) > (rank[$1.key] ?? -1, $1.key) }) {
+                    let cost = pixels(want)
+                    if admitted.count >= WidgetCompositor.maxLayers || cost > budget {
+                        break
+                    }
+                    budget -= cost
+                    admitted[id] = want
+                }
             }
             if log { print("COMPOSITE round wanted=\(wanted.count) unobscured=\(next.count) admitted=\(admitted.count)") }
             let stable = Set(admitted.keys) == Set(accepted.keys)
@@ -1331,9 +1344,15 @@ final class WidgetCompositor {
             accepted[orphan] = nil
         }
         if accepted.count > 1 {
-            let ignoring = Set(accepted.keys.map { String($0) })
-            let finalTag = tag(for: ignoring)
-            accepted = accepted.filter { entry in reaches[entry.key]?.contains(where: { unobscured(entry.key, $0, ignoring, tag: finalTag) }) ?? false }
+            while true {
+                let ignoring = Set(accepted.keys.map { String($0) })
+                let finalTag = tag(for: ignoring)
+                let filtered = accepted.filter { entry in reaches[entry.key]?.contains(where: { unobscured(entry.key, $0, ignoring, tag: finalTag) }) ?? false }
+                if filtered.count == accepted.count {
+                    break
+                }
+                accepted = filtered
+            }
         } else if let only = accepted.first, !(reaches[only.key]?.contains(where: { unobscured(only.key, $0, [], tag: 0) }) ?? false) {
             accepted = [:]
         }
