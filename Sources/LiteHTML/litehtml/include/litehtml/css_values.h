@@ -514,6 +514,15 @@ namespace litehtml
         content_property_no_close_quote,
     };
 
+    inline constexpr auto overflow_wrap_strings = split_css_values<3>("normal;break-word;anywhere");
+
+    enum overflow_wrap
+    {
+        overflow_wrap_normal,
+        overflow_wrap_break_word,
+        overflow_wrap_anywhere
+    };
+
     inline constexpr auto resize_strings = split_css_values<6>("none;both;horizontal;vertical;block;inline");
 
     enum resize

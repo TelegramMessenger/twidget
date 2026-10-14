@@ -39,6 +39,7 @@ namespace litehtml
         overflow              m_overflow_x     = overflow_visible;
         overflow              m_overflow_y     = overflow_visible;
         white_space           m_white_space    = white_space_normal;
+        overflow_wrap         m_overflow_wrap  = overflow_wrap_normal;
         style_display         m_display        = display_inline;
         visibility            m_visibility     = visibility_visible;
         appearance            m_appearance     = appearance_none;
@@ -160,6 +161,8 @@ namespace litehtml
 
         white_space get_white_space() const;
         void        set_white_space(white_space mWhiteSpace);
+        overflow_wrap get_overflow_wrap() const { return m_overflow_wrap; }
+        void set_overflow_wrap(overflow_wrap value) { m_overflow_wrap = value; }
 
         style_display get_display() const;
         void          set_display(style_display mDisplay);

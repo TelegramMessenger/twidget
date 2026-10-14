@@ -6,6 +6,7 @@
 
 namespace litehtml
 {
+    class text_breaker;
     class el_text : public element
     {
       protected:
@@ -16,6 +17,7 @@ namespace litehtml
         bool        m_draw_spaces;
         uint_ptr    m_measured_font = 0;
         int         m_measured_transform = -1;
+        std::shared_ptr<text_breaker> m_breaker;
 
       public:
         el_text(const char* text, const document::ptr& doc);
@@ -23,6 +25,8 @@ namespace litehtml
         void get_text(std::string& text) const override;
         void set_text(const std::string& text);
         void compute_styles(bool recursive) override;
+        const std::string& display_text() const { return m_use_transformed ? m_transformed_text : m_text; }
+        std::shared_ptr<text_breaker> breaker();
         bool is_text() const override
         {
             return true;

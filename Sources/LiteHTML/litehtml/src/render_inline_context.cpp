@@ -2,6 +2,69 @@
 #include "document.h"
 #include "iterators.h"
 #include "types.h"
+#include "el_text.h"
+#include "document_container.h"
+
+namespace
+{
+    class wrapped_text_item : public litehtml::line_box_item
+    {
+      public:
+        wrapped_text_item(const std::shared_ptr<litehtml::render_item>& item, litehtml::pixel_t minimum) : line_box_item(item)
+        {
+            set_rendered_min_width(minimum);
+        }
+        litehtml::pixel_t get_rendered_natural_width() const override { return width(); }
+    };
+}
+
+litehtml::rendered_width litehtml::render_item_inline_context::measure(pixel_t x, pixel_t y,
+    const containing_block_context& cb, formatting_context* fmt_ctx, bool second_pass, pixel_t* measured_height)
+{
+    if(!measured_height && (cb.size_mode & containing_block_context::size_mode_content) &&
+       css().get_width().is_predefined() && css().get_min_width().is_predefined() && css().get_max_width().is_predefined() &&
+       !css().contains(contain_size) && !css().contains(contain_inline_size) &&
+       (css().get_list_style_type() == list_style_type_none || css().get_list_style_position() != list_style_position_inside) &&
+       css().get_text_indent().val() == 0 &&
+       !m_children.empty())
+    {
+        calc_outlines(cb.width);
+        auto self_size = calculate_containing_block_context(cb);
+        if(static_cast<pixel_t>(self_size.render_width) <= 0_px)
+        {
+            pixel_t minimum = 0_px;
+            bool supported = true;
+            for(const auto& child : m_children)
+            {
+                auto text = std::dynamic_pointer_cast<el_text>(child->src_el());
+                if(!text || text->css().get_overflow_wrap() != overflow_wrap_anywhere ||
+                   is_one_of(text->css().get_white_space(), white_space_pre, white_space_nowrap))
+                {
+                    supported = false;
+                    break;
+                }
+                if(text->is_white_space())
+                    continue;
+                auto breaker = text->breaker();
+                if(!breaker)
+                {
+                    supported = false;
+                    break;
+                }
+                minimum = std::max(minimum, breaker->minimum_width());
+            }
+            if(supported)
+            {
+                rendered_width result;
+                result.natural_width = minimum + content_offset_width();
+                result.min_width = is_one_of(css().get_overflow(), overflow_visible, overflow_clip) ?
+                    result.natural_width : content_offset_width();
+                return result;
+            }
+        }
+    }
+    return render_item::measure(x, y, cb, fmt_ctx, second_pass, measured_height);
+}
 
 litehtml::size litehtml::render_item_inline_context::text_content_size() const
 {
@@ -30,6 +93,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     formatting_context* fmt_ctx)
 {
     m_line_boxes.clear();
+    m_fragmented_texts.clear();
     m_rendered_width.reset();
     m_va_applied = 0_px;
 
@@ -106,6 +170,16 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     m_trailing = 0_px;
 
     finish_last_box(true, self_size);
+    for(const auto& text : m_fragmented_texts)
+    {
+        text->update_fragment_bounds();
+        if(text->css().get_overflow_wrap() != overflow_wrap_anywhere || static_cast<pixel_t>(self_size.render_width) > 0_px)
+        {
+            size unbroken;
+            text->src_el()->get_content_size(unbroken, self_size.render_width);
+            m_rendered_width.natural_width = std::max(m_rendered_width.natural_width, unbroken.width);
+        }
+    }
 
     if(!m_line_boxes.empty())
     {
@@ -300,10 +374,77 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
             item->set_rendered_min_width(min_rendered_width);
         } else if(item->get_el()->src_el()->css().get_display() == display_inline_text)
         {
-            litehtml::size sz;
-            item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
-            item->get_el()->pos() = sz;
-            item->set_rendered_min_width(sz.width);
+            auto text_item = std::dynamic_pointer_cast<render_text>(item->get_el());
+            if(text_item && !text_item->is_fragment)
+            {
+                text_item->fragments.clear();
+                litehtml::size sz;
+                item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
+                item->get_el()->pos() = sz;
+                item->set_rendered_min_width(sz.width);
+                auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
+                const auto wrapping = text_item->css().get_overflow_wrap();
+                const auto whitespace = text_item->css().get_white_space();
+                if(text && !text->is_space() && !text->is_break() && wrapping != overflow_wrap_normal &&
+                   whitespace != white_space_nowrap && whitespace != white_space_pre)
+                {
+                    pixel_t line_left = 0_px;
+                    pixel_t line_right = self_size.render_width;
+                    fmt_ctx->get_line_left_right(m_line_boxes.empty() ? 0_px : m_line_boxes.back()->top(),
+                        self_size.render_width, line_left, line_right);
+                    if(m_line_boxes.empty())
+                    {
+                        line_left += src_el()->css().get_text_indent().calc_percent(self_size.width);
+                        if(src_el()->css().get_list_style_type() != list_style_type_none &&
+                           src_el()->css().get_list_style_position() == list_style_position_inside)
+                            line_left += src_el()->css().get_font_size();
+                    } else
+                        line_left = std::max(line_left, m_line_boxes.back()->left());
+                    const pixel_t line_width = line_right - line_left;
+                    auto breaker = wrapping == overflow_wrap_anywhere || sz.width + m_trailing > line_width ? text->breaker() : nullptr;
+                    if(breaker)
+                    {
+                        const pixel_t minimum = wrapping == overflow_wrap_anywhere ? breaker->minimum_width() : sz.width;
+                        item = std::make_unique<wrapped_text_item>(text_item, minimum);
+                        if(sz.width + m_trailing > line_width)
+                        {
+                            const std::string& content = text->display_text();
+                            const bool needs_line = m_line_boxes.empty() || !m_line_boxes.back()->can_hold(item, whitespace, m_trailing);
+                            text_item->pos().width = breaker->minimum_width();
+                            if(needs_line)
+                                new_box(item, self_size, fmt_ctx);
+                            const pixel_t trailing = m_trailing;
+                            for(size_t start = 0; start < content.size();)
+                            {
+                                pixel_t available = m_line_boxes.back()->line_right() - m_line_boxes.back()->right();
+                                size_t end = breaker->fit(start, available);
+                                if(end <= start || end > content.size())
+                                    break;
+                                if(end == content.size() && trailing > 0_px)
+                                    end = breaker->fit(start, available - trailing);
+                                auto fragment = std::make_shared<render_text>(text_item->src_el());
+                                fragment->parent(text_item->parent());
+                                fragment->is_fragment = true;
+                                fragment->fragment_text = content.substr(start, end - start);
+                                fragment->pos() = size(text->doc_ptr()->container()->text_width(fragment->fragment_text.c_str(), text->css().get_font()), sz.height);
+                                text_item->fragments.push_back(fragment);
+                                m_trailing = end == content.size() ? trailing : 0_px;
+                                place_inline(std::make_unique<wrapped_text_item>(fragment, minimum), self_size, fmt_ctx);
+                                start = end;
+                                if(start < content.size())
+                                    new_box(item, self_size, fmt_ctx);
+                            }
+                            m_trailing = trailing;
+                            if(!text_item->fragments.empty())
+                            {
+                                m_fragmented_texts.push_back(text_item);
+                                return;
+                            }
+                            text_item->pos() = sz;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -402,6 +543,8 @@ void litehtml::render_item_inline_context::apply_vertical_align()
             }
         }
         m_va_applied = add;
+        for(const auto& text : m_fragmented_texts)
+            text->update_fragment_bounds();
     }
 }
 

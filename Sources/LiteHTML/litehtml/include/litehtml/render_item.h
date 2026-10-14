@@ -544,7 +544,7 @@ namespace litehtml
 
         rendered_width render(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                               formatting_context* fmt_ctx, bool second_pass = false);
-        rendered_width measure(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
+        virtual rendered_width measure(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                                formatting_context* fmt_ctx, bool second_pass = false, pixel_t* measured_height = nullptr);
         pixel_t measure_height(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                                formatting_context* fmt_ctx, bool second_pass = false);

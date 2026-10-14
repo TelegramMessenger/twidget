@@ -56,7 +56,7 @@ input[type="range"] { width: 129px; height: 16px; margin: 2px; padding: 0; borde
 input[type="color"] { box-sizing: border-box; width: 44px; height: 23px; padding: 1px; border-width: 2px; }
 input[type="button"], input[type="submit"], input[type="reset"], button { box-sizing: border-box; padding: 0.01px 6.01px 1.01px; border: 2px outset rgba(1, 2, 3, 0.004); background-color: rgba(3, 2, 1, 0.004); text-align: center; }
 select { box-sizing: border-box; padding: 0; border: 1px solid rgba(1, 2, 3, 0.004); border-radius: 5px; background-color: rgba(3, 2, 1, 0.004); vertical-align: baseline; }
-textarea { display: inline-block; box-sizing: content-box; width: 12.73em; height: auto; padding: 2px 5px; border: 1px solid rgba(1, 2, 3, 0.004); background-color: rgba(3, 2, 1, 0.004); white-space: pre-wrap; overflow: hidden; }
+textarea { display: inline-block; box-sizing: content-box; width: 12.73em; height: auto; padding: 2px 5px; border: 1px solid rgba(1, 2, 3, 0.004); background-color: rgba(3, 2, 1, 0.004); white-space: pre-wrap; overflow-wrap: break-word; overflow: hidden; }
 fieldset { display: block; margin: 0 2px; padding: 0.35em 0.75em 0.625em; border: 2px groove rgb(192, 192, 192); }
 legend { display: table; padding: 0 2px; }
 progress, meter { appearance: auto; display: inline-block; box-sizing: border-box; width: 140px; height: 14px; vertical-align: -0.2em; overflow: hidden; color: transparent; font-size: 0; }

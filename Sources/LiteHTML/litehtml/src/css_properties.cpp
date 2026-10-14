@@ -44,6 +44,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
         el->get_property<int>(__webkit_font_smoothing_, true, font_smoothing_auto, offset(m_font_smoothing)));
     m_white_space =
         static_cast<white_space>(el->get_property<int>(_white_space_, true, white_space_normal, offset(m_white_space)));
+    m_overflow_wrap = static_cast<overflow_wrap>(el->get_property<int>(_overflow_wrap_, true, overflow_wrap_normal, offset(m_overflow_wrap)));
     m_caption_side = static_cast<caption_side>(
         el->get_property<int>(_caption_side_, true, caption_side_top, offset(m_caption_side)));
 

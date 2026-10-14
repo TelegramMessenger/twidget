@@ -2,6 +2,7 @@
 #define LITEHTML_RENDER_INLINE_CONTEXT_H
 
 #include "render_block.h"
+#include "render_inline.h"
 
 namespace litehtml
 {
@@ -12,6 +13,7 @@ namespace litehtml
     class render_item_inline_context : public render_item_block
     {
         pixel_t m_trailing = 0_px;
+        std::vector<std::shared_ptr<render_text>> m_fragmented_texts;
 
       protected:
         void shift_content(pixel_t delta) override
@@ -20,6 +22,8 @@ namespace litehtml
             {
                 box->y_shift(delta);
             }
+            for(const auto& text : m_fragmented_texts)
+                text->update_fragment_bounds();
         }
 
         /**
@@ -75,6 +79,8 @@ namespace litehtml
         pixel_t get_last_baseline() override;
         pixel_t control_baseline_inset() const;
         size text_content_size() const;
+        rendered_width measure(pixel_t x, pixel_t y, const containing_block_context& cb,
+            formatting_context* fmt_ctx, bool second_pass = false, pixel_t* measured_height = nullptr) override;
     };
 } // namespace litehtml
 

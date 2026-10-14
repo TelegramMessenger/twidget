@@ -46,6 +46,7 @@ namespace litehtml
         {_text_transform_,         text_transform_strings              },
         {__webkit_font_smoothing_, font_smoothing_strings              },
         {_white_space_,            white_space_strings                 },
+        {_overflow_wrap_,          overflow_wrap_strings               },
 
         {_font_style_,             font_style_strings                  },
         {_font_variant_,           font_variant_strings                },
@@ -387,6 +388,8 @@ namespace litehtml
         // nonempty if value is a single identifier
         std::string ident = val.ident();
 
+        if(name == _word_wrap_)
+            name = _overflow_wrap_;
         if(ident == "inherit")
         {
             return inherit_property(name, important);
@@ -432,6 +435,7 @@ namespace litehtml
         case _text_transform_:
         case __webkit_font_smoothing_:
         case _white_space_:
+        case _overflow_wrap_:
 
         case _font_style_:
         case _font_variant_:

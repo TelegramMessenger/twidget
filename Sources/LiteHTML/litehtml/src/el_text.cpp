@@ -1,6 +1,7 @@
 #include "html.h"
 #include "el_text.h"
 #include "render_item.h"
+#include "render_inline.h"
 #include "document_container.h"
 
 litehtml::el_text::el_text(const char* text, const document::ptr& doc) :
@@ -33,6 +34,7 @@ void litehtml::el_text::set_text(const std::string& text)
     m_draw_spaces     = true;
     m_size            = size();
     m_measured_font   = 0;
+    m_breaker.reset();
     mark_layout_dirty();
     css_w()           = css_properties();
     css_w().set_display(display_inline_text);
@@ -48,6 +50,7 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         css_w().set_font(el_parent->css().get_font());
         css_w().set_font_metrics(el_parent->css().get_font_metrics());
         css_w().set_white_space(el_parent->css().get_white_space());
+        css_w().set_overflow_wrap(el_parent->css().get_overflow_wrap());
         css_w().set_text_transform(el_parent->css().get_text_transform());
     }
     css_w().set_display(display_inline_text);
@@ -115,6 +118,7 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         const int transform = m_use_transformed ? (is_white_space() ? -2 : int(m_css.get_text_transform())) : -3;
         if(m_measured_font != font || m_measured_transform != transform)
         {
+            m_breaker.reset();
             m_size.width = get_document()->container()->text_width(
                 m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font);
             m_measured_font      = font;
@@ -124,11 +128,26 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
     m_draw_spaces = fm.draw_spaces;
 }
 
+std::shared_ptr<litehtml::text_breaker> litehtml::el_text::breaker()
+{
+    if(!m_breaker)
+        m_breaker = doc_ptr()->container()->create_text_breaker(display_text(), css().get_font());
+    return m_breaker;
+}
+
 void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                              const std::shared_ptr<render_item>& ri)
 {
     if(is_white_space() && !m_draw_spaces)
     {
+        return;
+    }
+
+    const auto text_item = std::dynamic_pointer_cast<render_text>(ri);
+    if(text_item && !text_item->fragments.empty())
+    {
+        for(const auto& fragment : text_item->fragments)
+            draw(hdc, x, y, clip, fragment);
         return;
     }
 
@@ -159,7 +178,7 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
             if(font)
             {
                 web_color color = el_parent->css().get_color();
-                doc->container()->draw_text(hdc, m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font,
+                doc->container()->draw_text(hdc, text_item && text_item->is_fragment ? text_item->fragment_text.c_str() : display_text().c_str(), font,
                                             color, pos);
             }
         }

@@ -82,9 +82,42 @@ namespace litehtml
     class render_text : public render_item_inline
     {
       public:
+        std::vector<std::shared_ptr<render_text>> fragments;
+        std::string fragment_text;
+        bool is_fragment = false;
+
         explicit render_text(std::shared_ptr<element> src_el) :
             render_item_inline(std::move(src_el))
         {
+        }
+
+        void update_fragment_bounds()
+        {
+            if(fragments.empty())
+                return;
+            m_pos = fragments.front()->pos();
+            for(const auto& fragment : fragments)
+            {
+                const position& box = fragment->pos();
+                const pixel_t right = std::max(m_pos.right(), box.right());
+                const pixel_t bottom = std::max(m_pos.bottom(), box.bottom());
+                m_pos.x = std::min(m_pos.x, box.x);
+                m_pos.y = std::min(m_pos.y, box.y);
+                m_pos.width = right - m_pos.x;
+                m_pos.height = bottom - m_pos.y;
+            }
+        }
+
+        void y_shift(pixel_t shift) override
+        {
+            render_item_inline::y_shift(shift);
+            for(const auto& fragment : fragments)
+                fragment->y_shift(shift);
+        }
+
+        std::shared_ptr<render_item> clone() override
+        {
+            return std::make_shared<render_text>(src_el());
         }
 
         bool for_inline_boxes([[maybe_unused]] const std::function<bool(const position& box, bool first, bool last)>&

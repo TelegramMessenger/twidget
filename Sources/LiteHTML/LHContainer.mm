@@ -1351,6 +1351,107 @@ static bool ShapeSimple(SharedFont& sf, const char* text, SimpleRun& run)
     return sf.simple->shape(text, run.count, run.glyphs, run.xs, &run.width);
 }
 
+namespace
+{
+    class LHTextBreaker final : public lh::text_breaker
+    {
+        CTTypesetterRef typesetter = nullptr;
+        std::vector<std::pair<CFIndex, size_t>> boundaries;
+        lh::pixel_t minimum = -1_px;
+        LHContainer *container;
+        lh::uint_ptr font;
+        std::shared_ptr<SharedFont> sharedFont;
+        std::string text;
+
+        void prepare()
+        {
+            if(typesetter)
+                return;
+            CFStringRef string = CFStringCreateWithBytes(nullptr, reinterpret_cast<const UInt8*>(text.data()), text.size(), kCFStringEncodingUTF8, false);
+            if(!string)
+                return;
+            CFAttributedStringRef attributed = CFAttributedStringCreate(nullptr, string, sharedFont->drawAttrs);
+            typesetter = CTTypesetterCreateWithAttributedString(attributed);
+            CFRelease(attributed);
+            CFRelease(string);
+        }
+
+      public:
+        LHTextBreaker(LHContainer *container, const std::string& text, lh::uint_ptr font, std::shared_ptr<SharedFont> sharedFont) : container(container), font(font), sharedFont(std::move(sharedFont)), text(text)
+        {
+            if(std::all_of(text.begin(), text.end(), [](unsigned char c) { return c >= 0x20 && c < 0x7f; }))
+            {
+                boundaries.reserve(text.size() + 1);
+                for(size_t index = 0; index <= text.size(); index++)
+                    boundaries.emplace_back(index, index);
+                return;
+            }
+            CFStringRef string = CFStringCreateWithBytes(nullptr, reinterpret_cast<const UInt8*>(text.data()), text.size(), kCFStringEncodingUTF8, false);
+            if(!string)
+                return;
+            NSString *source = (__bridge NSString *)string;
+            boundaries.emplace_back(0, 0);
+            size_t bytes = 0;
+            for(NSUInteger index = 0; index < source.length;)
+            {
+                NSRange range = [source rangeOfComposedCharacterSequenceAtIndex:index];
+                CFIndex length = 0;
+                CFStringGetBytes(string, CFRangeMake(range.location, range.length), kCFStringEncodingUTF8, 0, false, nullptr, 0, &length);
+                bytes += length;
+                index = NSMaxRange(range);
+                boundaries.emplace_back(index, bytes);
+            }
+            CFRelease(string);
+        }
+
+        ~LHTextBreaker() override
+        {
+            if(typesetter)
+                CFRelease(typesetter);
+        }
+
+        size_t fit(size_t start, lh::pixel_t width) override
+        {
+            if(boundaries.size() < 2)
+                return start;
+            auto first = std::lower_bound(boundaries.begin(), boundaries.end(), start, [](const auto& point, size_t byte) { return point.second < byte; });
+            if(first == boundaries.end() || first + 1 == boundaries.end())
+                return start;
+            if(width <= 0_px)
+                return (first + 1)->second;
+            prepare();
+            if(!typesetter)
+                return start;
+            CFIndex end = first->first + CTTypesetterSuggestClusterBreak(typesetter, first->first, std::max(0.f, width.value()));
+            auto last = std::upper_bound(first, boundaries.end(), end, [](CFIndex index, const auto& point) { return index < point.first; });
+            if(last != first)
+                --last;
+            if(last == first)
+                ++last;
+            return last->second;
+        }
+
+        lh::pixel_t minimum_width() override
+        {
+            if(minimum >= 0_px)
+                return minimum;
+            minimum = 0_px;
+            for(size_t index = 1; index < boundaries.size(); index++)
+            {
+                const auto cluster = text.substr(boundaries[index - 1].second, boundaries[index].second - boundaries[index - 1].second);
+                minimum = std::max(minimum, container->text_width(cluster.c_str(), font));
+            }
+            return minimum;
+        }
+    };
+}
+
+std::shared_ptr<lh::text_breaker> LHContainer::create_text_breaker(const std::string& text, lh::uint_ptr font)
+{
+    auto* f = reinterpret_cast<Font*>(font);
+    return f && f->shared ? std::make_shared<LHTextBreaker>(this, text, font, f->shared) : nullptr;
+}
+
 lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
 {
     auto* f = reinterpret_cast<Font*>(hFont);

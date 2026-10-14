@@ -13,6 +13,14 @@
 
 namespace litehtml
 {
+    class text_breaker
+    {
+      public:
+        virtual ~text_breaker() = default;
+        virtual size_t fit(size_t start, pixel_t width) = 0;
+        virtual pixel_t minimum_width() = 0;
+    };
+
     struct list_marker
     {
         std::string     image;
@@ -38,6 +46,7 @@ namespace litehtml
                                                litehtml::font_metrics* fm)                                          = 0;
         virtual void               delete_font(litehtml::uint_ptr hFont)                                            = 0;
         virtual pixel_t            text_width(const char* text, litehtml::uint_ptr hFont)                           = 0;
+        virtual std::shared_ptr<text_breaker> create_text_breaker(const std::string&, uint_ptr) { return nullptr; }
         virtual void               draw_text(litehtml::uint_ptr hdc, const char* text, litehtml::uint_ptr hFont,
                                              litehtml::web_color color, const litehtml::position& pos)              = 0;
         virtual pixel_t            pt_to_px(float pt) const                                                         = 0;

@@ -79,6 +79,10 @@ namespace litehtml
         {
             return m_rendered_min_width;
         }
+        virtual pixel_t get_rendered_natural_width() const
+        {
+            return get_rendered_min_width();
+        }
         virtual void set_rendered_min_width(pixel_t min_width)
         {
             m_rendered_min_width = min_width;
