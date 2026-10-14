@@ -186,6 +186,17 @@ int main() {
     Json q = r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"anims","id":12}})"))[0];
     check(q["result"]["list"].arr().size() == 1 && q["result"]["list"].arr()[0]["name"].asString() == "spin", "the anims query reports the running CSS animation");
 
+    // ── SVG geometry ──
+    r.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"svg","attrs":[["width","40"],["height","40"]]},{"op":"el","id":41,"tag":"line","attrs":[["x1","0"],["y1","0"],["x2","30"],["y2","40"]]},
+        {"op":"ins","parent":4,"id":40,"before":null},{"op":"ins","parent":40,"id":41,"before":null}]})"));
+    q = r.receive(parse(R"({"type":"query","qid":2,"query":{"q":"svg","id":41,"method":"getTotalLength","args":[]}})"))[0];
+    check(std::abs(q["result"].asNumber() - 50) < 0.01, "getTotalLength of a 30×40 line is 50 (got " + std::to_string(q["result"].asNumber()) + ")");
+    q = r.receive(parse(R"({"type":"query","qid":3,"query":{"q":"svg","id":41,"method":"getPointAtLength","args":[25]}})"))[0];
+    check(std::abs(q["result"]["x"].asNumber() - 15) < 0.01 && std::abs(q["result"]["y"].asNumber() - 20) < 0.01, "getPointAtLength half way is the midpoint");
+    q = r.receive(parse(R"({"type":"query","qid":4,"query":{"q":"svg","id":41,"method":"getBBox","args":[]}})"))[0];
+    check(std::abs(q["result"]["width"].asNumber() - 30) < 0.01 && std::abs(q["result"]["height"].asNumber() - 40) < 0.01, "getBBox spans the line");
+    r.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":40}]})"));
+
     // ── canvas ──
     r.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"canvas","attrs":[["width","100"],["height","50"]]},{"op":"ins","parent":4,"id":30,"before":null},
         {"op":"canvas","id":30,"cmds":[["s","fillStyle","#ff0000"],["c","translate",10,5],["c","fillRect",0,0,20,10],["c","beginPath"],["c","arc",50,20,10,0,6.2832],["s","lineWidth",4],["c","stroke"],
@@ -427,6 +438,112 @@ int main() {
             }
             check(inside == 1, std::string("a card with a static ") + group + " paints the bar inside its group");
             check(found && grouped.y == 82, std::string("a card with a static ") + group + " draws the bar at 82 (" + std::to_string(grouped.y) + ")");
+        }
+    }
+
+    // ── clip-path and fixed elements under an overflow clip ──
+    {
+        const char* page = R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":".box{width:200px;height:200px;overflow:hidden} .round{width:100px;height:100px;clip-path:circle(50%);background-color:#ff0000} .wide{width:300px;height:20px;background-color:#00ff00} .fixed{position:fixed;left:0;top:0;width:300px;height:10px;background-color:#0000ff}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":80,"tag":"div","attrs":[["class","box"]]},
+         {"op":"el","id":81,"tag":"div","attrs":[["class","round"]]},
+         {"op":"el","id":82,"tag":"div","attrs":[["class","wide"]]},
+         {"op":"el","id":83,"tag":"div","attrs":[["class","fixed"]]},
+         {"op":"ins","parent":4,"id":80,"before":null},
+         {"op":"ins","parent":80,"id":81,"before":null},
+         {"op":"ins","parent":80,"id":82,"before":null},
+         {"op":"ins","parent":80,"id":83,"before":null}
+        ]})";
+        StubBackend b;
+        Renderer clipped(360, 1, false, b);
+        clipped.receive(parse(page));
+        int depth = 0, low = 0, wide = -1, fixed = -1, paths = 0;
+        for (const Command& cmd : clipped.paint()) {
+            if (cmd.kind == Cmd::ClipPush) { depth++; if (cmd.path) paths++; }
+            else if (cmd.kind == Cmd::ClipPop) low = std::min(low, --depth);
+            else if (cmd.kind == Cmd::FillRect && cmd.color.g == 255) wide = depth;
+            else if (cmd.kind == Cmd::FillRect && cmd.color.b == 255 && cmd.color.r == 0) fixed = depth;
+        }
+        check(paths == 1, "clip-path pushes a path clip");
+        check(depth == 0 && low == 0, "clip pushes and pops balance, so clip-path does not pop its parent's clip");
+        check(wide >= 1, "the element after the clip-path one is still clipped by the overflow box (depth " + std::to_string(wide) + ")");
+        check(fixed >= 0 && fixed < wide, "a fixed element escapes its ancestor's overflow clip (depth " + std::to_string(fixed) + ")");
+        auto at = [&](int x, int y) {
+            return clipped.receive(parse("{\"type\":\"query\",\"qid\":9,\"query\":{\"q\":\"elementFromPoint\",\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) + "}}"))[0]["result"].asNumber();
+        };
+        check(at(50, 50) == 81 && at(4, 14) != 81, "hits inside the circle reach it, the corner outside does not (" + std::to_string(at(50, 50)) + ", " + std::to_string(at(4, 14)) + ")");
+    }
+
+    // ── JSON for the Android and web painters ──
+    {
+        DisplayList list;
+        Command group;
+        group.kind = Cmd::GroupPush;
+        group.matrix[0] = 0.70710678f;
+        group.opacity = 0.5f;
+        list.push_back(group);
+        Command shape;
+        shape.kind = Cmd::Path;
+        auto p = std::make_shared<Path>();
+        p->ops = {Path::Move, Path::Line, Path::Close};
+        p->points = {0, 0, 10, 0};
+        p->fill = true;
+        p->fill_color = Color{255, 0, 0, 255};
+        p->stroke = true;
+        p->stroke_width = 2;
+        p->dashes = {4, 2};
+        shape.path = p;
+        list.push_back(shape);
+        Command clip;
+        clip.kind = Cmd::ClipPush;
+        clip.path = p;
+        list.push_back(clip);
+        Command shadow;
+        shadow.kind = Cmd::Shadow;
+        shadow.rect = Rect{1, 2, 3, 4};
+        shadow.inset = true;
+        shadow.bx = 6;
+        list.push_back(shadow);
+        list.push_back(Command{Cmd::ClipPop});
+        list.push_back(Command{Cmd::GroupPop});
+        auto json = Json::parse(to_json(list));
+        bool parsed = json && json->arr().size() == 6;
+        check(parsed, "the display list JSON parses");
+        if (parsed) {
+            const Json& j = *json;
+            check(j[size_t(0)]["k"].asInt() == int(Cmd::GroupPush) && std::abs(j[size_t(0)]["m"][size_t(0)].asNumber() - 0.70710678) < 1e-6 && j[size_t(0)]["o"].asNumber() == 0.5,
+                  "a group keeps its matrix exact and its opacity");
+            const Json& path = j[size_t(1)]["p"];
+            check(path["o"].arr().size() == 3 && path["v"].arr().size() == 4 && path["f"].asNumber() == double(0xffff0000u) && path["sw"].asNumber() == 2 && path["d"].arr().size() == 2,
+                  "an SVG path carries its geometry, fill and dashed stroke");
+            check(j[size_t(2)]["p"]["o"].arr().size() == 3 && !j[size_t(2)]["p"].find("f"), "a path clip carries the geometry only");
+            check(j[size_t(3)]["n"].asInt() == 1 && j[size_t(3)]["a"][size_t(2)].asNumber() == 6 && j[size_t(3)]["r"][size_t(3)].asNumber() == 4, "a shadow carries inset, blur and box");
+        }
+
+        std::vector<CanvasOp> ops(2);
+        ops[0].kind = CanvasOp::Fill;
+        ops[0].path.ops = {Path::Move, Path::Line};
+        ops[0].path.points = {0, 0, 5, 5};
+        ops[0].paint.kind = CanvasPaint::Linear;
+        ops[0].paint.stops = {Stop{0, Color{}}, Stop{1, Color{255, 255, 255, 255}}};
+        ops[0].composite = Composite::Multiply;
+        ops[0].clips = std::make_shared<std::vector<CanvasClip>>(1);
+        ops[1].kind = CanvasOp::PutImage;
+        ops[1].w = ops[1].h = 1;
+        ops[1].rgba = std::make_shared<std::vector<uint8_t>>(std::vector<uint8_t>{1, 2, 3, 4});
+        auto canvas = Json::parse(to_json(ops));
+        bool read = canvas && canvas->arr().size() == 2;
+        check(read, "the canvas JSON parses");
+        if (read) {
+            const Json& c = *canvas;
+            check(c[size_t(0)]["pk"].asInt() == 1 && c[size_t(0)]["s"].arr().size() == 4 && c[size_t(0)]["cm"].asInt() == int(Composite::Multiply) && c[size_t(0)]["cl"].arr().size() == 1 && !c[size_t(0)].find("a"),
+                  "a fill carries its paint, blend mode and clip, and no alpha when opaque");
+            check(c[size_t(1)]["px"].asString() == "AQIDBA==", "putImageData pixels are base64");
         }
     }
 

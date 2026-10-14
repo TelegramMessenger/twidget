@@ -45,15 +45,25 @@ The renderer is not thread-safe: one widget's calls must not overlap.
 
 ## Platforms
 
-Each platform's backend is in `platform/`, and the C ABI that Apple and the web drive is
-`include/twidget_litehtml.h`:
+Each platform's backend is in `platform/`. Apple, Android and the web reach the core through the C
+ABI in `include/twidget_litehtml.h` (input, frames, layers and paint), Windows through the C++ API.
+Every platform draws the same display list commands and runs canvases:
 
-| Platform | Backend | What the build produces |
-|---|---|---|
-| iOS, macOS | `apple/`: CoreText, CoreGraphics, ImageIO behind the C ABI | `libtwidget_litehtml.a`, merged into one archive by `tools/build-apple.sh` |
-| Android | `android/`: fonts, text and images from Kotlin over JNI | `libtwidget_litehtml.so` |
-| Web | `web/`: canvas text metrics and images from the page, behind the C ABI | `twidget_litehtml.js` and `.wasm` |
-| Windows | `windows/`: DirectWrite, WIC and Direct2D, canvas included | `twidget::d2d`, which a host paints with |
+| Platform | Backend | Painter | What the build produces |
+|---|---|---|---|
+| iOS, macOS | `apple/`: CoreText, CoreGraphics, ImageIO | `CGBackend::paint`, canvases as bitmap contexts | `libtwidget_litehtml.a`, merged into one archive by `tools/build-apple.sh` |
+| Android | `android/jni.cpp` over `android/kotlin/` | `DisplayListPainter`, `CanvasBitmaps` on `android.graphics` | `libtwidget_litehtml.so`, plus the Kotlin sources for the host's Gradle build |
+| Web | `web/wasm.cpp` over `web/painter.ts` | `DisplayListPainter`, `CanvasBitmaps` on canvas 2D | `twidget_litehtml.js` and `.wasm`, plus the TypeScript for the host's bundle |
+| Windows | `windows/`: DirectWrite, WIC and Direct2D | `D2DBackend::paint` | `twidget::d2d`, which a host paints with |
+
+Android and the web paint from JSON (`to_json` of the display list, the canvas ops and the
+composition, in `src/encode.cpp`); the keys are documented next to each `to_json`.
+
+Where a platform API falls short, the platform does the nearest thing:
+- Android before API 29 draws the blend modes beyond Porter-Duff, multiply, screen, overlay, darken
+  and lighten as source-over; its radial gradients have no focus.
+- Direct2D draws every canvas blend mode beyond Porter-Duff as source-over and has no conic brush on
+  canvas.
 
 The adapters that plug a renderer into a host's own interface stay with the host: widget-sandbox's
 desktop core, its demos, and Telegram's clients.
@@ -80,7 +90,12 @@ TwidgetCore is C++20. Apple's SwiftPM build does not use TwidgetCore yet.
 
 - **The Composition player for Windows** (layers on `Windows.UI.Composition`) lives in a Windows
   spike with its host adapter.
-- **Only MSVC has built this tree.** The Apple, Android and Emscripten targets are carried over from
-  widget-sandbox, where they built, but have not been built here.
+- **Only MSVC has built this tree.** The Apple, Android and Emscripten targets have not been built
+  here. The Apple and Android glue was type-checked against stub headers and the JDK's `jni.h`, the
+  Kotlin compiled against `android.jar`, and the TypeScript checked by `tsc` and
+  `Tests/TwidgetCoreTests/web_painter_test.ts`; none of them has drawn a widget yet.
+- **The hosts still use widget-sandbox's renderer copy.** Its Android and web demos build their own
+  renderer against upstream litehtml; moving them onto this tree means building `libtwidget_litehtml`
+  from here and replacing their painters with the ones in `platform/`.
 - **`TW_LITEHTML_TWIDGET`** keeps the code that needs the fork apart from code that also builds
   against upstream litehtml. With the fork the only litehtml, it can go.

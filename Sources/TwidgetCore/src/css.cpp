@@ -593,7 +593,8 @@ std::optional<Affine> function(const std::string& name, const std::vector<std::s
         if (n < 1 || n > (name == "translate" ? 2u : 3u)) return std::nullopt;
         auto x = length(args[0], w);
         auto y = n > 1 ? length(args[1], h) : std::optional<double>(0);
-        if (!x || !y || (n == 3 && length(args[2], 0) != 0.0)) return std::nullopt;
+        // Without perspective a z offset or z scale does not move anything on screen, so it is accepted and dropped.
+        if (!x || !y || (n == 3 && !length(args[2], 0))) return std::nullopt;
         return Affine::translate(float(*x), float(*y));
     }
     if (name == "translatex" || name == "translatey") {
@@ -602,12 +603,12 @@ std::optional<Affine> function(const std::string& name, const std::vector<std::s
         if (!v) return std::nullopt;
         return name == "translatex" ? Affine::translate(float(*v), 0) : Affine::translate(0, float(*v));
     }
-    if (name == "translatez") return n == 1 && length(args[0], 0) == 0.0 ? std::optional<Affine>(Affine{}) : std::nullopt;
+    if (name == "translatez") return n == 1 && length(args[0], 0) ? std::optional<Affine>(Affine{}) : std::nullopt;
     if (name == "scale" || name == "scale3d") {
         if (n < 1 || n > (name == "scale" ? 2u : 3u)) return std::nullopt;
         auto x = scalar(args[0]);
         auto y = n > 1 ? scalar(args[1]) : x;
-        if (!x || !y || (n == 3 && scalar(args[2]) != 1.0)) return std::nullopt;
+        if (!x || !y || (n == 3 && !scalar(args[2]))) return std::nullopt;
         return Affine{float(*x), 0, 0, float(*y), 0, 0};
     }
     if (name == "scalex" || name == "scaley") {

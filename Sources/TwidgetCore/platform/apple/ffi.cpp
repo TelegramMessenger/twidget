@@ -8,6 +8,7 @@
 #include "twidget_litehtml.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -98,6 +99,58 @@ char* twl_set_theme(twl_renderer* h, const char* theme) {
 
 char* twl_touch(twl_renderer* h, int32_t action, double x, double y, int32_t pointer, bool primary) {
     return ret_string(guarded<std::string>(h, "[]", "touch", [&](twlite::Renderer& r) { return messages(r.touch(action, x, y, pointer, primary)); }));
+}
+
+char* twl_pointer(twl_renderer* h, int32_t action, double x, double y, int32_t pointer, bool primary, bool mouse, int32_t modifiers) {
+    return ret_string(guarded<std::string>(h, "[]", "pointer", [&](twlite::Renderer& r) { return messages(r.touch(action, x, y, pointer, primary, mouse, modifiers)); }));
+}
+
+char* twl_hover(twl_renderer* h, int32_t action, double x, double y, int32_t modifiers) {
+    return ret_string(guarded<std::string>(h, "[]", "hover", [&](twlite::Renderer& r) { return messages(r.hover(action, x, y, modifiers)); }));
+}
+
+char* twl_wheel(twl_renderer* h, double x, double y, double dx, double dy, int32_t mode, int32_t modifiers) {
+    return ret_string(guarded<std::string>(h, "[]", "wheel", [&](twlite::Renderer& r) { return messages(r.wheel(x, y, dx, dy, mode, modifiers)); }));
+}
+
+char* twl_key(twl_renderer* h, const char* type, const char* key, const char* code, bool repeat, int32_t modifiers) {
+    return ret_string(guarded<std::string>(h, "[]", "key", [&](twlite::Renderer& r) {
+        return messages(r.key(type ? type : "", key ? key : "", code ? code : "", repeat, modifiers));
+    }));
+}
+
+char* twl_tick(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "[]", "tick", [&](twlite::Renderer& r) { return messages(r.tick()); }));
+}
+
+bool twl_wants_tick(twl_renderer* h) {
+    return guarded<bool>(h, false, "wants_tick", [&](twlite::Renderer& r) { return r.wants_tick(); });
+}
+
+double twl_next_tick_in(twl_renderer* h) {
+    return guarded<double>(h, INFINITY, "next_tick_in", [&](twlite::Renderer& r) { return r.next_tick_in(); });
+}
+
+void twl_set_compositing(twl_renderer* h, bool enabled) {
+    guarded<bool>(h, false, "set_compositing", [&](twlite::Renderer& r) {
+        r.set_compositing(enabled);
+        return true;
+    });
+}
+
+char* twl_composition(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "{\"v\":0,\"l\":[]}", "composition", [&](twlite::Renderer& r) { return twlite::to_json(r.composition()); }));
+}
+
+double twl_clock(void) {
+    return twlite::Renderer::clock();
+}
+
+char* twl_layer_content(twl_renderer* h, uint32_t index) {
+    return guarded<char*>(h, nullptr, "layer_content", [&](twlite::Renderer& r) -> char* {
+        const auto& layers = r.composition().layers;
+        return index < layers.size() ? ret_string(twlite::to_json(layers[index].content)) : nullptr;
+    });
 }
 
 void twl_size(twl_renderer* h, uint32_t* width, uint32_t* height) {

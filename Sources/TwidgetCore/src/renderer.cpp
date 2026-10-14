@@ -5,6 +5,9 @@
 #include <litehtml.h>
 #include <litehtml/html_tag.h>
 #include <litehtml/render_item.h>
+#ifdef TW_LITEHTML_TWIDGET
+#include <litehtml/el_svg.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -126,25 +129,6 @@ Json rect_json(const Rect& r) {
 double now_ms() {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
-}
-
-std::string base64_encode(const std::vector<uint8_t>& in) {
-    static const char* A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((in.size() + 2) / 3 * 4);
-    size_t i = 0;
-    for (; i + 2 < in.size(); i += 3) {
-        uint32_t v = (uint32_t(in[i]) << 16) | (uint32_t(in[i + 1]) << 8) | in[i + 2];
-        out += A[v >> 18]; out += A[(v >> 12) & 63]; out += A[(v >> 6) & 63]; out += A[v & 63];
-    }
-    if (i + 1 == in.size()) {
-        uint32_t v = uint32_t(in[i]) << 16;
-        out += A[v >> 18]; out += A[(v >> 12) & 63]; out += "==";
-    } else if (i + 2 == in.size()) {
-        uint32_t v = (uint32_t(in[i]) << 16) | (uint32_t(in[i + 1]) << 8);
-        out += A[v >> 18]; out += A[(v >> 12) & 63]; out += A[(v >> 6) & 63]; out += '=';
-    }
-    return out;
 }
 
 /// What a compositor layer animates; an element animating anything else is painted per frame.
@@ -402,6 +386,8 @@ public:
     DisplayList draw_layer(const litehtml::element::ptr& el, const std::vector<litehtml::element::ptr>& skip, Rect& bounds) {
         list_.clear();
         groups_.clear();
+        clips_.clear();
+        suspended_.clear();
         auto ri = el->get_render_item();
         if (!doc_ || !ri) return {};
         for (const auto& other : skip)
@@ -492,6 +478,8 @@ public:
     }
     DisplayList draw() {
         list_.clear();
+        clips_.clear();
+        suspended_.clear();
 #ifdef TW_LITEHTML_TWIDGET
         groups_.clear();
 #endif
@@ -812,13 +800,60 @@ public:
         c.kind = Cmd::ClipPush;
         c.rect = rect_of(pos);
         c.radii = radii_of(r);
+        clips_.push_back(c);
         list_.push_back(std::move(c));
     }
     void del_clip() override {
+        if (!clips_.empty()) clips_.pop_back();
         Command c;
         c.kind = Cmd::ClipPop;
         list_.push_back(std::move(c));
     }
+#ifdef TW_LITEHTML_TWIDGET
+    void set_clip_path(const litehtml::vector_path& path) override {
+        auto p = std::make_shared<Path>();
+        p->ops.reserve(path.ops.size());
+        for (auto op : path.ops) p->ops.push_back(Path::Op(op));
+        p->points = path.points;
+        p->evenodd = path.evenodd;
+        float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+        for (size_t i = 0; i + 1 < p->points.size(); i += 2) {
+            x0 = std::min(x0, p->points[i]); x1 = std::max(x1, p->points[i]);
+            y0 = std::min(y0, p->points[i + 1]); y1 = std::max(y1, p->points[i + 1]);
+        }
+        Command c;
+        c.kind = Cmd::ClipPush;
+        c.rect = x0 <= x1 && y0 <= y1 ? Rect{x0, y0, x1 - x0, y1 - y0} : Rect{};
+        c.path = std::move(p);
+        clips_.push_back(c);
+        list_.push_back(std::move(c));
+    }
+    bool point_in_clip_path(const litehtml::vector_path& path, litehtml::pixel_t x, litehtml::pixel_t y) override {
+        Geometry g;
+        g.ops.reserve(path.ops.size());
+        for (auto op : path.ops) g.ops.push_back(Path::Op(op));
+        g.points = path.points;
+        return geometry_contains(g, float(x), float(y), path.evenodd);
+    }
+    // A fixed element outside every group escapes its ancestors' overflow clips, as in WebKit: the clips
+    // are popped around it and pushed again after.
+    void suspend_clips() override {
+        Command pop;
+        pop.kind = Cmd::ClipPop;
+        for (size_t i = 0; i < clips_.size(); i++) list_.push_back(pop);
+        suspended_.push_back(std::move(clips_));
+        clips_.clear();
+    }
+    void resume_clips() override {
+        if (suspended_.empty()) return;
+        Command pop;
+        pop.kind = Cmd::ClipPop;
+        for (size_t i = 0; i < clips_.size(); i++) list_.push_back(pop);
+        clips_ = std::move(suspended_.back());
+        suspended_.pop_back();
+        for (const Command& c : clips_) list_.push_back(c);
+    }
+#endif
 #ifdef TW_LITEHTML_TWIDGET
     void draw_box_shadow(litehtml::uint_ptr, const litehtml::position& box, const litehtml::border_radiuses& radius, const litehtml::shadow_paint& shadow) override {
         if (shadow.color.alpha == 0) return;
@@ -990,6 +1025,8 @@ private:
     std::unordered_map<std::string, Image> images_;
     int next_image_ = 0;
     DisplayList list_;
+    std::vector<Command> clips_;
+    std::vector<std::vector<Command>> suspended_;
 };
 
 // ───────────────────────── Renderer ─────────────────────────
@@ -1963,7 +2000,7 @@ Json Renderer::answer(const Json& q) {
         auto it = shadow ? canvases_.find(shadow->id) : canvases_.end();
         if (it == canvases_.end() || !backend_.canvas_read(it->second->id(), q["x"].asInt(), q["y"].asInt(), w, h, rgba) || rgba.size() != size_t(w) * h * 4)
             rgba.assign(size_t(w) * h * 4, 0);
-        binary_ = base64_encode(rgba);
+        binary_ = base64(rgba);
         return Json::object().set("width", w).set("height", h);
     }
     if (kind == "canvasCall") {
@@ -1978,7 +2015,36 @@ Json Renderer::answer(const Json& q) {
         if (method == "toDataURL") return Json::object().set("error", "toDataURL unsupported by the litehtml renderer");
         return it->second->call(method, q["args"]);
     }
+#ifdef TW_LITEHTML_TWIDGET
+    if (kind == "svg") {
+        const std::string& method = q["method"].asString();
+        litehtml::vector_path path;
+        if (!el || !litehtml::svg_geometry(el, path)) return Json::object().set("error", "unsupported");
+        if (method == "getTotalLength") return double(litehtml::svg_path_length(path, -1, nullptr, nullptr));
+        if (method == "getPointAtLength") {
+            double at = q["args"][size_t(0)].asNumber();
+            float x = 0, y = 0;
+            litehtml::svg_path_length(path, std::isfinite(at) ? float(std::max(0.0, at)) : 0.0f, &x, &y);
+            return Json::object().set("x", x).set("y", y);
+        }
+        if (method == "getBBox") {
+            // Sampled along the outline, as the Apple renderer does, so curves bound by their ink rather than their control points.
+            const int steps = 512;
+            float total = litehtml::svg_path_length(path, -1, nullptr, nullptr);
+            float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+            for (int i = 0; i <= steps; i++) {
+                float x = 0, y = 0;
+                litehtml::svg_path_length(path, total * float(i) / steps, &x, &y);
+                x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y);
+            }
+            if (!std::isfinite(x0)) return Json::object().set("error", "unsupported");
+            return Json::object().set("x", x0).set("y", y0).set("width", x1 - x0).set("height", y1 - y0);
+        }
+        return Json::object().set("error", "unsupported");
+    }
+#else
     if (kind == "svg") return Json::object().set("error", kind + " unsupported by the litehtml renderer");
+#endif
     return Json::object().set("error", "unknown query");
 }
 
@@ -2291,68 +2357,6 @@ void Renderer::freeze(const std::string& reason, bool fatal) {
     touches_.clear();
     pending_moves_.clear();
     hover_ = 0;
-}
-
-// ───────────────────────── display list JSON ─────────────────────────
-
-std::string to_json(const DisplayList& list) {
-    std::string out;
-    out.reserve(list.size() * 64 + 2);
-    auto num = [&](float v) { out += twidget::Json::number(std::round(double(v) * 100) / 100); };
-    auto rect = [&](const char* key, const Rect& r) {
-        out += ",\"";
-        out += key;
-        out += "\":[";
-        num(r.x); out.push_back(','); num(r.y); out.push_back(','); num(r.w); out.push_back(','); num(r.h);
-        out.push_back(']');
-    };
-    auto color = [&](const Color& c) {
-        out += ",\"c\":";
-        out += std::to_string((uint32_t(c.a) << 24) | (uint32_t(c.r) << 16) | (uint32_t(c.g) << 8) | c.b);
-    };
-    out.push_back('[');
-    bool first = true;
-    for (const Command& c : list) {
-        if (!first) out.push_back(',');
-        first = false;
-        out += "{\"k\":";
-        out += std::to_string(int(c.kind));
-        if (c.kind != Cmd::ClipPop && c.kind != Cmd::Text) rect("r", c.rect);
-        if (c.radii.any()) {
-            out += ",\"q\":[";
-            const float v[] = {c.radii.tlx, c.radii.tly, c.radii.trx, c.radii.try_, c.radii.brx, c.radii.bry, c.radii.blx, c.radii.bly};
-            for (int i = 0; i < 8; i++) { if (i) out.push_back(','); num(v[i]); }
-            out.push_back(']');
-        }
-        if (c.has_clip) rect("l", c.clip);
-        switch (c.kind) {
-        case Cmd::FillRect: case Cmd::FillEllipse: color(c.color); break;
-        case Cmd::StrokeRect: case Cmd::StrokeEllipse: color(c.color); out += ",\"w\":"; num(c.width); break;
-        case Cmd::Text:
-            color(c.color);
-            out += ",\"f\":" + std::to_string(c.font) + ",\"x\":"; num(c.x);
-            out += ",\"y\":"; num(c.y);
-            out += ",\"t\":" + twidget::Json::quote(c.text);
-            break;
-        case Cmd::Image: out += ",\"i\":" + std::to_string(c.image); break;
-        case Cmd::Linear: case Cmd::Radial: case Cmd::Conic:
-            out += ",\"a\":["; num(c.ax); out.push_back(','); num(c.ay); out.push_back(','); num(c.bx); out.push_back(','); num(c.by); out.push_back(']');
-            out += ",\"s\":[";
-            for (size_t i = 0; i < c.stops.size(); i++) {
-                if (i) out.push_back(',');
-                num(c.stops[i].offset);
-                out.push_back(',');
-                const Color& s = c.stops[i].color;
-                out += std::to_string((uint32_t(s.a) << 24) | (uint32_t(s.r) << 16) | (uint32_t(s.g) << 8) | s.b);
-            }
-            out.push_back(']');
-            break;
-        case Cmd::ClipPush: case Cmd::ClipPop: break;
-        }
-        out.push_back('}');
-    }
-    out.push_back(']');
-    return out;
 }
 
 } // namespace twlite

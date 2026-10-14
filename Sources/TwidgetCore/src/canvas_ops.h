@@ -91,4 +91,14 @@ struct CanvasOp {
     bool has_shadow() const { return shadow_color.a > 0 && (shadow_blur > 0 || shadow_x != 0 || shadow_y != 0); }
 };
 
+/// JSON for canvas_run outside C++: an array of `{"k": <CanvasOp::Kind>, ...}` with the display list's
+/// path keys ("o", "v", "e") and:
+/// - "m" matrix, "a" alpha (absent = 1), "cm" Composite (absent = source-over), "shc"/"sh" shadow colour and
+///   (x, y, blur), "cl" clips as paths;
+/// - paint: "pk" (0 solid with "c", 1 linear, 2 radial, 3 conic with "pa" args and "s" stops);
+/// - line: "lw", "lc", "lj", "ml", "d", "do"; text: "f", "t", "tp" (x, y, scale_x, text_dx), "st" stroke;
+/// - image: "i" or "cv", "ir" (sx, sy, sw, sh, dx, dy, dw, dh), "ns" no smoothing;
+/// - PutImage: "x", "y", "w", "h", "px" base64 straight RGBA.
+std::string to_json(const std::vector<CanvasOp>& ops);
+
 } // namespace twlite

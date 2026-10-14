@@ -1,7 +1,7 @@
 // JNI surface of the litehtml renderer (org.telegram.widgetsandbox.litehtml.LitehtmlNative)
 // and the Backend that calls back into LitehtmlBackend.kt for fonts, text
-// metrics and image decoding (android.graphics.Paint / BitmapFactory — there
-// is no NDK text API). One Renderer per widget behind an opaque handle; every
+// metrics, image decoding and canvas bitmaps (android.graphics — there is no
+// NDK text API). One Renderer per widget behind an opaque handle; every
 // call happens on the Android main thread (the Kotlin side guarantees it), so
 // the document needs no lock and the JNIEnv of the current entry serves the
 // callbacks. Exceptions are caught and logged, never thrown into the JVM.
@@ -11,6 +11,7 @@
 #include <android/log.h>
 #include <jni.h>
 
+#include <cmath>
 #include <exception>
 #include <memory>
 #include <string>
@@ -31,16 +32,67 @@ struct EnvScope {
     ~EnvScope() { g_env = prev; }
 };
 
+// JNI's *StringUTF* functions speak modified UTF-8, which writes characters outside the BMP (emoji) as
+// surrogate pairs and NUL as two bytes; the core speaks standard UTF-8. Strings cross as UTF-16 instead.
 std::string get_string(JNIEnv* env, jstring s) {
     if (!s) return {};
-    const char* chars = env->GetStringUTFChars(s, nullptr);
-    std::string out = chars ? chars : "";
-    if (chars) env->ReleaseStringUTFChars(s, chars);
+    const jchar* chars = env->GetStringChars(s, nullptr);
+    jsize n = env->GetStringLength(s);
+    std::string out;
+    out.reserve(size_t(n));
+    for (jsize i = 0; chars && i < n; i++) {
+        uint32_t c = chars[i];
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < n && chars[i + 1] >= 0xDC00 && chars[i + 1] < 0xE000) {
+            c = 0x10000 + ((c - 0xD800) << 10) + (chars[i + 1] - 0xDC00);
+            i++;
+        } else if (c >= 0xD800 && c < 0xE000) {
+            c = 0xFFFD;
+        }
+        if (c < 0x80) {
+            out.push_back(char(c));
+        } else if (c < 0x800) {
+            out.push_back(char(0xC0 | (c >> 6)));
+            out.push_back(char(0x80 | (c & 0x3F)));
+        } else if (c < 0x10000) {
+            out.push_back(char(0xE0 | (c >> 12)));
+            out.push_back(char(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back(char(0x80 | (c & 0x3F)));
+        } else {
+            out.push_back(char(0xF0 | (c >> 18)));
+            out.push_back(char(0x80 | ((c >> 12) & 0x3F)));
+            out.push_back(char(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back(char(0x80 | (c & 0x3F)));
+        }
+    }
+    if (chars) env->ReleaseStringChars(s, chars);
     return out;
 }
 
 jstring new_string(JNIEnv* env, const std::string& s) {
-    return env->NewStringUTF(s.c_str());
+    std::u16string units;
+    units.reserve(s.size());
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    size_t n = s.size(), i = 0;
+    while (i < n) {
+        uint32_t c = p[i];
+        size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+        if (len == 0 || i + len > n) {
+            units.push_back(char16_t(0xFFFD));
+            i++;
+            continue;
+        }
+        if (len > 1) c &= 0xFFu >> (len + 1);
+        for (size_t k = 1; k < len; k++) c = (c << 6) | (p[i + k] & 0x3F);
+        i += len;
+        if (c >= 0x10000) {
+            c -= 0x10000;
+            units.push_back(char16_t(0xD800 + (c >> 10)));
+            units.push_back(char16_t(0xDC00 + (c & 0x3FF)));
+        } else {
+            units.push_back(char16_t(c));
+        }
+    }
+    return env->NewString(reinterpret_cast<const jchar*>(units.data()), jsize(units.size()));
 }
 
 /// Fonts, text metrics and images through LitehtmlBackend.kt.
@@ -53,6 +105,10 @@ public:
         delete_font_ = env->GetMethodID(cls, "deleteFont", "(I)V");
         text_width_ = env->GetMethodID(cls, "textWidth", "(ILjava/lang/String;)F");
         load_image_ = env->GetMethodID(cls, "loadImage", "(ILjava/lang/String;)[F");
+        // Canvas is optional: a backend without these methods leaves canvases transparent.
+        canvas_run_ = optional_method(env, cls, "canvasRun", "(IIILjava/lang/String;)V");
+        canvas_read_ = optional_method(env, cls, "canvasRead", "(IIIII)[B");
+        canvas_release_ = optional_method(env, cls, "canvasRelease", "(I)V");
         env->DeleteLocalRef(cls);
     }
     ~JniBackend() override {
@@ -104,8 +160,40 @@ public:
         h = v[1];
         return w > 0 && h > 0;
     }
+    void canvas_run(int id, int w, int h, const std::vector<twlite::CanvasOp>& ops) override {
+        JNIEnv* env = g_env;
+        if (!env || !canvas_run_) return;
+        jstring json = new_string(env, twlite::to_json(ops));
+        env->CallVoidMethod(backend_, canvas_run_, (jint)id, (jint)w, (jint)h, json);
+        env->DeleteLocalRef(json);
+        clear_exception(env);
+    }
+    bool canvas_read(int id, int x, int y, int w, int h, std::vector<uint8_t>& rgba) override {
+        JNIEnv* env = g_env;
+        if (!env || !canvas_read_) return false;
+        auto arr = (jbyteArray)env->CallObjectMethod(backend_, canvas_read_, (jint)id, (jint)x, (jint)y, (jint)w, (jint)h);
+        if (clear_exception(env) || !arr) return false;
+        jsize n = env->GetArrayLength(arr);
+        bool ok = size_t(n) == size_t(w) * h * 4;
+        if (ok) {
+            rgba.resize(size_t(n));
+            env->GetByteArrayRegion(arr, 0, n, reinterpret_cast<jbyte*>(rgba.data()));
+        }
+        env->DeleteLocalRef(arr);
+        return ok;
+    }
+    void canvas_release(int id) override {
+        if (!g_env || !canvas_release_) return;
+        g_env->CallVoidMethod(backend_, canvas_release_, (jint)id);
+        clear_exception(g_env);
+    }
 
 private:
+    static jmethodID optional_method(JNIEnv* env, jclass cls, const char* name, const char* signature) {
+        jmethodID id = env->GetMethodID(cls, name, signature);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return id;
+    }
     static bool clear_exception(JNIEnv* env) {
         if (!env->ExceptionCheck()) return false;
         env->ExceptionDescribe();
@@ -115,6 +203,7 @@ private:
 
     jobject backend_;
     jmethodID create_font_, delete_font_, text_width_, load_image_;
+    jmethodID canvas_run_ = nullptr, canvas_read_ = nullptr, canvas_release_ = nullptr;
 };
 
 struct Handle {
@@ -201,6 +290,74 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
 JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_touch(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "touch", [&](Handle& hd) { return messages(hd.renderer->touch(action, x, y, pointer, primary)); }));
+}
+
+/// A mouse or touch pointer with modifiers (bit0 alt, bit1 ctrl, bit2 meta, bit3 shift); `mouse` sends no touch events.
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_pointer(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary, jboolean mouse, jint modifiers) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "pointer", [&](Handle& hd) { return messages(hd.renderer->touch(action, x, y, pointer, primary, mouse, modifiers)); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_hover(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint modifiers) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "hover", [&](Handle& hd) { return messages(hd.renderer->hover(action, x, y, modifiers)); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_wheel(JNIEnv* env, jclass, jlong h, jdouble x, jdouble y, jdouble dx, jdouble dy, jint mode, jint modifiers) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "wheel", [&](Handle& hd) { return messages(hd.renderer->wheel(x, y, dx, dy, mode, modifiers)); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_key(JNIEnv* env, jclass, jlong h, jstring type, jstring key, jstring code, jboolean repeat, jint modifiers) {
+    EnvScope scope(env);
+    std::string t = get_string(env, type), k = get_string(env, key), c = get_string(env, code);
+    return new_string(env, guarded<std::string>(h, "[]", "key", [&](Handle& hd) { return messages(hd.renderer->key(t, k, c, repeat, modifiers)); }));
+}
+
+/// One display frame (Choreographer): animations advance. Call it every frame while wantsTick holds,
+/// otherwise after nextTickIn seconds.
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_tick(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "tick", [&](Handle& hd) { return messages(hd.renderer->tick()); }));
+}
+
+JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_wantsTick(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return guarded<bool>(h, false, "wantsTick", [&](Handle& hd) { return hd.renderer->wants_tick(); });
+}
+
+JNIEXPORT jdouble JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_nextTickIn(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return guarded<double>(h, INFINITY, "nextTickIn", [&](Handle& hd) { return hd.renderer->next_tick_in(); });
+}
+
+JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setCompositing(JNIEnv* env, jclass, jlong h, jboolean enabled) {
+    EnvScope scope(env);
+    guarded<bool>(h, false, "setCompositing", [&](Handle& hd) {
+        hd.renderer->set_compositing(enabled);
+        return true;
+    });
+}
+
+/// The layers above the last displayList (src/compositor.h, to_json(Composition)).
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_composition(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "{\"v\":0,\"l\":[]}", "composition", [&](Handle& hd) { return twlite::to_json(hd.renderer->composition()); }));
+}
+
+/// The renderer clock, in seconds: what the layers' track starts are on.
+JNIEXPORT jdouble JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_clock(JNIEnv*, jclass) {
+    return twlite::Renderer::clock();
+}
+
+/// Layer `index` of the last composition as a display list; null past the end.
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_layerContent(JNIEnv* env, jclass, jlong h, jint index) {
+    EnvScope scope(env);
+    std::string json = guarded<std::string>(h, "", "layerContent", [&](Handle& hd) {
+        const auto& layers = hd.renderer->composition().layers;
+        return index >= 0 && size_t(index) < layers.size() ? twlite::to_json(layers[size_t(index)].content) : std::string();
+    });
+    return json.empty() ? nullptr : new_string(env, json);
 }
 
 /// (width << 32) | height, CSS px.

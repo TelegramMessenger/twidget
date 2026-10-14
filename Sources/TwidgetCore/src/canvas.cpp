@@ -179,6 +179,8 @@ bool near_stroke(const Geometry& g, double x, double y, double half) {
 
 } // namespace
 
+bool geometry_contains(const Geometry& g, double x, double y, bool evenodd) { return contains(g, x, y, evenodd); }
+
 struct Canvas::Value {
     enum Kind { Null, Number, String, List, Gradient, PathRef, Node, Pixels } kind = Null;
     double number = 0;

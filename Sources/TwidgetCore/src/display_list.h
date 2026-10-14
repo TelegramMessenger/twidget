@@ -56,7 +56,7 @@ enum class Cmd {
     Linear,         // rect (border box), radii, clip, ax/ay → bx/by, stops
     Radial,         // rect, radii, clip, centre (ax, ay), radii (bx, by), stops
     Conic,          // rect, radii, clip, centre (ax, ay), angle (bx, degrees clockwise from the top), stops
-    ClipPush,       // rect, radii: intersect the clip until the matching ClipPop
+    ClipPush,       // rect, radii: intersect the clip until the matching ClipPop; a `path` (clip-path) replaces both, rect is its bounds
     ClipPop,
     // Only from twidget's litehtml fork (TW_LITEHTML_TWIDGET):
     Path,           // path (SVG geometry, fill and stroke), in CSS px
@@ -69,7 +69,7 @@ struct Path {
     enum Op : uint8_t { Move, Line, Quad, Cubic, Close };
     std::vector<Op> ops;
     std::vector<float> points;  // 2 per Move/Line, 4 per Quad, 6 per Cubic
-    bool fill = false;
+    bool fill = false;  // and evenodd: the fill rule of a clip path too
     bool evenodd = false;
     Color fill_color;
     // fill_gradient: 0 none, 1 linear (x1, y1 → x2, y2), 2 radial (centre x1, y1, radius r, focus fx, fy)
@@ -110,8 +110,17 @@ struct Command {
 
 using DisplayList = std::vector<Command>;
 
-/// Compact JSON for the Kotlin painter on Android: an array of
-/// `{"k":<kind>, ...}` objects with the fields above under one-letter keys.
+/// JSON for the painters outside C++ (Android, the web): an array of `{"k": <Cmd>, ...}`.
+/// - "r" rect, "q" radii (8), "l" clip rect, "c" colour as ARGB, "w" width;
+/// - Text: "f" font, "x", "y", "t" text. Image: "i" image or "cv" canvas;
+/// - Linear/Radial/Conic and Shadow: "a" (ax, ay, bx, by), "s" stops as offset, ARGB pairs; Shadow: "n" inset;
+/// - ClipPush with a clip path, and Path: "p" {"o" op codes (0 move, 1 line, 2 quad, 3 cubic, 4 close),
+///   "v" points, "e" evenodd}; a Path adds "f" fill, or "g" gradient (1 linear, 2 radial) with "ga"
+///   (x1, y1, x2, y2, r, fx, fy) and "s", and "sc", "sw", "lc", "lj", "ml", "d", "do" for its stroke;
+/// - GroupPush: "m" matrix (a, b, c, d, tx, ty), "o" opacity, "h" hidden.
+/// Flags are present only when set.
 std::string to_json(const DisplayList& list);
+
+std::string base64(const std::vector<uint8_t>& bytes);
 
 } // namespace twlite

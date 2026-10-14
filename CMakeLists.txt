@@ -54,7 +54,8 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/css.cpp"
     "${TW_CORE}/src/animations.cpp"
     "${TW_CORE}/src/canvas.cpp"
-    "${TW_CORE}/src/compositor.cpp")
+    "${TW_CORE}/src/compositor.cpp"
+    "${TW_CORE}/src/encode.cpp")
 add_library(twidget::core ALIAS twidget_core)
 target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" "${TW_SANDBOX_INCLUDE}")
 target_link_libraries(twidget_core PUBLIC litehtml)
@@ -78,7 +79,9 @@ elseif(APPLE)
         "-framework CoreGraphics" "-framework CoreText" "-framework ImageIO" "-framework CoreFoundation")
 elseif(EMSCRIPTEN)
     set(TW_WASM_EXPORTS twl_create twl_backend_id twl_destroy twl_receive twl_set_width twl_set_theme twl_touch
-        twl_image_ready twl_size twl_dirty twl_display_list twl_stats twl_html twl_string_free twl_alloc twl_free)
+        twl_image_ready twl_size twl_dirty twl_display_list twl_stats twl_html twl_string_free twl_alloc twl_free
+        twl_pointer twl_hover twl_wheel twl_key twl_tick twl_wants_tick twl_next_tick_in twl_set_compositing
+        twl_composition twl_clock twl_layer_content)
     list(TRANSFORM TW_WASM_EXPORTS PREPEND "_")
     list(JOIN TW_WASM_EXPORTS "," TW_WASM_EXPORT_LIST)
     add_executable(twidget_litehtml "${TW_PLATFORM}/web/wasm.cpp")
