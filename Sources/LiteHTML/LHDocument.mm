@@ -2171,6 +2171,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     if(!ri)
         return NO;
     std::shared_ptr<lh::render_item> clip;
+    std::vector<std::shared_ptr<lh::render_item>> outer;
     bool escaped = ri->src_el()->css().get_position() == lh::element_position_fixed;
     for(auto p = ri->parent(); p; p = p->parent())
     {
@@ -2179,12 +2180,27 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         if(p->src_el()->css().clips_contents() && !viewportClip)
         {
             if(clip)
-                return NO;
-            clip = p;
+                outer.push_back(p);
+            else
+                clip = p;
         }
     }
     if(!clip)
         return NO;
+    auto paddingBox = [](const std::shared_ptr<lh::render_item> &item) {
+        CGRect border = BorderBox(item);
+        CGFloat bl = item->border_left().value(), bt = item->border_top().value(), br = item->border_right().value(), bb = item->border_bottom().value();
+        return CGRectMake(border.origin.x + bl, border.origin.y + bt, border.size.width - bl - br, border.size.height - bt - bb);
+    };
+    for(const auto &p : outer)
+    {
+        CGRect border = BorderBox(p);
+        const auto &radius = p->src_el()->css().get_borders().radius.calc_percents(lh::pixel_t(static_cast<float>(border.size.width)), lh::pixel_t(static_cast<float>(border.size.height)));
+        CGFloat corner = std::max({radius.top_left_x.value(), radius.top_left_y.value(), radius.top_right_x.value(), radius.top_right_y.value(),
+                                   radius.bottom_left_x.value(), radius.bottom_left_y.value(), radius.bottom_right_x.value(), radius.bottom_right_y.value()});
+        if(!CGRectContainsRect(CGRectInset(paddingBox(p), corner, corner), paddingBox(clip)))
+            return NO;
+    }
     CGRect border = BorderBox(clip);
     CGFloat bl = clip->border_left().value(), bt = clip->border_top().value(), br = clip->border_right().value(), bb = clip->border_bottom().value();
     *rect = CGRectMake(border.origin.x + bl, border.origin.y + bt, border.size.width - bl - br, border.size.height - bt - bb);
