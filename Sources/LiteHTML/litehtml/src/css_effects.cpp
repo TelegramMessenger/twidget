@@ -719,15 +719,8 @@ namespace litehtml
         css_token_vector flat;
         size_t           i = 0;
         auto             whitespace = [&]() {
-            size_t start = i;
             while(i < size && ws(value[i]))
                 i++;
-            if(i > start)
-            {
-                css_token tok(WHITESPACE);
-                tok.repr = value.substr(start, i - start);
-                flat.push_back(std::move(tok));
-            }
         };
         auto word = [&]() {
             size_t start = i;
@@ -751,7 +744,7 @@ namespace litehtml
                 whitespace();
                 if(i != size)
                     return false;
-                tokens = normalize(flat, f_componentize | f_remove_whitespace);
+                tokens = std::move(flat);
                 return true;
             }
             i = start;
@@ -759,16 +752,13 @@ namespace litehtml
         int functions = 0;
         while(i < size)
         {
-            size_t      start = i;
             std::string name  = word();
             if(name.empty() || i >= size || value[i] != '(' || ++functions > 32 ||
                !fast_one_of(name, {"translate", "translatex", "translatey", "rotate", "scale", "scalex", "scaley",
                                    "skewx", "skewy", "matrix"}))
                 return false;
             i++;
-            css_token fn(FUNCTION, name);
-            fn.repr = value.substr(start, i - start);
-            flat.push_back(std::move(fn));
+            css_token fn(CV_FUNCTION, name);
             int args = 0;
             while(true)
             {
@@ -778,9 +768,7 @@ namespace litehtml
                 char c = value[i];
                 if(c == ')')
                 {
-                    css_token tok(RIGHT_PAREN);
-                    tok.repr = ")";
-                    flat.push_back(std::move(tok));
+                    flat.push_back(std::move(fn));
                     i++;
                     break;
                 }
@@ -788,7 +776,7 @@ namespace litehtml
                 {
                     css_token tok(COMMA);
                     tok.repr = ",";
-                    flat.push_back(std::move(tok));
+                    fn.value.push_back(std::move(tok));
                     i++;
                     continue;
                 }
@@ -820,7 +808,7 @@ namespace litehtml
                     i++;
                     css_token tok(PERCENTAGE, static_cast<float>(number));
                     tok.repr = value.substr(num, i - num);
-                    flat.push_back(std::move(tok));
+                    fn.value.push_back(std::move(tok));
                 } else if(i < size && fast_alpha(value[i]))
                 {
                     std::string unit = word();
@@ -828,12 +816,12 @@ namespace litehtml
                         return false;
                     css_token tok(DIMENSION, static_cast<float>(number), type, unit);
                     tok.repr = value.substr(num, i - num);
-                    flat.push_back(std::move(tok));
+                    fn.value.push_back(std::move(tok));
                 } else
                 {
                     css_token tok(NUMBER, static_cast<float>(number), type);
                     tok.repr = value.substr(num, i - num);
-                    flat.push_back(std::move(tok));
+                    fn.value.push_back(std::move(tok));
                 }
                 if(++args > 6)
                     return false;
@@ -846,7 +834,7 @@ namespace litehtml
         }
         if(functions == 0)
             return false;
-        tokens = normalize(flat, f_componentize | f_remove_whitespace);
+        tokens = std::move(flat);
         return true;
     }
 

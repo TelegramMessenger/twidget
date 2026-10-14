@@ -120,7 +120,30 @@ namespace litehtml
             }
         }
 
+        css_token(css_token&& token) noexcept :
+            m_str(std::move(token.m_str)),
+            type(token.type),
+            value(std::move(token.value)),
+            repr(std::move(token.repr))
+        {
+            switch(type)
+            {
+            case HASH:
+                hash_type = token.hash_type;
+                break;
+
+            case NUMBER:
+            case PERCENTAGE:
+            case DIMENSION:
+                n = token.n;
+                break;
+
+            default:;
+            }
+        }
+
         css_token& operator=(const css_token& token) = default;
+        css_token& operator=(css_token&& token) noexcept = default;
 
         bool is_component_value() const
         {

@@ -83,7 +83,7 @@ namespace litehtml
         tmp.reserve(keep_idx.size());
         for(auto idx : keep_idx)
         {
-            tmp.push_back(tokens[idx]);
+            tmp.push_back(std::move(tokens[idx]));
         }
         tokens.swap(tmp);
     }
@@ -137,9 +137,9 @@ namespace litehtml
             {
                 break;
             }
-            result.push_back(tok);
+            result.push_back(std::move(tok));
         }
-        tokens = result;
+        tokens = std::move(result);
     }
 
     // https://www.w3.org/TR/css-syntax-3/#normalize-into-a-token-stream
