@@ -125,7 +125,7 @@ final class FrameCostBenchTests: XCTestCase {
             let delta = value - (stagesBefore[key] ?? 0)
             if delta > 0 { stages.append(String(format: "%@=%.1f", key, delta * 1000 / Double(frames))) }
         }
-        print(String(format: "BENCH mode=%@ n=%d frames=%d wall=%.1fus cpu=%.1fus tailcpu=%.1fus answers=%d layouts=%d", mode, count, frames, wall * 1e6 / Double(frames), cpu * 1e6 / Double(frames), waitCPU * 1e6 / Double(frames), answers, renderer.layoutCount))
+        print(String(format: "BENCH mode=%@ n=%d frames=%d wall=%.1fus cpu=%.1fus tailcpu=%.1fus total=%.1fus answers=%d layouts=%d", mode, count, frames, wall * 1e6 / Double(frames), cpu * 1e6 / Double(frames), waitCPU * 1e6 / Double(frames), (cpu + waitCPU) * 1e6 / Double(frames), answers, renderer.layoutCount))
         print("BENCH stages(us/frame or count*1000/frame) " + stages.joined(separator: " "))
     }
 
@@ -242,7 +242,7 @@ final class FrameCostBenchTests: XCTestCase {
             let delta = value - (stagesBefore[key] ?? 0)
             if delta > 0 { stages.append(String(format: "%@=%.1f", key, delta * 1000 / Double(frames))) }
         }
-        print(String(format: "BENCH mode=swarm n=%d frames=%d wall=%.1fus cpu=%.1fus tailcpu=%.1fus layouts=%d", count, frames, wall * 1e6 / Double(frames), cpu * 1e6 / Double(frames), waitCPU * 1e6 / Double(frames), renderer.layoutCount - layoutsBefore))
+        print(String(format: "BENCH mode=swarm n=%d frames=%d wall=%.1fus cpu=%.1fus tailcpu=%.1fus total=%.1fus layouts=%d", count, frames, wall * 1e6 / Double(frames), cpu * 1e6 / Double(frames), waitCPU * 1e6 / Double(frames), (cpu + waitCPU) * 1e6 / Double(frames), renderer.layoutCount - layoutsBefore))
         print("BENCH stages(us/frame or count*1000/frame) " + stages.joined(separator: " "))
     }
 }
