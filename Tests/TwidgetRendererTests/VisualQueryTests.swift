@@ -41,6 +41,48 @@ final class VisualQueryTests: XCTestCase {
         XCTAssertGreaterThan(renderer.layoutCount, count)
     }
 
+    func testPositionOffsetsAreRelativeToThePositionedParentPaddingEdge() {
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        renderer.schedule = { _ in }
+        renderer.load()
+        defer { renderer.destroy() }
+        send(renderer, ["type": "ops", "ops": [
+            ["op": "el", "id": 7, "tag": "body", "adopt": "body", "attrs": [["style", "margin:0;padding:12px"]]],
+            ["op": "el", "id": 9, "tag": "div", "attrs": [["style", "position:relative;width:300px;height:180px;border:2px solid black;padding:10px"]]],
+            ["op": "el", "id": 8, "tag": "div", "attrs": [["style", "position:absolute;left:20px;top:25px;width:60px;height:60px;border:1px solid red;padding:3px"]]],
+            ["op": "ins", "parent": 7, "id": 9],
+            ["op": "ins", "parent": 9, "id": 8]
+        ]])
+        let box = query(renderer, "box")
+        XCTAssertEqual(box["offsetLeft"] as? Double, 20)
+        XCTAssertEqual(box["offsetTop"] as? Double, 25)
+        XCTAssertEqual(box["offsetParent"] as? Double, 9)
+        send(renderer, ["type": "ops", "ops": [["op": "style", "id": 9, "name": "transform", "value": "translate(30px,40px)"]]])
+        _ = query(renderer, "rect")
+        XCTAssertEqual(query(renderer, "box")["offsetLeft"] as? Double, 20)
+        XCTAssertEqual(query(renderer, "box")["offsetTop"] as? Double, 25)
+    }
+
+    func testPositionOffsetsDoNotChangeWhenAnAncestorScrolls() {
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        renderer.schedule = { _ in }
+        renderer.load()
+        defer { renderer.destroy() }
+        send(renderer, ["type": "ops", "ops": [
+            ["op": "el", "id": 7, "tag": "body", "adopt": "body", "attrs": [["style", "margin:0;padding:12px"]]],
+            ["op": "el", "id": 9, "tag": "div", "attrs": [["style", "position:relative;width:300px;height:100px;overflow:auto;border:2px solid black"]]],
+            ["op": "el", "id": 10, "tag": "div", "attrs": [["style", "height:400px"]]],
+            ["op": "el", "id": 8, "tag": "div", "attrs": [["style", "position:absolute;left:20px;top:200px;width:60px;height:60px"]]],
+            ["op": "ins", "parent": 7, "id": 9],
+            ["op": "ins", "parent": 9, "id": 10],
+            ["op": "ins", "parent": 10, "id": 8],
+            ["op": "prop", "id": 9, "name": "scrollTop", "value": 80]
+        ]])
+        XCTAssertEqual(query(renderer, "box")["offsetLeft"] as? Double, 20)
+        XCTAssertEqual(query(renderer, "box")["offsetTop"] as? Double, 200)
+        XCTAssertEqual(query(renderer, "box")["offsetParent"] as? Double, 9)
+    }
+
     func testTextareaSizeQueriesFlushValuesAndRows() {
         let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
         renderer.schedule = { _ in }
@@ -68,6 +110,28 @@ final class VisualQueryTests: XCTestCase {
         XCTAssertEqual(query(renderer, "box")["scrollHeight"] as? Double, 112)
         send(renderer, ["type": "ops", "ops": [["op": "prop", "id": 8, "name": "value", "value": ""]]])
         XCTAssertEqual(query(renderer, "box")["scrollHeight"] as? Double, 36)
+    }
+
+    func testStickyOffsetsIncludeTheAppliedStickyPosition() {
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 400)
+        renderer.schedule = { _ in }
+        renderer.load()
+        defer { renderer.destroy() }
+        send(renderer, ["type": "ops", "ops": [
+            ["op": "el", "id": 7, "tag": "body", "adopt": "body", "attrs": [["style", "margin:0;padding:12px"]]],
+            ["op": "el", "id": 9, "tag": "div", "attrs": [["style", "position:relative;width:300px;height:70px;overflow:auto;border:2px solid black"]]],
+            ["op": "el", "id": 10, "tag": "div", "attrs": [["style", "height:25px"]]],
+            ["op": "el", "id": 8, "tag": "div", "attrs": [["style", "position:sticky;top:0;height:20px"]]],
+            ["op": "el", "id": 11, "tag": "div", "attrs": [["style", "height:200px"]]],
+            ["op": "ins", "parent": 7, "id": 9],
+            ["op": "ins", "parent": 9, "id": 10],
+            ["op": "ins", "parent": 9, "id": 8],
+            ["op": "ins", "parent": 9, "id": 11]
+        ]])
+        XCTAssertEqual(query(renderer, "box")["offsetTop"] as? Double, 25)
+        send(renderer, ["type": "ops", "ops": [["op": "prop", "id": 9, "name": "scrollTop", "value": 80]]])
+        XCTAssertEqual(query(renderer, "box")["offsetTop"] as? Double, 80)
+        XCTAssertEqual(query(renderer, "box")["offsetParent"] as? Double, 9)
     }
 
     func testLayoutMutationAfterVisualWritesStillFlushes() {

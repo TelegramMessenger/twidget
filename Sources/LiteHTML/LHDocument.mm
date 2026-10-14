@@ -1430,6 +1430,57 @@ static std::string MasterWithCSS(NSString *css)
     return result;
 }
 
+- (nullable NSDictionary<NSString *, NSNumber *> *)offsetMetricsWithAttribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri)
+        return nil;
+    auto origin = [](std::shared_ptr<lh::render_item> item) {
+        CGPoint point = CGPointZero;
+        for(; item; item = item->parent())
+        {
+            const auto sticky = item->sticky_offset();
+            point.x += item->pos().x.value() + sticky.x.value();
+            point.y += item->pos().y.value() + sticky.y.value();
+            if(item->css().get_position() == lh::element_position_fixed)
+                break;
+        }
+        return point;
+    };
+    CGPoint point = origin(ri);
+    point.x -= ri->padding_left().value() + ri->border_left().value();
+    point.y -= ri->padding_top().value() + ri->border_top().value();
+    NSInteger parentId = 0;
+    if(ri->css().get_position() != lh::element_position_fixed && ri->src_el()->tag() != lh::_body_ && ri->src_el()->tag() != lh::_html_)
+    {
+        for(auto parent = ri->parent(); parent; parent = parent->parent())
+        {
+            const auto& css = parent->css();
+            const auto tag = parent->src_el()->tag();
+            const bool positioned = css.get_position() != lh::element_position_static || !css.get_transform().empty() || css.contains(lh::contain_layout | lh::contain_paint);
+            const bool table = ri->css().get_position() == lh::element_position_static && (tag == lh::_table_ || tag == lh::_td_ || tag == lh::_th_);
+            if(!positioned && !table && tag != lh::_body_)
+                continue;
+            if(const char *value = parent->src_el()->get_attr(attribute.UTF8String))
+                parentId = [@(value) integerValue];
+            if(positioned || table)
+            {
+                const CGPoint parentOrigin = origin(parent);
+                point.x -= parentOrigin.x - parent->padding_left().value();
+                point.y -= parentOrigin.y - parent->padding_top().value();
+            }
+            break;
+        }
+    }
+    return @{
+        @"offsetLeft": @(std::round(point.x)),
+        @"offsetTop": @(std::round(point.y)),
+        @"offsetParent": @(parentId),
+    };
+}
+
 - (nullable NSDictionary<NSString *, NSNumber *> *)textareaMetricsWithAttribute:(NSString *)attribute value:(NSString *)value
 {
     std::lock_guard<std::mutex> guard(_lock);

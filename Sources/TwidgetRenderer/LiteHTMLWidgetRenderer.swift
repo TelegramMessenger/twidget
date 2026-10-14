@@ -1997,6 +1997,10 @@ public final class LiteHTMLWidgetRenderer {
             return [LiteHTMLWidgetRenderer.rectResult(rect ?? .zero)]
         case "box":
             let r = rect ?? .zero
+            let offsets = (q["id"] as? NSNumber).flatMap { document?.offsetMetrics(attribute: WidgetDOM.idAttribute, value: $0.stringValue) }?.mapValues { $0.doubleValue } ?? [:]
+            func withOffsets(_ box: [String: Double]) -> [String: Double] {
+                return box.merging(offsets) { _, offset in offset }
+            }
             if let id = (q["id"] as? NSNumber)?.intValue, dom.node(id)?.tag.lowercased() == "textarea", let metrics = document?.textareaMetrics(attribute: WidgetDOM.idAttribute, value: String(id)) {
                 var box = metrics.mapValues { $0.doubleValue }
                 box["offsetWidth"] = Double(r.width.rounded())
@@ -2006,7 +2010,7 @@ public final class LiteHTMLWidgetRenderer {
                 box["offsetParent"] = 0
                 box["scrollTop"] = Double(scrolling.offset(id).y)
                 box["scrollLeft"] = Double(scrolling.offset(id).x)
-                return box
+                return withOffsets(box)
             }
             if let id = (q["id"] as? NSNumber)?.intValue, let geometry = scrolling.geometries[id] {
                 let offset = scrolling.offset(id)
@@ -2019,9 +2023,9 @@ public final class LiteHTMLWidgetRenderer {
                 box["scrollHeight"] = Double(max(geometry.viewport.height, geometry.content.height))
                 box["scrollTop"] = Double(offset.y)
                 box["scrollLeft"] = Double(offset.x)
-                return box
+                return withOffsets(box)
             }
-            return ["offsetWidth": Double(r.width), "offsetHeight": Double(r.height), "offsetTop": Double(r.minY), "offsetLeft": Double(r.minX), "offsetParent": 0, "clientWidth": Double(r.width), "clientHeight": Double(r.height), "clientTop": 0, "clientLeft": 0, "scrollWidth": Double(r.width), "scrollHeight": Double(r.height), "scrollTop": 0, "scrollLeft": 0]
+            return withOffsets(["offsetWidth": Double(r.width), "offsetHeight": Double(r.height), "offsetTop": Double(r.minY), "offsetLeft": Double(r.minX), "offsetParent": 0, "clientWidth": Double(r.width), "clientHeight": Double(r.height), "clientTop": 0, "clientLeft": 0, "scrollWidth": Double(r.width), "scrollHeight": Double(r.height), "scrollTop": 0, "scrollLeft": 0])
         case "elementFromPoint":
             let x = (q["x"] as? NSNumber)?.doubleValue ?? 0
             let y = (q["y"] as? NSNumber)?.doubleValue ?? 0
