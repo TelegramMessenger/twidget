@@ -129,6 +129,42 @@ static void CheckClips(XCTestCase *test, LHDocument *document, CGSize size, std:
     XCTAssertGreaterThan(painted, 100);
 }
 
+- (void)testNestedAffineGroupsMatchUnculledTiles
+{
+    NSMutableString *children = [NSMutableString string];
+    for(int i = 0; i < 96; i++)
+        [children appendFormat:@"<div class='cell' style='left:%dpx;top:%dpx;transform:rotate(%ddeg)'>%d<span></span></div>", (i % 12) * 28 - 60, (i / 12) * 28 - 40, (i % 5) * 9, i];
+    NSArray<NSString *> *transforms = @[@"translate(23.25px,-17.5px)", @"rotate(37deg) scale(.7,1.4)", @"scale(-1.2,.8) skewX(23deg)", @"matrix(1,.3,-.2,1,12.5,5.25)", @"scale(0)", @"scale(.00000001)"];
+    std::mt19937 rng(20261015);
+    int painted = 0;
+    for(NSString *transform in transforms)
+    {
+        for(NSString *filter in @[@"", @"filter:blur(2px)", @"opacity:.6", @"backdrop-filter:blur(2px)"])
+        {
+            NSString *html = [NSString stringWithFormat:@"<style>body{margin:0;width:240px;height:200px;background:#e9eef5}.frame{position:relative;left:15px;top:10px;width:210px;height:170px;overflow:hidden;border-radius:17px;transform:rotate(-7deg)}.group{position:relative;transform-origin:30%% 70%%;transform:%@;%@}.cell{position:absolute;width:24px;height:23px;color:#fff;background:linear-gradient(35deg,#d34,#16a);box-shadow:3px 4px 3px #1269;font:9px sans-serif;text-shadow:-3px 2px 2px #050}.cell span{display:block;width:9px;height:8px;background:lime;transform:translate(17px,-5px)}</style><div class=frame><div class=group>%@</div></div>", transform, filter, children];
+            LHDocument *document = [[LHDocument alloc] initWithHTML:html css:nil];
+            CGSize size = [document layoutWithMaxWidth:240 preferredWidth:240];
+            CheckClips(self, document, size, rng, 24, [transform stringByAppendingString:filter], &painted);
+        }
+    }
+    XCTAssertGreaterThan(painted, 100);
+}
+
+- (void)testTextShadowTilesMatchFullImage
+{
+    LHDocument *document = [[LHDocument alloc] initWithHTML:@"<style>body{margin:0;width:240px;height:200px}p{position:absolute;left:12px;top:10px;margin:0;font:20px/24px sans-serif;color:black;text-shadow:0 120px 3px red,8px 145px 0 blue}</style><p>Shadow outside glyphs</p>" css:nil];
+    [document layoutWithMaxWidth:240 preferredWidth:240];
+    for(CGFloat scale : {1.0, 2.0})
+    {
+        NSData *full = Render(document, CGRectMake(0, 0, 240, 200), scale, 0, NO);
+        const size_t stride = (size_t)(240 * scale) * 4;
+        NSData *expected = [full subdataWithRange:NSMakeRange((size_t)(120 * scale) * stride, (size_t)(60 * scale) * stride)];
+        XCTAssertNotEqualObjects(expected, [NSMutableData dataWithLength:expected.length]);
+        for(BOOL cull : {NO, YES})
+            XCTAssertEqualObjects(Render(document, CGRectMake(0, 120, 240, 60), scale, 0, cull), expected);
+    }
+}
+
 - (void)testCulledDrawsMatchAfterMutations
 {
     std::mt19937 rng(7);

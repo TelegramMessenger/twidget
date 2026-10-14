@@ -1433,6 +1433,37 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
     const bool shaped = !el_css.get_clip_path().empty();
     if(shaped) container->set_clip_path(el_css.get_clip_path().resolve(border_box));
     const position* inner_clip = group.matrix.is_identity() ? clip : nullptr;
+    position transformed_clip;
+    static const bool transformed_culling = getenv("LH_NO_TRANSFORMED_CULLING") == nullptr;
+    if(transformed_culling && clip && !inner_clip && src_el()->doc_ptr()->culls_paint() && filter.empty() && backdrop.empty())
+    {
+        const auto& m = group.matrix;
+        const double determinant = double(m.a) * m.d - double(m.b) * m.c;
+        if(std::isfinite(determinant) && std::abs(determinant) > 1e-8)
+        {
+            double left = INFINITY, top = INFINITY, right = -INFINITY, bottom = -INFINITY;
+            for(double cx : {double(clip->left()) - 1, double(clip->right()) + 1})
+            {
+                for(double cy : {double(clip->top()) - 1, double(clip->bottom()) + 1})
+                {
+                    const double px = (m.d * (cx - m.tx) - m.c * (cy - m.ty)) / determinant;
+                    const double py = (m.a * (cy - m.ty) - m.b * (cx - m.tx)) / determinant;
+                    left = std::min(left, px);
+                    top = std::min(top, py);
+                    right = std::max(right, px);
+                    bottom = std::max(bottom, py);
+                }
+            }
+            if(std::isfinite(left) && std::isfinite(top) && std::isfinite(right) && std::isfinite(bottom) &&
+               std::abs(left) < 1e6 && std::abs(top) < 1e6 && std::abs(right) < 1e6 && std::abs(bottom) < 1e6)
+            {
+                left = std::floor(left);
+                top = std::floor(top);
+                transformed_clip = position(float(left), float(top), float(std::ceil(right) - left), float(std::ceil(bottom) - top));
+                inner_clip = &transformed_clip;
+            }
+        }
+    }
     if(g_paint_trace) g_paint_trace->push_back(el.get());
     if(!backdrop.empty() && !bare)
     {

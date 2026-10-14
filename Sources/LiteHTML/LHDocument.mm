@@ -113,6 +113,34 @@ struct LHDeclarationsEntry
     uint64_t      generation;
 };
 
+struct LHExclusionLookup
+{
+    NSSet<NSString *> *source;
+    std::unordered_set<std::string> values;
+
+    const std::unordered_set<std::string> &get(NSSet<NSString *> *current)
+    {
+        if(source != current && ![source isEqualToSet:current])
+        {
+            source = [current copy];
+            values.clear();
+            for(NSString *value in current)
+                values.insert(value.UTF8String);
+        }
+        return values;
+    }
+};
+
+static bool SubtreeNeedsBackdrop(const lh::element *root)
+{
+    if(!root->css().get_backdrop_filter().empty())
+        return true;
+    for(const auto &child : root->children())
+        if(SubtreeNeedsBackdrop(child.get()))
+            return true;
+    return false;
+}
+
 static bool ParseKeyInteger(const char *text, int64_t &out)
 {
     const char *p = text;
@@ -706,6 +734,7 @@ struct LHCoverVisit
     std::string                  _itemIndexAttribute;
     BOOL                         _itemIndexValid;
     NSString                    *_scrollAttribute;
+    LHExclusionLookup            _paintLookup, _layerLookup, _backgroundLookup, _scrollLookup;
     std::vector<LHDeclarationsEntry> _declarations;
     uint64_t                     _paintTraceGeneration;
     std::vector<LHCoverEntry>    _coverEntries;
@@ -1505,6 +1534,12 @@ static std::string MasterWithCSS(NSString *css)
 
 - (void)resolveExclusionsLocked
 {
+    [self resolveExclusionsLockedInRoot:_doc->root()];
+}
+
+- (void)resolveExclusionsLockedInRoot:(const lh::element::ptr &)requestedRoot
+{
+    const auto root = requestedRoot && requestedRoot != _doc->root() && SubtreeNeedsBackdrop(requestedRoot.get()) ? _doc->root() : requestedRoot;
     _doc->skip_paint.clear();
     _doc->skip_scroll_content.clear();
     _doc->skip_background_images.clear();
@@ -1520,11 +1555,9 @@ static std::string MasterWithCSS(NSString *css)
             }
         }
     }
-    if(_snapshotDepth == 0 && _backgroundExclusions.count > 0 && _doc->root())
+    if(_snapshotDepth == 0 && _backgroundExclusions.count > 0 && root)
     {
-        std::unordered_set<std::string> images;
-        for(NSString *value in _backgroundExclusions)
-            images.insert(value.UTF8String);
+        const auto &images = _backgroundLookup.get(_backgroundExclusions);
         const char *imageKey = _backgroundAttribute.UTF8String;
         std::function<void(const lh::element::ptr &)> visitImages = [&](const lh::element::ptr &el) {
             const char *value = el->get_attr(imageKey);
@@ -1533,13 +1566,11 @@ static std::string MasterWithCSS(NSString *css)
             for(const auto &child : el->children())
                 visitImages(child);
         };
-        visitImages(_doc->root());
+        visitImages(root);
     }
-    if(_scrollExclusions.count > 0 && _doc->root())
+    if(_scrollExclusions.count > 0 && root)
     {
-        std::unordered_set<std::string> scrollers;
-        for(NSString *value in _scrollExclusions)
-            scrollers.insert(value.UTF8String);
+        const auto &scrollers = _scrollLookup.get(_scrollExclusions);
         const char *scrollKey = _scrollAttribute.UTF8String;
         std::function<void(const lh::element::ptr &)> visitScrollers = [&](const lh::element::ptr &el) {
             const char *value = el->get_attr(scrollKey);
@@ -1548,19 +1579,13 @@ static std::string MasterWithCSS(NSString *css)
             for(const auto &child : el->children())
                 visitScrollers(child);
         };
-        visitScrollers(_doc->root());
+        visitScrollers(root);
     }
     const BOOL layered = _snapshotDepth == 0 && _layerExclusions.count > 0;
-    if((_exclusions.count == 0 && !layered) || !_doc->root())
+    if((_exclusions.count == 0 && !layered) || !root)
         return;
-    std::unordered_set<std::string> wanted, layers;
-    for(NSString *value in _exclusions)
-        wanted.insert(value.UTF8String);
-    if(layered)
-    {
-        for(NSString *value in _layerExclusions)
-            layers.insert(value.UTF8String);
-    }
+    const auto &wanted = _paintLookup.get(_exclusions);
+    const auto &layers = _layerLookup.get(layered ? _layerExclusions : nil);
     const char *key      = _exclusionAttribute.UTF8String;
     const char *layerKey = _layerAttribute.UTF8String;
     std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
@@ -1573,7 +1598,7 @@ static std::string MasterWithCSS(NSString *css)
         for(const auto &child : el->children())
             visit(child);
     };
-    visit(_doc->root());
+    visit(root);
 }
 
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
@@ -1783,7 +1808,7 @@ static std::string MasterWithCSS(NSString *css)
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
     _snapshotDepth++;
-    [self resolveExclusionsLocked];
+    [self resolveExclusionsLockedInRoot:ri->src_el()];
     _snapshotDepth--;
     _doc->skip_scroll_content.erase(ri->src_el().get());
     const lh::pixel_t left = ri->get_scroll_left(), top = ri->get_scroll_top();
@@ -2036,7 +2061,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextSetShouldAntialias(ctx, true);
     auto skipped = _doc->skip_paint;
     _snapshotDepth++;
-    [self resolveExclusionsLocked];
+    [self resolveExclusionsLockedInRoot:ri->src_el()];
     _snapshotDepth--;
     _doc->skip_paint.erase(ri->src_el().get());
     PixelSnap snap(ctx);
@@ -2162,6 +2187,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextRef ctx = [self createContextWithWidth:1 height:1];
     if(!ctx)
         return result;
+    [self resolveExclusionsLocked];
     auto saved        = _doc->skip_paint;
     _doc->skip_paint.clear();
     lh::g_paint_trace = &trace;
