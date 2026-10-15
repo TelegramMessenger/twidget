@@ -58,6 +58,11 @@ struct Layer {
     /// Changes whenever `track` changes; the same value means keep the running animation.
     uint64_t track_version = 0;
     LayerTrack track;
+    /// The layer this one moves with (an animated ancestor's), or 0 for one over the document. A
+    /// child comes after its parent, with nothing but the parent's other descendants in between;
+    /// its keys and its clip are in the parent's content space, so it shows at the parent's matrix
+    /// times its own, inside the parent's clip and opacity.
+    int64_t parent = 0;
 };
 
 /// Layers in paint order, bottom first, all above the document's own paint.
@@ -75,7 +80,7 @@ std::vector<LayerKey> resume_track(const LayerTrack& track, double elapsed, doub
 /// JSON for compositors outside C++, without the layers' content (to_json of `Layer::content`
 /// gives that): `{"v": version, "l": [{"id", "b" bounds, "cv" content_version, "rs" raster_scale,
 /// "l" clip and "q" its radii when clipped, "tv" track_version, "ts" start, "td" duration, "tr" 1
-/// when it repeats, "k" keys flat as t, a, b, c, d, e, f, opacity}]}`.
+/// when it repeats, "k" keys flat as t, a, b, c, d, e, f, opacity, "p" parent when nested}]}`.
 std::string to_json(const Composition& composition);
 
 /// A digest of everything `list` paints: equal digests paint equal pixels.

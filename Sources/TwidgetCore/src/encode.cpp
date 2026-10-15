@@ -321,6 +321,10 @@ std::string to_json(const Composition& composition) {
         for (const LayerKey& k : layer.track.keys)
             keys.insert(keys.end(), {k.t, k.matrix.a, k.matrix.b, k.matrix.c, k.matrix.d, k.matrix.e, k.matrix.f, k.opacity});
         w.floats("k", keys.data(), keys.size(), true);
+        if (layer.parent) {
+            w.key("p");
+            out += std::to_string(layer.parent);
+        }
         out.push_back('}');
     }
     out += "]}";

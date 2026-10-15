@@ -9,6 +9,7 @@
 #include <QWheelEvent>
 
 #include <cmath>
+#include <unordered_map>
 
 namespace {
 
@@ -125,24 +126,47 @@ void WidgetView::paintEvent(QPaintEvent*) {
     p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
     std::lock_guard l(frameMutex_);
     if (!frame_.isNull()) p.drawImage(QPointF(0, 0), frame_);
-    // Each layer where its track has it now, the way a compositor plays it.
+    // Each layer where its track has it now, inside its parent's matrix, opacity and clip, the way a
+    // compositor plays them. A parent comes before its children.
+    struct Placed {
+        QTransform world;  // the layer's content space → document coordinates
+        qreal opacity = 1;
+        bool clipped = false;
+        QPainterPath clip;  // document coordinates
+    };
+    std::unordered_map<int64_t, Placed> placed;
+    const QTransform base = p.transform();
     bool running = false;
     double now = twlite::Renderer::clock();
     for (const QtLayer& layer : layers_) {
         double span = 0;
         auto keys = twlite::resume_track(layer.track, now - layer.track.start, span);
         if (keys.empty()) continue;
+        Placed up;
+        if (layer.parent) {
+            auto it = placed.find(layer.parent);
+            if (it == placed.end()) continue;
+            up = it->second;
+        }
         running = running || (keys.size() > 1 && span > 0);
         const twlite::Affine& m = keys.front().matrix;
-        p.save();
+        Placed self = up;
         if (layer.has_clip) {
-            QPainterPath clip;
+            QPainterPath own;
             const twlite::Radii& q = layer.clip_radii;
-            clip.addRoundedRect(QRectF(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h), std::max(q.tlx, q.trx), std::max(q.tly, q.bly));
-            p.setClipPath(clip);
+            own.addRoundedRect(QRectF(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h), std::max(q.tlx, q.trx), std::max(q.tly, q.bly));
+            own = up.world.map(own);
+            self.clip = up.clipped ? up.clip.intersected(own) : own;
+            self.clipped = true;
         }
-        p.setTransform(QTransform(m.a, m.b, m.c, m.d, m.e, m.f), true);
-        p.setOpacity(keys.front().opacity);
+        self.world = QTransform(m.a, m.b, m.c, m.d, m.e, m.f) * up.world;
+        self.opacity = up.opacity * keys.front().opacity;
+        placed[layer.id] = self;
+        p.save();
+        p.setTransform(base);
+        if (self.clipped) p.setClipPath(self.clip);
+        p.setTransform(self.world * base);
+        p.setOpacity(self.opacity);
         p.drawImage(QRectF(layer.bounds.x, layer.bounds.y, layer.bounds.w, layer.bounds.h), layer.image);
         p.restore();
     }

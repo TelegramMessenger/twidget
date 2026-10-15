@@ -189,6 +189,7 @@ void QtRenderer::paint() {
                 layer.clip = source.clip;
                 layer.clip_radii = source.clip_radii;
                 layer.track = source.track;
+                layer.parent = source.parent;
                 auto old = layerImages_.find(source.id);
                 if (old != layerImages_.end() && old->second.first == source.content_version) {
                     layer.image = old->second.second;

@@ -251,6 +251,11 @@ private:
         bool svg = false;
         /// A canvas drawn again and again: a still layer whose drawing repaints only it.
         bool canvas = false;
+        /// The layer this one moves with (Layer::parent), and the clip clip_of found before it was
+        /// dropped or kept, to tell a clip of its own from the parent's.
+        int64_t parent = 0;
+        bool found_clip = false;
+        Rect found_clip_rect;
     };
     void update_composition(double now);
     // Scripted layers (the Swift renderer's): an element a script moves batch after batch through the

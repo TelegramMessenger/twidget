@@ -53,6 +53,7 @@ struct LayerFrame {
     twlite::Radii clip_radii;
     bool track_changed = false;
     twlite::LayerTrack track;
+    int64_t parent = 0;  // the layer this one moves with (twlite::Layer::parent)
 };
 
 struct Frame {

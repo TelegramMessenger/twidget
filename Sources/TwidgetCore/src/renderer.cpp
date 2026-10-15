@@ -687,13 +687,14 @@ public:
     uint64_t layouts() const { return layouts_; }
     /// `el` can be painted on its own as a layer: a box with no effects of its own, under no
     /// ancestor that groups its paint. `box` gets its border box.
-    bool layer_candidate(const litehtml::element::ptr& el, Rect& box) const {
+    /// `movers` are ancestors that may be paint groups: layers this one would move with.
+    bool layer_candidate(const litehtml::element::ptr& el, Rect& box, const std::unordered_set<const litehtml::element*>* movers = nullptr) const {
         auto ri = el->get_render_item();
         if (!doc_ || !ri || !ri->is_visible() || (el->is_inline() && !el->is_inline_box())) return false;
         const auto& css = el->css();
         if (!css.get_filter().empty() || !css.get_backdrop_filter().empty()) return false;
         for (auto p = ri->parent(); p; p = p->parent())
-            if (p->src_el()->css().is_paint_group()) return false;
+            if (p->src_el()->css().is_paint_group() && !(movers && movers->count(p->src_el().get()))) return false;
         box = border_box_of(el);
         return box.w > 0 && box.h > 0 && box.w * box.h < 2'000'000;
     }
@@ -2588,8 +2589,20 @@ void Renderer::update_composition(double now) {
     // that only repaints its own background. One walk up from each animated element marks the
     // elements with something animated inside.
     std::unordered_set<int64_t> animated(ids.begin(), ids.end());
+    // Movers: elements whose usable animations touch only layer properties. One inside another
+    // becomes a layer inside the other's (nested), so neither rules the other out.
+    std::unordered_set<int64_t> movers;
+    std::unordered_set<const litehtml::element*> mover_elements;
+    for (const Planned& p : planned) {
+        auto properties = animator_.animated_properties(p.id);
+        const Node* n = node(p.id);
+        if (!n || n->svg || n->tag == "svg" || !std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_layer_property(name); })) continue;
+        movers.insert(p.id);
+        if (auto el = container_->element(p.id)) mover_elements.insert(el.get());
+    }
     std::unordered_set<int64_t> holds_animated;
     for (int64_t id : ids) {
+        if (movers.count(id)) continue;
         const Node* n = node(id);
         for (const Node* p = n ? n->parent : nullptr; p; p = p->parent)
             if (p->id && !holds_animated.insert(p->id).second) break;
@@ -2616,11 +2629,11 @@ void Renderer::update_composition(double now) {
         const Node* n = node(id);
         if (!n || n->svg || n->tag == "svg" || holds_animated.count(id)) continue;
         bool blocked = false;
-        for (const Node* a = n->parent; a && !blocked; a = a->parent) blocked = a->id && blocks(a->id);
+        for (const Node* a = n->parent; a && !blocked; a = a->parent) blocked = a->id && !movers.count(a->id) && blocks(a->id);
         if (blocked) continue;
         auto el = container_->element(id);
         Rect box;
-        if (!el || !container_->layer_candidate(el, box)) continue;
+        if (!el || !container_->layer_candidate(el, box, &mover_elements)) continue;
         wanted.emplace_back(id, Want{std::move(el), p.plan, box, p.signature});
     }
     for (auto it = scripted_candidates_.begin(); it != scripted_candidates_.end();)
@@ -2644,6 +2657,8 @@ void Renderer::update_composition(double now) {
         p.box = want.box;
         p.signature = want.signature;
         if (!container_->clip_of(want.el, p.has_clip, p.clip, p.clip_radii)) continue;
+        p.found_clip = p.has_clip;
+        p.found_clip_rect = p.clip;
         // A running track stays when nothing about it changed, and while it still covers what the
         // animations will do: the end of a one-shot track, or the same loop.
         auto old = promoted_.find(id);
@@ -2915,6 +2930,66 @@ void Renderer::update_composition(double now) {
         auto ri = elements[id]->get_render_item();
         p.order = size_t(std::find(trace.begin(), trace.end(), ri.get()) - trace.begin());
     }
+
+    // Nested layers: a layer inside a mover moves with the mover's layer. Its keys and its own clip
+    // are in the parent's content space; a clip it shares with the parent is the parent's. What
+    // nothing may cover is where the parent's keys take its reach.
+    for (auto& [id, p] : next) {
+        p.parent = 0;
+        for (const Node* a = node(id) ? node(id)->parent : nullptr; a && !p.parent; a = a->parent)
+            if (a->id && movers.count(a->id)) p.parent = a->id;
+    }
+    {
+        std::vector<std::pair<int, int64_t>> by_depth;
+        for (const auto& [id, p] : next) {
+            int depth = 0;
+            for (int64_t up = p.parent; up && next.count(up) && depth < 64; up = next[up].parent) depth++;
+            by_depth.emplace_back(depth, id);
+        }
+        std::sort(by_depth.begin(), by_depth.end());
+        for (const auto& [depth, id] : by_depth) {
+            Promotion& p = next[id];
+            auto parent = next.find(p.parent);
+            if (!p.parent || parent == next.end()) continue;
+            if (p.has_clip && parent->second.found_clip && std::memcmp(&p.found_clip_rect, &parent->second.found_clip_rect, sizeof(Rect)) == 0) p.has_clip = false;
+            Rect reach{};
+            bool first = true;
+            for (const LayerKey& k : parent->second.track.keys) {
+                Rect at = bounds_under(p.reach, k.matrix);
+                if (first) reach = at;
+                else reach = Rect{std::min(reach.x, at.x), std::min(reach.y, at.y), std::max(reach.x + reach.w, at.x + at.w) - std::min(reach.x, at.x),
+                                  std::max(reach.y + reach.h, at.y + at.h) - std::min(reach.y, at.y)};
+                first = false;
+            }
+            if (parent->second.has_clip) reach = intersection(reach, parent->second.clip);
+            p.reach = reach;
+        }
+    }
+    // A child goes with its parent, and only when nothing else is composited between them.
+    auto drop_orphans = [&](std::map<int64_t, Promotion>& set) {
+        for (bool dropped = true; dropped;) {
+            dropped = false;
+            for (auto it = set.begin(); it != set.end();) {
+                int64_t parent = it->second.parent;
+                bool orphan = false;
+                if (parent) {
+                    auto up = set.find(parent);
+                    orphan = up == set.end();
+                    for (const auto& [other, q] : set) {
+                        if (orphan) break;
+                        orphan = other != parent && other != it->first && q.order > up->second.order && q.order < it->second.order && !is_ancestor(parent, other);
+                    }
+                }
+                if (orphan) {
+                    it = set.erase(it);
+                    dropped = true;
+                } else {
+                    ++it;
+                }
+            }
+        }
+    };
+    drop_orphans(next);
     size_t rounds = next.size() + 1;
     for (size_t round = 0; round < rounds && !next.empty(); round++) {
         std::unordered_set<const litehtml::element*> ignore;
@@ -2939,6 +3014,7 @@ void Renderer::update_composition(double now) {
             pixels += cost;
             admitted.emplace(id, std::move(next[id]));
         }
+        drop_orphans(admitted);
         bool stable = admitted.size() == next.size();
         next = std::move(admitted);
         if (stable) break;
@@ -2948,7 +3024,7 @@ void Renderer::update_composition(double now) {
     for (const auto& [id, p] : next) {
         auto old = promoted_.find(id);
         changed = changed || old == promoted_.end() || old->second.track_version != p.track_version || old->second.order != p.order ||
-                  std::memcmp(&old->second.box, &p.box, sizeof(Rect)) != 0;
+                  old->second.parent != p.parent || std::memcmp(&old->second.box, &p.box, sizeof(Rect)) != 0;
     }
     promoted_ = std::move(next);
     layer_ids_.clear();
@@ -3361,10 +3437,11 @@ DisplayList Renderer::paint_document() {
             layer.clip_radii = p.clip_radii;
             layer.track_version = p.track_version;
             layer.track = p.track;
+            layer.parent = p.parent;
             size_t i = next.layers.size();
             if (!changed) {
                 const Layer& old = composition_.layers[i];
-                changed = old.id != id || old.content_version != layer.content_version || old.track_version != layer.track_version ||
+                changed = old.id != id || old.content_version != layer.content_version || old.track_version != layer.track_version || old.parent != layer.parent ||
                           std::memcmp(&old.bounds, &layer.bounds, sizeof(Rect)) != 0 || old.has_clip != layer.has_clip ||
                           std::memcmp(&old.clip, &layer.clip, sizeof(Rect)) != 0 || std::memcmp(&old.clip_radii, &layer.clip_radii, sizeof(Radii)) != 0;
             }
@@ -3568,10 +3645,20 @@ int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
             // A shimmer's element stays in the document, which takes the point.
             if (p.shimmer) continue;
             if (p.has_clip && !(x >= p.clip.x && y >= p.clip.y && x < p.clip.x + p.clip.w && y < p.clip.y + p.clip.h)) continue;
-            double span = 0;
-            auto keys = resume_track(p.track, now - p.track.start, span);
+            // Where it shows: its key after each parent's, the opacity theirs too.
+            Affine shown;
+            float opacity = 1;
+            bool known = true;
+            for (const Promotion* q = &p; q && known; q = q->parent ? &promoted_.at(q->parent) : nullptr) {
+                double span = 0;
+                auto keys = resume_track(q->track, now - q->track.start, span);
+                known = !keys.empty() && promoted_.count(q->parent) == size_t(q->parent != 0);
+                if (!known) break;
+                shown = keys.front().matrix * shown;
+                opacity *= keys.front().opacity;
+            }
             Affine inverse;
-            if (keys.empty() || keys.front().opacity <= 0 || !keys.front().matrix.invert(inverse)) continue;
+            if (!known || opacity <= 0 || !shown.invert(inverse)) continue;
             float mx = inverse.apply_x(float(x), float(y)), my = inverse.apply_y(float(x), float(y));
             if (!(mx >= p.box.x && my >= p.box.y && mx < p.box.x + p.box.w && my < p.box.y + p.box.h)) continue;
             if (int64_t hit = container_->widget_id(container_->element_at_within(container_->element(id), mx, my), placement)) return hit;

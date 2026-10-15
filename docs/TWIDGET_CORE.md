@@ -124,8 +124,6 @@ This is not yet a replacement for Telegram's Swift renderer. The three fixtures 
 `tools/perflab/widget-stress` expose gaps beyond the existing unit coverage:
 
 - The canvas-market replay and the live Mac demo show a flat fill in place of the chart content.
-- `Renderer::update_composition` rejects nested animated elements. The Swift compositor can promote
-  the orbit fixture's nested motion; that needs a parent link in `Composition` and in every player.
 - The core has no input focus model; its focus and selection operations are ignored.
 
 `docs/PERFORMANCE_PARITY.md` tracks the rest against the Swift renderer, item by item.

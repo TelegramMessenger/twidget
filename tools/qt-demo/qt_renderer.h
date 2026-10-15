@@ -31,6 +31,7 @@ struct QtLayer {
     twlite::Rect clip;
     twlite::Radii clip_radii;
     twlite::LayerTrack track;
+    int64_t parent = 0;  // the layer this one moves with (twlite::Layer::parent)
 };
 
 struct QtFrame {

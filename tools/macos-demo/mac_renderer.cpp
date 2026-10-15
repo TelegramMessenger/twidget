@@ -274,6 +274,7 @@ void MacRenderer::paint() {
                 if (before == shown_.end() || before->second.first != source.content_version) layer.content = raster(source.content, source.bounds, layer.scale);
                 layer.track_changed = before == shown_.end() || before->second.second != source.track_version;
                 layer.track = source.track;
+                layer.parent = source.parent;
                 shown[source.id] = {source.content_version, source.track_version};
                 layers.push_back(std::move(layer));
             }

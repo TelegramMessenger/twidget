@@ -54,6 +54,9 @@ struct Shown {
     twlite::Rect clip;
     twlite::Radii clip_radii;
     twlite::LayerTrack track;
+    /// The children's parent, inside `content`: shifted by the bounds' origin, so the children's
+    /// document coordinates land where the content has them and they move with it.
+    CALayer* nest = nil;
     CALayer* top() const { return container ?: content; }
 };
 
@@ -208,6 +211,7 @@ struct Shown {
 - (void)showLayers:(const std::vector<LayerFrame>&)layers {
     std::map<int64_t, Shown> next;
     NSMutableArray<CALayer*>* order = [NSMutableArray array];
+    std::map<int64_t, NSMutableArray<CALayer*>*> children;  // by parent, in paint order
     for (const LayerFrame& source : layers) {
         Shown shown;
         auto old = _layers.find(source.id);
@@ -254,12 +258,39 @@ struct Shown {
         }
         shown.track = source.track;
         if (source.track_changed || moved || reclipped) [self play:shown];
-        [order addObject:shown.top()];
+        // A child goes into its parent's nest, which comes before it in the list.
+        if (source.parent && next.count(source.parent)) {
+            auto& list = children[source.parent];
+            if (!list) list = [NSMutableArray array];
+            [list addObject:shown.top()];
+        } else {
+            [order addObject:shown.top()];
+        }
         next.emplace(source.id, shown);
     }
     // Layers the composition no longer has: their elements are back in the document's paint.
     for (auto& [id, gone] : _layers) [gone.top() removeFromSuperlayer];
     _layers = std::move(next);
+
+    for (auto& [id, shown] : _layers) {
+        auto kids = children.find(id);
+        if (kids == children.end()) {
+            [shown.nest removeFromSuperlayer];
+            shown.nest = nil;
+            continue;
+        }
+        if (!shown.nest) {
+            shown.nest = [CALayer layer];
+            shown.nest.anchorPoint = CGPointZero;
+            [shown.content addSublayer:shown.nest];
+        }
+        shown.nest.position = CGPointMake(-shown.bounds.x, -shown.bounds.y);
+        if (![(shown.nest.sublayers ?: @[]) isEqualToArray:kids->second]) {
+            shown.nest.sublayers = kids->second;
+            for (auto& [other, child] : _layers)
+                if ([kids->second containsObject:child.top()]) [self play:child];
+        }
+    }
 
     // Paint order, bottom first, above the document (the root's contents). A layer that moves among
     // its siblings starts its track again, from where the clock has it.

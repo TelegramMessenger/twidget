@@ -1104,6 +1104,28 @@ int main() {
         check(!w.wants_tick(), "and the document needs no frames for it");
     }
 
+    // ── nested layers ──
+    {
+        StubBackend ob;
+        Renderer o(400, 1, false, ob);
+        o.set_compositing(true);
+        o.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style"},{"op":"css","id":20,"text":"@keyframes spin{to{transform:rotate(360deg)}} .orbit{margin:40px;width:100px;height:100px;animation:spin 4s linear infinite} .moon{width:20px;height:20px;background:red;animation:spin 1s linear infinite}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":30,"tag":"div","attrs":[["class","orbit"]]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":31,"tag":"div","attrs":[["class","moon"]]},{"op":"ins","parent":30,"id":31,"before":null}]})"));
+        o.paint();
+        const auto& layers = o.composition().layers;
+        bool nested = layers.size() == 2 && layers[0].id == 30 && layers[0].parent == 0 && layers[1].id == 31 && layers[1].parent == 30;
+        check(nested, "a spinner inside a spinner is a layer inside its layer (" + std::to_string(layers.size()) + " layers)");
+        if (nested) {
+            auto has = [](const DisplayList& list, uint8_t red) { return std::any_of(list.begin(), list.end(), [&](const Command& c) { return c.kind == Cmd::FillRect && c.color.r == red && c.color.g == 0; }); };
+            check(!has(layers[0].content, 255) && has(layers[1].content, 255), "the parent's content leaves the child out");
+            check(to_json(o.composition()).find("\"p\":30") != std::string::npos, "the JSON names the parent");
+        }
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
