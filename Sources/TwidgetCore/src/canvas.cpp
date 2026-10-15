@@ -4,12 +4,83 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <string_view>
 
 using twidget::Json;
 
 namespace twlite {
 
 namespace {
+
+// Canvas method and property names, looked up once a command instead of compared one by one down
+// the chain of them (the Swift renderer interns them too).
+enum class Method : uint8_t { unknown, beginPath, clearRect, clip, drawImage, fill, fillRect, fillText, putImageData, resetTransform, restore, rotate, save, scale, setLineDash, setTransform, stroke, strokeRect, strokeText, transform, translate, addPath, arc, arcTo, bezierCurveTo, closePath, ellipse, lineTo, moveTo, quadraticCurveTo, rect, roundRect };
+
+Method method_of(const std::string& name) {
+    static const std::unordered_map<std::string_view, Method> names = {
+        {"beginPath", Method::beginPath},
+        {"clearRect", Method::clearRect},
+        {"clip", Method::clip},
+        {"drawImage", Method::drawImage},
+        {"fill", Method::fill},
+        {"fillRect", Method::fillRect},
+        {"fillText", Method::fillText},
+        {"putImageData", Method::putImageData},
+        {"resetTransform", Method::resetTransform},
+        {"restore", Method::restore},
+        {"rotate", Method::rotate},
+        {"save", Method::save},
+        {"scale", Method::scale},
+        {"setLineDash", Method::setLineDash},
+        {"setTransform", Method::setTransform},
+        {"stroke", Method::stroke},
+        {"strokeRect", Method::strokeRect},
+        {"strokeText", Method::strokeText},
+        {"transform", Method::transform},
+        {"translate", Method::translate},
+        {"addPath", Method::addPath},
+        {"arc", Method::arc},
+        {"arcTo", Method::arcTo},
+        {"bezierCurveTo", Method::bezierCurveTo},
+        {"closePath", Method::closePath},
+        {"ellipse", Method::ellipse},
+        {"lineTo", Method::lineTo},
+        {"moveTo", Method::moveTo},
+        {"quadraticCurveTo", Method::quadraticCurveTo},
+        {"rect", Method::rect},
+        {"roundRect", Method::roundRect},
+    };
+    auto it = names.find(name);
+    return it == names.end() ? Method::unknown : it->second;
+}
+
+enum class Property : uint8_t { unknown, fillStyle, font, globalAlpha, globalCompositeOperation, imageSmoothingEnabled, lineCap, lineDashOffset, lineJoin, lineWidth, miterLimit, shadowBlur, shadowColor, shadowOffsetX, shadowOffsetY, strokeStyle, textAlign, textBaseline };
+
+Property property_of(const std::string& name) {
+    static const std::unordered_map<std::string_view, Property> names = {
+        {"fillStyle", Property::fillStyle},
+        {"font", Property::font},
+        {"globalAlpha", Property::globalAlpha},
+        {"globalCompositeOperation", Property::globalCompositeOperation},
+        {"imageSmoothingEnabled", Property::imageSmoothingEnabled},
+        {"lineCap", Property::lineCap},
+        {"lineDashOffset", Property::lineDashOffset},
+        {"lineJoin", Property::lineJoin},
+        {"lineWidth", Property::lineWidth},
+        {"miterLimit", Property::miterLimit},
+        {"shadowBlur", Property::shadowBlur},
+        {"shadowColor", Property::shadowColor},
+        {"shadowOffsetX", Property::shadowOffsetX},
+        {"shadowOffsetY", Property::shadowOffsetY},
+        {"strokeStyle", Property::strokeStyle},
+        {"textAlign", Property::textAlign},
+        {"textBaseline", Property::textBaseline},
+    };
+    auto it = names.find(name);
+    return it == names.end() ? Property::unknown : it->second;
+}
+
 
 constexpr double PI = 3.14159265358979323846;
 constexpr size_t MAX_OBJECTS = 4096;
@@ -333,42 +404,43 @@ void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
 
 void Canvas::set(const std::string& p, const Value& v) {
     State& s = state_;
+    const Property q = property_of(p);
     Color color;
-    if (p == "fillStyle" || p == "strokeStyle") {
-        Paint& paint = p == "fillStyle" ? s.fill : s.stroke;
+    if (q == Property::fillStyle || q == Property::strokeStyle) {
+        Paint& paint = q == Property::fillStyle ? s.fill : s.stroke;
         if (v.kind == Value::String && color_of(v.string, color)) paint = Paint{false, color, 0};
         else if (v.kind == Value::Gradient) paint = Paint{true, Color{}, int(v.ref)};
-    } else if (p == "lineWidth") {
+    } else if (q == Property::lineWidth) {
         if (v.kind == Value::Number && v.number > 0 && std::isfinite(v.number)) s.line_width = float(v.number);
-    } else if (p == "lineCap") {
+    } else if (q == Property::lineCap) {
         s.line_cap = v.string == "round" ? 1 : v.string == "square" ? 2 : v.string == "butt" ? 0 : s.line_cap;
-    } else if (p == "lineJoin") {
+    } else if (q == Property::lineJoin) {
         s.line_join = v.string == "round" ? 1 : v.string == "bevel" ? 2 : v.string == "miter" ? 0 : s.line_join;
-    } else if (p == "miterLimit") {
+    } else if (q == Property::miterLimit) {
         if (v.kind == Value::Number && v.number > 0 && std::isfinite(v.number)) s.miter_limit = float(v.number);
-    } else if (p == "lineDashOffset") {
+    } else if (q == Property::lineDashOffset) {
         if (v.kind == Value::Number && std::isfinite(v.number)) s.dash_offset = float(v.number);
-    } else if (p == "font") {
+    } else if (q == Property::font) {
         if (v.kind == Value::String && !v.string.empty()) s.font = v.string;
-    } else if (p == "textAlign") {
+    } else if (q == Property::textAlign) {
         if (v.kind == Value::String) s.align = v.string;
-    } else if (p == "textBaseline") {
+    } else if (q == Property::textBaseline) {
         if (v.kind == Value::String) s.baseline = v.string;
-    } else if (p == "globalAlpha") {
+    } else if (q == Property::globalAlpha) {
         if (v.kind == Value::Number && v.number >= 0 && v.number <= 1) s.alpha = float(v.number);
-    } else if (p == "globalCompositeOperation") {
+    } else if (q == Property::globalCompositeOperation) {
         bool known;
         Composite c = composite_of(v.string, known);
         if (known) s.composite = c;
-    } else if (p == "shadowBlur") {
+    } else if (q == Property::shadowBlur) {
         if (v.kind == Value::Number && v.number >= 0 && std::isfinite(v.number)) s.shadow_blur = float(std::min(v.number, 100.0));
-    } else if (p == "shadowColor") {
+    } else if (q == Property::shadowColor) {
         if (v.kind == Value::String && color_of(v.string, color)) s.shadow_color = color;
-    } else if (p == "shadowOffsetX") {
+    } else if (q == Property::shadowOffsetX) {
         if (v.kind == Value::Number && std::isfinite(v.number)) s.shadow_x = float(v.number);
-    } else if (p == "shadowOffsetY") {
+    } else if (q == Property::shadowOffsetY) {
         if (v.kind == Value::Number && std::isfinite(v.number)) s.shadow_y = float(v.number);
-    } else if (p == "imageSmoothingEnabled") {
+    } else if (q == Property::imageSmoothingEnabled) {
         if (v.kind == Value::Number) s.smoothing = v.number != 0;
     }
 }
@@ -505,6 +577,7 @@ bool Canvas::color_of(const std::string& text, Color& out) {
 
 void Canvas::call_method(const std::string& method, const std::vector<Value>& a, std::vector<CanvasOp>& out) {
     if (width_ == 0 || height_ == 0) return;
+    const Method m = method_of(method);
     auto n = [&](size_t i, double fallback = 0) { return i < a.size() && a[i].kind == Value::Number && std::isfinite(a[i].number) ? a[i].number : fallback; };
     auto evenodd = [&](size_t i) { return i < a.size() && a[i].kind == Value::String && a[i].string == "evenodd"; };
     auto path_arg = [&]() -> const Builder* {
@@ -513,46 +586,46 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
         return it == paths_.end() ? nullptr : &it->second;
     };
     State& s = state_;
-    if (method == "save") {
+    if (m == Method::save) {
         if (stack_.size() < MAX_STACK) stack_.push_back(s);
-    } else if (method == "restore") {
+    } else if (m == Method::restore) {
         if (!stack_.empty()) {
             s = std::move(stack_.back());
             stack_.pop_back();
         }
-    } else if (method == "scale") {
+    } else if (m == Method::scale) {
         s.matrix = Matrix{n(0, 1), 0, 0, n(1, 1), 0, 0}.then(s.matrix);
-    } else if (method == "rotate") {
+    } else if (m == Method::rotate) {
         double r = n(0), c = std::cos(r), si = std::sin(r);
         s.matrix = Matrix{c, si, -si, c, 0, 0}.then(s.matrix);
-    } else if (method == "translate") {
+    } else if (m == Method::translate) {
         s.matrix = Matrix{1, 0, 0, 1, n(0), n(1)}.then(s.matrix);
-    } else if (method == "transform") {
+    } else if (m == Method::transform) {
         s.matrix = Matrix{n(0, 1), n(1), n(2), n(3, 1), n(4), n(5)}.then(s.matrix);
-    } else if (method == "setTransform") {
+    } else if (m == Method::setTransform) {
         if (!a.empty() && a[0].kind == Value::List && a[0].list.size() >= 6) {
             const auto& l = a[0].list;
             s.matrix = Matrix{l[0], l[1], l[2], l[3], l[4], l[5]};
         } else s.matrix = Matrix{n(0, 1), n(1), n(2), n(3, 1), n(4), n(5)};
-    } else if (method == "resetTransform") {
+    } else if (m == Method::resetTransform) {
         s.matrix = Matrix();
-    } else if (method == "clearRect") {
+    } else if (m == Method::clearRect) {
         CanvasOp o = op(CanvasOp::Clear);
         o.path = rect_geometry(n(0), n(1), n(2), n(3));
         out.push_back(std::move(o));
-    } else if (method == "fillRect") {
+    } else if (m == Method::fillRect) {
         fill(rect_geometry(n(0), n(1), n(2), n(3)), false, out);
-    } else if (method == "strokeRect") {
+    } else if (m == Method::strokeRect) {
         stroke(rect_geometry(n(0), n(1), n(2), n(3)), out);
-    } else if (method == "beginPath") {
+    } else if (m == Method::beginPath) {
         path_ = Builder();
-    } else if (method == "fill") {
+    } else if (m == Method::fill) {
         if (const Builder* p = path_arg()) fill(transformed(p->geometry, s.matrix), evenodd(1), out);
         else fill(path_.geometry, evenodd(0), out);
-    } else if (method == "stroke") {
+    } else if (m == Method::stroke) {
         if (const Builder* p = path_arg()) stroke(transformed(p->geometry, s.matrix), out);
         else stroke(path_.geometry, out);
-    } else if (method == "clip") {
+    } else if (m == Method::clip) {
         CanvasClip clip;
         if (const Builder* p = path_arg()) {
             clip.path = transformed(p->geometry, s.matrix);
@@ -565,9 +638,9 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
         // An empty path clips everything away.
         clips->push_back(std::move(clip));
         s.clips = std::move(clips);
-    } else if (method == "fillText" || method == "strokeText") {
-        if (!a.empty() && a[0].kind == Value::String) text(a[0].string, n(1), n(2), a.size() > 3 ? &a[3] : nullptr, method == "strokeText", out);
-    } else if (method == "setLineDash") {
+    } else if (m == Method::fillText || m == Method::strokeText) {
+        if (!a.empty() && a[0].kind == Value::String) text(a[0].string, n(1), n(2), a.size() > 3 ? &a[3] : nullptr, m == Method::strokeText, out);
+    } else if (m == Method::setLineDash) {
         if (!a.empty() && a[0].kind == Value::List && a[0].list.size() <= 64) {
             const auto& v = a[0].list;
             if (std::all_of(v.begin(), v.end(), [](float x) { return std::isfinite(x) && x >= 0; })) {
@@ -575,7 +648,7 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
                 if (v.size() % 2 == 1) s.dash.insert(s.dash.end(), v.begin(), v.end());
             }
         }
-    } else if (method == "putImageData") {
+    } else if (m == Method::putImageData) {
         if (a.empty() || a[0].kind != Value::Pixels) return;
         const Value& px = a[0];
         if (px.w <= 0 || px.h <= 0 || px.w > MAX_SIDE || px.h > MAX_SIDE || int64_t(px.w) * px.h > MAX_PIXELS || px.pixels->size() < size_t(px.w) * px.h * 4) return;
@@ -587,7 +660,7 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
         o.dx = float(n(1));
         o.dy = float(n(2));
         out.push_back(std::move(o));
-    } else if (method == "drawImage") {
+    } else if (m == Method::drawImage) {
         image(a, out);
     } else {
         path_method(path_, s.matrix, method, a);
@@ -595,6 +668,7 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
 }
 
 void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method, const std::vector<Value>& a) const {
+    const Method verb = method_of(method);
     auto n = [&](size_t i, double fallback = 0) { return i < a.size() && a[i].kind == Value::Number && std::isfinite(a[i].number) ? a[i].number : fallback; };
     auto truthy = [&](size_t i) {
         if (i >= a.size()) return false;
@@ -677,25 +751,25 @@ void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method,
         y = fy;
         return true;
     };
-    if (method == "moveTo") move(n(0), n(1));
-    else if (method == "lineTo") line(n(0), n(1));
-    else if (method == "closePath") close();
-    else if (method == "bezierCurveTo") {
+    if (verb == Method::moveTo) move(n(0), n(1));
+    else if (verb == Method::lineTo) line(n(0), n(1));
+    else if (verb == Method::closePath) close();
+    else if (verb == Method::bezierCurveTo) {
         ensure(n(0), n(1));
         cubic(n(0), n(1), n(2), n(3), n(4), n(5));
-    } else if (method == "quadraticCurveTo") {
+    } else if (verb == Method::quadraticCurveTo) {
         ensure(n(0), n(1));
         b.geometry.ops.push_back(Path::Quad);
         point(n(0), n(1));
         auto [px, py] = point(n(2), n(3));
         b.cx = px;
         b.cy = py;
-    } else if (method == "arc") {
+    } else if (verb == Method::arc) {
         arc(n(0), n(1), std::max(0.0, n(2)), std::max(0.0, n(2)), 0, n(3), n(4), truthy(5));
-    } else if (method == "ellipse") {
+    } else if (verb == Method::ellipse) {
         if (n(2) < 0 || n(3) < 0) return;
         arc(n(0), n(1), n(2), n(3), n(4), n(5), n(6), truthy(7));
-    } else if (method == "arcTo") {
+    } else if (verb == Method::arcTo) {
         double x1 = n(0), y1 = n(1), x2 = n(2), y2 = n(3), r = std::max(0.0, n(4));
         double x0, y0;
         if (!b.has_point) {
@@ -721,14 +795,14 @@ void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method,
         double start = std::atan2(t1y - cy, t1x - cx), end = std::atan2(t2y - cy, t2x - cx);
         line(t1x, t1y);
         arc(cx, cy, r, r, 0, start, end, cross > 0);
-    } else if (method == "rect") {
+    } else if (verb == Method::rect) {
         double x = n(0), y = n(1), w = n(2), h = n(3);
         move(x, y);
         line(x + w, y);
         line(x + w, y + h);
         line(x, y + h);
         close();
-    } else if (method == "roundRect") {
+    } else if (verb == Method::roundRect) {
         double x = n(0), y = n(1), w = n(2), h = n(3);
         if (w < 0) { x += w; w = -w; }
         if (h < 0) { y += h; h = -h; }
@@ -754,7 +828,7 @@ void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method,
         close();
         // The spec starts the next subpath at the rectangle's origin, not at the first corner arc.
         set_current(x, y);
-    } else if (method == "addPath") {
+    } else if (verb == Method::addPath) {
         if (a.empty() || a[0].kind != Value::PathRef) return;
         auto it = paths_.find(int(a[0].ref));
         if (it == paths_.end() || &it->second == &b) return;

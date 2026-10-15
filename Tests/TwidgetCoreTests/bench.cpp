@@ -2,7 +2,7 @@
 // FrameCostBenchTests (Tests/TwidgetRendererTests), sent as the same protocol ops, so the two can be
 // compared. It measures the core alone: the stub backend measures text at 8 px a byte and rasters
 // nothing, so a platform's painting is not in the numbers.
-//   twidget_core_bench [mixed|transform|swarm|css|drag|drag-doc] [count] [frames]
+//   twidget_core_bench [mixed|transform|swarm|css|drag|drag-doc|canvas] [count] [frames]
 #include "renderer.h"
 
 #include <chrono>
@@ -231,6 +231,29 @@ Scenario swarm(int count, int frames) {
     return s;
 }
 
+/// A chart a script redraws on a canvas every frame: `count` points as line segments, bars and labels.
+Scenario canvas_chart(int count, int frames) {
+    Scenario s;
+    auto ops = document("body { margin: 0; } canvas { width: 400px; height: 300px; }");
+    ops.push_back(el(100, "canvas", attr("width", "800") + "," + attr("height", "600")));
+    ops.push_back(ins(100, 1));
+    s.setup = message(ops);
+    for (int f = 0; f < frames; f++) {
+        std::string cmds = "[\"c\",\"clearRect\",0,0,800,600],[\"s\",\"lineWidth\",2],[\"s\",\"strokeStyle\",\"#3a7\"],[\"c\",\"beginPath\"]";
+        for (int i = 0; i < count; i++) {
+            double x = 800.0 * i / count, y = 300 + 200 * std::sin((i + f) * 0.05);
+            cmds += std::string(",[\"c\",\"") + (i ? "lineTo" : "moveTo") + "\"," + num(x) + "," + num(y) + "]";
+        }
+        cmds += ",[\"c\",\"stroke\"],[\"s\",\"fillStyle\",\"#f80\"]";
+        for (int i = 0; i < count / 10; i++)
+            cmds += ",[\"c\",\"fillRect\"," + num(800.0 * i * 10 / count) + ",580,6," + num(-((i * 37 + f) % 200)) + "]";
+        cmds += ",[\"s\",\"fillStyle\",\"#222\"],[\"s\",\"font\",\"12px sans-serif\"]";
+        for (int i = 0; i < 10; i++) cmds += ",[\"c\",\"fillText\",\"" + std::to_string(i * 10 + f % 10) + "\"," + num(i * 80) + ",20]";
+        s.frames.push_back(message({"\"op\":\"canvas\",\"id\":100,\"cmds\":[" + cmds + "]"}));
+    }
+    return s;
+}
+
 /// CSS animations the core runs itself, composited: frames are ticks, with no ops at all. Rows of
 /// spinners, every tenth row with a pulsing background behind it.
 Scenario css_animations(int count) {
@@ -259,7 +282,7 @@ int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "mixed";
     int count = argc > 2 ? std::atoi(argv[2]) : (mode == "swarm" ? 800 : 1000);
     int frames = argc > 3 ? std::atoi(argv[3]) : 300;
-    Scenario scenario = mode == "swarm" ? swarm(count, frames) : mode == "css" ? css_animations(count) : busy(mode, count, frames);
+    Scenario scenario = mode == "swarm" ? swarm(count, frames) : mode == "css" ? css_animations(count) : mode == "canvas" ? canvas_chart(count, frames) : busy(mode, count, frames);
 
     StubBackend backend;
     Renderer r(400, 2, false, backend);
