@@ -41,6 +41,7 @@ struct Timing {
     double web(double x, bool before) const;
 
     static std::optional<Timing> parse(std::string_view text);
+    static std::optional<Timing> parse_uncached(std::string_view text);
     static Timing ease();
 };
 

@@ -16,6 +16,7 @@
 #include "display_list.h"
 #include "twidget/json.h"
 
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -173,6 +174,9 @@ private:
     void dispatch(twidget::Json ev, std::vector<twidget::Json>& out);
     void flush_moves(std::vector<twidget::Json>& out);
     void flush_pending(std::vector<twidget::Json>& out);
+    /// The sandbox wants events of `type` (it listens, or every widget gets them).
+    bool listened(const char* type) const;
+    void send_event(const char* type, int64_t target, const Input& in, std::vector<twidget::Json>& out);
     bool is_ancestor(int64_t ancestor, int64_t id) const;
     std::vector<int64_t> chain(int64_t id) const;
     // shadow tree → style attribute, with animation overrides
@@ -261,7 +265,8 @@ private:
     bool frozen_ = false;
     std::string frozen_reason_;
     bool frozen_fatal_ = false;
-    std::string last_size_;
+    std::array<double, 4> last_size_{};  // width, document height, viewport height, dpr as last reported
+    uint64_t declared_generation_ = 0;
     std::unordered_map<int, Touch> touches_;
     int64_t hover_ = 0;
     double hover_x_ = 0, hover_y_ = 0;

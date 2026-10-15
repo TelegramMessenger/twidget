@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -117,6 +118,8 @@ private:
     // By id, which the sandbox only ever increases: at the cap the oldest object goes, as a browser
     // collects the ones a widget dropped, rather than the newest being refused.
     std::map<int, Gradient> gradients_;
+    bool color_of(const std::string& text, Color& out);
+    std::unordered_map<std::string, std::optional<Color>> colors_;
     std::map<int, Builder> paths_;
 };
 

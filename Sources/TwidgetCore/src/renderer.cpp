@@ -12,6 +12,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -450,17 +451,22 @@ public:
 #ifdef TW_LITEHTML_TWIDGET
     /// The declared values of `names` on every displayed element with a widget id that declares
     /// one of `gates`, or whose id is in `always`. What the fork records as raw declarations.
-    std::unordered_map<int64_t, Declared> declarations(const std::vector<std::string>& names, const std::vector<std::string>& gates, const std::vector<int64_t>& always) const {
-        std::unordered_map<int64_t, Declared> out;
-        if (!doc_ || !doc_->root()) return out;
+    /// `generation` tells one answer from another: the same number, the same declarations.
+    const std::unordered_map<int64_t, Declared>& declarations(const std::vector<std::string>& names, const std::vector<std::string>& gates, const std::vector<int64_t>& always,
+                                                              uint64_t* generation = nullptr) const {
+        static const std::unordered_map<int64_t, Declared> nothing;
+        if (generation) *generation = 0;
+        if (!doc_ || !doc_->root()) return nothing;
         // A frame asks the same few questions of a document whose styles have not changed: the walk
         // is done once per style epoch for each.
         for (size_t i = 0; i < scans_.size(); i++) {
             const Scan& scan = scans_[i];
             if (scan.epoch != doc_->style_epoch() || scan.names != names || scan.gates != gates || scan.always != always) continue;
             std::rotate(scans_.begin(), scans_.begin() + i, scans_.begin() + i + 1);
+            if (generation) *generation = scans_.front().generation;
             return scans_.front().result;
         }
+        std::unordered_map<int64_t, Declared> out;
         std::function<void(const litehtml::element::ptr&)> visit = [&](const litehtml::element::ptr& el) {
             if (el->css().get_display() == litehtml::display_none) return;
             if (auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(el)) {
@@ -482,9 +488,10 @@ public:
             for (const auto& child : el->children()) visit(child);
         };
         visit(doc_->root());
-        scans_.insert(scans_.begin(), Scan{names, gates, always, doc_->style_epoch(), out});
+        scans_.insert(scans_.begin(), Scan{names, gates, always, doc_->style_epoch(), ++scan_generation_, std::move(out)});
         if (scans_.size() > 4) scans_.pop_back();
-        return out;
+        if (generation) *generation = scans_.front().generation;
+        return scans_.front().result;
     }
     /// Whether the layout can change with the viewport's height, which follows the document's: fixed
     /// boxes, percentage heights on html or body, viewport lengths, height media queries, and absolute boxes
@@ -1412,8 +1419,10 @@ private:
         std::vector<std::string> names, gates;
         std::vector<int64_t> always;
         uint64_t epoch;
+        uint64_t generation;
         std::unordered_map<int64_t, Declared> result;
     };
+    mutable uint64_t scan_generation_ = 0;
     mutable std::vector<Scan> scans_;  // declarations(), latest first; a new document starts its epochs again
 #endif
     uint64_t layouts_ = 0;
@@ -2105,10 +2114,20 @@ void Renderer::animate() {
         animator_.set_style_sheets(sheets);
     }
     animator_.prune([this](int64_t id) { return node(id) != nullptr; });
-    auto declarations = container_->declarations(Animator::watched(), Animator::entry_properties(), {});
-    animator_.underlying.clear();
+    uint64_t generation = 0;
+    const auto& found = container_->declarations(Animator::watched(), Animator::entry_properties(), {}, &generation);
     auto targets = animator_.web_targets();
-    if (!targets.empty()) {
+    if (targets.empty()) {
+        // The same declarations as last time start, stop and retarget nothing.
+        if (generation == 0 || generation != declared_generation_) {
+            animator_.underlying.clear();
+            animator_.update(found, now);
+        }
+        declared_generation_ = generation;
+    } else {
+        declared_generation_ = 0;
+        auto declarations = found;
+        animator_.underlying.clear();
         // Web Animations targets are read whatever they declare: their keyframes compose onto these values.
         std::vector<std::string> names = Animator::watched();
         for (int64_t id : targets)
@@ -2120,8 +2139,8 @@ void Renderer::animate() {
                 if (!css::starts_with(k, "animation") && !css::starts_with(k, "transition")) declared.emplace(k, v);
             animator_.underlying[id] = std::move(values);
         }
+        animator_.update(declarations, now);
     }
-    animator_.update(declarations, now);
     update_composition(now);
     auto sampled = animator_.sample(now);
     strip_layers(sampled);
@@ -2568,14 +2587,14 @@ int64_t Renderer::canvas_allowance(int id) {
 }
 
 void Renderer::report_size(std::vector<Json>& out) {
+    // Every frame asks; the message goes out when a number moved.
+    std::array<double, 4> size{width_, doc_height_, double(vp_height_), dpr_};
+    if (size == last_size_) return;
+    last_size_ = size;
     Json msg = Json::object();
     msg.set("type", "size").set("width", width_).set("height", doc_height_);
     msg.set("innerWidth", width_).set("innerHeight", vp_height_).set("dpr", dpr_);
-    std::string key = msg.dump();
-    if (key != last_size_) {
-        last_size_ = key;
-        out.push_back(std::move(msg));
-    }
+    out.push_back(std::move(msg));
 }
 
 DisplayList Renderer::paint() {
@@ -2948,8 +2967,20 @@ void Renderer::flush_moves(std::vector<Json>& out) {
     pending_moves_.clear();
 }
 
+bool Renderer::listened(const char* type) const {
+    for (const char* a : ALWAYS_FORWARD)
+        if (std::strcmp(type, a) == 0) return true;
+    return interest_.count(type) != 0;
+}
+
+void Renderer::send_event(const char* type, int64_t target, const Input& in, std::vector<Json>& out) {
+    if (listened(type)) dispatch(event_json(type, target, box_of(target), in), out);
+}
+
 void Renderer::emit_event(const char* type, int64_t target, const Rect& target_rect, const Touch& t, int action, std::vector<Json>& out) {
     if (t.mouse && std::strncmp(type, "touch", 5) == 0) return;
+    // An event nothing listens for is dropped before it is built.
+    if (!listened(type)) return;
     Input in;
     in.x = t.x;
     in.y = t.y;
@@ -3106,29 +3137,29 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
         auto in_chain = [](const std::vector<int64_t>& c, int64_t id) { return std::find(c.begin(), c.end(), id) != c.end(); };
         if (previous) {
             in.related = target;
-            dispatch(event_json("pointerout", previous, box(previous), in), out);
-            dispatch(event_json("mouseout", previous, box(previous), in), out);
+            send_event("pointerout", previous, in, out);
+            send_event("mouseout", previous, in, out);
             for (int64_t id : before) {
                 if (in_chain(after, id)) continue;
-                dispatch(event_json("pointerleave", id, box(id), in), out);
-                dispatch(event_json("mouseleave", id, box(id), in), out);
+                send_event("pointerleave", id, in, out);
+                send_event("mouseleave", id, in, out);
             }
         }
         if (target) {
             in.related = previous;
-            dispatch(event_json("pointerover", target, box(target), in), out);
-            dispatch(event_json("mouseover", target, box(target), in), out);
+            send_event("pointerover", target, in, out);
+            send_event("mouseover", target, in, out);
             for (auto it = after.rbegin(); it != after.rend(); ++it) {
                 if (in_chain(before, *it)) continue;
-                dispatch(event_json("pointerenter", *it, box(*it), in), out);
-                dispatch(event_json("mouseenter", *it, box(*it), in), out);
+                send_event("pointerenter", *it, in, out);
+                send_event("mouseenter", *it, in, out);
             }
         }
         in.related = 0;
     }
     if (target) {
-        dispatch(event_json("pointermove", target, box(target), in), out);
-        dispatch(event_json("mousemove", target, box(target), in), out);
+        send_event("pointermove", target, in, out);
+        send_event("mousemove", target, in, out);
     }
     flush_pending(out);
     return out;

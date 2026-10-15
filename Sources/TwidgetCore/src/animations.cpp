@@ -530,6 +530,16 @@ Timing Timing::ease() {
 }
 
 std::optional<Timing> Timing::parse(std::string_view raw) {
+    // A document repeats a handful of timing functions; each is parsed once per thread.
+    thread_local std::unordered_map<std::string, std::optional<Timing>> parsed;
+    if (auto it = parsed.find(std::string(raw)); it != parsed.end()) return it->second;
+    if (parsed.size() >= 256) parsed.clear();
+    auto timing = parse_uncached(raw);
+    parsed.emplace(std::string(raw), timing);
+    return timing;
+}
+
+std::optional<Timing> Timing::parse_uncached(std::string_view raw) {
     std::string t = css::lower(css::trim(raw));
     Timing out;
     out.text = t;

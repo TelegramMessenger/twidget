@@ -16,6 +16,7 @@ constexpr size_t MAX_OBJECTS = 4096;
 constexpr size_t MAX_STOPS = 256;
 constexpr size_t MAX_STACK = 512;
 constexpr size_t MAX_TEXT = 4096;
+constexpr size_t MAX_COLORS = 256;
 
 std::vector<uint8_t> base64(const std::string& in) {
     static int8_t table[256];
@@ -301,7 +302,7 @@ void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
         } else if (kind == "gs") {
             auto it = gradients_.find(list[1].asInt());
             Color color;
-            if (it == gradients_.end() || list.size() < 4 || it->second.stops.size() >= MAX_STOPS || !css::parse_color(list[3].asString(), color)) continue;
+            if (it == gradients_.end() || list.size() < 4 || it->second.stops.size() >= MAX_STOPS || !color_of(list[3].asString(), color)) continue;
             Stop stop{std::clamp(float(list[2].asNumber()), 0.0f, 1.0f), color};
             auto& stops = it->second.stops;
             stops.insert(std::upper_bound(stops.begin(), stops.end(), stop, [](const Stop& a, const Stop& b) { return a.offset < b.offset; }), stop);
@@ -335,7 +336,7 @@ void Canvas::set(const std::string& p, const Value& v) {
     Color color;
     if (p == "fillStyle" || p == "strokeStyle") {
         Paint& paint = p == "fillStyle" ? s.fill : s.stroke;
-        if (v.kind == Value::String && css::parse_color(v.string, color)) paint = Paint{false, color, 0};
+        if (v.kind == Value::String && color_of(v.string, color)) paint = Paint{false, color, 0};
         else if (v.kind == Value::Gradient) paint = Paint{true, Color{}, int(v.ref)};
     } else if (p == "lineWidth") {
         if (v.kind == Value::Number && v.number > 0 && std::isfinite(v.number)) s.line_width = float(v.number);
@@ -362,7 +363,7 @@ void Canvas::set(const std::string& p, const Value& v) {
     } else if (p == "shadowBlur") {
         if (v.kind == Value::Number && v.number >= 0 && std::isfinite(v.number)) s.shadow_blur = float(std::min(v.number, 100.0));
     } else if (p == "shadowColor") {
-        if (v.kind == Value::String && css::parse_color(v.string, color)) s.shadow_color = color;
+        if (v.kind == Value::String && color_of(v.string, color)) s.shadow_color = color;
     } else if (p == "shadowOffsetX") {
         if (v.kind == Value::Number && std::isfinite(v.number)) s.shadow_x = float(v.number);
     } else if (p == "shadowOffsetY") {
@@ -485,6 +486,21 @@ void Canvas::image(const std::vector<Value>& a, std::vector<CanvasOp>& out) {
     }
     if (o.dw == 0 || o.dh == 0 || (a.size() == 9 && (o.sw == 0 || o.sh == 0))) return;
     out.push_back(std::move(o));
+}
+
+bool Canvas::color_of(const std::string& text, Color& out) {
+    // A widget sets the same few colours frame after frame.
+    if (auto it = colors_.find(text); it != colors_.end()) {
+        if (!it->second) return false;
+        out = *it->second;
+        return true;
+    }
+    if (colors_.size() >= MAX_COLORS) colors_.clear();
+    Color parsed;
+    bool ok = css::parse_color(text, parsed);
+    colors_.emplace(text, ok ? std::optional<Color>(parsed) : std::nullopt);
+    if (ok) out = parsed;
+    return ok;
 }
 
 void Canvas::call_method(const std::string& method, const std::vector<Value>& a, std::vector<CanvasOp>& out) {
