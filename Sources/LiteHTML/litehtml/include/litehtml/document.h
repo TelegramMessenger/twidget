@@ -145,6 +145,7 @@ namespace litehtml
         bool                                    m_build_limited  = false;
         int                                     m_selector_scope = -1;
         int                                     m_ids_selectable = -1;
+        int                                     m_style_attributes_selectable = -1;
         std::unordered_set<string_id>           m_left_classes;
         std::unordered_set<string_id>           m_left_ids;
         std::unordered_set<string_id>           m_left_attrs;
@@ -319,13 +320,16 @@ namespace litehtml
         void     build_template();
         int      update_from_template(const std::string& html, bool* changed);
         int      apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed);
+        static constexpr int template_requires_fresh_document = -2;
         bool     update_structure(const std::string& html, bool* changed);
         int      selector_scope();
+        bool     style_attributes_selectable();
         void     restyle_after_patch(const std::vector<std::shared_ptr<element>>& restyle,
                                      const std::vector<std::shared_ptr<element>>& new_text, bool keep_tree = false,
                                      const std::vector<std::shared_ptr<element>>& retext = {},
                                      const std::unordered_set<const element*>& background_only = {},
-                                     const std::unordered_map<const element*, const property_patch*>& patched = {});
+                                     const std::unordered_map<const element*, const property_patch*>& patched = {},
+                                     const std::unordered_set<const element*>& shallow_width = {});
         bool     retag_allowed(const std::shared_ptr<element>& el, std::string name, bool svg, string_map& attrs,
                                bool blocked);
         bool     apply_retag(const std::shared_ptr<element>& el, const string_map& attrs, bool check, int* region = nullptr);
