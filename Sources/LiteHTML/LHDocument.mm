@@ -4,6 +4,7 @@
 #import "LHDocumentPainting.h"
 
 #include "LHContainer.h"
+#include "LHImmutableBitmap.h"
 #include "LHSimpleText.h"
 #include "lhx_local_paint_key.h"
 #include "lhx_alpha_bounds.h"
@@ -628,6 +629,28 @@ struct PixelSnap
     }
     ~PixelSnap() { lh::pixel_snap_scale() = saved; }
 };
+
+static bool LHScrollTextBatchingSafe(const std::shared_ptr<lh::render_item>& root)
+{
+    if(getenv("LH_NO_SCROLL_TEXT_BATCH"))
+        return false;
+    lh::render_item* pending[512];
+    size_t count = 1, visited = 0;
+    pending[0] = root.get();
+    while(count)
+    {
+        lh::render_item* item = pending[--count];
+        if(++visited > 512 || !item->css().get_text_shadows().empty())
+            return false;
+        for(const auto& child : item->children())
+        {
+            if(count == 512)
+                return false;
+            pending[count++] = child.get();
+        }
+    }
+    return true;
+}
 
 static bool LHPaintTraceUncached()
 {
@@ -1880,7 +1903,8 @@ static std::string MasterWithCSS(NSString *css)
     const size_t pw = (size_t)std::ceil(rect.size.width * scale), ph = (size_t)std::ceil(rect.size.height * scale);
     if(pw == 0 || ph == 0 || pw > 8192 || ph > 8192)
         return nullptr;
-    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    LHImmutableBitmap bitmap([self createContextWithWidth:pw height:ph]);
+    CGContextRef ctx = bitmap.context();
     if(!ctx)
         return nullptr;
     const lh::position placement = ri->get_placement();
@@ -1909,6 +1933,9 @@ static std::string MasterWithCSS(NSString *css)
         std::set<int> z;
         CollectPositionedZ(ri, z);
         auto hdc = reinterpret_cast<lh::uint_ptr>(ctx);
+        const bool batchText = LHScrollTextBatchingSafe(ri);
+        if(batchText)
+            _container->begin_text_batching(ctx);
         for(int index : z)
             if(index < 0)
                 ri->draw_children(hdc, x, y, &clip, lh::draw_positioned, index);
@@ -1918,14 +1945,14 @@ static std::string MasterWithCSS(NSString *css)
         for(int index : z)
             if(index >= 0)
                 ri->draw_children(hdc, x, y, &clip, lh::draw_positioned, index);
+        if(batchText)
+            _container->end_text_batching();
     }
     _doc->set_culls_paint(savedCull);
     _doc->unclipped_scroll = savedUnclipped;
     ri->scroll_to(left, top);
     _coverBoxesValid = NO;
-    CGImageRef image = CGBitmapContextCreateImage(ctx);
-    CGContextRelease(ctx);
-    return image;
+    return bitmap.takeImage(getenv("LH_NO_IMMUTABLE_SCROLL_BITMAP") == nullptr);
 }
 
 - (void)setBackgroundImageExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute

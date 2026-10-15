@@ -149,7 +149,13 @@ final class ScrollRasterLifetimeTests: XCTestCase {
         renderer.view.frame = geometry.viewport
         defer { renderer.destroy() }
         var scheduled: [() -> Void] = []
-        renderer.schedule = { scheduled.append($0) }
+        renderer.schedule = { work in
+            if Thread.isMainThread {
+                scheduled.append(work)
+            } else {
+                DispatchQueue.main.async(execute: work)
+            }
+        }
         renderer.load()
         let ops: [[String: Any]] = [
             ["op": "el", "id": 1, "tag": "body", "attrs": [["style", "margin:0"]], "adopt": "body"],

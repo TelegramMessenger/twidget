@@ -232,6 +232,7 @@ public final class LiteHTMLWidgetRenderer {
         documentView = WidgetDocumentView.backingStore ? WidgetBackingStoreDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300)) : WidgetDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300))
         view = documentView
         documentView.owner = self
+        scrolling.schedule = { [weak self] block in self?.schedule(block) }
         dom.onViolation = { [weak self] detail in
             self?.post(["type": "violation", "detail": detail])
         }
@@ -511,7 +512,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public var tileDebug: String {
-        return "detached=\(documentView.detached) preparing=\(documentView.preparing) tiles=\(documentView.tileCount) trimmed=\(documentView.tilesTrimmed) \(documentView.flushDebug) doc=\(document != nil) h=\(document.map { Int($0.size.height) } ?? -1) inWindow=\(documentView.windowState.inWindow) onScreen=\(isOnScreen) hostVisible=\(hostVisible) frozen=\(frozen) destroyed=\(destroyed)"
+        return "detached=\(documentView.detached) preparing=\(documentView.preparing) held=\(held.count) throttle-ms=\(Int(throttleRemaining(CACurrentMediaTime()) * 1000)) tiles=\(documentView.tileCount) trimmed=\(documentView.tilesTrimmed) \(documentView.flushDebug) doc=\(document != nil) h=\(document.map { Int($0.size.height) } ?? -1) inWindow=\(documentView.windowState.inWindow) onScreen=\(isOnScreen) hostVisible=\(hostVisible) frozen=\(frozen) destroyed=\(destroyed)"
     }
 
     public var isPrepared: Bool {
@@ -2668,7 +2669,7 @@ public final class LiteHTMLWidgetRenderer {
         if frameRequested {
             worked = true
             let now = CACurrentMediaTime()
-            if pacer.due(now) {
+            if (held.isEmpty || answersInput) && pacer.due(now) {
                 frameRequested = false
                 lastFramePost = now
                 if frameHoldStart != nil && frameHoldPosted == nil {
@@ -2849,8 +2850,22 @@ public final class LiteHTMLWidgetRenderer {
         guard !pendingScrollRequests.isEmpty, document != nil else { return }
         let requests = pendingScrollRequests
         pendingScrollRequests.removeAll()
+        scrolling.beginScrollUpdates()
+        defer {
+            if scrolling.endScrollUpdates(dom: dom, document: document) {
+                documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+            }
+        }
         for request in requests {
-            applyScrollRequest(request)
+            if case .reveal = request {
+                if scrolling.endScrollUpdates(dom: dom, document: document) {
+                    documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+                }
+                applyScrollRequest(request)
+                scrolling.beginScrollUpdates()
+            } else {
+                applyScrollRequest(request)
+            }
         }
     }
 

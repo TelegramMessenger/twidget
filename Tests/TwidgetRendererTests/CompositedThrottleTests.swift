@@ -4,6 +4,49 @@ import WidgetSandboxProtocol
 @testable import TwidgetRenderer
 
 final class CompositedThrottleTests: XCTestCase {
+    func testRequestedFramesWaitForHeldPaintAndResumeWithoutAnotherRequest() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 160), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        defer { renderer.destroy() }
+        renderer.view.frame = window.contentView!.bounds
+        window.contentView?.addSubview(renderer.view)
+        renderer.load()
+        renderer.send(ops: [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [["style", "margin:0;height:160px"]], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:20px;height:20px;background:red"]]],
+            ["op": "ins", "id": 3, "parent": 1]
+        ].map(WidgetOp.init))
+        RunLoop.main.run(until: Date().addingTimeInterval(1.1))
+        XCTAssertFalse(renderer.isPreparingTiles)
+        renderer.charge(0.2)
+        renderer.send(ops: [["op": "style", "id": 3, "name": "width", "value": "40px"]].map(WidgetOp.init))
+        XCTAssertEqual(renderer.heldOpBatches, 1)
+        var frames = 0
+        renderer.onMessage = { json in
+            if json.hasPrefix("{\"type\":\"frame\"") { frames += 1 }
+        }
+        renderer.send("{\"type\":\"requestFrame\"}")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        XCTAssertEqual(frames, 0)
+        XCTAssertEqual(renderer.heldOpBatches, 1)
+        let deadline = Date().addingTimeInterval(2)
+        while frames == 0 && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(frames, 1)
+        XCTAssertEqual(renderer.heldOpBatches, 0)
+        let image = try XCTUnwrap(renderer.snapshot())
+        let pixels = NSBitmapImageRep(cgImage: try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil)))
+        let scale = CGFloat(pixels.pixelsWide) / image.size.width
+        let expanded = try XCTUnwrap(pixels.colorAt(x: Int(35 * scale), y: Int(10 * scale))?.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(expanded.redComponent, 0.9)
+        XCTAssertLessThan(expanded.greenComponent, 0.3)
+    }
+
     func testNativeMotionContinuesWithoutReorderingBudgetedChanges() throws {
         _ = NSApplication.shared
         for scenario in 0..<9 {
