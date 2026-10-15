@@ -121,7 +121,7 @@ namespace twlite
         while (start <= families.size())
         {
             size_t comma = families.find(',', start);
-            std::string family = trim(families.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+            std::string family = twlite::trim(families.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
             start = comma == std::string::npos ? families.size() + 1 : comma + 1;
             if (family.empty())
             {
@@ -1012,7 +1012,105 @@ namespace twlite
         m_canvases.erase(id);
     }
 
+    namespace
+    {
+        constexpr int64_t MAX_RASTER_PIXELS = int64_t(16) << 20;
+
+        // The index of the GroupPop closing the group opened at `at`, or list.size().
+        size_t group_end(std::span<const Command> list, size_t at)
+        {
+            int depth = 0;
+            for (size_t i = at; i < list.size(); i++)
+            {
+                switch (list[i].kind)
+                {
+                case Cmd::GroupPush: case Cmd::ClipPush: depth++; break;
+                case Cmd::GroupPop: case Cmd::ClipPop:
+                    if (--depth == 0) return i;
+                    break;
+                default: break;
+                }
+            }
+            return list.size();
+        }
+    }
+
+    void D2DBackend::trim()
+    {
+        m_rasters.clear();
+        m_rasterPixels = 0;
+    }
+
+    bool D2DBackend::draw_raster(ID2D1DeviceContext* ctx, const Command& push, std::span<const Command> inner)
+    {
+        D2D1_MATRIX_3X2_F outer;
+        ctx->GetTransform(&outer);
+        float dpiX, dpiY;
+        ctx->GetDpi(&dpiX, &dpiY);
+        // User space → device pixels.
+        auto device = D2D1::Matrix3x2F(push.matrix[0], push.matrix[1], push.matrix[2], push.matrix[3], push.matrix[4], push.matrix[5]) *
+                      D2D1::Matrix3x2F::ReinterpretBaseType(&outer)[0] * D2D1::Matrix3x2F::Scale(dpiX / 96, dpiY / 96);
+        if (device._12 != 0 || device._21 != 0 || !(device._11 > 0) || !(device._22 > 0)) return false;
+        float x0 = std::floor(push.rect.x * device._11 + device._31), y0 = std::floor(push.rect.y * device._22 + device._32);
+        float x1 = std::ceil((push.rect.x + push.rect.w) * device._11 + device._31), y1 = std::ceil((push.rect.y + push.rect.h) * device._22 + device._32);
+        if (!(x1 > x0) || !(y1 > y0)) return false;
+        int64_t pixels = int64_t(x1 - x0) * int64_t(y1 - y0);
+        if (pixels > MAX_RASTER_PIXELS / 4) return false;
+        auto to_raster = device * D2D1::Matrix3x2F::Translation(-x0, -y0);
+        auto q = [](float v) { return int64_t(std::llround(double(v) * 1024)); };
+        RasterKey key{push.key, q(to_raster._11), q(to_raster._22), q(to_raster._31), q(to_raster._32)};
+        auto it = m_rasters.find(key);
+        if (it == m_rasters.end())
+        {
+            while (!m_rasters.empty() && m_rasterPixels + pixels > MAX_RASTER_PIXELS)
+            {
+                auto oldest = m_rasters.begin();
+                for (auto i = m_rasters.begin(); i != m_rasters.end(); ++i)
+                    if (i->second.used < oldest->second.used) oldest = i;
+                m_rasterPixels -= oldest->second.pixels;
+                m_rasters.erase(oldest);
+            }
+            if (!m_rasterCtx)
+            {
+                winrt::check_hresult(m_device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, m_rasterCtx.put()));
+            }
+            Raster raster;
+            raster.pixels = pixels;
+            auto properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            if (FAILED(m_rasterCtx->CreateBitmap(D2D1::SizeU(UINT32(x1 - x0), UINT32(y1 - y0)), nullptr, 0, properties, raster.bitmap.put()))) return false;
+            m_rasterCtx->SetTarget(raster.bitmap.get());
+            m_rasterCtx->SetDpi(96, 96);
+            m_rasterCtx->BeginDraw();
+            m_rasterCtx->Clear(D2D1::ColorF(0, 0));
+            m_rasterCtx->SetTransform(to_raster);
+            // The raster paints with this backend's state, which the paint around it gets back after.
+            ID2D1DeviceContext* saved = m_ctx;
+            auto blur = m_blur;
+            m_rastering = true;
+            paint_span(inner, m_rasterCtx.get());
+            m_rastering = false;
+            m_ctx = saved;
+            m_blur = blur;
+            HRESULT hr = m_rasterCtx->EndDraw();
+            m_rasterCtx->SetTarget(nullptr);
+            if (FAILED(hr)) return false;
+            m_rasterPixels += pixels;
+            it = m_rasters.emplace(key, std::move(raster)).first;
+        }
+        it->second.used = ++m_rasterClock;
+        // Device pixels, copied as they are.
+        ctx->SetTransform(D2D1::Matrix3x2F::Scale(96 / dpiX, 96 / dpiY));
+        ctx->DrawBitmap(it->second.bitmap.get(), D2D1::RectF(x0, y0, x1, y1), 1.0f, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        ctx->SetTransform(outer);
+        return true;
+    }
+
     void D2DBackend::paint(const DisplayList& list, ID2D1DeviceContext* ctx)
+    {
+        paint_span(list, ctx);
+    }
+
+    void D2DBackend::paint_span(std::span<const Command> list, ID2D1DeviceContext* ctx)
     {
         m_ctx = ctx;
         if (!m_factory)
@@ -1084,8 +1182,9 @@ namespace twlite
             stack.push_back(e);
         };
 
-        for (const Command& c : list)
+        for (size_t i = 0; i < list.size(); i++)
         {
+            const Command& c = list[i];
             switch (c.kind)
             {
             case Cmd::ClipPush:
@@ -1107,6 +1206,15 @@ namespace twlite
                 pop();
                 break;
             case Cmd::GroupPush:
+                if (c.key && !c.hidden && c.opacity >= 1 && !m_rastering)
+                {
+                    size_t end = group_end(list, i);
+                    if (end < list.size() && draw_raster(ctx, c, list.subspan(i + 1, end - i - 1)))
+                    {
+                        i = end;
+                        break;
+                    }
+                }
                 group(c);
                 break;
             case Cmd::Path:

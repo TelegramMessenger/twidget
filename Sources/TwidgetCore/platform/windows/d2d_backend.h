@@ -12,6 +12,7 @@
 #include "display_list.h"
 
 #include <map>
+#include <span>
 #include <tuple>
 
 namespace twlite
@@ -32,6 +33,10 @@ namespace twlite
         // Paints `list` (CSS px) into `ctx`, whose transform already maps CSS px onto the target.
         void paint(const DisplayList& list, ID2D1DeviceContext* ctx);
 
+        // Drops the rasters of keyed groups, made again on demand.
+        void trim();
+        size_t cached_rasters() const { return m_rasters.size(); }
+
     private:
         struct Layout
         {
@@ -51,6 +56,10 @@ namespace twlite
 
         using FaceKey = std::tuple<std::string, float, int, bool>;
 
+        void paint_span(std::span<const Command> list, ID2D1DeviceContext* ctx);
+        // Draws a keyed group (`inner`, between its GroupPush and GroupPop) from its raster, made first
+        // when missing. False when it cannot be rastered: the transform turns it, or it is too large.
+        bool draw_raster(ID2D1DeviceContext* ctx, const Command& push, std::span<const Command> inner);
         const Layout* layout(Face& face, const std::string& text);
         std::wstring resolve_family(const std::string& families);
         winrt::com_ptr<ID2D1Geometry> rounded(const Rect& r, const Radii& q);
@@ -97,6 +106,21 @@ namespace twlite
         };
         std::unordered_map<int, CanvasBitmap> m_canvases;
         winrt::com_ptr<ID2D1DeviceContext> m_canvasCtx;
+
+        // A raster depends on the scale and the fraction of a pixel it was drawn at, besides the key.
+        using RasterKey = std::tuple<uint64_t, int64_t, int64_t, int64_t, int64_t>;
+        struct Raster
+        {
+            winrt::com_ptr<ID2D1Bitmap1> bitmap;
+            uint64_t used = 0;
+            int64_t pixels = 0;
+        };
+        std::map<RasterKey, Raster> m_rasters;
+        int64_t m_rasterPixels = 0;
+        uint64_t m_rasterClock = 0;
+        winrt::com_ptr<ID2D1DeviceContext> m_rasterCtx;
+        // A raster is being drawn: m_rasterCtx is busy, so a keyed group inside it paints directly.
+        bool m_rastering = false;
         winrt::com_ptr<ID2D1DeviceContext> m_canvasRecorder;
         winrt::com_ptr<ID2D1SolidColorBrush> m_canvasBrush;
     };

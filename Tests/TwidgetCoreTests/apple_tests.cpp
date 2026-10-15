@@ -5,6 +5,7 @@
 #include "renderer.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -196,6 +197,54 @@ static void test_measure_text() {
     CHECK(res[0]["result"]["fontBoundingBoxAscent"].asNumber() > 10);
 }
 
+// An SVG's paint is rastered once and drawn from the raster where its key recurs: the pixels match
+// painting it directly, after a move too.
+static void test_cached_svg() {
+    CGBackend backend;
+    Renderer r(200, 1.5, false, backend);
+    r.receive(parse(R"J({"type":"ops","ops":[
+      {"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body"},
+      {"op":"style","id":4,"name":"margin","value":"0"},
+      {"op":"el","id":9,"tag":"div","attrs":[["style","width:40px;height:0"]]},{"op":"ins","parent":4,"id":9,"before":null},
+      {"op":"el","id":10,"tag":"div"},{"op":"ins","parent":4,"id":10,"before":null},
+      {"op":"el","id":40,"tag":"svg","attrs":[["width","60"],["height","60"],["viewBox","0 0 60 60"]]},{"op":"ins","parent":10,"id":40,"before":null},
+      {"op":"el","id":41,"tag":"circle","attrs":[["cx","30"],["cy","30"],["r","20"],["fill","#f00"],["stroke","#00f"],["stroke-width","4"]]},{"op":"ins","parent":40,"id":41,"before":null},
+      {"op":"el","id":42,"tag":"path","attrs":[["d","M5 5 L55 10 L30 55 Z"],["fill","rgba(0,128,0,.6)"]]},{"op":"ins","parent":40,"id":42,"before":null}]})J"));
+    const uint32_t w = 300, h = 210;
+    auto paint = [&](CGBackend& b, const DisplayList& list) {
+        std::vector<uint8_t> px(size_t(w) * h * 4);
+        b.paint(list, px.data(), w, h, 1.5);
+        return px;
+    };
+    auto direct = [&](DisplayList list) {
+        for (Command& c : list) c.key = 0;
+        CGBackend plain;
+        return paint(plain, list);
+    };
+    auto close = [](const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+        for (size_t i = 0; i < a.size(); i++)
+            if (std::abs(int(a[i]) - int(b[i])) > 2) return false;
+        return true;
+    };
+    auto pixel = [&](const std::vector<uint8_t>& px, int x, int y) { return px.data() + (size_t(y) * w + x) * 4; };
+
+    DisplayList first = r.paint();
+    auto a = paint(backend, first);
+    CHECK(backend.cached_rasters() == 1);
+    CHECK(close(a, direct(first)));
+    CHECK(pixel(a, 21, 45)[0] > 240 && pixel(a, 21, 45)[1] < 15);
+
+    r.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":9,"name":"height","value":"40px"}]})"));
+    DisplayList moved = r.paint();
+    auto b = paint(backend, moved);
+    CHECK(backend.cached_rasters() == 1);
+    CHECK(close(b, direct(moved)));
+    CHECK(pixel(b, 21, 105)[0] > 240 && pixel(b, 21, 105)[1] < 15 && pixel(b, 21, 45)[3] == 0);
+
+    backend.trim();
+    CHECK(backend.cached_rasters() == 0);
+}
+
 int main() {
     test_color_scheme_rewrite();
     test_ops_layout_and_queries();
@@ -203,6 +252,7 @@ int main() {
     test_tap_events();
     test_mutations();
     test_measure_text();
+    test_cached_svg();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

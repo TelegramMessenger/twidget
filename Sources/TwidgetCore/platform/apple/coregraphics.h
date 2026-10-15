@@ -9,7 +9,10 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
 
+#include <map>
+#include <span>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 namespace twlite {
@@ -32,6 +35,10 @@ public:
     /// rest of `buffer` is kept.
     void paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint32_t h, double dpr, const std::vector<Rect>* damage = nullptr);
 
+    /// Drops the rasters of keyed groups, made again on demand.
+    void trim();
+    size_t cached_rasters() const { return rasters_.size(); }
+
 private:
     struct Font {
         CTFontRef font = nullptr;
@@ -49,6 +56,20 @@ private:
     static constexpr size_t MAX_GRADIENTS = 256;
     std::unordered_map<std::string, CTLineRef> lines_;
     std::unordered_map<std::string, CGGradientRef> gradients_;
+    void draw(CGContextRef ctx, std::span<const Command> list);
+    /// Draws a keyed group (`inner`, between its GroupPush and GroupPop) from its raster, made first
+    /// when missing. False when it cannot be rastered: the transform turns it, or it is too large.
+    bool draw_raster(CGContextRef ctx, const Command& push, std::span<const Command> inner);
+    // A raster depends on the scale and the fraction of a pixel it was drawn at, besides the key.
+    using RasterKey = std::tuple<uint64_t, int64_t, int64_t, int64_t, int64_t>;
+    struct Raster {
+        CGImageRef image = nullptr;
+        uint64_t used = 0;
+        int64_t pixels = 0;
+    };
+    std::map<RasterKey, Raster> rasters_;
+    int64_t raster_pixels_ = 0;
+    uint64_t raster_clock_ = 0;
     CGColorRef cg_color(const Color& c);
     CGGradientRef gradient(const std::vector<Stop>& stops);
     void draw_path(CGContextRef ctx, const Path& p);

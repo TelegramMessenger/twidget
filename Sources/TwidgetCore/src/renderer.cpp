@@ -261,6 +261,9 @@ constexpr double HEAVY_PASS_S = 0.05;
 constexpr double LOAD_GRACE_S = 1;
 /// Backend fonts kept for documents to come, beyond those a document holds.
 constexpr size_t MAX_FACES = 256;
+/// The SVG paints the container keeps for draw_cached, and the commands they hold together.
+constexpr size_t MAX_CACHED_PAINTS = 128;
+constexpr size_t MAX_CACHED_COMMANDS = 50000;
 
 } // namespace
 
@@ -438,6 +441,9 @@ public:
         doc_ = nullptr;
 #ifdef TW_LITEHTML_TWIDGET
         scans_.clear();
+        // The fork's keys are only good within a document: a new one may resolve colours differently.
+        cached_.clear();
+        cached_commands_ = 0;
         doc_ = litehtml::document::createUpdatableFromString(html, this, std::string(litehtml::master_css) + UA_EXTRA);
 #else
         doc_ = litehtml::document::createFromString(litehtml::estring(html), this, std::string(litehtml::master_css) + UA_EXTRA);
@@ -556,6 +562,8 @@ public:
         cover_trace_ = nullptr;
 #ifdef TW_LITEHTML_TWIDGET
         scans_.clear();
+        cached_.clear();
+        cached_commands_ = 0;
 #endif
     }
     /// The document was laid out at the current width and viewport: a patch can go straight in.
@@ -1273,6 +1281,54 @@ public:
         c.kind = Cmd::GroupPop;
         list_.push_back(std::move(c));
     }
+    /// An SVG paint under a key that stands for all it draws: recorded once, then copied in, shifted by
+    /// how far the box moved, inside a keyed group a painter may raster once (Cmd::GroupPush).
+    bool draw_cached(litehtml::uint_ptr hdc, const litehtml::position& box, uint64_t key, const std::function<void(litehtml::uint_ptr)>& paint) override {
+        // The trace walks into the paint for its elements.
+        if (litehtml::g_paint_trace) return false;
+        Rect r = rect_of(box);
+        if (r.empty()) return false;
+        Command push;
+        push.kind = Cmd::GroupPush;
+        push.key = key;
+        push.rect = r;
+        Command pop;
+        pop.kind = Cmd::GroupPop;
+        auto it = cached_.find(key);
+        if (it != cached_.end()) {
+            CachedPaint& hit = it->second;
+            // The key holds the fractional offset: a move is whole pixels.
+            push.matrix[4] = r.x - hit.x;
+            push.matrix[5] = r.y - hit.y;
+            push.rect = Rect{hit.x, hit.y, r.w, r.h};
+            hit.used = ++cached_clock_;
+            list_.push_back(push);
+            list_.insert(list_.end(), hit.commands.begin(), hit.commands.end());
+            list_.push_back(pop);
+            return true;
+        }
+        list_.push_back(push);
+        size_t start = list_.size();
+        paint(hdc);
+        size_t count = list_.size() - start;
+        if (count <= MAX_CACHED_COMMANDS / 4) {
+            while (!cached_.empty() && (cached_.size() >= MAX_CACHED_PAINTS || cached_commands_ + count > MAX_CACHED_COMMANDS)) {
+                auto oldest = cached_.begin();
+                for (auto i = cached_.begin(); i != cached_.end(); ++i)
+                    if (i->second.used < oldest->second.used) oldest = i;
+                cached_commands_ -= oldest->second.commands.size();
+                cached_.erase(oldest);
+            }
+            CachedPaint& entry = cached_[key];
+            entry.x = r.x;
+            entry.y = r.y;
+            entry.used = ++cached_clock_;
+            entry.commands.assign(list_.begin() + long(start), list_.end());
+            cached_commands_ += count;
+        }
+        list_.push_back(pop);
+        return true;
+    }
     void draw_path(litehtml::uint_ptr, const litehtml::vector_path& path) override {
         if (litehtml::g_paint_trace) return;
         if (!path.fill && !path.stroke) return;
@@ -1360,6 +1416,11 @@ private:
                     backend_.delete_font(faces_[idle[i].second]->handle);
                     faces_.erase(idle[i].second);
                 }
+#ifdef TW_LITEHTML_TWIDGET
+                // A cached paint may draw text in a face gone now.
+                cached_.clear();
+                cached_commands_ = 0;
+#endif
             }
             auto face = std::make_unique<Face>();
             face->handle = backend_.create_font(family, size, weight, italic, face->metrics);
@@ -1481,6 +1542,16 @@ private:
     DisplayList list_;
     std::vector<Command> clips_;
     std::vector<std::vector<Command>> suspended_;
+#ifdef TW_LITEHTML_TWIDGET
+    struct CachedPaint {
+        float x = 0, y = 0;  // where the box was when it was recorded
+        uint64_t used = 0;
+        std::vector<Command> commands;
+    };
+    std::unordered_map<uint64_t, CachedPaint> cached_;
+    size_t cached_commands_ = 0;
+    uint64_t cached_clock_ = 0;
+#endif
 };
 
 // ───────────────────────── Renderer ─────────────────────────

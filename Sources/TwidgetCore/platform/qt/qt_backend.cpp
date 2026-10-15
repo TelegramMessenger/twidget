@@ -362,7 +362,7 @@ QStringList QtBackend::resolve_families(const std::string& families) {
     size_t start = 0;
     while (start <= families.size()) {
         size_t comma = families.find(',', start);
-        std::string family = trim(families.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        std::string family = twlite::trim(families.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
         start = comma == std::string::npos ? families.size() + 1 : comma + 1;
         if (family.empty()) continue;
 
@@ -659,7 +659,62 @@ void QtBackend::paint(const DisplayList& list, QImage& target, const QTransform&
     for (const QRect& r : region) paint_area(list, target, transform, &r);
 }
 
-void QtBackend::paint_area(const DisplayList& list, QImage& target, const QTransform& transform, const QRect* area_only) {
+namespace {
+constexpr int64_t MAX_RASTER_PIXELS = int64_t(16) << 20;
+
+/// The index of the GroupPop closing the group opened at `at`, or list.size().
+size_t group_end(std::span<const Command> list, size_t at) {
+    int depth = 0;
+    for (size_t i = at; i < list.size(); i++) {
+        switch (list[i].kind) {
+        case Cmd::GroupPush: case Cmd::ClipPush: depth++; break;
+        case Cmd::GroupPop: case Cmd::ClipPop:
+            if (--depth == 0) return i;
+            break;
+        default: break;
+        }
+    }
+    return list.size();
+}
+}
+
+void QtBackend::trim() {
+    rasters_.clear();
+    raster_pixels_ = 0;
+}
+
+bool QtBackend::draw_raster(QPainter& p, QPoint origin, const QTransform& device, const Command& push, std::span<const Command> inner) {
+    if (device.type() > QTransform::TxScale) return false;
+    QRect bounds = device.mapRect(QRectF(push.rect.x, push.rect.y, push.rect.w, push.rect.h)).toAlignedRect();
+    if (bounds.isEmpty() || int64_t(bounds.width()) * bounds.height() > MAX_RASTER_PIXELS / 4) return false;
+    QTransform to_raster = device * QTransform::fromTranslate(-bounds.x(), -bounds.y());
+    auto q = [](qreal v) { return int64_t(std::llround(v * 1024)); };
+    RasterKey key{push.key, q(to_raster.m11()), q(to_raster.m22()), q(to_raster.dx()), q(to_raster.dy())};
+    auto it = rasters_.find(key);
+    if (it == rasters_.end()) {
+        int64_t pixels = int64_t(bounds.width()) * bounds.height();
+        while (!rasters_.empty() && raster_pixels_ + pixels > MAX_RASTER_PIXELS) {
+            auto oldest = rasters_.begin();
+            for (auto i = rasters_.begin(); i != rasters_.end(); ++i)
+                if (i->second.used < oldest->second.used) oldest = i;
+            raster_pixels_ -= int64_t(oldest->second.image.width()) * oldest->second.image.height();
+            rasters_.erase(oldest);
+        }
+        Raster raster;
+        raster.image = make_image(bounds.width(), bounds.height());
+        paint_area(inner, raster.image, to_raster, nullptr);
+        raster_pixels_ += pixels;
+        it = rasters_.emplace(key, std::move(raster)).first;
+    }
+    it->second.used = ++raster_clock_;
+    p.save();
+    p.resetTransform();
+    p.drawImage(bounds.topLeft() - origin, it->second.image);
+    p.restore();
+    return true;
+}
+
+void QtBackend::paint_area(std::span<const Command> list, QImage& target, const QTransform& transform, const QRect* area_only) {
     QPainter root(&target);
     hints(root);
     QRect limit = target.rect();
@@ -754,7 +809,8 @@ void QtBackend::paint_area(const DisplayList& list, QImage& target, const QTrans
         stack.push_back(std::move(e));
     };
 
-    for (const Command& c : list) {
+    for (size_t i = 0; i < list.size(); i++) {
+        const Command& c = list[i];
         QPainter& p = current();
         switch (c.kind) {
         case Cmd::ClipPush:
@@ -772,6 +828,13 @@ void QtBackend::paint_area(const DisplayList& list, QImage& target, const QTrans
             pop();
             continue;
         case Cmd::GroupPush: {
+            if (c.key && !c.hidden && c.opacity >= 1 && hidden == 0) {
+                size_t end = group_end(list, i);
+                if (end < list.size() && draw_raster(p, origin(), qmatrix(c.matrix) * device(), c, list.subspan(i + 1, end - i - 1))) {
+                    i = end;
+                    continue;
+                }
+            }
             Entry e;
             e.saved = &p;
             p.save();

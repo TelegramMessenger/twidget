@@ -139,6 +139,7 @@ CGPathRef vector_path(const Path& path) {
 CGBackend::CGBackend() : rgb_(CGColorSpaceCreateDeviceRGB()) {}
 
 CGBackend::~CGBackend() {
+    trim();
     for (auto& [k, l] : lines_) CFRelease(l);
     for (auto& [k, g] : gradients_) CGGradientRelease(g);
     for (auto& [_, f] : fonts_) if (f.font) CFRelease(f.font);
@@ -153,7 +154,7 @@ int CGBackend::create_font(const std::string& families, float size, int weight, 
     size_t start = 0;
     while (!base && start <= list.size()) {
         size_t comma = list.find(',', start);
-        std::string fam = trim(list.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        std::string fam = twlite::trim(list.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
         start = comma == std::string::npos ? list.size() + 1 : comma + 1;
         if (fam.empty()) continue;
         std::string l = lower(fam);
@@ -473,7 +474,84 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
     CGContextSetShouldAntialias(ctx, true);
     CGContextSetShouldSmoothFonts(ctx, false);
     CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    draw(ctx, list);
+    CGContextFlush(ctx);
+    CGContextRelease(ctx);
+}
 
+namespace {
+constexpr int64_t MAX_RASTER_PIXELS = int64_t(16) << 20;
+
+/// The index of the GroupPop closing the group opened at `at`, or list.size().
+size_t group_end(std::span<const Command> list, size_t at) {
+    int depth = 0;
+    for (size_t i = at; i < list.size(); i++) {
+        switch (list[i].kind) {
+        case Cmd::GroupPush: case Cmd::ClipPush: depth++; break;
+        case Cmd::GroupPop: case Cmd::ClipPop:
+            if (--depth == 0) return i;
+            break;
+        default: break;
+        }
+    }
+    return list.size();
+}
+} // namespace
+
+void CGBackend::trim() {
+    for (auto& [key, raster] : rasters_) CGImageRelease(raster.image);
+    rasters_.clear();
+    raster_pixels_ = 0;
+}
+
+bool CGBackend::draw_raster(CGContextRef ctx, const Command& push, std::span<const Command> inner) {
+    // User space → device px, y up.
+    CGAffineTransform device = CGAffineTransformConcat(
+        CGAffineTransformMake(push.matrix[0], push.matrix[1], push.matrix[2], push.matrix[3], push.matrix[4], push.matrix[5]), CGContextGetCTM(ctx));
+    if (device.b != 0 || device.c != 0 || !(device.a > 0) || device.d == 0) return false;
+    CGRect bounds = CGRectIntegral(CGRectApplyAffineTransform(CGRectMake(push.rect.x, push.rect.y, push.rect.w, push.rect.h), device));
+    if (CGRectIsEmpty(bounds)) return false;
+    size_t w = size_t(bounds.size.width), h = size_t(bounds.size.height);
+    int64_t pixels = int64_t(w) * int64_t(h);
+    if (pixels > MAX_RASTER_PIXELS / 4) return false;
+    CGAffineTransform to_raster = CGAffineTransformConcat(device, CGAffineTransformMakeTranslation(-bounds.origin.x, -bounds.origin.y));
+    auto q = [](CGFloat v) { return int64_t(std::llround(double(v) * 1024)); };
+    RasterKey key{push.key, q(to_raster.a), q(to_raster.d), q(to_raster.tx), q(to_raster.ty)};
+    auto it = rasters_.find(key);
+    if (it == rasters_.end()) {
+        while (!rasters_.empty() && raster_pixels_ + pixels > MAX_RASTER_PIXELS) {
+            auto oldest = rasters_.begin();
+            for (auto i = rasters_.begin(); i != rasters_.end(); ++i)
+                if (i->second.used < oldest->second.used) oldest = i;
+            raster_pixels_ -= oldest->second.pixels;
+            CGImageRelease(oldest->second.image);
+            rasters_.erase(oldest);
+        }
+        CGContextRef raster = CGBitmapContextCreate(nullptr, w, h, 8, 0, rgb_, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        if (!raster) return false;
+        CGContextConcatCTM(raster, to_raster);
+        CGContextSetTextMatrix(raster, CGAffineTransformMakeScale(1, -1));
+        CGContextSetShouldAntialias(raster, true);
+        CGContextSetShouldSmoothFonts(raster, false);
+        CGContextSetInterpolationQuality(raster, kCGInterpolationHigh);
+        draw(raster, inner);
+        CGImageRef image = CGBitmapContextCreateImage(raster);
+        CGContextRelease(raster);
+        if (!image) return false;
+        raster_pixels_ += pixels;
+        it = rasters_.emplace(key, Raster{image, 0, pixels}).first;
+    }
+    it->second.used = ++raster_clock_;
+    // Device px, copied as they are.
+    CGContextSaveGState(ctx);
+    CGContextConcatCTM(ctx, CGAffineTransformInvert(CGContextGetCTM(ctx)));
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+    CGContextDrawImage(ctx, bounds, it->second.image);
+    CGContextRestoreGState(ctx);
+    return true;
+}
+
+void CGBackend::draw(CGContextRef ctx, std::span<const Command> list) {
     // Clips and groups nest together in paint order, so one stack unwinds both; a group with opacity
     // is a transparency layer.
     std::vector<bool> stack;
@@ -490,7 +568,8 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
         CGPathRelease(p);
     };
 
-    for (const Command& c : list) {
+    for (size_t i = 0; i < list.size(); i++) {
+        const Command& c = list[i];
         switch (c.kind) {
         case Cmd::ClipPush:
             CGContextSaveGState(ctx);
@@ -510,6 +589,13 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
             pop();
             break;
         case Cmd::GroupPush: {
+            if (c.key && !c.hidden && c.opacity >= 1) {
+                size_t end = group_end(list, i);
+                if (end < list.size() && draw_raster(ctx, c, list.subspan(i + 1, end - i - 1))) {
+                    i = end;
+                    break;
+                }
+            }
             CGContextSaveGState(ctx);
             CGContextConcatCTM(ctx, CGAffineTransformMake(c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]));
             bool layer = false;
@@ -632,8 +718,6 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
         }
     }
     while (!stack.empty()) pop();
-    CGContextFlush(ctx);
-    CGContextRelease(ctx);
 }
 
 // ───────────────────────── canvas ─────────────────────────

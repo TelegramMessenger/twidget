@@ -12,6 +12,7 @@
 
 #include <map>
 #include <memory>
+#include <span>
 #include <tuple>
 #include <unordered_map>
 
@@ -39,6 +40,10 @@ public:
     /// An image with this backend's resolution: fonts are sized for 96 dpi, where a point is 4/3 px.
     static QImage make_image(int w, int h);
 
+    /// Drops the rasters of keyed groups, made again on demand.
+    void trim();
+    size_t cached_rasters() const { return rasters_.size(); }
+
 private:
     struct Face {
         QFont font;
@@ -49,7 +54,10 @@ private:
 
     Face* face(int font);
     /// One pass of paint(): everything, or only `area_only` (device px), cleared first.
-    void paint_area(const DisplayList& list, QImage& target, const QTransform& transform, const QRect* area_only);
+    void paint_area(std::span<const Command> list, QImage& target, const QTransform& transform, const QRect* area_only);
+    /// Draws a keyed group (`inner`, between its GroupPush and GroupPop) from its raster, made first
+    /// when missing. False when it cannot be rastered: `device` (its user space → target px) turns it.
+    bool draw_raster(QPainter& p, QPoint origin, const QTransform& device, const Command& push, std::span<const Command> inner);
     QStringList resolve_families(const std::string& families);
     void canvas_op(QImage& target, const CanvasOp& op, int id);
     void canvas_content(QPainter& p, const CanvasOp& op, const QImage* self);
@@ -60,6 +68,15 @@ private:
     std::unordered_map<int, QImage> images_;
     std::unordered_map<int, QImage> canvases_;
     QImage reference_;  // the 96 dpi device fonts are measured against
+    // A raster depends on the scale and the fraction of a pixel it was drawn at, besides the key.
+    using RasterKey = std::tuple<uint64_t, int64_t, int64_t, int64_t, int64_t>;
+    struct Raster {
+        QImage image;
+        uint64_t used = 0;
+    };
+    std::map<RasterKey, Raster> rasters_;
+    int64_t raster_pixels_ = 0;
+    uint64_t raster_clock_ = 0;
 };
 
 } // namespace twlite

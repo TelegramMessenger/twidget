@@ -68,7 +68,9 @@ enum class Cmd {
     ClipPop,
     // Only from twidget's litehtml fork (TW_LITEHTML_TWIDGET):
     Path,           // path (SVG geometry, fill and stroke), in CSS px
-    GroupPush,      // matrix, concatenated onto the current transform; opacity over the group; hidden = draw nothing until GroupPop
+    GroupPush,      // matrix, concatenated onto the current transform; opacity over the group; hidden = draw nothing until GroupPop;
+                    // key, when not 0: the group draws the same wherever the key recurs, inside rect (in the group's own
+                    // coordinates, after matrix), so a painter may raster it once
     GroupPop,
     Shadow,         // rect (border box, or padding box when inset), radii, color, offset (ax, ay), blur (bx), spread (by), inset
 };
@@ -114,6 +116,7 @@ struct Command {
     float matrix[6] = {1, 0, 0, 1, 0, 0};  // a, b, c, d, tx, ty
     bool hidden = false;
     bool inset = false;
+    uint64_t key = 0;
 };
 
 using DisplayList = std::vector<Command>;

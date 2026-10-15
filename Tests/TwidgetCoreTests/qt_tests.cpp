@@ -289,6 +289,65 @@ static void test_inert_clips() {
     check(a == b, "and the pixels are the same");
 }
 
+/// An SVG's paint is recorded once and copied in where it recurs, and the painter rasters it once:
+/// the pixels match painting it directly, after a move too.
+static void test_cached_svg() {
+    QtBackend backend;
+    Renderer r(200, 1.5, false, backend);
+    r.receive(parse(R"J({"type":"ops","ops":[
+      {"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body"},
+      {"op":"style","id":4,"name":"margin","value":"0"},
+      {"op":"el","id":9,"tag":"div","attrs":[["style","width:40px;height:0"]]},{"op":"ins","parent":4,"id":9,"before":null},
+      {"op":"el","id":10,"tag":"div"},{"op":"ins","parent":4,"id":10,"before":null},
+      {"op":"el","id":40,"tag":"svg","attrs":[["width","60"],["height","60"],["viewBox","0 0 60 60"]]},{"op":"ins","parent":10,"id":40,"before":null},
+      {"op":"el","id":41,"tag":"circle","attrs":[["cx","30"],["cy","30"],["r","20"],["fill","#f00"],["stroke","#00f"],["stroke-width","4"]]},{"op":"ins","parent":40,"id":41,"before":null},
+      {"op":"el","id":42,"tag":"path","attrs":[["d","M5 5 L55 10 L30 55 Z"],["fill","rgba(0,128,0,.6)"]]},{"op":"ins","parent":40,"id":42,"before":null}]})J"));
+    auto keyed = [](const DisplayList& list, float& dy) {
+        for (const Command& c : list)
+            if (c.kind == Cmd::GroupPush && c.key) {
+                dy = c.matrix[5];
+                return true;
+            }
+        return false;
+    };
+    // Without keys, the same list paints directly.
+    auto direct = [](DisplayList list) {
+        for (Command& c : list) c.key = 0;
+        QtBackend plain;
+        QImage image = QtBackend::make_image(300, 210);
+        plain.paint(list, image, QTransform::fromScale(1.5, 1.5));
+        return image;
+    };
+    auto close = [](const QImage& a, const QImage& b) {
+        for (int y = 0; y < a.height(); y++)
+            for (int x = 0; x < a.width(); x++) {
+                QRgb p = a.pixel(x, y), q = b.pixel(x, y);
+                if (std::abs(qRed(p) - qRed(q)) > 2 || std::abs(qGreen(p) - qGreen(q)) > 2 || std::abs(qBlue(p) - qBlue(q)) > 2 || std::abs(qAlpha(p) - qAlpha(q)) > 2) return false;
+            }
+        return true;
+    };
+    float dy = -1;
+    DisplayList first = r.paint();
+    check(keyed(first, dy) && dy == 0, "the SVG paints inside a keyed group");
+    QImage a = QtBackend::make_image(300, 210);
+    backend.paint(first, a, QTransform::fromScale(1.5, 1.5));
+    check(backend.cached_rasters() == 1, "which the painter rasters");
+    check(close(a, direct(first)), "the raster draws what the paint would");
+    check(near(at(a, 21, 45), QColor(255, 0, 0)), "the circle is there");
+
+    r.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":9,"name":"height","value":"40px"}]})"));
+    DisplayList moved = r.paint();
+    check(keyed(moved, dy) && dy == 40, "moved, the recorded paint is copied in, shifted");
+    QImage b = QtBackend::make_image(300, 210);
+    backend.paint(moved, b, QTransform::fromScale(1.5, 1.5));
+    check(backend.cached_rasters() == 1, "and the raster is drawn again where it went");
+    check(close(b, direct(moved)), "the same as painting it there");
+    check(near(at(b, 21, 105), QColor(255, 0, 0)) && qAlpha(at(b, 21, 45)) == 0, "the circle moved");
+
+    backend.trim();
+    check(backend.cached_rasters() == 0, "trim drops the rasters");
+}
+
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
@@ -299,6 +358,7 @@ int main(int argc, char** argv) {
     test_canvas_through_renderer(1.5);
     test_damage_repaints();
     test_inert_clips();
+    test_cached_svg();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;
