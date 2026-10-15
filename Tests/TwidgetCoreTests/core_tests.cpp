@@ -561,6 +561,24 @@ int main() {
         }
     }
 
+    // ── viewport height ──
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;line-height:20px"]]}]})"));
+        uint64_t before = g.layouts();
+        for (int i = 0; i < 5; i++)
+            g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":)" + std::to_string(10 + i) + R"(,"tag":"div"},{"op":"ins","parent":4,"id":)" + std::to_string(10 + i) +
+                            R"(,"before":null},{"op":"text","id":)" + std::to_string(20 + i) + R"(,"data":"row"},{"op":"ins","parent":)" + std::to_string(10 + i) + R"(,"id":)" +
+                            std::to_string(20 + i) + R"(,"before":null}]})"));
+        check(g.layouts() - before == 5, "a growing document lays out once per batch (" + std::to_string(g.layouts() - before) + " for 5)");
+        // A box sized by the viewport's height follows it.
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"div","attrs":[["style","position:absolute;top:0;height:100%;width:5px"]]},{"op":"ins","parent":4,"id":30,"before":null}]})"));
+        double tall = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":30}})"))[0]["result"]["height"].asNumber();
+        check(tall == g.viewport_height(), "a box the viewport's height sizes matches it (" + std::to_string(tall) + " and " + std::to_string(g.viewport_height()) + ")");
+    }
+
     // ── in-place patches ──
     {
         // Random batches into a patching renderer and one that builds every time: the same paint.

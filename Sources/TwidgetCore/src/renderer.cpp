@@ -377,6 +377,8 @@ public:
     /// True when the last build patched the previous document instead of parsing a new one.
     bool patched() const { return patched_; }
 
+    /// The viewport is now `vp_height` tall, without a layout: the document does not depend on it.
+    void viewport_resized(int vp_height) { vp_height_ = vp_height; }
     /// False when the document is exactly as it was: same HTML, viewport and width.
     bool build(const std::string& html, int vp_height) {
         bool viewport_changed = vp_height != vp_height_;
@@ -472,6 +474,37 @@ public:
         scans_.insert(scans_.begin(), Scan{names, gates, always, doc_->style_epoch(), out});
         if (scans_.size() > 4) scans_.pop_back();
         return out;
+    }
+    /// Whether the layout can change with the viewport's height, which follows the document's: fixed
+    /// boxes, percentage heights on html or body, viewport lengths, height media queries, and absolute boxes
+    /// placed against the viewport. Otherwise a new height needs no second layout.
+    bool depends_on_viewport_height(const std::string& html) const {
+        if (!doc_ || !doc_->root()) return false;
+        if (viewport_units_) return true;
+        // Width queries do not care (the theme's rewrite makes every widget have some): only those
+        // that read the height, its ratio to the width or the orientation.
+        for (size_t at = html.find("@media"); at != std::string::npos; at = html.find("@media", at + 6)) {
+            std::string query = html.substr(at, html.find('{', at) - at);
+            if (query.find("height") != std::string::npos || query.find("aspect") != std::string::npos || query.find("orientation") != std::string::npos) return true;
+        }
+        litehtml::position::vector fixed;
+        doc_->get_fixed_boxes(fixed);
+        if (!fixed.empty()) return true;
+        auto percent = [](const litehtml::element::ptr& el) {
+            return el->css().get_height().units() == litehtml::css_units_percentage || el->css().get_min_height().units() == litehtml::css_units_percentage;
+        };
+        auto root = doc_->root();
+        if (percent(root)) return true;
+        for (const auto& child : root->children())
+            if (child->tag() == litehtml::_body_ && percent(child)) return true;
+        for (const auto& [id, el] : elements_) {
+            if (el->css().get_position() != litehtml::element_position_absolute) continue;
+            bool contained = false;
+            for (auto p = el->parent(); p && !contained; p = p->parent())
+                contained = p->css().get_position() != litehtml::element_position_static;
+            if (!contained) return true;
+        }
+        return false;
     }
     /// The document was laid out at the current width and viewport: a patch can go straight in.
     bool can_patch() const { return doc_ && float(r_.width_) == rendered_width_; }
@@ -1784,7 +1817,13 @@ void Renderer::build_document(bool patch) {
         if (pass == 0 && container_->patched()) stats_.patched++;
         int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, MAX_HEIGHT)));
         if (h == vp_height_) break;
+        bool again = container_->depends_on_viewport_height(html_);
         vp_height_ = h;
+        if (!again) {
+            // Nothing lays out against the viewport's height: the new one only needs recording.
+            container_->viewport_resized(vp_height_);
+            break;
+        }
     }
     doc_height_ = std::ceil(container_->height());
     stats_.builds++;
@@ -1865,8 +1904,13 @@ bool Renderer::patch_document() {
     }
     if (!container_->patch(changes)) return false;
     int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, MAX_HEIGHT)));
-    // A new height moves the viewport: the full path settles that, with the patch already in.
-    if (h != vp_height_) return false;
+    // A new height moves the viewport: when the layout depends on it, the full path settles that, with
+    // the patch already in. Style sheets only change through that path, so html_'s are current.
+    if (h != vp_height_) {
+        if (container_->depends_on_viewport_height(html_)) return false;
+        vp_height_ = h;
+        container_->viewport_resized(h);
+    }
     doc_height_ = std::ceil(container_->height());
     stats_.parse_ms = now_ms() - t0;
     stats_.serialize_ms = 0;
