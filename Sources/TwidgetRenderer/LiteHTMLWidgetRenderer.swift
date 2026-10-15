@@ -262,6 +262,19 @@ public final class LiteHTMLWidgetRenderer {
         post(["type": "ready"])
     }
 
+    deinit {
+        forgetCanvasImages()
+    }
+
+    private func forgetCanvasImages() {
+        for id in canvases.keys {
+            WidgetCanvasImages.unregister(uid + "-" + String(id))
+        }
+        for url in Array(canvasURLs.values) + retiredURLs {
+            LHImages.forgetImage(withURL: url)
+        }
+    }
+
     public func setTheme(_ theme: String) {
         guard theme != self.theme else {
             return
@@ -299,6 +312,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public func destroy() {
+        guard !destroyed else {
+            return
+        }
         destroyed = true
         smoothScrolls.removeAll()
         pendingScrollRequests.removeAll()
@@ -307,15 +323,22 @@ public final class LiteHTMLWidgetRenderer {
         form.rangeId = 0
         endEditing()
         magic.cancel()
-        for (id, url) in canvasURLs {
-            WidgetCanvasImages.unregister(uid + "-" + String(id))
-            LHImages.forgetImage(withURL: url)
-        }
+        compositor.reset()
+        svgLayers.reset()
+        shimmers.reset()
+        scrolling.reset()
+        animator.reset()
+        forgetCanvasImages()
         canvasURLs.removeAll()
+        retiredURLs.removeAll()
         for presenter in presenters.values {
             presenter.remove()
         }
         presenters.removeAll()
+        canvases.removeAll()
+        canvasAttributeSizes.removeAll()
+        canvasDraws.removeAll()
+        presentationChecked = nil
         for token in placedSurfaces.keys {
             surfaceLayout?(token, .zero, 1, false)
         }
@@ -344,6 +367,24 @@ public final class LiteHTMLWidgetRenderer {
         }
         document = nil
         displayList = nil
+        dom.reset()
+        held.removeAll()
+        buffered.removeAll()
+        pendingMoves.removeAll()
+        bounds.removeAll()
+        boundsValid = false
+        scannedDeclarations = (0, [:])
+        overrides.removeAll()
+        webUnderlying.removeAll()
+        lastLayoutOverrides = nil
+        lastSerialized = nil
+        styleSheetKey = ""
+        form = WidgetFormState()
+        onMessage = nil
+        onDiag = nil
+        onSerialized = nil
+        surfaceLayer = nil
+        surfaceLayout = nil
         WidgetTeardown.release(retired)
     }
 
@@ -939,6 +980,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func deliver(_ json: String) {
+        guard !destroyed else {
+            return
+        }
         if let onMessage = onMessage {
             onMessage(json)
         } else {
@@ -1082,6 +1126,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func render() {
+        guard !destroyed else {
+            return
+        }
         if frameHoldStart != nil && !destroyed && !frozen {
             frameHoldRender = true
             needsRender = false
@@ -3706,6 +3753,12 @@ class WidgetDocumentView: NSView {
         var spareEpoch = 0
         var partialStreak = 0
         var lastPartial: CFTimeInterval = 0
+
+        deinit {
+            if let spare = spare {
+                WidgetTileSpares.release(spare)
+            }
+        }
     }
 
     private func dropSpare(_ tile: Tile) {
@@ -3861,6 +3914,7 @@ class WidgetDocumentView: NSView {
         }
         let scale = self.scale
         var jobs: [(index: Int, rect: CGRect, dirty: CGRect, base: IOSurfaceRef?, spare: IOSurfaceRef?, spareStale: CGRect)] = []
+        var reservations: [Int: WidgetTileSpares.Reservation] = [:]
         let epoch = WidgetTileSpares.epoch
         for (index, dirty) in asyncDirty where index < tiles.count {
             let tile = tiles[index]
@@ -3879,7 +3933,8 @@ class WidgetDocumentView: NSView {
             }
             tile.note("job dirty=\(dirty) base=\(base != nil)")
             let spare = base == nil ? nil : tile.spare
-            if spare != nil {
+            if let spare = spare {
+                reservations[index] = WidgetTileSpares.Reservation(spare)
                 tile.spare = nil
             }
             jobs.append((index, tile.rect, base == nil ? tile.rect : dirty, base, spare, tile.spareStale))
@@ -3981,16 +4036,6 @@ class WidgetDocumentView: NSView {
             }
             WidgetTileStats.add(stats)
             let finish = {
-                let lent = jobs.compactMap { job in job.spare.map { (job.index, $0) } }
-                var settled = Set<Int>()
-                defer {
-                    for (index, spare) in lent where !settled.contains(index) {
-                        WidgetTileSpares.release(spare)
-                        if WidgetDocumentView.recycleSurfaces {
-                            WidgetSurfacePool.shared.recycle(spare)
-                        }
-                    }
-                }
                 guard let self = self else {
                     return
                 }
@@ -4012,8 +4057,8 @@ class WidgetDocumentView: NSView {
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
                         tile.note("async-install partial=\(item.partial) dirty=\(item.dirty)")
-                        if item.usedSpare {
-                            settled.insert(item.index)
+                        if item.usedSpare, previous != nil {
+                            reservations[item.index]?.transfer()
                         }
                         self.settleSpare(tile, previous: previous, item: (item.partial, item.dirty, item.usedSpare))
                         tile.prepared = true
@@ -4238,9 +4283,12 @@ class WidgetDocumentView: NSView {
         document = nil
         for tile in tiles {
             retired.append(contentsOf: tile.surfaces as [AnyObject])
+            retired.append(tile.layer)
             tile.surfaces.removeAll()
             tile.shown = nil
         }
+        removeTiles()
+        asyncDirty.removeAll()
         return retired
     }
 

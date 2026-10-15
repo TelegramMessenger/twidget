@@ -15,6 +15,12 @@ public enum WidgetCanvasImages {
     private static var canvases: [String: Weak] = [:]
     private static var installed = false
 
+    static var registeredCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return canvases.count
+    }
+
     static func install() {
         lock.lock()
         defer { lock.unlock() }

@@ -617,6 +617,9 @@ final class WidgetCompositor {
     }
 
     func reset() {
+        for id in effectKeys.keys {
+            removeEffectAnimations(id)
+        }
         for item in promoted.values {
             item.effects?.backdropLayer?.twRemoveFromSuperlayer()
             item.layer.twRemoveFromSuperlayer()
