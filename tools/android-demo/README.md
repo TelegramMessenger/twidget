@@ -52,6 +52,6 @@ at Java 8, and the JNI bridge against the JDK's `jni.h`, but nothing here has be
 the NDK, or run on a device. Things to check first:
 
 - the CMake build of widget-sandbox's desktop package for Android (it has only been built for desktops;
-  it now takes its random bytes from `arc4random_buf` on Android, a widget-sandbox commit not yet pushed);
+  it takes its random bytes from `arc4random_buf` on Android since widget-sandbox d4dd581);
 - `LitehtmlBackend`'s font metrics against what litehtml lays out with;
 - the gesture split between a widget and the feed.

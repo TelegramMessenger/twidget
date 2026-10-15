@@ -146,8 +146,9 @@ CPU percentages across different hardware and drawing backends are not a meaning
 - **The Composition player for Windows** (layers on `Windows.UI.Composition`) lives in a Windows
   spike with its host adapter.
 - **Platform validation is incomplete.** The Qt backend and its demo were previously built against
-  Qt 6.8 on Windows. Apple and Emscripten build results are recorded above. Android still has only
-  the earlier JNI stub-header and Kotlin `android.jar` checks; device rendering remains unverified.
+  Qt 6.8 on Windows. Apple and Emscripten build results are recorded above. Android has only
+  type checks: the JNI bridges against `jni.h`, the Kotlin and the demo's Java against `android.jar`;
+  nothing has been built with the NDK or run on a device.
 - **The hosts still use widget-sandbox's renderer copy.** Its Android and web demos build their own
   renderer against upstream litehtml; moving them onto this tree means building `libtwidget_litehtml`
   from here and replacing their painters with the ones in `platform/`.
