@@ -8,6 +8,7 @@
 #include "lhx_local_paint_key.h"
 #include "lhx_alpha_bounds.h"
 #include "lhx_paint_exclusion_cache.h"
+#include "lhx_paint_exclusion_rules.h"
 #include "render_item.h"
 #include "render_inline_context.h"
 #include "html_tag.h"
@@ -115,24 +116,6 @@ struct LHDeclarationsEntry
     NSArray      *key;
     uint64_t      epoch;
     uint64_t      generation;
-};
-
-struct LHExclusionLookup
-{
-    NSSet<NSString *> *source;
-    std::unordered_set<std::string> values;
-
-    const std::unordered_set<std::string> &get(NSSet<NSString *> *current)
-    {
-        if(source != current && ![source isEqualToSet:current])
-        {
-            source = [current copy];
-            values.clear();
-            for(NSString *value in current)
-                values.insert(value.UTF8String);
-        }
-        return values;
-    }
 };
 
 static bool LHExclusionStateMatches(NSSet<NSString *> *saved, NSString *savedAttribute, NSSet<NSString *> *values, NSString *attribute)
@@ -768,7 +751,8 @@ struct LHCoverVisit
     std::string                  _itemIndexAttribute;
     BOOL                         _itemIndexValid;
     NSString                    *_scrollAttribute;
-    LHExclusionLookup            _paintLookup, _layerLookup, _backgroundLookup, _scrollLookup;
+    lhx::PaintExclusionRules     _paintExclusionRules;
+    BOOL                         _paintExclusionRulesValid;
     lhx::PaintExclusionCache<lh::element> _paintExclusionCache;
     uint64_t                     _exclusionStyleEpoch;
     uint64_t                     _exclusionLayoutEpoch;
@@ -1631,7 +1615,7 @@ static std::string MasterWithCSS(NSString *css)
 
 - (void)rebuildExclusionsLockedInRoot:(const lh::element::ptr &)requestedRoot
 {
-    const auto root = requestedRoot && requestedRoot != _doc->root() && SubtreeNeedsBackdrop(requestedRoot.get()) ? _doc->root() : requestedRoot;
+    const auto root = requestedRoot && requestedRoot != _doc->root() && _doc->has_backdrop && SubtreeNeedsBackdrop(requestedRoot.get()) ? _doc->root() : requestedRoot;
     _doc->skip_paint.clear();
     _doc->skip_scroll_content.clear();
     _doc->skip_background_images.clear();
@@ -1647,46 +1631,38 @@ static std::string MasterWithCSS(NSString *css)
             }
         }
     }
-    if(_snapshotDepth == 0 && _backgroundExclusions.count > 0 && root)
+    if(!_paintExclusionRulesValid)
     {
-        const auto &images = _backgroundLookup.get(_backgroundExclusions);
-        const char *imageKey = _backgroundAttribute.UTF8String;
-        std::function<void(const lh::element::ptr &)> visitImages = [&](const lh::element::ptr &el) {
-            const char *value = el->get_attr(imageKey);
-            if(value && images.count(value))
-                _doc->skip_background_images.insert(el.get());
-            for(const auto &child : el->children())
-                visitImages(child);
+        _paintExclusionRules.clear();
+        auto add = [&](NSSet<NSString *> *values, NSString *attribute, uint8_t bits) {
+            const char *name = attribute.UTF8String;
+            if(!name)
+                return;
+            for(NSString *value in values)
+            {
+                const char *encoded = value.UTF8String;
+                if(encoded)
+                    _paintExclusionRules.add(name, encoded, bits);
+            }
         };
-        visitImages(root);
+        add(_exclusions, _exclusionAttribute, lhx::PaintExclusionRules::paint);
+        add(_layerExclusions, _layerAttribute, lhx::PaintExclusionRules::layer);
+        add(_backgroundExclusions, _backgroundAttribute, lhx::PaintExclusionRules::background);
+        add(_scrollExclusions, _scrollAttribute, lhx::PaintExclusionRules::scroll);
+        _paintExclusionRulesValid = YES;
     }
-    if(_scrollExclusions.count > 0 && root)
-    {
-        const auto &scrollers = _scrollLookup.get(_scrollExclusions);
-        const char *scrollKey = _scrollAttribute.UTF8String;
-        std::function<void(const lh::element::ptr &)> visitScrollers = [&](const lh::element::ptr &el) {
-            const char *value = el->get_attr(scrollKey);
-            if(value && scrollers.count(value))
-                _doc->skip_scroll_content.insert(el.get());
-            for(const auto &child : el->children())
-                visitScrollers(child);
-        };
-        visitScrollers(root);
-    }
-    const BOOL layered = _snapshotDepth == 0 && _layerExclusions.count > 0;
-    if((_exclusions.count == 0 && !layered) || !root)
+    const uint8_t active = lhx::PaintExclusionRules::paint | lhx::PaintExclusionRules::scroll |
+        (_snapshotDepth == 0 ? lhx::PaintExclusionRules::layer | lhx::PaintExclusionRules::background : 0);
+    if(!root || !_paintExclusionRules.active(active))
         return;
-    const auto &wanted = _paintLookup.get(_exclusions);
-    const auto &layers = _layerLookup.get(layered ? _layerExclusions : nil);
-    const char *key      = _exclusionAttribute.UTF8String;
-    const char *layerKey = _layerAttribute.UTF8String;
     std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
-        const char *value = key ? el->get_attr(key) : nullptr;
-        if(value && wanted.count(value))
+        const uint8_t matched = _paintExclusionRules.match([&](const char *attribute) { return el->get_attr(attribute); }, active);
+        if(matched & (lhx::PaintExclusionRules::paint | lhx::PaintExclusionRules::layer))
             _doc->skip_paint.insert(el.get());
-        const char *layer = layerKey && !layers.empty() ? el->get_attr(layerKey) : nullptr;
-        if(layer && layers.count(layer))
-            _doc->skip_paint.insert(el.get());
+        if(matched & lhx::PaintExclusionRules::scroll)
+            _doc->skip_scroll_content.insert(el.get());
+        if(matched & lhx::PaintExclusionRules::background)
+            _doc->skip_background_images.insert(el.get());
         for(const auto &child : el->children())
             visit(child);
     };
@@ -1697,7 +1673,10 @@ static std::string MasterWithCSS(NSString *css)
 {
     std::lock_guard<std::mutex> guard(_lock);
     if(!LHExclusionStateMatches(_scrollExclusions, _scrollAttribute, values, attribute))
+    {
         _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _scrollExclusions = [values copy];
     _scrollAttribute  = [attribute copy];
 }
@@ -1953,7 +1932,10 @@ static std::string MasterWithCSS(NSString *css)
 {
     std::lock_guard<std::mutex> guard(_lock);
     if(!LHExclusionStateMatches(_backgroundExclusions, _backgroundAttribute, values, attribute))
+    {
         _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _backgroundExclusions = [values copy];
     _backgroundAttribute  = [attribute copy];
 }
@@ -1973,7 +1955,10 @@ static std::string MasterWithCSS(NSString *css)
 {
     std::lock_guard<std::mutex> guard(_lock);
     if(!LHExclusionStateMatches(_layerExclusions, _layerAttribute, values, attribute))
+    {
         _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _layerExclusions = [values copy];
     _layerAttribute  = [attribute copy];
 }
@@ -1982,7 +1967,10 @@ static std::string MasterWithCSS(NSString *css)
 {
     std::lock_guard<std::mutex> guard(_lock);
     if(!LHExclusionStateMatches(_exclusions, _exclusionAttribute, values, attribute))
+    {
         _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _exclusions         = [values copy];
     _exclusionAttribute = [attribute copy];
 }
@@ -3512,10 +3500,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     if(savedValues.count > 0 && [savedAttribute isEqualToString:attribute])
         [merged unionSet:savedValues];
     _paintExclusionCache.clear();
+    _paintExclusionRulesValid = NO;
     _exclusions         = merged;
     _exclusionAttribute = [attribute copy];
     CGImageRef image    = [self copyImageLockedWithRect:rect scale:scale];
     _paintExclusionCache.clear();
+    _paintExclusionRulesValid = NO;
     _exclusions         = savedValues;
     _exclusionAttribute = savedAttribute;
     return image;
