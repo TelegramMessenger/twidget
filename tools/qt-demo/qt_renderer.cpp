@@ -16,9 +16,10 @@ double QtRenderer::nowMs() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-QtRenderer::QtRenderer(const std::string& theme, double width, double dpr, std::function<void(QImage)> onFrame)
+QtRenderer::QtRenderer(const std::string& theme, double width, double dpr, std::function<void(std::shared_ptr<QtFrame>)> onFrame)
     : dpr_(dpr), onFrame_(std::move(onFrame)) {
     core_ = std::make_unique<twlite::Renderer>(width, dpr, theme == "dark", backend_);
+    core_->set_compositing(true);
     clock_ = std::thread([this] { clockLoop(); });
 }
 
@@ -150,7 +151,7 @@ void QtRenderer::dispatch(std::vector<Json> messages) {
 }
 
 void QtRenderer::paint() {
-    QImage frame;
+    auto frame = std::make_shared<QtFrame>();
     {
         std::lock_guard l(mutex_);
         if (destroyed_) return;
@@ -161,14 +162,45 @@ void QtRenderer::paint() {
         // Only what changed is painted again, over the last frame.
         std::vector<twlite::Rect> damage;
         bool partial = core_->damage(damage) && last_.width() == int(w) && last_.height() == int(h);
-        if (partial && damage.empty()) return;
         if (!partial) last_ = twlite::QtBackend::make_image(int(w), int(h));
-        backend_.paint(list, last_, QTransform::fromScale(dpr_, dpr_), partial ? &damage : nullptr);
-        frame = last_;
+        if (!partial || !damage.empty()) backend_.paint(list, last_, QTransform::fromScale(dpr_, dpr_), partial ? &damage : nullptr);
+        frame->document = last_;
+        // Set after painting: QPainter would otherwise scale by it a second time.
+        frame->document.setDevicePixelRatio(dpr_);
+
+        // The layers go with the document they were cut from; their images only when their content changed.
+        const twlite::Composition& composition = core_->composition();
+        if (composition.version != compositionVersion_) {
+            compositionVersion_ = composition.version;
+            std::vector<QtLayer> layers;
+            std::map<int64_t, std::pair<uint64_t, QImage>> images;
+            for (const twlite::Layer& source : composition.layers) {
+                QtLayer layer;
+                layer.id = source.id;
+                layer.bounds = source.bounds;
+                layer.has_clip = source.has_clip;
+                layer.clip = source.clip;
+                layer.clip_radii = source.clip_radii;
+                layer.track = source.track;
+                auto old = layerImages_.find(source.id);
+                if (old != layerImages_.end() && old->second.first == source.content_version) {
+                    layer.image = old->second.second;
+                } else {
+                    double scale = dpr_ * source.raster_scale;
+                    layer.image = twlite::QtBackend::make_image(int(std::ceil(source.bounds.w * scale)), int(std::ceil(source.bounds.h * scale)));
+                    backend_.paint(source.content, layer.image, QTransform::fromTranslate(-source.bounds.x, -source.bounds.y) * QTransform::fromScale(scale, scale));
+                    layer.image.setDevicePixelRatio(scale);
+                }
+                images[source.id] = {source.content_version, layer.image};
+                layers.push_back(std::move(layer));
+            }
+            layerImages_ = std::move(images);
+            frame->layers = std::move(layers);
+        } else if (partial && damage.empty()) {
+            return;
+        }
         lastPaintMs_ = nowMs() - t0;
     }
-    // Set after painting: QPainter would otherwise scale by it a second time.
-    frame.setDevicePixelRatio(dpr_);
     paints_++;
     if (onFrame_) onFrame_(std::move(frame));
 }

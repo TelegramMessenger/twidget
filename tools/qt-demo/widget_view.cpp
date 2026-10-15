@@ -47,6 +47,9 @@ std::pair<std::string, std::string> dom_key(const QKeyEvent* e) {
 WidgetView::WidgetView(const std::string& html, bool dark, double width, std::shared_ptr<twidget::SandboxResources> resources, QWidget* parent)
     : QWidget(parent), width_(width) {
     setMouseTracking(true);
+    animation_ = new QTimer(this);
+    animation_->setInterval(16);
+    connect(animation_, &QTimer::timeout, this, [this] { update(); });
     setFocusPolicy(Qt::ClickFocus);
     setFixedSize(int(std::lround(width)), 24);
 
@@ -56,10 +59,11 @@ WidgetView::WidgetView(const std::string& html, bool dark, double width, std::sh
     options.features = {"webAnimations"};
 
     auto factory = [this, dpr](std::shared_ptr<twidget::SandboxResources>, const std::string& theme, double w) -> std::unique_ptr<twidget::Renderer> {
-        auto renderer = std::make_unique<QtRenderer>(theme, w, dpr, [this](QImage frame) {
+        auto renderer = std::make_unique<QtRenderer>(theme, w, dpr, [this](std::shared_ptr<QtFrame> frame) {
             {
                 std::lock_guard l(frameMutex_);
-                frame_ = std::move(frame);
+                frame_ = std::move(frame->document);
+                if (frame->layers) layers_ = std::move(*frame->layers);
             }
             QMetaObject::invokeMethod(this, [this] { update(); }, Qt::QueuedConnection);
         });
@@ -118,8 +122,32 @@ void WidgetView::changed(const twidget::WidgetDiagnostics& d) {
 
 void WidgetView::paintEvent(QPaintEvent*) {
     QPainter p(this);
+    p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
     std::lock_guard l(frameMutex_);
     if (!frame_.isNull()) p.drawImage(QPointF(0, 0), frame_);
+    // Each layer where its track has it now, the way a compositor plays it.
+    bool running = false;
+    double now = twlite::Renderer::clock();
+    for (const QtLayer& layer : layers_) {
+        double span = 0;
+        auto keys = twlite::resume_track(layer.track, now - layer.track.start, span);
+        if (keys.empty()) continue;
+        running = running || (keys.size() > 1 && span > 0);
+        const twlite::Affine& m = keys.front().matrix;
+        p.save();
+        if (layer.has_clip) {
+            QPainterPath clip;
+            const twlite::Radii& q = layer.clip_radii;
+            clip.addRoundedRect(QRectF(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h), std::max(q.tlx, q.trx), std::max(q.tly, q.bly));
+            p.setClipPath(clip);
+        }
+        p.setTransform(QTransform(m.a, m.b, m.c, m.d, m.e, m.f), true);
+        p.setOpacity(keys.front().opacity);
+        p.drawImage(QRectF(layer.bounds.x, layer.bounds.y, layer.bounds.w, layer.bounds.h), layer.image);
+        p.restore();
+    }
+    if (running && !animation_->isActive()) animation_->start();
+    else if (!running && animation_->isActive()) animation_->stop();
 }
 
 void WidgetView::mousePressEvent(QMouseEvent* e) {

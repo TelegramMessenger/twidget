@@ -1,5 +1,6 @@
 // WidgetHost's Renderer on TwidgetCore, painted by QtBackend into a QImage per frame. The Qt twin of the
-// Windows spike's SurfaceRenderer, without compositor layers: every frame is painted whole.
+// Windows spike's SurfaceRenderer: transform and opacity animations are compositor layers, images the
+// view draws at their tracks' matrices every frame while the core sleeps.
 //
 // Threading: the core is not locked on its side, so every call into it goes through one mutex here. The
 // host thread (messages), the clock thread (frames and paints) and the UI thread (input) take turns;
@@ -16,14 +17,32 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <thread>
 
+/// A compositor layer as the view draws it.
+struct QtLayer {
+    int64_t id = 0;
+    twlite::Rect bounds;  // CSS px, document coordinates
+    QImage image;         // the content, its device pixel ratio set
+    bool has_clip = false;
+    twlite::Rect clip;
+    twlite::Radii clip_radii;
+    twlite::LayerTrack track;
+};
+
+struct QtFrame {
+    QImage document;  // its device pixel ratio set
+    /// The layers in paint order, bottom first, when they changed; otherwise the view keeps its own.
+    std::optional<std::vector<QtLayer>> layers;
+};
+
 class QtRenderer final : public twidget::Renderer {
 public:
-    /// `onFrame` runs on the clock thread with each painted frame, its device pixel ratio set.
-    QtRenderer(const std::string& theme, double width, double dpr, std::function<void(QImage)> onFrame);
+    /// `onFrame` runs on the clock thread with each painted frame.
+    QtRenderer(const std::string& theme, double width, double dpr, std::function<void(std::shared_ptr<QtFrame>)> onFrame);
     ~QtRenderer() override;
 
     // Renderer (host thread)
@@ -58,11 +77,13 @@ private:
     static double nowMs();
 
     double dpr_;
-    std::function<void(QImage)> onFrame_;
+    std::function<void(std::shared_ptr<QtFrame>)> onFrame_;
     twlite::QtBackend backend_;
     std::unique_ptr<twlite::Renderer> core_;
     std::mutex mutex_;  // every call into core_ and backend_
     QImage last_;       // the last frame painted, which the next one starts from
+    uint64_t compositionVersion_ = 0;
+    std::map<int64_t, std::pair<uint64_t, QImage>> layerImages_;  // id → content version and its image
 
     // One tick per display refresh at most.
     std::mutex clockMutex_;

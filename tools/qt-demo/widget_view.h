@@ -11,7 +11,9 @@
 #include <memory>
 #include <mutex>
 
-class QtRenderer;
+#include "qt_renderer.h"
+
+#include <QTimer>
 
 class WidgetView : public QWidget {
 public:
@@ -45,6 +47,8 @@ private:
     double width_;
     bool onScreen_ = true;
 
-    std::mutex frameMutex_;  // frame_: written on the clock thread, drawn on the UI thread
+    std::mutex frameMutex_;  // frame_ and layers_: written on the clock thread, drawn on the UI thread
     QImage frame_;
+    std::vector<QtLayer> layers_;
+    QTimer* animation_ = nullptr;  // repaints while a layer's track runs
 };
