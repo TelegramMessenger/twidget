@@ -561,6 +561,20 @@ int main() {
         }
     }
 
+    // ── font cache ──
+    {
+        StubBackend fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","width:50vw"]]},{"op":"text","id":5,"data":"hello"},{"op":"ins","parent":4,"id":5,"before":null}]})"));
+        int fonts = fb.next;
+        for (int q = 0; q < 2; q++) f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"measureText","font":"12px serif","text":"abc"}})"));
+        check(fb.next == fonts + 1, "measureText keeps its font for the next query (" + std::to_string(fb.next - fonts) + " made)");
+        std::vector<Json> out;
+        f.set_width(200, out);  // viewport lengths: a fresh parse
+        check(fb.next == fonts + 1, "a reparsed document finds its fonts made (" + std::to_string(fb.next - fonts - 1) + " more)");
+    }
+
     // ── viewport height ──
     {
         StubBackend gb;

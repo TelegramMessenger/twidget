@@ -17,6 +17,8 @@
 #include <cstring>
 #include <functional>
 #include <set>
+#include <string_view>
+#include <tuple>
 
 using twidget::Json;
 
@@ -239,6 +241,8 @@ constexpr double MAX_LAYER_PIXELS = 4096.0 * 4096.0;
 constexpr double MIN_LAYER_SPAN = 0.1;
 constexpr float LAYER_MARGIN = 48;
 constexpr double DOUBLE_CLICK_MS = 500;
+/// Backend fonts kept for documents to come, beyond those a document holds.
+constexpr size_t MAX_FACES = 256;
 
 } // namespace
 
@@ -371,6 +375,7 @@ public:
         // (and the element handles that keep its nodes alive) while the font table still exists.
         elements_.clear();
         doc_ = nullptr;
+        for (auto& [key, face] : faces_) backend_.delete_font(face->handle);
     }
 
     // document lifecycle
@@ -802,11 +807,10 @@ public:
                 family += tokens[i];
             }
         }
-        FontMetrics fm;
-        int handle = backend_.create_font(family, size, weight, italic, fm);
+        Face* face = face_for(family, size, weight, italic);
+        FontMetrics fm = face ? face->metrics : FontMetrics{};
         Json o = Json::object();
-        float width = handle ? backend_.text_width(handle, text) : 0.0f;
-        if (handle) backend_.delete_font(handle);
+        float width = face ? face->width(backend_, text) : 0.0f;
         o.set("width", width);
         o.set("actualBoundingBoxLeft", 0).set("actualBoundingBoxRight", width);
         o.set("actualBoundingBoxAscent", fm.ascent * 0.8f).set("actualBoundingBoxDescent", fm.descent * 0.6f);
@@ -818,11 +822,13 @@ public:
 
     // ── document_container: fonts and text ──
     litehtml::uint_ptr create_font(const litehtml::font_description& descr, const litehtml::document*, litehtml::font_metrics* fm) override {
-        FontMetrics m;
-        int handle = backend_.create_font(descr.family, float(descr.size), descr.weight, descr.style == litehtml::font_style_italic, m);
-        if (!handle) return 0;
+        Face* face = face_for(descr.family, float(descr.size), descr.weight, descr.style == litehtml::font_style_italic);
+        if (!face) return 0;
+        const FontMetrics& m = face->metrics;
+        face->uses++;
         Font f;
-        f.handle = handle;
+        f.face = face;
+        f.handle = face->handle;
         f.metrics = m;
         f.size = float(descr.size);
         f.decoration = descr.decoration_line;
@@ -845,7 +851,8 @@ public:
     void delete_font(litehtml::uint_ptr h) override {
         auto it = fonts_.find(h);
         if (it == fonts_.end()) return;
-        backend_.delete_font(it->second.handle);
+        // The face stays for the next document, which asks for the same fonts.
+        it->second.face->uses--;
         fonts_.erase(it);
     }
 #ifdef TW_LITEHTML_TWIDGET
@@ -856,15 +863,7 @@ public:
     litehtml::pixel_t text_width(const char* text, litehtml::uint_ptr h) override {
         auto it = fonts_.find(h);
         if (it == fonts_.end() || !text) return 0;
-        std::string key = std::to_string(it->second.handle);
-        key.push_back('\0');
-        key += text;
-        auto c = widths_.find(key);
-        if (c != widths_.end()) return litehtml::pixel_t(c->second);
-        float w = backend_.text_width(it->second.handle, text);
-        if (widths_.size() > 20000) widths_.clear();
-        widths_[key] = w;
-        return litehtml::pixel_t(w);
+        return litehtml::pixel_t(it->second.face->width(backend_, text));
     }
     void draw_text(litehtml::uint_ptr, const char* text, litehtml::uint_ptr h, litehtml::web_color color, const litehtml::position& pos) override {
         auto it = fonts_.find(h);
@@ -1216,7 +1215,53 @@ public:
     }
 
 private:
+    /// A backend font for one description, shared by every document and font handle asking for it,
+    /// with the widths measured in it.
+    struct Face {
+        int handle = 0;
+        FontMetrics metrics;
+        int uses = 0;  // litehtml font handles on it
+        uint64_t used = 0;
+        struct Hash {
+            using is_transparent = void;
+            size_t operator()(std::string_view s) const { return std::hash<std::string_view>{}(s); }
+        };
+        std::unordered_map<std::string, float, Hash, std::equal_to<>> widths;
+        float width(Backend& backend, std::string_view text) {
+            if (auto c = widths.find(text); c != widths.end()) return c->second;
+            // Words repeat across documents, but a widget that types a counter would grow this forever.
+            if (widths.size() > 4096) widths.clear();
+            float w = backend.text_width(handle, std::string(text));
+            widths.emplace(std::string(text), w);
+            return w;
+        }
+    };
+    using FaceKey = std::tuple<std::string, float, int, bool>;
+    Face* face_for(const std::string& family, float size, int weight, bool italic) {
+        FaceKey key{family, size, weight, italic};
+        auto it = faces_.find(key);
+        if (it == faces_.end()) {
+            // Past the bound, faces no document holds go, least recently used first.
+            if (faces_.size() >= MAX_FACES) {
+                std::vector<std::pair<uint64_t, FaceKey>> idle;
+                for (const auto& [k, f] : faces_)
+                    if (f->uses == 0) idle.emplace_back(f->used, k);
+                std::sort(idle.begin(), idle.end());
+                for (size_t i = 0; i < idle.size() && faces_.size() >= MAX_FACES / 2; i++) {
+                    backend_.delete_font(faces_[idle[i].second]->handle);
+                    faces_.erase(idle[i].second);
+                }
+            }
+            auto face = std::make_unique<Face>();
+            face->handle = backend_.create_font(family, size, weight, italic, face->metrics);
+            if (!face->handle) return nullptr;
+            it = faces_.emplace(std::move(key), std::move(face)).first;
+        }
+        it->second->used = ++face_clock_;
+        return it->second.get();
+    }
     struct Font {
+        Face* face = nullptr;
         int handle = 0;
         FontMetrics metrics;
         float size = 16;
@@ -1306,9 +1351,10 @@ private:
     uint64_t layouts_ = 0;
     bool patched_ = false;
     std::unordered_map<int64_t, litehtml::element::ptr> elements_;
+    std::map<FaceKey, std::unique_ptr<Face>> faces_;
+    uint64_t face_clock_ = 0;
     std::unordered_map<litehtml::uint_ptr, Font> fonts_;
     litehtml::uint_ptr next_font_ = 0;
-    std::unordered_map<std::string, float> widths_;
     std::unordered_map<std::string, Image> images_;
     int next_image_ = 0;
     DisplayList list_;
