@@ -323,6 +323,24 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     return new_string(env, guarded<std::string>(h, "[]", "key", [&](Handle& hd) { return messages(hd.renderer->key(t, k, c, repeat, modifiers)); }));
 }
 
+/// The text control being edited (Renderer::EditorSpec as JSON), or "null": the view covers it with an
+/// EditText of its own, which brings the keyboard and the input method.
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_editor(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "null", "editor", [&](Handle& hd) { return hd.renderer->editor_json(); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_edit(JNIEnv* env, jclass, jlong h, jlong generation, jstring text, jstring inputType) {
+    EnvScope scope(env);
+    std::string t = get_string(env, text), i = get_string(env, inputType);
+    return new_string(env, guarded<std::string>(h, "[]", "edit", [&](Handle& hd) { return messages(hd.renderer->edit(uint64_t(generation), t, i.empty() ? "insertText" : i)); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_endEditing(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "end_editing", [&](Handle& hd) { return messages(hd.renderer->end_editing()); }));
+}
+
 /// One display frame (Choreographer): animations advance. Call it every frame while wantsTick holds,
 /// otherwise after nextTickIn seconds.
 JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_tick(JNIEnv* env, jclass, jlong h) {

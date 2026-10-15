@@ -59,6 +59,8 @@ template <class Call> void QtRenderer::run(Call call) {
     std::vector<Json> out;
     bool dirty, ticking;
     double wake;
+    bool editorChanged = false;
+    std::optional<twlite::Renderer::EditorSpec> editor;
     {
         std::lock_guard l(mutex_);
         if (destroyed_) return;
@@ -66,7 +68,15 @@ template <class Call> void QtRenderer::run(Call call) {
         dirty = core_->dirty();
         ticking = core_->wants_tick();
         wake = core_->next_tick_in();
+        const twlite::Renderer::EditorSpec* spec = core_->editor();
+        uint64_t generation = spec ? spec->generation : 0;
+        if (generation != editorGeneration_) {
+            editorGeneration_ = generation;
+            editorChanged = true;
+            if (spec) editor = *spec;
+        }
     }
+    if (editorChanged && onEditor) onEditor(std::move(editor));
     dispatch(std::move(out));
     setWake(wake);
     setTicking(ticking);
@@ -124,6 +134,14 @@ void QtRenderer::setVisible(bool visible) {
         visible_ = visible;
     }
     clockCv_.notify_all();
+}
+
+void QtRenderer::edit(uint64_t generation, const std::string& text) {
+    run([&](std::vector<Json>& out) { out = core_->edit(generation, text); });
+}
+
+void QtRenderer::endEditing() {
+    run([&](std::vector<Json>& out) { out = core_->end_editing(); });
 }
 
 void QtRenderer::setTicking(bool ticking) {

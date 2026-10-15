@@ -74,8 +74,47 @@ public:
     std::vector<twidget::Json> hover(int action, double x, double y, int modifiers = 0);
     /// A wheel or trackpad scroll over the view. `mode`: 0 pixels, 1 lines, 2 pages.
     std::vector<twidget::Json> wheel(double x, double y, double dx, double dy, int mode, int modifiers = 0);
-    /// `type` keydown or keyup, with DOM `key` and `code`; the target is the body (no focus model).
+    /// `type` keydown or keyup, with DOM `key` and `code`, aimed at the control being edited, or else
+    /// at the body.
     std::vector<twidget::Json> key(const std::string& type, const std::string& key, const std::string& code, bool repeat, int modifiers);
+
+    /// The text control being edited (the Swift renderer's WidgetEditorSpec): a platform covers it
+    /// with its own editor, which takes the keyboard and the input method. A tap on a text input or
+    /// a textarea starts editing, and a script's focus() too within a second of the user's input;
+    /// the document stops drawing the control's text meanwhile.
+    struct EditorSpec {
+        int64_t id = 0;
+        /// Changes whenever anything below does; edit() names the one it answers.
+        uint64_t generation = 0;
+        bool multiline = false;  // a textarea
+        Rect frame;              // the content box, document coordinates
+        bool has_clip = false;   // a clipping ancestor's padding box
+        Rect clip;
+        int font = 0;            // the backend's font, and what it was made from
+        std::string font_family;
+        float font_size = 16;
+        int font_weight = 400;
+        bool italic = false;
+        Color color;
+        int align = 0;           // 0 start, 1 center, 2 end
+        std::string text, placeholder;
+        std::string input_type;  // text, search, number, email, url, tel; empty for a textarea
+        int max_length = -1;
+        bool read_only = false;
+        /// What a script's select() or setSelectionRange() asked for, in UTF-16 code units as the
+        /// script counts them; -1 when it asked for nothing.
+        int selection_start = -1, selection_end = -1;
+    };
+    /// Null when nothing is being edited.
+    const EditorSpec* editor() const { return editing_.id ? &editing_ : nullptr; }
+    /// The JSON of editor(): null, or the fields above by name.
+    std::string editor_json() const;
+    /// The platform's editor changed the text of `generation`'s control: the value goes into the
+    /// document and an input event to the widget. A stale generation is ignored.
+    std::vector<twidget::Json> edit(uint64_t generation, const std::string& text, const std::string& input_type = "insertText");
+    /// The platform's editor let go (the user dismissed it, or it lost the keyboard): change if the
+    /// value differs from when editing began, then blur and focusout.
+    std::vector<twidget::Json> end_editing();
     /// One display frame: coalesced move events go out and animations advance. Returns renderer → host messages.
     std::vector<twidget::Json> tick();
     /// Something waits for the next frame: a running animation or a coalesced move.
@@ -204,6 +243,19 @@ private:
     /// The sandbox wants events of `type` (it listens, or every widget gets them).
     bool listened(const char* type) const;
     void send_event(const char* type, int64_t target, const Input& in, std::vector<twidget::Json>& out);
+    // focus
+    /// The text control `id` is, or holds within a few levels (a tap on its inner text), or 0.
+    int64_t text_control(int64_t id) const;
+    std::string control_value(const Node* n) const;
+    void focus(int64_t id, std::vector<twidget::Json>& out);
+    void blur(std::vector<twidget::Json>& out);
+    void form_event(const char* type, int64_t id, std::vector<twidget::Json>& out, const char* input_type = nullptr);
+    /// Brings the spec up to the document after a build: geometry and font; drops it when its
+    /// control left the document.
+    void refresh_editor();
+    EditorSpec editing_;
+    std::string editing_initial_;
+    uint64_t editor_generation_ = 0;
     bool is_ancestor(int64_t ancestor, int64_t id) const;
     std::vector<int64_t> chain(int64_t id) const;
     // shadow tree → style attribute, with animation overrides

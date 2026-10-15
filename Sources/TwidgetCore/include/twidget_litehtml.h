@@ -35,6 +35,13 @@ char *twl_hover(twl_renderer *handle, int32_t action, double x, double y, int32_
 char *twl_wheel(twl_renderer *handle, double x, double y, double dx, double dy, int32_t mode, int32_t modifiers);
 /// type "keydown" | "keyup", DOM key and code.
 char *twl_key(twl_renderer *handle, const char *type, const char *key, const char *code, bool repeat, int32_t modifiers);
+/// The text control being edited, for the platform to cover with its own editor (Renderer::EditorSpec
+/// as JSON), or `null`. Check it after every call that returns messages: its generation changes with it.
+char *twl_editor(twl_renderer *handle);
+/// The platform's editor changed the text of editor generation `generation`. Returns renderer → host messages.
+char *twl_edit(twl_renderer *handle, uint64_t generation, const char *text, const char *input_type);
+/// The platform's editor let go of the keyboard. Returns renderer → host messages.
+char *twl_end_editing(twl_renderer *handle);
 /// One display frame: animations advance and coalesced moves go out. Call it each frame while twl_wants_tick holds,
 /// otherwise after twl_next_tick_in seconds (infinity: nothing scheduled). Returns renderer → host messages.
 char *twl_tick(twl_renderer *handle);

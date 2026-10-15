@@ -34,7 +34,9 @@ constexpr double HEIGHT_CEILING = 16384.0;
 constexpr int MAX_PASSES = 4;
 /// A finger jitters a few px during a tap (see renderer.rs TAP_SLOP): moves inside this radius are not forwarded.
 constexpr double TAP_SLOP = 8.0;
-const char* const ALWAYS_FORWARD[] = {"click", "input", "change", "submit", "reset", "load", "error", "toggle"};
+const char* const ALWAYS_FORWARD[] = {"click", "input", "change", "submit", "reset", "load", "error", "toggle", "focus", "blur"};
+/// A script's focus() takes the keyboard only this soon after the user's input (as Swift's scriptFocusWindow).
+constexpr double SCRIPT_FOCUS_S = 1;
 
 /// Chromium/WebKit UA rules litehtml's master.css lacks and widgets rely on. Form controls get a
 /// visible box: litehtml has no controls of its own (the container would own them), so they are
@@ -582,6 +584,26 @@ public:
         if (scans_.size() > 4) scans_.pop_back();
         if (generation) *generation = scans_.front().generation;
         return scans_.front().result;
+    }
+    /// Where and in what font element `id` shows its text, for a platform's editor.
+    bool editor_style(int64_t id, Renderer::EditorSpec& spec) {
+        auto el = element(id);
+        auto ri = el ? el->get_render_item() : nullptr;
+        if (!ri || !ri->is_visible()) return false;
+        spec.frame = rect_of(el->get_placement());
+        const auto& css = el->css();
+        spec.font_family = css.font_family();
+        spec.font_size = float(css.get_font_size());
+        spec.font_weight = int(css.font_weight().val());
+        spec.italic = css.font_style_value() == litehtml::font_style_italic;
+        spec.color = color_of(css.get_color());
+        auto align = css.get_text_align();
+        spec.align = align == litehtml::text_align_center ? 1 : align == litehtml::text_align_right ? 2 : 0;
+        auto font = fonts_.find(css.get_font());
+        spec.font = font == fonts_.end() ? 0 : font->second.handle;
+        Radii radii;
+        if (!clip_of(el, spec.has_clip, spec.clip, radii)) spec.has_clip = false;
+        return true;
     }
     /// What `id` declares for `names` after the cascade, its style attribute included.
     Declared declared(int64_t id, const std::vector<std::string>& names) const {
@@ -1964,6 +1986,11 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
                 note_attribute(n, "value");
                 set_attr("value", v);
             }
+            if (editing_.id == n->id && editing_.text != v) {
+                editing_.text = v;
+                editing_.selection_start = editing_.selection_end = -1;
+                editing_.generation = ++editor_generation_;
+            }
         } else if (name == "checked" || name == "selected" || name == "indeterminate") {
             if (attached(n)) patch_log_.valid = false;
             if (value.asBool()) set_attr(name, ""); else remove_attr(name);
@@ -1998,7 +2025,21 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
                 else if (t.capture == n->id) set_capture(t, 0, out);
             }
         }
-        // focus/blur/scroll*/select*: nothing to do without a focus model or scrolling
+        else if (method == "focus") {
+            if (now_s() - last_input_ < SCRIPT_FOCUS_S && text_control(n->id) == n->id) focus(n->id, out);
+        } else if (method == "blur") {
+            if (editing_.id == n->id) blur(out);
+        } else if ((method == "select" || method == "setSelectionRange") && editing_.id == n->id) {
+            int length = 0;
+            for (unsigned char c : editing_.text) length += (c & 0xC0) != 0x80 ? ((c & 0xF8) == 0xF0 ? 2 : 1) : 0;
+            const Json& args = op["args"];
+            int start = method == "select" ? 0 : std::clamp(args[size_t(0)].asInt(0), 0, length);
+            int end = method == "select" ? length : std::clamp(args[size_t(1)].asInt(start), start, length);
+            editing_.selection_start = start;
+            editing_.selection_end = end;
+            editing_.generation = ++editor_generation_;
+        }
+        // scroll*: nothing to do without scrolling
     } else if (kind == "canvas") {
         if (n->tag == "canvas" && !n->svg) {
             // The document shows a canvas through its src, which names its size: a new or resized
@@ -2074,10 +2115,13 @@ void Renderer::serialize_node(const Node* n, std::string& out) const {
         if (auto it = canvases_.find(n->id); it != canvases_.end()) canvas = it->second.get();
     }
     if (canvas) out += " src=\"tw-canvas:" + std::to_string(canvas->id()) + "/" + std::to_string(canvas->width()) + "x" + std::to_string(canvas->height()) + "\"";
-    bool styled = !n->styles.empty() || overrides_.count(n->id);
+    bool edited = n->id && n->id == editing_.id;
+    bool styled = !n->styles.empty() || overrides_.count(n->id) || edited;
     for (const auto& [name, value] : n->attrs) {
         if (name == "style") { styled = true; continue; }
         if ((canvas && name == "src") || !css::is_attribute_name(name)) continue;
+        // The platform's editor shows the placeholder of the control being edited.
+        if (edited && name == "placeholder") continue;
         out.push_back(' ');
         out += name;
         out += "=\"";
@@ -2121,12 +2165,17 @@ void Renderer::write_style(const Node* n, std::string& out) const {
     };
     for (const auto& [name, value] : n->styles)
         if (css::is_property_name(name)) declare(name, value);
-    if (auto it = overrides_.find(n->id); n->id && it != overrides_.end()) {
+    auto it = n->id ? overrides_.find(n->id) : overrides_.end();
+    bool edited = n->id && n->id == editing_.id;
+    if (it != overrides_.end() || edited) {
         // The fork records nothing after this marker as declared, so animated values never feed back
         // into the next scan as the element's own.
         declare("-lh-anim", "1");
-        for (const auto& [name, value] : it->second)
-            if (css::is_property_name(name)) declare(name, value);
+        if (it != overrides_.end())
+            for (const auto& [name, value] : it->second)
+                if (css::is_property_name(name)) declare(name, value);
+        // The platform's editor shows the text of the control being edited.
+        if (edited) declare("color", "transparent");
     }
     escape_attr(plain, out);
 }
@@ -2190,6 +2239,10 @@ void Renderer::settle(std::vector<Json>& out) {
 
 void Renderer::rebuild(bool patch) {
     Meter meter(*this);
+    struct Refresh {
+        Renderer& r;
+        ~Refresh() { r.refresh_editor(); }
+    } refresh{*this};
     stale_ = false;
     // Scripted layers follow what the build declares, which the composition key does not cover.
     if (!scripted_candidates_.empty()) composition_key_ = 0;
@@ -2308,7 +2361,7 @@ bool Renderer::patch_document() {
             change.name = name;
             // Byte for byte what serialize_node writes there.
             if (name == "style") {
-                if (n->styles.empty() && !overrides_.count(n->id)) return false;
+                if (n->styles.empty() && !overrides_.count(n->id) && n->id != editing_.id) return false;
                 write_style(n, change.value);
             } else if (name == "src" && n->tag == "canvas" && !n->svg) {
                 auto it = canvases_.find(n->id);
@@ -3748,6 +3801,158 @@ void Renderer::flush_moves(std::vector<Json>& out) {
     pending_moves_.clear();
 }
 
+int64_t Renderer::text_control(int64_t id) const {
+    const Node* n = node(id);
+    for (int depth = 0; n && depth < 6; n = n->parent, depth++) {
+        if (n->kind != Node::Element || n->svg || (n->tag != "input" && n->tag != "textarea")) continue;
+        std::string type;
+        for (const auto& [name, value] : n->attrs) {
+            if (name == "disabled") return 0;
+            if (name == "type") type = css::trim(lower(value));
+        }
+        bool editable = n->tag == "textarea" || type.empty() || type == "text" || type == "search" || type == "number" || type == "email" || type == "url" || type == "tel";
+        return editable && attached(n) ? n->id : 0;
+    }
+    return 0;
+}
+
+std::string Renderer::control_value(const Node* n) const {
+    if (n->tag == "textarea") return n->data;
+    for (const auto& [name, value] : n->attrs)
+        if (name == "value") return value;
+    return {};
+}
+
+void Renderer::form_event(const char* type, int64_t id, std::vector<Json>& out, const char* input_type) {
+    if (frozen_ || !listened(type)) return;
+    Json ev = Json::object();
+    ev.set("type", type).set("targetId", double(id));
+    if (const Node* n = node(id)) ev.set("value", control_value(n));
+    if (input_type) ev.set("inputType", input_type);
+    dispatch(std::move(ev), out);
+}
+
+void Renderer::focus(int64_t id, std::vector<Json>& out) {
+    if (frozen_) return;
+    if (editing_.id == id) {
+        // Focused again: the platform shows its editor again.
+        editing_.generation = ++editor_generation_;
+        return;
+    }
+    if (editing_.id) blur(out);
+    Node* n = node(id);
+    if (!n) return;
+    editing_ = EditorSpec{};
+    editing_.id = id;
+    editing_.generation = ++editor_generation_;
+    editing_.multiline = n->tag == "textarea";
+    editing_.text = control_value(n);
+    editing_initial_ = editing_.text;
+    for (const auto& [name, value] : n->attrs) {
+        if (name == "placeholder") editing_.placeholder = value;
+        else if (name == "maxlength") editing_.max_length = std::max(-1, std::atoi(value.c_str()));
+        else if (name == "readonly") editing_.read_only = true;
+        else if (name == "type" && !editing_.multiline) editing_.input_type = css::trim(lower(value));
+    }
+    if (!editing_.multiline && editing_.input_type.empty()) editing_.input_type = "text";
+#ifdef TW_LITEHTML_TWIDGET
+    container_->editor_style(id, editing_);
+#endif
+    // The control's text goes transparent in the document: its style attribute changes.
+    // Its placeholder comes and goes too, which only a build takes.
+    patch_log_.valid = false;
+    note_attribute(n, "style");
+    document_changed_ = true;
+    stale_ = true;
+    form_event("focus", id, out);
+    form_event("focusin", id, out);
+}
+
+void Renderer::blur(std::vector<Json>& out) {
+    int64_t id = editing_.id;
+    if (!id) return;
+    editing_ = EditorSpec{};
+    editing_.generation = ++editor_generation_;
+    Node* n = node(id);
+    if (!n) return;
+    // Its placeholder comes and goes too, which only a build takes.
+    patch_log_.valid = false;
+    note_attribute(n, "style");
+    document_changed_ = true;
+    stale_ = true;
+    if (control_value(n) != editing_initial_) form_event("change", id, out);
+    form_event("blur", id, out);
+    form_event("focusout", id, out);
+}
+
+void Renderer::refresh_editor() {
+    if (!editing_.id) return;
+    const Node* n = node(editing_.id);
+    if (!n || !attached(n)) {
+        editing_ = EditorSpec{};
+        editing_.generation = ++editor_generation_;
+        return;
+    }
+#ifdef TW_LITEHTML_TWIDGET
+    EditorSpec before = editing_;
+    container_->editor_style(editing_.id, editing_);
+    // The document draws the edited text transparent: the editor keeps the colour it had.
+    editing_.color = before.color;
+    bool moved = std::memcmp(&before.frame, &editing_.frame, sizeof(Rect)) != 0 || before.has_clip != editing_.has_clip ||
+                 std::memcmp(&before.clip, &editing_.clip, sizeof(Rect)) != 0 || before.font != editing_.font || before.font_size != editing_.font_size ||
+                 before.align != editing_.align || std::memcmp(&before.color, &editing_.color, sizeof(Color)) != 0;
+    if (moved) editing_.generation = ++editor_generation_;
+#endif
+}
+
+std::string Renderer::editor_json() const {
+    if (!editing_.id) return "null";
+    const EditorSpec& e = editing_;
+    auto rect = [](const Rect& r) { return Json::array().push(double(r.x)).push(double(r.y)).push(double(r.w)).push(double(r.h)); };
+    Json j = Json::object();
+    j.set("id", double(e.id)).set("generation", double(e.generation)).set("multiline", e.multiline).set("frame", rect(e.frame));
+    if (e.has_clip) j.set("clip", rect(e.clip));
+    j.set("font", e.font).set("fontFamily", e.font_family).set("fontSize", double(e.font_size)).set("fontWeight", e.font_weight).set("italic", e.italic);
+    j.set("color", double((uint32_t(e.color.a) << 24) | (uint32_t(e.color.r) << 16) | (uint32_t(e.color.g) << 8) | e.color.b));
+    j.set("align", e.align).set("text", e.text).set("placeholder", e.placeholder).set("inputType", e.input_type);
+    j.set("maxLength", e.max_length).set("readOnly", e.read_only).set("selectionStart", e.selection_start).set("selectionEnd", e.selection_end);
+    return j.dump();
+}
+
+std::vector<Json> Renderer::edit(uint64_t generation, const std::string& text, const std::string& input_type) {
+    std::vector<Json> out;
+    last_input_ = now_s();
+    if (frozen_ || !editing_.id || generation != editing_.generation) return out;
+    Node* n = node(editing_.id);
+    if (!n) return out;
+    editing_.text = text;
+    editing_.selection_start = editing_.selection_end = -1;
+    // The value goes in as a script setting it would; the text stays hidden under the editor.
+    Json op = Json::object();
+    op.set("op", "prop").set("id", double(n->id)).set("name", "value").set("value", text);
+    document_changed_ = false;
+    apply_op(op, out);
+    editing_.generation = generation;
+    if (document_changed_) {
+        rebuild(true);
+        report_size(out);
+    }
+    form_event("input", n->id, out, input_type.c_str());
+    flush_pending(out);
+    return out;
+}
+
+std::vector<Json> Renderer::end_editing() {
+    std::vector<Json> out;
+    blur(out);
+    if (stale_) {
+        rebuild(true);
+        report_size(out);
+    }
+    flush_pending(out);
+    return out;
+}
+
 bool Renderer::listened(const char* type) const {
     for (const char* a : ALWAYS_FORWARD)
         if (std::strcmp(type, a) == 0) return true;
@@ -3878,6 +4083,13 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             Rect rect = click == done.target ? done.target_rect : up_rect;
             emit_event("click", click, rect, done, 2, out);
             if (click_count_ == 2) emit_event("dblclick", click, rect, done, 2, out);
+            // A tap on a text control edits it; one anywhere else ends the editing.
+            if (int64_t control = text_control(click)) focus(control, out);
+            else if (editing_.id) blur(out);
+            if (stale_) {
+                rebuild(true);
+                report_size(out);
+            }
         }
     } else if (done.target) {
         emit_event("pointercancel", done.capture ? done.capture : done.target, done.capture ? box_of(done.capture) : done.target_rect, done, 3, out);
@@ -3971,7 +4183,7 @@ std::vector<Json> Renderer::key(const std::string& type, const std::string& key,
     last_input_ = now_s();
     settle(out);
     if (frozen_ || (type != "keydown" && type != "keyup")) return out;
-    int64_t target = body_node_->id ? body_node_->id : html_node_->id;
+    int64_t target = editing_.id ? editing_.id : body_node_->id ? body_node_->id : html_node_->id;
     if (!target) return out;
     Json ev = Json::object();
     ev.set("type", type).set("targetId", double(target)).set("key", key).set("code", code).set("repeat", repeat).set("modifiers", modifiers);

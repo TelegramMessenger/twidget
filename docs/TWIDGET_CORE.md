@@ -32,7 +32,8 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   gradients, clips, paths, groups and shadows, in CSS px.
 - **A clock.** Call `tick()` while `wants_tick()` holds, and once `next_tick_in()` seconds have passed
   when it does not.
-- **Input.** `touch`, `hover`, `wheel` and `key`.
+- **Input.** `touch`, `hover`, `wheel` and `key`; for text controls, `editor()` describes the one being
+  edited for the platform to cover with its own editor, which reports back through `edit()` and `end_editing()`.
 
 With `set_compositing(true)`, the platform also plays `composition()`: a list of layers, each an
 element's own display list with a track of linear keys (a 2D matrix and an opacity per key) that the
@@ -124,7 +125,6 @@ This is not yet a replacement for Telegram's Swift renderer. The three fixtures 
 `tools/perflab/widget-stress` expose gaps beyond the existing unit coverage:
 
 - The canvas-market replay and the live Mac demo show a flat fill in place of the chart content.
-- The core has no input focus model; its focus and selection operations are ignored.
 
 `docs/PERFORMANCE_PARITY.md` tracks the rest against the Swift renderer, item by item.
 

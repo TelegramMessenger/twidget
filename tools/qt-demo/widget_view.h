@@ -42,6 +42,14 @@ private:
     void changed(const twidget::WidgetDiagnostics& d);
     void forwardKey(QKeyEvent* e, const char* type);
 
+    /// Covers the control being edited with a Qt editor, which takes the keyboard; none, removes it.
+    void showEditor(std::optional<twlite::Renderer::EditorSpec> spec);
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+    QWidget* editor_ = nullptr;  // a QLineEdit, or a QPlainTextEdit for a textarea
+    uint64_t editorGeneration_ = 0;
+    bool editorMultiline_ = false;
+
     std::unique_ptr<twidget::WidgetHost> host_;
     QtRenderer* renderer_ = nullptr;  // owned by host_
     double width_;

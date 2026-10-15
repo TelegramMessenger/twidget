@@ -60,6 +60,13 @@ public:
     void key(const std::string& type, const std::string& key, const std::string& code, bool repeat, int modifiers);
     // Off screen nothing animates: the clock stops ticking until the widget is back.
     void setVisible(bool visible);
+    // The view's text editor changed the text of editor `generation`, or let go of the keyboard.
+    void edit(uint64_t generation, const std::string& text);
+    void endEditing();
+
+    /// The text control to cover with an editor (twlite::Renderer::editor()), or none; called on any
+    /// thread whenever it changes.
+    std::function<void(std::optional<twlite::Renderer::EditorSpec>)> onEditor;
 
     int paints() const { return paints_; }
     double lastPaintMs() const { return lastPaintMs_; }
@@ -84,6 +91,7 @@ private:
     std::mutex mutex_;  // every call into core_ and backend_
     QImage last_;       // the last frame painted, which the next one starts from
     uint64_t compositionVersion_ = 0;
+    uint64_t editorGeneration_ = 0;  // of the spec last handed to onEditor, 0 for none
     std::map<int64_t, std::pair<uint64_t, QImage>> layerImages_;  // id → content version and its image
 
     // One tick per display refresh at most.

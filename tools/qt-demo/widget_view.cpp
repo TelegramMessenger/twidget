@@ -3,6 +3,8 @@
 #include "qt_renderer.h"
 
 #include <QKeyEvent>
+#include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
@@ -68,6 +70,9 @@ WidgetView::WidgetView(const std::string& html, bool dark, double width, std::sh
             }
             QMetaObject::invokeMethod(this, [this] { update(); }, Qt::QueuedConnection);
         });
+        renderer->onEditor = [this](std::optional<twlite::Renderer::EditorSpec> spec) {
+            QMetaObject::invokeMethod(this, [this, spec] { showEditor(spec); }, Qt::QueuedConnection);
+        };
         renderer_ = renderer.get();
         return renderer;
     };
@@ -172,6 +177,85 @@ void WidgetView::paintEvent(QPaintEvent*) {
     }
     if (running && !animation_->isActive()) animation_->start();
     else if (!running && animation_->isActive()) animation_->stop();
+}
+
+void WidgetView::showEditor(std::optional<twlite::Renderer::EditorSpec> spec) {
+    if (!spec || (editor_ && editorMultiline_ != spec->multiline)) {
+        if (editor_) {
+            editor_->removeEventFilter(this);
+            editor_->deleteLater();
+            editor_ = nullptr;
+        }
+        if (!spec) return;
+    }
+    editorGeneration_ = spec->generation;
+    editorMultiline_ = spec->multiline;
+    if (!editor_) {
+        if (spec->multiline) {
+            auto* area = new QPlainTextEdit(this);
+            area->setFrameShape(QFrame::NoFrame);
+            area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            area->document()->setDocumentMargin(0);
+            connect(area, &QPlainTextEdit::textChanged, this, [this, area] {
+                if (renderer_) renderer_->edit(editorGeneration_, area->toPlainText().toStdString());
+            });
+            editor_ = area;
+        } else {
+            auto* line = new QLineEdit(this);
+            line->setFrame(false);
+            line->setTextMargins(0, 0, 0, 0);
+            connect(line, &QLineEdit::textEdited, this, [this](const QString& text) {
+                if (renderer_) renderer_->edit(editorGeneration_, text.toStdString());
+            });
+            editor_ = line;
+        }
+        // The control's own box, border and background stay the document's.
+        editor_->setAttribute(Qt::WA_TranslucentBackground);
+        editor_->setStyleSheet("background: transparent; border: none;");
+        editor_->installEventFilter(this);
+    }
+    editor_->setGeometry(QRect(int(std::floor(spec->frame.x)), int(std::floor(spec->frame.y)), int(std::ceil(spec->frame.w)), int(std::ceil(spec->frame.h))));
+    QFont font;
+    QStringList families;
+    for (const QString& family : QString::fromStdString(spec->font_family).split(',')) families << family.trimmed().remove('"').remove('\'');
+    font.setFamilies(families);
+    font.setPixelSize(std::max(1, int(std::lround(spec->font_size))));
+    font.setWeight(QFont::Weight(std::clamp(spec->font_weight, 100, 900)));
+    font.setItalic(spec->italic);
+    editor_->setFont(font);
+    QPalette palette = editor_->palette();
+    palette.setColor(QPalette::Text, QColor(spec->color.r, spec->color.g, spec->color.b, spec->color.a));
+    editor_->setPalette(palette);
+    QString text = QString::fromStdString(spec->text);
+    if (auto* line = qobject_cast<QLineEdit*>(editor_)) {
+        if (line->text() != text) line->setText(text);
+        line->setPlaceholderText(QString::fromStdString(spec->placeholder));
+        line->setReadOnly(spec->read_only);
+        line->setMaxLength(spec->max_length >= 0 ? spec->max_length : 32767);
+        line->setAlignment(spec->align == 1 ? Qt::AlignHCenter : spec->align == 2 ? Qt::AlignRight : Qt::AlignLeft);
+        if (spec->selection_start >= 0) line->setSelection(spec->selection_start, spec->selection_end - spec->selection_start);
+    } else if (auto* area = qobject_cast<QPlainTextEdit*>(editor_)) {
+        if (area->toPlainText() != text) {
+            QSignalBlocker block(area);
+            area->setPlainText(text);
+        }
+        area->setPlaceholderText(QString::fromStdString(spec->placeholder));
+        area->setReadOnly(spec->read_only);
+        if (spec->selection_start >= 0) {
+            QTextCursor cursor = area->textCursor();
+            cursor.setPosition(spec->selection_start);
+            cursor.setPosition(spec->selection_end, QTextCursor::KeepAnchor);
+            area->setTextCursor(cursor);
+        }
+    }
+    editor_->show();
+    editor_->setFocus();
+}
+
+bool WidgetView::eventFilter(QObject* watched, QEvent* event) {
+    // The editor losing the keyboard ends the editing: change, blur and focusout in the widget.
+    if (watched == editor_ && event->type() == QEvent::FocusOut && renderer_) renderer_->endEditing();
+    return QWidget::eventFilter(watched, event);
 }
 
 void WidgetView::mousePressEvent(QMouseEvent* e) {

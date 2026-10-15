@@ -24,6 +24,12 @@ internal object LitehtmlNative {
     external fun wheel(handle: Long, x: Double, y: Double, dx: Double, dy: Double, mode: Int, modifiers: Int): String
     /** type "keydown" or "keyup", with the DOM key and code. */
     external fun key(handle: Long, type: String, key: String, code: String, repeat: Boolean, modifiers: Int): String
+    /** The text control being edited as JSON, or "null": cover it with an EditText (Renderer::EditorSpec). */
+    external fun editor(handle: Long): String
+    /** The EditText's text changed, for editor generation [generation]. */
+    external fun edit(handle: Long, generation: Long, text: String, inputType: String): String
+    /** The EditText let go of the keyboard. */
+    external fun endEditing(handle: Long): String
     /** One display frame (Choreographer): animations advance. Every frame while wantsTick, else after nextTickIn seconds. */
     external fun tick(handle: Long): String
     external fun wantsTick(handle: Long): Boolean

@@ -127,6 +127,20 @@ char* twl_key(twl_renderer* h, const char* type, const char* key, const char* co
     }));
 }
 
+char* twl_editor(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "null", "editor", [&](twlite::Renderer& r) { return r.editor_json(); }));
+}
+
+char* twl_edit(twl_renderer* h, uint64_t generation, const char* text, const char* input_type) {
+    return ret_string(guarded<std::string>(h, "[]", "edit", [&](twlite::Renderer& r) {
+        return messages(r.edit(generation, text ? text : "", input_type && *input_type ? input_type : "insertText"));
+    }));
+}
+
+char* twl_end_editing(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "[]", "end_editing", [&](twlite::Renderer& r) { return messages(r.end_editing()); }));
+}
+
 char* twl_tick(twl_renderer* h) {
     return ret_string(guarded<std::string>(h, "[]", "tick", [&](twlite::Renderer& r) { return messages(r.tick()); }));
 }

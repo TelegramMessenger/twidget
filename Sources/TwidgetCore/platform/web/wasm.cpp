@@ -211,6 +211,23 @@ EMSCRIPTEN_KEEPALIVE char* twl_key(Handle* h, const char* type, const char* key,
     return ret_string(messages(h->renderer->key(type ? type : "", key ? key : "", code ? code : "", repeat != 0, modifiers)));
 }
 
+/// The text control being edited (Renderer::EditorSpec as JSON), or null: the page covers it with an
+/// <input> or <textarea> of its own.
+EMSCRIPTEN_KEEPALIVE char* twl_editor(Handle* h) {
+    if (!h) return ret_string("null");
+    return ret_string(h->renderer->editor_json());
+}
+
+EMSCRIPTEN_KEEPALIVE char* twl_edit(Handle* h, double generation, const char* text, const char* input_type) {
+    if (!h) return ret_string("[]");
+    return ret_string(messages(h->renderer->edit(uint64_t(generation), text ? text : "", input_type && *input_type ? input_type : "insertText")));
+}
+
+EMSCRIPTEN_KEEPALIVE char* twl_end_editing(Handle* h) {
+    if (!h) return ret_string("[]");
+    return ret_string(messages(h->renderer->end_editing()));
+}
+
 /// One animation frame (requestAnimationFrame): animations advance. Call it every frame while twl_wants_tick
 /// holds, otherwise after twl_next_tick_in seconds.
 EMSCRIPTEN_KEEPALIVE char* twl_tick(Handle* h) {

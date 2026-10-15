@@ -1126,6 +1126,46 @@ int main() {
         }
     }
 
+    // ── focus and the platform's editor ──
+    {
+        StubBackend fb;
+        Renderer f(400, 1, false, fb);
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"input","attrs":[["style","width:200px;height:20px;padding:4px"],["placeholder","Name"],["value","ab"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","height:40px"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+        f.paint();
+        auto tap = [&](double x, double y) {
+            f.touch(0, x, y, 0, true, true, 0);
+            return f.touch(2, x, y, 0, true, true, 0);
+        };
+        auto out = tap(50, 10);
+        check(types(out).find("focus:10 ") != std::string::npos, "a tap on a text input focuses it (got " + types(out) + ")");
+        const Renderer::EditorSpec* spec = f.editor();
+        check(spec && spec->id == 10 && spec->text == "ab" && spec->placeholder == "Name" && spec->input_type == "text" && std::fabs(spec->frame.w - 190) < 0.5f && std::fabs(spec->frame.x - 5) < 0.5f && spec->color.a == 255 && spec->font != 0,
+              "the editor spec has the control's content box (inside its padding and border), font, colour, text and placeholder");
+        check(f.last_html().find("color:transparent") != std::string::npos && f.last_html().find("placeholder") == std::string::npos,
+              "the document stops drawing the edited text and placeholder");
+        uint64_t generation = spec ? spec->generation : 0;
+        out = f.edit(generation, "abc");
+        auto evs = events(out);
+        check(evs.size() == 1 && evs[0]["type"].asString() == "input" && evs[0]["value"].asString() == "abc", "an edit is an input event with the new value");
+        check(f.last_html().find("value=\"abc\"") != std::string::npos, "and the value is the document's");
+        check(f.edit(generation + 100, "x").empty(), "a stale generation is ignored");
+        out = tap(50, 50);
+        check(types(out).find("change:10 blur:10 ") != std::string::npos && !f.editor(), "a tap elsewhere ends it: change, then blur (got " + types(out) + ")");
+        check(f.last_html().find("color:transparent") == std::string::npos, "and the text shows again");
+        // A script's focus() right after the user's input takes the keyboard; later it does not.
+        out = f.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":10,"method":"focus"}]})"));
+        check(f.editor() && f.editor()->id == 10, "focus() just after a tap focuses");
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":10,"method":"setSelectionRange","args":[1,2]}]})"));
+        check(f.editor() && f.editor()->selection_start == 1 && f.editor()->selection_end == 2, "setSelectionRange reaches the editor");
+        f.end_editing();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":10,"method":"focus"}]})"));
+        check(!f.editor(), "focus() long after the user's input does not");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
