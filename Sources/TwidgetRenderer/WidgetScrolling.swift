@@ -63,6 +63,18 @@ final class WidgetScrollLayer {
     private var signature = 0
     private var generation = 0
     private var rasterLifetime = WidgetRasterLifetime()
+    private var refillsVisibleTiles = false
+    private var viewportRasterCapacity = CGSize.zero
+    var clipsRasterToViewport = false {
+        didSet {
+            if clipsRasterToViewport != oldValue {
+                viewportRasterCapacity = .zero
+                updateViewportRasterCapacity()
+                refillsVisibleTiles = true
+                invalidate()
+            }
+        }
+    }
     static let tileSize = CGSize(width: 512, height: 256)
     static let queue = DispatchQueue(label: "twidget.scroll.raster", qos: .userInitiated)
     static let batchesCommits = ProcessInfo.processInfo.environment["TW_SCROLL_BATCH_COMMITS"] != "0"
@@ -96,7 +108,12 @@ final class WidgetScrollLayer {
 
     func apply(_ geometry: WidgetScrollGeometry) {
         let resized = geometry.viewport.size != self.geometry.viewport.size || geometry.content != self.geometry.content
+        let previousRasterSize = rasterSize
         self.geometry = geometry
+        updateViewportRasterCapacity()
+        if clipsRasterToViewport && rasterSize != previousRasterSize {
+            refillsVisibleTiles = true
+        }
         clip.frame = geometry.viewport
         content.frame = CGRect(origin: .zero, size: geometry.viewport.size)
         if geometry.radii.contains(where: { $0 > 0 }) {
@@ -183,13 +200,29 @@ final class WidgetScrollLayer {
     }
 
     private func columns() -> Int {
-        return max(1, Int(ceil(max(geometry.viewport.width, geometry.content.width) / WidgetScrollLayer.tileSize.width)))
+        return max(1, Int(ceil(rasterSize.width / WidgetScrollLayer.tileSize.width)))
+    }
+
+    private var rasterSize: CGSize {
+        let full = CGSize(width: max(geometry.viewport.width, geometry.content.width), height: max(geometry.viewport.height, geometry.content.height))
+        guard clipsRasterToViewport else { return full }
+        return CGSize(width: min(full.width, viewportRasterCapacity.width), height: min(full.height, viewportRasterCapacity.height))
+    }
+
+    private func updateViewportRasterCapacity() {
+        guard clipsRasterToViewport else { return }
+        func capacity(_ required: CGFloat, previous: CGFloat) -> CGFloat {
+            guard required > previous || required * 2 < previous else { return previous }
+            return ceil(required * 1.25 / 64) * 64
+        }
+        viewportRasterCapacity = CGSize(width: capacity(geometry.viewport.width, previous: viewportRasterCapacity.width),
+                                       height: capacity(geometry.viewport.height, previous: viewportRasterCapacity.height))
     }
 
     private func rect(_ index: Int) -> CGRect {
         let columns = self.columns()
         let size = WidgetScrollLayer.tileSize
-        let width = max(geometry.viewport.width, geometry.content.width), height = max(geometry.viewport.height, geometry.content.height)
+        let width = rasterSize.width, height = rasterSize.height
         let x = CGFloat(index % columns) * size.width, y = CGFloat(index / columns) * size.height
         return CGRect(x: x, y: y, width: min(size.width, width - x), height: min(size.height, height - y))
     }
@@ -204,7 +237,7 @@ final class WidgetScrollLayer {
         let visible = CGRect(origin: geometry.clamp(offset), size: geometry.viewport.size)
         let ahead = visible.insetBy(dx: -geometry.viewport.width * 0.5, dy: -max(geometry.viewport.height, 256)).offsetBy(dx: 0, dy: velocity)
         let keep = visible.insetBy(dx: -geometry.viewport.width * 2, dy: -geometry.viewport.height * 3)
-        let width = max(geometry.viewport.width, geometry.content.width), height = max(geometry.viewport.height, geometry.content.height)
+        let width = rasterSize.width, height = rasterSize.height
         let rows = max(1, Int(ceil(height / size.height)))
         for index in Array(tiles.keys) {
             let currentRect = rect(index)
@@ -213,7 +246,7 @@ final class WidgetScrollLayer {
                 tiles[index] = nil
             }
         }
-        let firstFill = tiles.isEmpty
+        let firstFill = tiles.isEmpty || refillsVisibleTiles
         let wanted = ahead.intersection(CGRect(x: 0, y: 0, width: width, height: height))
         guard !wanted.isNull else {
             return
@@ -223,6 +256,7 @@ final class WidgetScrollLayer {
         guard firstRow <= lastRow, firstColumn <= lastColumn else {
             return
         }
+        refillsVisibleTiles = false
         var order: [Int] = []
         for row in firstRow...lastRow {
             for column in firstColumn...lastColumn {
@@ -353,6 +387,7 @@ final class WidgetScrolling {
     static let resizeAwareClips = ProcessInfo.processInfo.environment["TW_NO_RESIZE_AWARE_CLIPS"] == nil
     var allowsCompositorTakeover = ProcessInfo.processInfo.environment["TW_SCROLL_COMPOSITOR_TAKEOVER"] == "1"
     var batchesScrollGeometry = ProcessInfo.processInfo.environment["TW_NO_BATCH_SCROLL_GEOMETRY"] == nil
+    var clipsUnscrolledRasters = ProcessInfo.processInfo.environment["TW_CLIP_UNSCROLLED_RASTERS"] != "0"
 
     struct Gesture {
         var id: Int?
@@ -404,6 +439,18 @@ final class WidgetScrolling {
         for layer in layers.values {
             host?.twAddSublayer(layer.clip)
         }
+    }
+
+    private func allowsViewportRaster(_ root: WidgetNode?) -> Bool {
+        guard let root = root else { return false }
+        var remaining = 64
+        func visit(_ node: WidgetNode) -> Bool {
+            remaining -= 1
+            guard remaining >= 0 else { return false }
+            for child in node.children where !visit(child) { return false }
+            return true
+        }
+        return visit(root)
     }
 
     func reset() {
@@ -504,6 +551,7 @@ final class WidgetScrolling {
                 host?.twAddSublayer(layer.clip)
             }
             layer.apply(geometry)
+            layer.clipsRasterToViewport = clipsUnscrolledRasters && hits[id] == nil && offsets[id] == nil && allowsViewportRaster(dom.node(id))
             layer.thumb.isHidden = hits[id] == nil
             layer.update(signature: WidgetCompositor.contentSignature(id, dom: dom, box: CGRect(origin: .zero, size: geometry.content), scale: scale, styleKey: styleKey) ?? 0)
             if layer.content.animation(forKey: "tw.settle") == nil && gesture?.id != id {
@@ -686,6 +734,7 @@ final class WidgetScrolling {
         let released = (phase.contains(.ended) || phase.contains(.cancelled)) && momentum.isEmpty || finished
         offsets[id] = document?.setScrollOffset(clamped, attribute: attribute, value: String(id)) ?? clamped
         if let layer = layers[id] {
+            layer.clipsRasterToViewport = false
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.content.removeAnimation(forKey: "tw.settle")
@@ -720,6 +769,7 @@ final class WidgetScrolling {
         let previous = offsets[id] ?? .zero
         offsets[id] = document?.setScrollOffset(clamped, attribute: WidgetDOM.idAttribute, value: String(id)) ?? clamped
         if let layer = layers[id] {
+            layer.clipsRasterToViewport = false
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.content.removeAnimation(forKey: "tw.settle")
