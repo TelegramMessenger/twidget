@@ -374,6 +374,7 @@ std::list<litehtml::flex_line> litehtml::render_item_flex::get_lines(
 
 std::shared_ptr<litehtml::render_item> litehtml::render_item_flex::init()
 {
+    src_el()->add_render(shared_from_this());
     auto                 doc = src_el()->get_document();
     decltype(m_children) new_children;
     decltype(m_children) inlines;
