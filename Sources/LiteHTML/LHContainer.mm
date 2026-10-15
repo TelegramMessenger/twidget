@@ -3761,7 +3761,7 @@ void LHContainer::capture_shape(const lh::vector_path& path)
     for(const auto& g : m_groups)
         faded = faded || g.opacity < 1;
     if(dashed || faded || !m_clips.empty() || !m_effects.empty() || m_hidden_depth > 0 || std::fabs(m.b) > 1e-9 || std::fabs(m.c) > 1e-9 ||
-       std::fabs(std::fabs(m.a) - std::fabs(m.d)) > 1e-6 || (path.fill && path.fill_gradient.type == 2))
+       std::fabs(std::fabs(m.a) - std::fabs(m.d)) > 1e-6 || (path.fill && path.fill_gradient.type == 2) || (path.stroke && path.stroke_gradient.type != 0))
     {
         m_shapes_bad = true;
         return;
@@ -3809,6 +3809,28 @@ void LHContainer::capture_shape(const lh::vector_path& path)
     m_shapes->push_back(std::move(shape));
 }
 
+static void EvaluateSVGGradient(void* info, const CGFloat* input, CGFloat* output)
+{
+    const auto& stops = static_cast<const lh::svg_gradient*>(info)->stops;
+    size_t index = 0;
+    while(index + 1 < stops.size() && stops[index + 1].first <= input[0]) index++;
+    const auto& left = stops[index];
+    const auto& right = stops[std::min(index + 1, stops.size() - 1)];
+    CGFloat span = right.first - left.first;
+    CGFloat t = span > 0 ? std::clamp<CGFloat>((input[0] - left.first) / span, 0, 1) : 0;
+    CGFloat a = left.second.alpha / 255.0 * (1 - t), b = right.second.alpha / 255.0 * t;
+    CGFloat alpha = a + b;
+    output[0] = alpha > 0 ? (left.second.red * a + right.second.red * b) / (255 * alpha) : 0;
+    output[1] = alpha > 0 ? (left.second.green * a + right.second.green * b) / (255 * alpha) : 0;
+    output[2] = alpha > 0 ? (left.second.blue * a + right.second.blue * b) / (255 * alpha) : 0;
+    output[3] = alpha;
+}
+
+static void ReleaseSVGGradient(void* info)
+{
+    delete static_cast<lh::svg_gradient*>(info);
+}
+
 void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
 {
     if(lh::g_paint_trace)
@@ -3854,10 +3876,11 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
         for(float v : path.dashes)
             hash.number(v);
         hash.number(path.dash_offset);
-        if(path.fill_gradient.type != 0)
+        for(const auto* gradient : {&path.fill_gradient, &path.stroke_gradient})
         {
-            const auto& g = path.fill_gradient;
+            const auto& g = *gradient;
             hash.integer(g.type);
+            if(g.type == 0) continue;
             for(float v : {g.x1, g.y1, g.x2, g.y2, g.r, g.fx, g.fy})
                 hash.number(v);
             for(const auto& stop : g.stops)
@@ -3882,11 +3905,36 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
     }
     CGContextSaveGState(ctx);
     apply_clips(ctx, ink);
-    if(path.fill && path.fill_gradient.type != 0)
-    {
+    auto draw_gradient = [&](const lh::svg_gradient& g) {
+        bool premultiplied = false;
+        for(size_t i = 1; i < g.stops.size(); i++)
+        {
+            const auto& a = g.stops[i - 1].second;
+            const auto& b = g.stops[i].second;
+            premultiplied = premultiplied || (a.alpha != b.alpha && (a.red != b.red || a.green != b.green || a.blue != b.blue));
+        }
+        if(premultiplied)
+        {
+            const CGFloat domain[] = {0, 1}, range[] = {0, 1, 0, 1, 0, 1, 0, 1};
+            const CGFunctionCallbacks callbacks = {0, EvaluateSVGGradient, ReleaseSVGGradient};
+            auto info = std::make_unique<lh::svg_gradient>(g);
+            CGFunctionRef function = CGFunctionCreate(info.get(), 1, domain, 4, range, &callbacks);
+            if(!function) return;
+            info.release();
+            CGShadingRef shading = g.type == 1
+                ? CGShadingCreateAxial(SRGB(), CGPointMake(g.x1, g.y1), CGPointMake(g.x2, g.y2), function, true, true)
+                : CGShadingCreateRadial(SRGB(), CGPointMake(g.fx, g.fy), 0, CGPointMake(g.x1, g.y1), g.r, function, true, true);
+            CGFunctionRelease(function);
+            if(shading)
+            {
+                CGContextDrawShading(ctx, shading);
+                CGShadingRelease(shading);
+            }
+            return;
+        }
         std::vector<CGColorRef> colors;
         std::vector<CGFloat>    locations;
-        for(const auto& stop : path.fill_gradient.stops)
+        for(const auto& stop : g.stops)
         {
             colors.push_back(CreateColor(stop.second));
             locations.push_back(stop.first);
@@ -3898,13 +3946,6 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
             CGColorRelease(color);
         if(gradient)
         {
-            const auto& g = path.fill_gradient;
-            CGContextSaveGState(ctx);
-            CGContextAddPath(ctx, cgpath);
-            if(path.evenodd)
-                CGContextEOClip(ctx);
-            else
-                CGContextClip(ctx);
             const CGGradientDrawingOptions options = kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation;
             if(g.type == 1)
             {
@@ -3913,9 +3954,19 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
             }
             else
                 CGContextDrawRadialGradient(ctx, gradient, CGPointMake(g.fx, g.fy), 0, CGPointMake(g.x1, g.y1), g.r, options);
-            CGContextRestoreGState(ctx);
             CGGradientRelease(gradient);
         }
+    };
+    if(path.fill && path.fill_gradient.type != 0)
+    {
+        CGContextSaveGState(ctx);
+        CGContextAddPath(ctx, cgpath);
+        if(path.evenodd)
+            CGContextEOClip(ctx);
+        else
+            CGContextClip(ctx);
+        draw_gradient(path.fill_gradient);
+        CGContextRestoreGState(ctx);
     } else if(path.fill && path.fill_color.alpha > 0)
     {
         SetFill(ctx, path.fill_color);
@@ -3925,7 +3976,7 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
         else
             CGContextFillPath(ctx);
     }
-    if(path.stroke && path.stroke_color.alpha > 0)
+    if(path.stroke && (path.stroke_gradient.type != 0 || path.stroke_color.alpha > 0))
     {
         SetStroke(ctx, path.stroke_color);
         CGContextSetLineWidth(ctx, path.stroke_width);
@@ -3941,7 +3992,15 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
             CGContextSetLineDash(ctx, path.dash_offset, lengths.data(), lengths.size());
         }
         CGContextAddPath(ctx, cgpath);
-        CGContextStrokePath(ctx);
+        if(path.stroke_gradient.type != 0)
+        {
+            CGContextReplacePathWithStrokedPath(ctx);
+            CGContextClip(ctx);
+            draw_gradient(path.stroke_gradient);
+        } else
+        {
+            CGContextStrokePath(ctx);
+        }
     }
     CGContextRestoreGState(ctx);
     CGPathRelease(cgpath);

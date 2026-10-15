@@ -152,7 +152,7 @@ static LHDocument *SVGCacheWarmDocument(NSString *html)
 
 - (void)testSVGCacheTracksExternalGradientChanges
 {
-    for(NSString *paint in @[@"fill='url(#paint)'", @"fill='URL(#paint)'", @"class='filled'", @"style='fill:var(--paint)'", @"fill='var(--paint)'", @""])
+    for(NSString *paint in @[@"fill='url(#paint)'", @"fill='URL(#paint)'", @"class='filled'", @"style='fill:var(--paint)'", @"fill='var(--paint)'", @"fill='none' style='stroke:var(--paint);stroke-width:8'", @""])
     {
         NSString *inherited = paint.length ? @"" : @"fill:url(#paint);";
         NSString *first = [NSString stringWithFormat:@"<style>body{margin:0;background:white;%@--paint:url(#paint)}.filled{fill:url(#paint)}</style><svg width='0' height='0'><defs><linearGradient id='paint'><stop id='external-stop' stop-color='#ff0000'/><stop offset='1' stop-color='#0000ff'/></linearGradient></defs></svg><svg width='200' height='100'><rect %@ x='10' y='10' width='180' height='80'/></svg>", inherited, paint];

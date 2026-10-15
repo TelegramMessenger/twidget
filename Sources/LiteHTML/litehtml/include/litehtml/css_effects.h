@@ -149,6 +149,7 @@ namespace litehtml
         std::vector<float> dashes;
         float              dash_offset = 0;
         svg_gradient       fill_gradient;
+        svg_gradient       stroke_gradient;
     };
 
     struct clip_path_shape
