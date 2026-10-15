@@ -2066,13 +2066,14 @@ void Renderer::animate() {
     if (animating_ || frozen_) return;
     animating_ = true;
     double now = now_s();
-    std::vector<std::string> sheets;
-    std::string key;
+    // The sheets' raw text decides: they are resolved for the theme only when it changed.
+    std::vector<const Node*> styles;
+    std::string key(1, dark_ ? 'd' : 'l');
     std::function<void(const Node*)> visit = [&](const Node* n) {
         if (n->kind != Node::Element) return;
         if (n->tag == "style") {
-            sheets.push_back(css::resolve_light_dark(rewrite_color_scheme(n->data, dark_), dark_));
-            key += sheets.back();
+            styles.push_back(n);
+            key += n->data;
             key.push_back('\x01');
             return;
         }
@@ -2081,6 +2082,8 @@ void Renderer::animate() {
     visit(html_node_.get());
     if (key != sheets_key_) {
         sheets_key_ = std::move(key);
+        std::vector<std::string> sheets;
+        for (const Node* n : styles) sheets.push_back(css::resolve_light_dark(rewrite_color_scheme(n->data, dark_), dark_));
         animator_.set_style_sheets(sheets);
     }
     animator_.prune([this](int64_t id) { return node(id) != nullptr; });
