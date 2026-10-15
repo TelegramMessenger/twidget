@@ -62,7 +62,12 @@ struct Shown {
 
 } // namespace
 
+@interface TWWidgetView () <NSTextFieldDelegate>
+@end
+
 @implementation TWWidgetView {
+    NSTextField* _editor;  // over the text control being edited, a sibling: a layer-hosting view keeps no subviews
+    uint64_t _editorGeneration;
     std::unique_ptr<twidget::WidgetHost> _host;
     MacRenderer* _renderer;  // owned by _host
     CALayer* _root;
@@ -105,6 +110,11 @@ struct Shown {
                     [weakSelf showFrame:frame];
                 });
             });
+            renderer->onEditor = [weakSelf](std::optional<twlite::Renderer::EditorSpec> spec) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf showEditor:spec];
+                });
+            };
             created = renderer.get();
             return renderer;
         };
@@ -133,6 +143,7 @@ struct Shown {
 }
 
 - (void)close {
+    [self showEditor:std::nullopt];
     if (!_host) return;
     // destroy() joins the host, engine and clock threads; frames already queued find the view closed.
     _host->destroy();
@@ -142,6 +153,61 @@ struct Shown {
 
 - (void)start {
     if (_host) _host->start();
+}
+
+/// Covers the control being edited with a text field, which takes the keyboard and the input method;
+/// none, removes it.
+- (void)showEditor:(const std::optional<twlite::Renderer::EditorSpec>&)spec {
+    if (!spec || !self.superview) {
+        if (_editor) {
+            _editor.delegate = nil;
+            [_editor removeFromSuperview];
+            _editor = nil;
+            if (self.window) [self.window makeFirstResponder:self];
+        }
+        return;
+    }
+    _editorGeneration = spec->generation;
+    if (!_editor) {
+        _editor = [[NSTextField alloc] initWithFrame:NSZeroRect];
+        _editor.bordered = NO;
+        _editor.bezeled = NO;
+        _editor.drawsBackground = NO;
+        _editor.focusRingType = NSFocusRingTypeNone;
+        _editor.delegate = self;
+        [self.superview addSubview:_editor positioned:NSWindowAbove relativeTo:self];
+    }
+    _editor.usesSingleLineMode = !spec->multiline;
+    _editor.cell.wraps = spec->multiline;
+    _editor.cell.scrollable = !spec->multiline;
+    const twlite::Rect& f = spec->frame;
+    NSRect local = NSMakeRect(f.x, self.isFlipped ? f.y : self.bounds.size.height - f.y - f.h, f.w, f.h);
+    _editor.frame = [self convertRect:local toView:self.superview];
+    NSFont* font = nil;
+    NSCharacterSet* quotes = [NSCharacterSet characterSetWithCharactersInString:@"\"' "];
+    for (NSString* family in [@(spec->font_family.c_str()) componentsSeparatedByString:@","]) {
+        font = [NSFont fontWithName:[family stringByTrimmingCharactersInSet:quotes] size:spec->font_size];
+        if (font) break;
+    }
+    if (!font) font = [NSFont systemFontOfSize:spec->font_size weight:spec->font_weight >= 600 ? NSFontWeightBold : NSFontWeightRegular];
+    _editor.font = font;
+    _editor.textColor = [NSColor colorWithSRGBRed:spec->color.r / 255.0 green:spec->color.g / 255.0 blue:spec->color.b / 255.0 alpha:spec->color.a / 255.0];
+    _editor.alignment = spec->align == 1 ? NSTextAlignmentCenter : spec->align == 2 ? NSTextAlignmentRight : NSTextAlignmentLeft;
+    _editor.editable = !spec->read_only;
+    _editor.placeholderString = @(spec->placeholder.c_str());
+    NSString* text = @(spec->text.c_str());
+    if (![_editor.stringValue isEqualToString:text]) _editor.stringValue = text;
+    if (!_editor.currentEditor) [self.window makeFirstResponder:_editor];
+    if (spec->selection_start >= 0) _editor.currentEditor.selectedRange = NSMakeRange(NSUInteger(spec->selection_start), NSUInteger(spec->selection_end - spec->selection_start));
+}
+
+- (void)controlTextDidChange:(NSNotification*)notification {
+    if (_renderer && _editor) _renderer->edit(_editorGeneration, _editor.stringValue.UTF8String ?: "");
+}
+
+/// The field losing the keyboard ends the editing: change, blur and focusout in the widget.
+- (void)controlTextDidEndEditing:(NSNotification*)notification {
+    if (_renderer) _renderer->endEditing();
 }
 
 - (void)setDark:(BOOL)dark {

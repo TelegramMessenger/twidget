@@ -41,3 +41,8 @@ for remaining behavior and performance gaps. Other areas that still need visual 
 - **Clips:** a clipped layer sits in a container masked by a `CAShapeLayer` with per-corner radii.
 - **Hit testing:** the core samples the same tracks on its own clock (`Renderer::clock()`).
   Core Animation starts them a dispatch later, so a fast-moving layer can be hit a frame off.
+- **Nested layers:** a layer inside an animated element's layer sits in that layer's `nest`,
+  shifted by its bounds' origin, so it moves with the parent's track.
+- **Text editing:** a tap on a text input or textarea puts an `NSTextField` over it, beside the
+  view (a layer-hosting view keeps no subviews), from the core's `editor()`; typing reaches the
+  widget as input events, and the field losing the keyboard ends the editing. Not yet built.

@@ -89,6 +89,13 @@ public:
     void key(const std::string& type, const std::string& key, const std::string& code, bool repeat, int modifiers);
     // Off screen nothing animates: the clock stops ticking until the widget is back.
     void setVisible(bool visible);
+    // The view's text field changed the text of editor `generation`, or let go of the keyboard.
+    void edit(uint64_t generation, const std::string& text);
+    void endEditing();
+
+    /// The text control to cover with a text field (twlite::Renderer::editor()), or none; called on
+    /// any thread whenever it changes.
+    std::function<void(std::optional<twlite::Renderer::EditorSpec>)> onEditor;
 
     int paints() const { return paints_; }
     double lastPaintMs() const { return lastPaintMs_; }
@@ -116,6 +123,7 @@ private:
     std::unique_ptr<twlite::Renderer> core_;
     std::mutex mutex_;  // every call into core_ and backend_
     uint64_t compositionVersion_ = 0;
+    uint64_t editorGeneration_ = 0;  // of the spec last handed to onEditor, 0 for none
     std::vector<uint8_t> pixels_;  // the last document frame, which the next one starts from
     size_t pixelsWidth_ = 0;
     std::map<int64_t, std::pair<uint64_t, uint64_t>> shown_;  // layer id → content and track versions handed out
