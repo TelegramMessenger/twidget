@@ -263,6 +263,9 @@ private:
     bool apply_scripted(const std::vector<int64_t>& ids);
     /// The layer's matrix and opacity as the element's style has them now.
     bool scripted_key(int64_t id, const Promotion& p, LayerKey& out) const;
+    /// A still layer's track and reach: one key holding the element's own transform and opacity,
+    /// which its content leaves out. The running track stays when the key is the same.
+    bool still_track(int64_t id, Promotion& p, double now);
     /// Nothing but layer tracks changed since the last paint: its list stands.
     bool reuse_paint() const;
     struct ScriptedHit {

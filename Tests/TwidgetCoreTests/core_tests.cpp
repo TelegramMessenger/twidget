@@ -795,6 +795,12 @@ int main() {
             label = label || (layer.id == 41 && layer.track.keys.size() == 1);
         }
         check(labelled.size() == 2 && spinner && label && labelled.back().id == 41, "a label over a spinner becomes a still layer above it (" + std::to_string(labelled.size()) + " layers)");
+        // Its content leaves out its own transform and opacity: its one key has them.
+        auto turned = layers_of(R"J({"op":"el","id":40,"tag":"div","attrs":[["class","s"],["style","margin:20px"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"el","id":41,"tag":"div","attrs":[["style","position:absolute;left:25px;top:30px;width:30px;height:12px;background:white;opacity:.5;transform:translateX(4px)"]]},{"op":"ins","parent":4,"id":41,"before":null})J");
+        bool kept = turned.size() == 2 && turned.back().id == 41 && turned.back().track.keys.size() == 1 && std::fabs(turned.back().track.keys[0].opacity - 0.5f) < 1e-3f &&
+                    std::fabs(turned.back().track.keys[0].matrix.e - 4) < 1e-3f;
+        check(kept, "a still layer keeps its element's own transform and opacity");
         {
             // A layer keeps its content while what changes is elsewhere, and records it again when it is inside.
             StubBackend kb;

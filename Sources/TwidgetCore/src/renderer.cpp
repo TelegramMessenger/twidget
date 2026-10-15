@@ -2848,16 +2848,7 @@ void Renderer::update_composition(double now) {
         if (!alone || !el || !container_->layer_candidate(el, p.box) || !container_->clip_of(el, p.has_clip, p.clip, p.clip_radii)) continue;
         p.svg = true;
         p.signature = 0x5F6ull ^ uint64_t(id);
-        auto old = promoted_.find(id);
-        if (old != promoted_.end() && old->second.svg && std::memcmp(&old->second.box, &p.box, sizeof(Rect)) == 0) {
-            p.track = old->second.track;
-            p.track_version = old->second.track_version;
-        } else {
-            p.track.start = now;
-            p.track.keys.assign(1, LayerKey{});
-            p.track_version = next_version_++;
-        }
-        p.reach = p.has_clip ? intersection(p.box, p.clip) : p.box;
+        if (!still_track(id, p, now)) continue;
         elements[id] = el;
         next.emplace(id, std::move(p));
     }
@@ -2887,20 +2878,9 @@ void Renderer::update_composition(double now) {
                     break;
                 }
                 s.signature = 0x57A71Cull ^ uint64_t(other);
-                auto old = promoted_.find(other);
-                if (old != promoted_.end() && old->second.signature == s.signature && std::memcmp(&old->second.box, &s.box, sizeof(Rect)) == 0) {
-                    s.track = old->second.track;
-                    s.track_version = old->second.track_version;
-                } else {
-                    s.track.start = now;
-                    s.track.keys.push_back(LayerKey{});
-                    s.track_version = next_version_++;
-                }
-                s.reach = s.box;
-                if (s.has_clip) {
-                    float cx0 = std::max(s.reach.x, s.clip.x), cy0 = std::max(s.reach.y, s.clip.y);
-                    float cx1 = std::min(s.reach.x + s.reach.w, s.clip.x + s.clip.w), cy1 = std::min(s.reach.y + s.reach.h, s.clip.y + s.clip.h);
-                    s.reach = Rect{cx0, cy0, std::max(0.0f, cx1 - cx0), std::max(0.0f, cy1 - cy0)};
+                if (!still_track(other, s, now)) {
+                    still.clear();
+                    break;
                 }
                 elements[other] = el;
                 still.emplace_back(other, std::move(s));
@@ -3190,6 +3170,33 @@ bool Renderer::scripted_key(int64_t id, const Promotion& p, LayerKey& out) const
     out.matrix = to * *translate * *rotate * *scale * *transform * from;
     out.opacity = *opacity;
     return true;
+}
+
+bool Renderer::still_track(int64_t id, Promotion& p, double now) {
+#ifdef TW_LITEHTML_TWIDGET
+    p.base = container_->declared(id, {"transform", "translate", "rotate", "scale", "opacity", "transform-origin"});
+    LayerKey key;
+    if (!scripted_key(id, p, key)) return false;
+    auto old = promoted_.find(id);
+    if (old != promoted_.end() && old->second.signature == p.signature && std::memcmp(&old->second.box, &p.box, sizeof(Rect)) == 0 &&
+        old->second.track.keys.size() == 1 && old->second.track.keys[0].matrix == key.matrix && old->second.track.keys[0].opacity == key.opacity) {
+        p.track = old->second.track;
+        p.track_version = old->second.track_version;
+    } else {
+        p.track = LayerTrack{};
+        p.track.start = now;
+        p.track.keys.assign(1, key);
+        p.track_version = next_version_++;
+    }
+    p.reach = bounds_under(p.box, key.matrix);
+    if (p.has_clip) p.reach = intersection(p.reach, p.clip);
+    return true;
+#else
+    (void)id;
+    (void)p;
+    (void)now;
+    return false;
+#endif
 }
 
 bool Renderer::apply_scripted(const std::vector<int64_t>& ids) {
