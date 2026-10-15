@@ -632,50 +632,60 @@ public:
     /// holds (other layers, ordered among themselves by paint order). What shows of an item is its
     /// border box inside its clipping ancestors; hidden and fully transparent items show nothing.
     bool covered(const litehtml::element::ptr& el, const Rect& area, const std::vector<const litehtml::render_item*>& trace,
-                 const std::unordered_set<const litehtml::element*>& ignore) const {
-        auto ri = el->get_render_item();
-        auto self = std::find(trace.begin(), trace.end(), ri.get());
-        if (self == trace.end()) return true;
-        for (auto it = std::next(self); it != trace.end(); ++it) {
-            const litehtml::render_item* item = *it;
-            // The box test first: most items are nowhere near the layer.
-            Rect box = clipped_border_box(item);
-            if (box.w <= 0 || box.h <= 0) continue;
-            if (!(box.x < area.x + area.w && area.x < box.x + box.w && box.y < area.y + area.h && area.y < box.y + box.h)) continue;
-            if (item->src_el()->is_space() || item->src_el()->css().get_visibility() != litehtml::visibility_visible) continue;
-            bool skip = false;
-            for (const litehtml::render_item* walk = item; walk && !skip; walk = walk->parent().get())
-                skip = walk == ri.get() || ignore.count(walk->src_el().get()) || walk->src_el()->css().get_opacity() <= 0;
-            if (skip) continue;
-            return true;
-        }
-        return false;
+                 const std::unordered_set<const litehtml::element*>& ignore) {
+        return scan(el, area, trace, ignore, nullptr, 0) != 0;
     }
     /// The widget elements painted after `el` that meet `area`, as `covered` finds them; nullopt when
     /// there are more than `limit` or one has no widget id.
     std::optional<std::vector<int64_t>> obscurers(const litehtml::element::ptr& el, const Rect& area, const std::vector<const litehtml::render_item*>& trace,
-                                                  const std::unordered_set<const litehtml::element*>& ignore, size_t limit) const {
+                                                  const std::unordered_set<const litehtml::element*>& ignore, size_t limit) {
         std::vector<int64_t> out;
-        auto ri = el->get_render_item();
-        auto self = std::find(trace.begin(), trace.end(), ri.get());
-        if (self == trace.end()) return std::nullopt;
-        for (auto it = std::next(self); it != trace.end(); ++it) {
-            const litehtml::render_item* item = *it;
-            Rect box = clipped_border_box(item);
-            if (box.w <= 0 || box.h <= 0) continue;
-            if (!(box.x < area.x + area.w && area.x < box.x + box.w && box.y < area.y + area.h && area.y < box.y + box.h)) continue;
-            if (item->src_el()->is_space() || item->src_el()->css().get_visibility() != litehtml::visibility_visible) continue;
-            bool skip = false;
-            for (const litehtml::render_item* walk = item; walk && !skip; walk = walk->parent().get())
-                skip = walk == ri.get() || ignore.count(walk->src_el().get()) || walk->src_el()->css().get_opacity() <= 0;
-            if (skip) continue;
-            int64_t id = widget_id(item->src_el(), nullptr);
-            if (!id) return std::nullopt;
-            if (std::find(out.begin(), out.end(), id) != out.end()) continue;
-            if (out.size() == limit) return std::nullopt;
-            out.push_back(id);
-        }
+        if (scan(el, area, trace, ignore, &out, limit) < 0) return std::nullopt;
         return out;
+    }
+
+    /// The items painted after `el` that meet `area`, skipping its descendants, what `ignore` holds and
+    /// what shows nothing: 1 at the first when `ids` is null, otherwise their widget ids into `ids`
+    /// (-1 past `limit` or for one without an id). 0 when nothing covers it; 1 too when `el` is not painted.
+    int scan(const litehtml::element::ptr& el, const Rect& area, const std::vector<const litehtml::render_item*>& trace,
+             const std::unordered_set<const litehtml::element*>& ignore, std::vector<int64_t>* ids, size_t limit) {
+        // What each traced item can show, worked out once per trace: its border box inside its
+        // clipping ancestors, and whether it or an ancestor is hidden or fully transparent.
+        if (cover_trace_ != &trace || cover_key_ != trace_key_) {
+            cover_.clear();
+            cover_index_.clear();
+            cover_.reserve(trace.size());
+            for (size_t i = 0; i < trace.size(); i++) {
+                const litehtml::render_item* item = trace[i];
+                Cover c{clipped_border_box(item), item->src_el()->is_space() || item->src_el()->css().get_visibility() != litehtml::visibility_visible};
+                for (const litehtml::render_item* walk = item; walk && !c.invisible; walk = walk->parent().get()) c.invisible = walk->src_el()->css().get_opacity() <= 0;
+                cover_.push_back(c);
+                cover_index_.emplace(item, i);
+            }
+            cover_trace_ = &trace;
+            cover_key_ = trace_key_;
+        }
+        auto ri = el->get_render_item();
+        auto self = cover_index_.find(ri.get());
+        if (self == cover_index_.end()) return ids ? -1 : 1;
+        for (size_t i = self->second + 1; i < trace.size(); i++) {
+            const Cover& c = cover_[i];
+            // The box test first: most items are nowhere near the layer.
+            const Rect& box = c.box;
+            if (c.invisible || box.w <= 0 || box.h <= 0) continue;
+            if (!(box.x < area.x + area.w && area.x < box.x + box.w && box.y < area.y + area.h && area.y < box.y + box.h)) continue;
+            bool skip = false;
+            for (const litehtml::render_item* walk = trace[i]; walk && !skip; walk = walk->parent().get())
+                skip = walk == ri.get() || ignore.count(walk->src_el().get());
+            if (skip) continue;
+            if (!ids) return 1;
+            int64_t id = widget_id(trace[i]->src_el(), nullptr);
+            if (!id) return -1;
+            if (std::find(ids->begin(), ids->end(), id) != ids->end()) continue;
+            if (ids->size() == limit) return -1;
+            ids->push_back(id);
+        }
+        return ids && !ids->empty() ? 1 : 0;
     }
     /// Paints the document without the elements in `skip`.
     DisplayList draw(const std::vector<litehtml::element::ptr>& skip) {
@@ -1409,6 +1419,14 @@ private:
     uint64_t layouts_ = 0;
     bool patched_ = false;
     std::vector<const litehtml::render_item*> trace_;
+    struct Cover {
+        Rect box;
+        bool invisible;
+    };
+    std::vector<Cover> cover_;  // parallel to the trace scan() was last given
+    std::unordered_map<const litehtml::render_item*, size_t> cover_index_;
+    const void* cover_trace_ = nullptr;
+    std::tuple<const litehtml::document*, uint32_t, uint64_t> cover_key_{};
     std::tuple<const litehtml::document*, uint32_t, uint64_t> trace_key_{};
     std::unordered_map<int64_t, litehtml::element::ptr> elements_;
     std::map<FaceKey, std::unique_ptr<Face>> faces_;
