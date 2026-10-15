@@ -750,7 +750,7 @@ int main() {
         // The spinner sits in two clips; the inner one holds it and the outer one holds the inner.
         auto nested = layers_of(R"J({"op":"el","id":30,"tag":"div","attrs":[["style","overflow:hidden;width:300px;height:300px"]]},{"op":"ins","parent":4,"id":30,"before":null},
             {"op":"el","id":31,"tag":"div","attrs":[["style","overflow:hidden;margin:50px;width:100px;height:100px"]]},{"op":"ins","parent":30,"id":31,"before":null},
-            {"op":"el","id":40,"tag":"div","attrs":[["class","s"],["style","margin:30px"]]},{"op":"ins","parent":31,"id":40,"before":null})J");
+            {"op":"el","id":40,"tag":"div","attrs":[["class","s"],["style","margin:0"]]},{"op":"ins","parent":31,"id":40,"before":null})J");
         check(nested.size() == 1 && nested[0].has_clip && nested[0].clip.x == 50 && nested[0].clip.w == 100,
               "a layer inside two clips takes the inner one (" + std::to_string(nested.size()) + " layers)");
         // A later box would cover the spinner, but its own overflow:hidden parent cuts it off far below.

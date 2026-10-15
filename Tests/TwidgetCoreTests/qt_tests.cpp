@@ -266,6 +266,29 @@ static void test_damage_repaints() {
     check(partial > rounds / 2, "and most frames repaint only part");
 }
 
+/// Clips whose content stays inside them go, and the pixels stay the same.
+static void test_inert_clips() {
+    QtBackend backend;
+    auto clip = [](Rect r, float radius) {
+        Command c;
+        c.kind = Cmd::ClipPush;
+        c.rect = r;
+        c.radii = Radii{radius, radius, radius, radius, radius, radius, radius, radius};
+        return c;
+    };
+    Command pop;
+    pop.kind = Cmd::ClipPop;
+    DisplayList list{clip({0, 0, 100, 100}, 10), fill_rect({20, 20, 30, 30}, {255, 0, 0, 255}), pop,
+                     clip({0, 0, 100, 100}, 10), fill_rect({80, 80, 40, 40}, {0, 0, 255, 255}), pop};
+    DisplayList dropped = list;
+    size_t gone = drop_inert_clips(dropped);
+    check(gone == 1 && dropped.size() == 4, "a clip its content stays inside goes, one it crosses stays");
+    QImage a = QtBackend::make_image(150, 150), b = QtBackend::make_image(150, 150);
+    backend.paint(list, a, QTransform::fromScale(1.5, 1.5));
+    backend.paint(dropped, b, QTransform::fromScale(1.5, 1.5));
+    check(a == b, "and the pixels are the same");
+}
+
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
@@ -275,6 +298,7 @@ int main(int argc, char** argv) {
     test_canvas_through_renderer(1);
     test_canvas_through_renderer(1.5);
     test_damage_repaints();
+    test_inert_clips();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

@@ -93,6 +93,11 @@ struct PaintSummary {
 };
 PaintSummary summarize(const DisplayList& list);
 
+/// Drops the rectangular clips whose content stays inside them (inset by their corner radii): they
+/// change no pixel, and a rounded clip costs a painter a layer. Clip paths and clips under a rotation
+/// or skew stay. Returns how many clips went.
+size_t drop_inert_clips(DisplayList& list);
+
 /// The areas where `after` paints differently from `before`: commands one has and the other not,
 /// commands whose paint order changed, and canvases `canvas_changed` says drew since. Merged into
 /// one area when there are many.

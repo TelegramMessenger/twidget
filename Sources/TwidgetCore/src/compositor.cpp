@@ -203,6 +203,79 @@ uint64_t paint_digest(const DisplayList& list) {
     return d.h;
 }
 
+size_t drop_inert_clips(DisplayList& list) {
+    // Per open clip: where it starts, its area (inset by its corners) in document coordinates, and
+    // whether everything drawn inside has stayed within it so far.
+    struct Open {
+        size_t at;
+        Rect area;
+        bool keep;
+    };
+    struct Frame {
+        Affine matrix;
+        bool clip;  // a ClipPush (else a GroupPush)
+    };
+    std::vector<Frame> frames{{Affine{}, false}};
+    std::vector<Open> open;
+    std::vector<char> drop(list.size(), 0);
+    auto axis_aligned = [](const Affine& m) { return m.b == 0 && m.c == 0 && m.a > 0 && m.d > 0; };
+    auto inside = [](const Rect& r, const Rect& area) {
+        return r.x >= area.x && r.y >= area.y && r.x + r.w <= area.x + area.w && r.y + r.h <= area.y + area.h;
+    };
+    for (size_t i = 0; i < list.size(); i++) {
+        const Command& c = list[i];
+        const Affine& m = frames.back().matrix;
+        switch (c.kind) {
+        case Cmd::ClipPush: {
+            Open o{i, {}, false};
+            // A clip path, or one under a rotation or skew, stays.
+            if (!c.path && axis_aligned(m)) {
+                const Radii& q = c.radii;
+                float corner = std::max({q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly});
+                Rect area{c.rect.x + corner, c.rect.y + corner, c.rect.w - 2 * corner, c.rect.h - 2 * corner};
+                o.area = transformed(area, m);
+                o.keep = area.w > 0 && area.h > 0;
+            }
+            open.push_back(o);
+            frames.push_back({m, true});
+            continue;
+        }
+        case Cmd::ClipPop:
+            if (frames.size() > 1 && frames.back().clip) {
+                frames.pop_back();
+                if (!open.empty()) {
+                    if (open.back().keep) drop[open.back().at] = drop[i] = 1;
+                    open.pop_back();
+                }
+            }
+            continue;
+        case Cmd::GroupPush: {
+            Affine own{c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]};
+            frames.push_back({m * own, false});
+            continue;
+        }
+        case Cmd::GroupPop:
+            if (frames.size() > 1 && !frames.back().clip) frames.pop_back();
+            continue;
+        default:
+            break;
+        }
+        if (open.empty()) continue;
+        Rect ink = transformed(ink_of(c), m);
+        if (ink.w <= 0 && ink.h <= 0) continue;
+        // Within the innermost open clip is within every enclosing one that it is within.
+        for (auto& o : open)
+            if (o.keep && !inside(ink, o.area)) o.keep = false;
+    }
+    size_t dropped = 0;
+    for (size_t i = list.size(); i-- > 0;)
+        if (drop[i]) {
+            list.erase(list.begin() + long(i));
+            dropped++;
+        }
+    return dropped / 2;
+}
+
 PaintSummary summarize(const DisplayList& list) {
     PaintSummary out;
     out.entries.reserve(list.size());

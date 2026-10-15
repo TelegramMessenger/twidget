@@ -2398,6 +2398,14 @@ void Renderer::update_composition(double now) {
         }
         p.raster_scale = std::min(scale, 3.0f);
         p.reach = Rect{x0, y0, x1 - x0, y1 - y0};
+        // A clip the whole track stays inside, away from its corners, cuts nothing: the layer goes without.
+        if (p.has_clip) {
+            const Radii& q = p.clip_radii;
+            float corner = std::max({q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly});
+            if (p.reach.x >= p.clip.x + corner && p.reach.y >= p.clip.y + corner && p.reach.x + p.reach.w <= p.clip.x + p.clip.w - corner &&
+                p.reach.y + p.reach.h <= p.clip.y + p.clip.h - corner)
+                p.has_clip = false;
+        }
         if (p.has_clip) {
             float cx0 = std::max(p.reach.x, p.clip.x), cy0 = std::max(p.reach.y, p.clip.y);
             float cx1 = std::min(p.reach.x + p.reach.w, p.clip.x + p.clip.w), cy1 = std::min(p.reach.y + p.reach.h, p.clip.y + p.clip.h);
@@ -2601,6 +2609,7 @@ DisplayList Renderer::paint() {
     // Messages from a build here go out with the next ones.
     settle(pending_events_);
     DisplayList list = paint_document();
+    drop_inert_clips(list);
     // What changed against the last paint, for a platform to repaint only that.
     PaintSummary summary = summarize(list);
     damage_valid_ = painted_valid_ && painted_size_ == std::make_pair(px_width(), px_height()) &&
