@@ -561,6 +561,51 @@ int main() {
         }
     }
 
+    // ── in-place patches ──
+    {
+        // Random batches into a patching renderer and one that builds every time: the same paint.
+        StubBackend pa, pb;
+        Renderer patching(300, 1, false, pa), building(300, 1, false, pb);
+        building.set_patching(false);
+        std::string setup = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":".a{color:red;padding:2px}.b{border:1px solid blue;width:40px}"},{"op":"ins","parent":3,"id":5,"before":null})";
+        for (int i = 0; i < 20; i++) {
+            std::string e = std::to_string(100 + i), t = std::to_string(200 + i);
+            setup += R"(,{"op":"el","id":)" + e + R"(,"tag":"div","attrs":[["class","a"],["style","height:10px"]]},{"op":"ins","parent":4,"id":)" + e +
+                     R"(,"before":null},{"op":"text","id":)" + t + R"(,"data":"item"},{"op":"ins","parent":)" + e + R"(,"id":)" + t + R"(,"before":null})";
+        }
+        setup += "]}";
+        patching.receive(parse(setup));
+        building.receive(parse(setup));
+        uint32_t seed = 7;
+        auto next = [&] { return seed = seed * 1664525u + 1013904223u, seed >> 8; };
+        int same = 0, rounds = 200;
+        int patched_before = patching.stats().in_place;
+        for (int round = 0; round < rounds; round++) {
+            std::string ops;
+            // Mostly what a busy widget sends; now and then what has no hole (a new height, markup in text) builds.
+            for (int k = 0; k < 3; k++) {
+                std::string e = std::to_string(100 + next() % 20), t = std::to_string(200 + next() % 20);
+                if (!ops.empty()) ops += ",";
+                unsigned pick = next() % 20;
+                if (pick < 6) ops += "{\"op\":\"style\",\"id\":" + e + ",\"name\":\"transform\",\"value\":\"translateX(" + std::to_string(next() % 30) + "px)\"}";
+                else if (pick < 11) ops += "{\"op\":\"style\",\"id\":" + e + ",\"name\":\"background-color\",\"value\":\"rgb(" + std::to_string(next() % 255) + ",0,0)\"}";
+                else if (pick < 13) ops += "{\"op\":\"attr\",\"id\":" + e + ",\"name\":\"class\",\"value\":\"" + (next() % 2 ? "a" : "a b") + "\"}";
+                else if (pick < 18) ops += "{\"op\":\"data\",\"id\":" + t + ",\"data\":\"text " + std::to_string(next() % 1000) + "\"}";
+                else if (pick < 19) ops += "{\"op\":\"data\",\"id\":" + t + ",\"data\":\"text &<> " + std::to_string(next() % 1000) + "\"}";
+                else ops += "{\"op\":\"style\",\"id\":" + e + ",\"name\":\"height\",\"value\":\"" + std::to_string(5 + next() % 20) + "px\"}";
+            }
+            std::string batch = R"({"type":"ops","ops":[)" + ops + "]}";
+            patching.receive(parse(batch));
+            building.receive(parse(batch));
+            if (to_json(patching.paint()) == to_json(building.paint()) && patching.last_html() == building.last_html()) same++;
+        }
+        int patched = patching.stats().in_place - patched_before;
+        check(same == rounds, "patched and rebuilt documents paint the same (" + std::to_string(same) + " of " + std::to_string(rounds) + ")");
+        check(patched > rounds / 2, "most batches go into the document in place (" + std::to_string(patched) + " of " + std::to_string(rounds) + ")");
+    }
+
     // ── pointer capture ──
     {
         StubBackend cb;

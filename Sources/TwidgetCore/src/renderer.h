@@ -20,6 +20,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -37,6 +38,8 @@ struct BuildStats {
     int builds = 0;
     /// Builds that patched the previous document instead of parsing a new one (TW_LITEHTML_TWIDGET).
     int patched = 0;
+    /// Of those, builds that went into the document without serialising it (ops patched in place).
+    int in_place = 0;
 };
 
 class Renderer : private CanvasHost {
@@ -91,6 +94,8 @@ public:
     /// Records the current document into a display list (clears `dirty`).
     DisplayList paint();
     const BuildStats& stats() const { return stats_; }
+    /// Off: every batch serialises the document again. For checks that patching changes nothing.
+    void set_patching(bool enabled) { patching_ = enabled; }
     /// Layouts of the document so far: full renders after a parse, a patch or a restyle that moved boxes.
     uint64_t layouts() const;
     /// The HTML of the last build (diagnostics).
@@ -138,7 +143,8 @@ private:
     // shadow tree → HTML → litehtml
     std::string serialize() const;
     void serialize_node(const Node* n, std::string& out) const;
-    void rebuild();
+    /// `patch`: an ops batch, which may go into the document in place (patch_document).
+    void rebuild(bool patch = false);
     void report_size(std::vector<twidget::Json>& out);
     // queries & events
     twidget::Json answer(const twidget::Json& q);
@@ -161,7 +167,19 @@ private:
     void write_style(const Node* n, std::string& out) const;
     // animations
     static double now_s();
-    void build_document();
+    void build_document(bool patch = false);
+    // In-place patching (the Swift renderer's patch log): which attributes and sole texts the ops of
+    // a batch changed, for the fork's `update_holes`, so the document is not serialised again.
+    struct PatchLog {
+        bool valid = true;
+        std::map<const Node*, std::set<std::string>> attributes;
+        std::set<const Node*> texts;
+    };
+    bool attached(const Node* n) const;
+    void note_attribute(const Node* n, const std::string& name);
+    void note_children(const Node* parent, const Node* child);
+    /// The log into the document; false, leaving it as it was, when the log cannot say it all.
+    bool patch_document();
     void animate();
     void apply_overrides(StyleOverrides sampled);
     void queue_animation_events();
@@ -199,7 +217,9 @@ private:
     int vp_height_;
     double doc_height_ = 0;
     bool dirty_ = true;
-    bool document_changed_ = false;  // an op since the last build changed what serialize() writes
+    bool document_changed_ = false;
+    PatchLog patch_log_;
+    bool patching_ = true;  // an op since the last build changed what serialize() writes
     mutable std::string html_;
     mutable bool html_stale_ = false;
     BuildStats stats_;

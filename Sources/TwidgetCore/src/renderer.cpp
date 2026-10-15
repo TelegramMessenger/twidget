@@ -473,6 +473,20 @@ public:
         if (scans_.size() > 4) scans_.pop_back();
         return out;
     }
+    /// The document was laid out at the current width and viewport: a patch can go straight in.
+    bool can_patch() const { return doc_ && float(r_.width_) == rendered_width_; }
+    /// Attribute values and sole texts into the document in place (the fork's holes), relaying out
+    /// only when a value can move boxes. False, leaving the document as it was, when a change has no hole.
+    bool patch(const std::vector<litehtml::document::hole_change>& changes) {
+        bool changed = false;
+        if (!doc_->update_holes(changes, &changed)) return false;
+        patched_ = true;
+        if (changed && !doc_->last_patch_paint_only()) {
+            doc_->render(litehtml::pixel_t(rendered_width_));
+            layouts_++;
+        }
+        return true;
+    }
     /// Replaces the style attribute of elements in place (the fork's style holes), relaying out
     /// only when a value can move boxes. False when the document cannot patch them.
     bool restyle(const std::vector<std::pair<litehtml::element::ptr, std::string>>& patches) {
@@ -1307,7 +1321,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         // A batch of canvas drawing, scrolling or focus leaves the document as it was: its canvases
         // repaint (run_canvas marks the paint dirty) without a build.
         if (document_changed_) {
-            rebuild();
+            rebuild(true);
             report_size(out);
         }
     } else if (type == "query") {
@@ -1381,6 +1395,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         if (!adopt_name.empty()) {
             Node* n = adopt_name == "html" ? html_node_.get() : adopt_name == "head" ? head_node_.get() : adopt_name == "body" ? body_node_.get() : nullptr;
             if (!n) return;
+            patch_log_.valid = false;
             adopt(id, n, op["attrs"]);
             return;
         }
@@ -1421,6 +1436,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             out.push_back(Json::object().set("type", "violation").set("detail", "attribute " + name.substr(0, 64)));
             return;
         }
+        note_attribute(n, lower(name));
         if (name == "style") {
             set_inline_style(n->styles, str("value"));
             return;
@@ -1439,18 +1455,23 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             }
         }
     } else if (kind == "rattr") {
+        if (attached(n)) patch_log_.valid = false;
         const std::string& name = str("name");
         if (name == "style") n->styles.clear();
         n->attrs.erase(std::remove_if(n->attrs.begin(), n->attrs.end(), [&](auto& a) { return a.first == name; }), n->attrs.end());
     } else if (kind == "data") {
-        if (n->kind != Node::Element) n->data = str("data");
+        if (n->kind == Node::Element) return;
+        note_children(n->parent, n);
+        n->data = str("data");
     } else if (kind == "ins") {
         if (is_root) return;
         int64_t parent = int64_t(op["parent"].asNumber());
+        note_children(n->parent, n);
         detach(n);
         if (parent == 0) return;
         Node* p = node(parent);
         if (!p || p->kind != Node::Element) return;
+        note_children(p, n);
         // no cycles: the validator forbids them, but a hostile batch must not hang the renderer
         for (Node* a = p; a; a = a->parent) if (a == n) return;
         n->parent = p;
@@ -1466,6 +1487,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         p->children.push_back(n);
     } else if (kind == "rm") {
         if (is_root) return;
+        note_children(n->parent, n);
         detach(n);
         forget(n);
     } else if (kind == "style") {
@@ -1474,6 +1496,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             out.push_back(Json::object().set("type", "violation").set("detail", "property name"));
             return;
         }
+        note_attribute(n, "style");
         std::string value = str("value");
         if (op["important"].asBool() && !value.empty()) value += " !important";
         auto it = std::find_if(n->styles.begin(), n->styles.end(), [&](auto& s) { return s.first == name; });
@@ -1482,6 +1505,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         } else if (it != n->styles.end()) it->second = value;
         else n->styles.emplace_back(name, value);
     } else if (kind == "css") {
+        if (attached(n)) patch_log_.valid = false;
         if (n->tag == "style") n->data = str("text");
     } else if (kind == "prop") {
         const std::string& name = str("name");
@@ -1495,11 +1519,21 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         };
         if (name == "value") {
             std::string v = value.isString() ? value.asString() : value.isNull() ? std::string() : value.dump();
-            if (n->tag == "textarea") n->data = v, n->children.clear();
-            else set_attr("value", v);
+            if (n->tag == "textarea") {
+                // A textarea's value is its text, a hole when it is the only content.
+                if (!n->children.empty()) patch_log_.valid = false;
+                else if (attached(n)) patch_log_.texts.insert(n);
+                n->data = v;
+                n->children.clear();
+            } else {
+                note_attribute(n, "value");
+                set_attr("value", v);
+            }
         } else if (name == "checked" || name == "selected" || name == "indeterminate") {
+            if (attached(n)) patch_log_.valid = false;
             if (value.asBool()) set_attr(name, ""); else remove_attr(name);
         } else if (name == "selectedIndex") {
+            if (attached(n)) patch_log_.valid = false;
             int idx = value.asInt(-1), i = 0;
             for (Node* c : n->children) {
                 if (c->tag != "option") continue;
@@ -1514,9 +1548,11 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             for (auto& p : n->attrs) if (p.first == "open") return;
             n->attrs.emplace_back("open", "");
             document_changed_ = true;
+            if (attached(n)) patch_log_.valid = false;
         } else if (method == "close" || method == "hidePopover") {
             n->attrs.erase(std::remove_if(n->attrs.begin(), n->attrs.end(), [](auto& p) { return p.first == "open"; }), n->attrs.end());
             document_changed_ = true;
+            if (attached(n)) patch_log_.valid = false;
         }
         else if (method == "setPointerCapture" || method == "releasePointerCapture") {
             // The pointer id as event_json gives it out: the mouse is 1, a finger its pointer + 2.
@@ -1530,7 +1566,17 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         // focus/blur/scroll*/select*: nothing to do without a focus model or scrolling
     } else if (kind == "canvas") {
         if (n->tag == "canvas" && !n->svg) {
-            if (Canvas* canvas = canvas_for(n)) run_canvas(*canvas, op["cmds"]);
+            // The document shows a canvas through its src, which names its size: a new or resized
+            // bitmap changes the document.
+            auto before = canvases_.find(n->id);
+            int w = before == canvases_.end() ? -1 : before->second->width(), h = before == canvases_.end() ? -1 : before->second->height();
+            if (Canvas* canvas = canvas_for(n)) {
+                run_canvas(*canvas, op["cmds"]);
+                if (canvas->width() != w || canvas->height() != h) {
+                    document_changed_ = true;
+                    note_attribute(n, "src");
+                }
+            }
         }
     }
 }
@@ -1701,12 +1747,24 @@ std::string Renderer::serialize() const {
     return out;
 }
 
-void Renderer::rebuild() {
-    build_document();
+void Renderer::rebuild(bool patch) {
+    build_document(patch);
     animate();
 }
 
-void Renderer::build_document() {
+void Renderer::build_document(bool patch) {
+    PatchLog log = std::move(patch_log_);
+    patch_log_ = PatchLog{};
+#ifdef TW_LITEHTML_TWIDGET
+    if (patch && patching_) {
+        patch_log_ = std::move(log);
+        bool patched = patch_document();
+        patch_log_ = PatchLog{};
+        if (patched) return;
+    }
+#else
+    (void)patch;
+#endif
     double t0 = now_ms();
     html_ = serialize();
     html_stale_ = false;
@@ -1731,6 +1789,97 @@ void Renderer::build_document() {
     doc_height_ = std::ceil(container_->height());
     stats_.builds++;
     if (changed) dirty_ = true;
+}
+
+bool Renderer::attached(const Node* n) const {
+    for (; n; n = n->parent)
+        if (n == html_node_.get()) return true;
+    return false;
+}
+
+void Renderer::note_attribute(const Node* n, const std::string& name) {
+    if (!patch_log_.valid || !attached(n)) return;
+    // The attributes the Swift renderer patches; anything else, or a text node, builds.
+    if (n->kind != Node::Element || !(name == "class" || name == "style" || name == "src" || n->svg)) {
+        patch_log_.valid = false;
+        return;
+    }
+    patch_log_.attributes[n].insert(name);
+}
+
+void Renderer::note_children(const Node* parent, const Node* child) {
+    if (!patch_log_.valid || !parent || !attached(parent)) return;
+    if (child->kind != Node::Text) {
+        patch_log_.valid = false;
+        return;
+    }
+    patch_log_.texts.insert(parent);
+}
+
+bool Renderer::patch_document() {
+#ifdef TW_LITEHTML_TWIDGET
+    const PatchLog& log = patch_log_;
+    if (!log.valid || (log.attributes.empty() && log.texts.empty()) || !container_->can_patch()) return false;
+    double t0 = now_ms();
+    std::vector<litehtml::document::hole_change> changes;
+    for (const auto& [n, names] : log.attributes) {
+        auto el = container_->element(n->id);
+        if (!el) return false;
+        for (const std::string& name : names) {
+            litehtml::document::hole_change change;
+            change.owner = el;
+            change.name = name;
+            // Byte for byte what serialize_node writes there.
+            if (name == "style") {
+                if (n->styles.empty() && !overrides_.count(n->id)) return false;
+                write_style(n, change.value);
+            } else if (name == "src" && n->tag == "canvas" && !n->svg) {
+                auto it = canvases_.find(n->id);
+                if (it == canvases_.end()) return false;
+                const Canvas& c = *it->second;
+                change.value = "tw-canvas:" + std::to_string(c.id()) + "/" + std::to_string(c.width()) + "x" + std::to_string(c.height());
+            } else {
+                auto a = std::find_if(n->attrs.begin(), n->attrs.end(), [&](const auto& p) { return p.first == name; });
+                if (a == n->attrs.end() || !css::is_attribute_name(name)) return false;
+                escape_attr(a->second, change.value);
+            }
+            changes.push_back(std::move(change));
+        }
+    }
+    for (const Node* n : log.texts) {
+        auto el = container_->element(n->id);
+        if (!el || n->tag == "style" || n->tag == "script") return false;
+        litehtml::document::hole_change change;
+        change.owner = el;
+        change.text = true;
+        if (n->tag == "textarea") {
+            if (!n->children.empty() || n->data.empty()) return false;
+            if (n->data[0] == '\n') change.value.push_back('\n');
+            escape_text(n->data, change.value);
+        } else {
+            // A hole holds an element's text when the text is all it holds.
+            if (n->children.size() != 1 || n->children[0]->kind != Node::Text || n->children[0]->data.empty()) return false;
+            escape_text(n->children[0]->data, change.value);
+        }
+        changes.push_back(std::move(change));
+    }
+    if (!container_->patch(changes)) return false;
+    int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, MAX_HEIGHT)));
+    // A new height moves the viewport: the full path settles that, with the patch already in.
+    if (h != vp_height_) return false;
+    doc_height_ = std::ceil(container_->height());
+    stats_.parse_ms = now_ms() - t0;
+    stats_.serialize_ms = 0;
+    stats_.passes = 1;
+    stats_.builds++;
+    stats_.patched++;
+    stats_.in_place++;
+    dirty_ = true;
+    html_stale_ = true;
+    return true;
+#else
+    return false;
+#endif
 }
 
 // ───────────────────────── animations ─────────────────────────

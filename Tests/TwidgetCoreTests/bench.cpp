@@ -239,13 +239,18 @@ int main(int argc, char** argv) {
     r.paint();
     double setup = now_us() - t;
 
-    double receive = 0, tick = 0, paint = 0;
+    double receive = 0, tick = 0, paint = 0, serialize = 0, build = 0;
     uint64_t layouts = r.layouts();
-    int builds = r.stats().builds, patched = r.stats().patched;
+    int builds = r.stats().builds, patched = r.stats().patched, in_place = r.stats().in_place;
     size_t commands = 0;
     for (int f = 0; f < frames; f++) {
         double a = now_us();
+        int before = r.stats().builds;
         r.receive(parse(scenario.frames[size_t(f)]));
+        if (r.stats().builds != before) {
+            serialize += r.stats().serialize_ms * 1000;
+            build += r.stats().parse_ms * 1000;
+        }
         for (const std::string& q : scenario.queries) r.receive(parse(q));
         if (scenario.hover) r.hover(0, f % 400, 300);
         double b = now_us();
@@ -259,7 +264,8 @@ int main(int argc, char** argv) {
     }
     std::printf("BENCH mode=%s n=%d frames=%d setup=%.0fms total=%.1fus receive=%.1fus tick=%.1fus paint=%.1fus\n", mode.c_str(), count, frames, setup / 1000,
                 (receive + tick + paint) / frames, receive / frames, tick / frames, paint / frames);
-    std::printf("BENCH layouts=%.2f/frame builds=%.2f/frame patched=%d commands=%.0f/frame layers=%zu\n", double(r.layouts() - layouts) / frames,
-                double(r.stats().builds - builds) / frames, r.stats().patched - patched, double(commands) / frames, r.composition().layers.size());
+    std::printf("BENCH stages serialize=%.1fus build=%.1fus (the last build of each frame)\n", serialize / frames, build / frames);
+    std::printf("BENCH layouts=%.2f/frame builds=%.2f/frame patched=%d in-place=%d commands=%.0f/frame layers=%zu\n", double(r.layouts() - layouts) / frames,
+                double(r.stats().builds - builds) / frames, r.stats().patched - patched, r.stats().in_place - in_place, double(commands) / frames, r.composition().layers.size());
     return 0;
 }
