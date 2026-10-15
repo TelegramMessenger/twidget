@@ -249,6 +249,8 @@ private:
         uint64_t tile_version = 0;
         /// An SVG a script keeps changing: a still layer whose content repaints without the document.
         bool svg = false;
+        /// A canvas drawn again and again: a still layer whose drawing repaints only it.
+        bool canvas = false;
     };
     void update_composition(double now);
     // Scripted layers (the Swift renderer's): an element a script moves batch after batch through the
@@ -259,6 +261,11 @@ private:
     void note_svg(const twidget::Json::Array& ops);
     std::unordered_map<int64_t, int> svg_streaks_;
     std::set<int64_t> svg_layers_;
+    /// How often each canvas drew, and what it drew last; a canvas id is its node's.
+    std::unordered_map<int, uint64_t> canvas_draws_;
+    std::set<int64_t> canvas_layers_;
+    /// The content version of a layer `content`: its commands, and what the canvases in it drew.
+    uint64_t content_version(const DisplayList& content) const;
     void note_scripted(const twidget::Json::Array& ops);
     bool apply_scripted(const std::vector<int64_t>& ids);
     /// The layer's matrix and opacity as the element's style has them now.

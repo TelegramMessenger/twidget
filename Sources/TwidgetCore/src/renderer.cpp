@@ -1744,6 +1744,8 @@ std::vector<Json> Renderer::receive(const Json& msg) {
                 report_size(out);
             }
         }
+        // A batch that built nothing can still have asked for new layers (a canvas drawn once more).
+        if (composition_key_ == 0 && compositing_ && !stale_) update_composition(now_s());
     } else if (type == "query") {
         // A query reads the document, which must have what only the layers show.
         if (scripted_pending_) stale_ = true;
@@ -2625,7 +2627,7 @@ void Renderer::update_composition(double now) {
         it = node(*it) ? std::next(it) : scripted_candidates_.erase(it);
     for (auto it = svg_layers_.begin(); it != svg_layers_.end();)
         it = node(*it) ? std::next(it) : svg_layers_.erase(it);
-    if (wanted.empty() && scripted_candidates_.empty() && shimmers.empty() && svg_layers_.empty()) {
+    if (wanted.empty() && scripted_candidates_.empty() && shimmers.empty() && svg_layers_.empty() && canvas_layers_.empty()) {
         if (!promoted_.empty()) {
             promoted_.clear();
             layer_ids_.clear();
@@ -2853,6 +2855,23 @@ void Renderer::update_composition(double now) {
         next.emplace(id, std::move(p));
     }
 
+    // Canvas layers: a canvas that keeps drawing repaints only itself.
+    for (int64_t id : canvas_layers_) {
+        const Node* n = node(id);
+        if (!n || n->tag != "canvas" || next.count(id) || animated.count(id)) continue;
+        bool alone = true;
+        for (const auto& [other, p] : next) alone = alone && !is_ancestor(other, id) && !is_ancestor(id, other);
+        for (const Node* a = n->parent; a && alone; a = a->parent) alone = !(a->id && blocks(a->id));
+        auto el = container_->element(id);
+        Promotion p;
+        if (!alone || !el || !container_->layer_candidate(el, p.box) || !container_->clip_of(el, p.has_clip, p.clip, p.clip_radii)) continue;
+        p.canvas = true;
+        p.signature = 0xCA9ull ^ uint64_t(id);
+        if (!still_track(id, p, now)) continue;
+        elements[id] = el;
+        next.emplace(id, std::move(p));
+    }
+
     // A few static elements over a wanted layer (labels on a moving card) become layers of their own,
     // still ones, so the moving one can go under them.
     {
@@ -2976,12 +2995,38 @@ void Renderer::run_canvas(Canvas& canvas, const Json& cmds) {
     if (ops.empty()) return;
     backend_.canvas_run(canvas.id(), canvas.width(), canvas.height(), ops);
     canvases_drawn_.insert(canvas.id());
+    uint64_t draws = ++canvas_draws_[canvas.id()];
+    // Drawn a third time, a canvas looks animated: the Swift renderer presents such a canvas in a layer.
+    if (draws >= 3 && canvas_layers_.size() < MAX_LAYERS && canvas_layers_.insert(canvas.id()).second) composition_key_ = 0;
+    bool clean = !dirty_ || composition_only_;
     dirty_ = true;
+    auto p = promoted_.find(canvas.id());
+    auto layer = std::find_if(composition_.layers.begin(), composition_.layers.end(), [&](const Layer& l) { return l.id == canvas.id(); });
+    if (p == promoted_.end() || !p->second.canvas || layer == composition_.layers.end()) {
+        composition_only_ = false;
+        return;
+    }
+    // Only the layer shows what the canvas drew.
+    layer->content_version = content_version(layer->content);
+    composition_.version = next_version_++;
+    composition_only_ = clean;
+}
+
+uint64_t Renderer::content_version(const DisplayList& content) const {
+    uint64_t version = paint_digest(content);
+    for (const Command& c : content)
+        if (c.canvas) {
+            auto it = canvas_draws_.find(c.canvas);
+            version = (version ^ uint64_t(c.canvas) ^ (it == canvas_draws_.end() ? 0 : it->second << 20)) * 1099511628211ull;
+        }
+    return version;
 }
 
 void Renderer::forget_canvas(int64_t id) {
     auto it = canvases_.find(id);
     if (it == canvases_.end()) return;
+    canvas_draws_.erase(it->second->id());
+    canvas_layers_.erase(it->second->id());
     backend_.canvas_release(it->second->id());
     canvases_.erase(it);
 }
@@ -3055,7 +3100,7 @@ DisplayList Renderer::paint() {
     painted_valid_ = true;
     painted_size_ = {px_width(), px_height()};
     canvases_drawn_.clear();
-    painted_list_valid_ = std::any_of(promoted_.begin(), promoted_.end(), [](const auto& p) { return p.second.scripted; });
+    painted_list_valid_ = std::any_of(promoted_.begin(), promoted_.end(), [](const auto& p) { return p.second.scripted || p.second.canvas; });
 #ifdef TW_LITEHTML_TWIDGET
     if (painted_list_valid_) {
         painted_list_ = list;
@@ -3069,7 +3114,11 @@ DisplayList Renderer::paint() {
 
 bool Renderer::reuse_paint() const {
 #ifdef TW_LITEHTML_TWIDGET
-    if (!composition_only_ || !painted_list_valid_ || !painted_valid_ || !touched_.empty() || touched_all_ || !canvases_drawn_.empty()) return false;
+    if (!composition_only_ || !painted_list_valid_ || !painted_valid_ || !touched_.empty() || touched_all_) return false;
+    for (int canvas : canvases_drawn_) {
+        auto p = promoted_.find(canvas);
+        if (p == promoted_.end() || !p->second.canvas) return false;
+    }
     if (container_->paint_key() != painted_key_ || painted_size_ != std::make_pair(px_width(), px_height())) return false;
     if (promoted_.size() != composition_.layers.size()) return false;
     for (size_t i = 0; i < composition_.layers.size(); i++) {
@@ -3291,8 +3340,8 @@ DisplayList Renderer::paint_document() {
             Layer layer;
             layer.id = id;
             auto old = before.find(id);
-            auto has_canvas = [](const DisplayList& list) { return std::any_of(list.begin(), list.end(), [](const Command& c) { return c.canvas != 0; }); };
-            bool keep = old != before.end() && !has_canvas(old->second->content) &&
+            auto redrawn = [&](const DisplayList& list) { return std::any_of(list.begin(), list.end(), [&](const Command& c) { return c.canvas != 0 && canvases_drawn_.count(c.canvas); }); };
+            bool keep = old != before.end() && !redrawn(old->second->content) &&
                         std::none_of(touched_.begin(), touched_.end(), [&](int64_t t) { return t == id || is_ancestor(id, t); });
             if (p.shimmer) {
                 layer.content = p.tile;
@@ -3304,8 +3353,7 @@ DisplayList Renderer::paint_document() {
                 layer.content_version = old->second->content_version;
             } else {
                 layer.content = container_->draw_layer(container_->element(id), skip, layer.bounds);
-                // A canvas repaints without its command changing: such a layer is always new.
-                layer.content_version = has_canvas(layer.content) ? next_version_++ : paint_digest(layer.content);
+                layer.content_version = content_version(layer.content);
             }
             layer.raster_scale = p.raster_scale;
             layer.has_clip = p.has_clip;

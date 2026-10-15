@@ -1051,6 +1051,36 @@ int main() {
         check(layered && v.composition().layers[0].content_version != content, "and repaints the layer");
     }
 
+    // ── canvas layers ──
+    {
+        StubBackend nb;
+        Renderer n(400, 1, false, nb);
+        n.set_compositing(true);
+        n.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":60,"tag":"canvas","attrs":[["width","100"],["height","50"]]},{"op":"ins","parent":4,"id":60,"before":null},
+            {"op":"el","id":61,"tag":"div","attrs":[["style","height:20px;background-color:#00f"]]},{"op":"ins","parent":4,"id":61,"before":null}]})"));
+        n.paint();
+        auto draw = [&](int x) {
+            n.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":60,"cmds":[["s","fillStyle","#f00"],["c","fillRect",)" + std::to_string(x) + R"(,0,10,10]]}]})"));
+            return n.paint();
+        };
+        draw(0);
+        draw(10);
+        check(n.composition().layers.empty(), "a canvas drawn twice is in the document");
+        draw(20);
+        bool layered = n.composition().layers.size() == 1 && n.composition().layers[0].id == 60;
+        check(layered, "drawn a third time, it is a layer");
+        uint64_t content = layered ? n.composition().layers[0].content_version : 0;
+        int builds = n.stats().builds, reused = n.stats().reused;
+        DisplayList list = draw(30);
+        std::vector<Rect> damage;
+        bool in_document = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.canvas != 0; });
+        check(!in_document && n.stats().reused == reused + 1 && n.stats().builds == builds && n.damage(damage) && damage.empty(),
+              "its next drawing leaves the document's list as it was");
+        check(layered && n.composition().layers[0].content_version != content, "and gives the layer a new content version");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
