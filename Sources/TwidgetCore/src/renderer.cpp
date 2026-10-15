@@ -606,14 +606,21 @@ public:
         }
         return true;
     }
-    /// Render items in the order a full paint draws them.
-    std::vector<const litehtml::render_item*> paint_order() {
-        std::vector<const litehtml::render_item*> trace;
-        if (!doc_) return trace;
-        litehtml::g_paint_trace = &trace;
+    /// Render items in the order a full paint draws them. The draw callbacks return at once while
+    /// tracing, and the trace holds until the document lays out or its paint changes.
+    const std::vector<const litehtml::render_item*>& paint_order() {
+        if (!doc_) {
+            trace_.clear();
+            return trace_;
+        }
+        auto key = std::make_tuple(doc_.get(), doc_->paint_generation(), layouts_);
+        if (key == trace_key_) return trace_;
+        trace_.clear();
+        litehtml::g_paint_trace = &trace_;
         draw();
         litehtml::g_paint_trace = nullptr;
-        return trace;
+        trace_key_ = key;
+        return trace_;
     }
     /// Something painted after `el` meets `area`, other than `el`'s descendants and what `ignore`
     /// holds (other layers, ordered among themselves by paint order). What shows of an item is its
@@ -866,6 +873,7 @@ public:
         return litehtml::pixel_t(it->second.face->width(backend_, text));
     }
     void draw_text(litehtml::uint_ptr, const char* text, litehtml::uint_ptr h, litehtml::web_color color, const litehtml::position& pos) override {
+        if (litehtml::g_paint_trace) return;
         auto it = fonts_.find(h);
         if (it == fonts_.end() || !text || !*text) return;
         const Font& f = it->second;
@@ -900,6 +908,7 @@ public:
     litehtml::pixel_t get_default_font_size() const override { return 16; }
     const char* get_default_font_name() const override { return "-apple-system, system-ui, sans-serif"; }
     void draw_list_marker(litehtml::uint_ptr, const litehtml::list_marker& marker) override {
+        if (litehtml::g_paint_trace) return;
         Command c;
         c.rect = rect_of(marker.pos);
         c.color = color_of(marker.color);
@@ -951,6 +960,7 @@ public:
         sz.height = litehtml::pixel_t(it->second.h);
     }
     void draw_image(litehtml::uint_ptr, const litehtml::background_layer& layer, const std::string& url, const std::string&) override {
+        if (litehtml::g_paint_trace) return;
         auto it = images_.find(url);
         if (it == images_.end() || (!it->second.id && !it->second.canvas)) return;
         Command c;
@@ -969,6 +979,7 @@ public:
 
     // ── backgrounds ──
     void draw_solid_fill(litehtml::uint_ptr, const litehtml::background_layer& layer, const litehtml::web_color& color) override {
+        if (litehtml::g_paint_trace) return;
         if (color.alpha == 0) return;
         Command c;
         c.kind = Cmd::FillRect;
@@ -992,6 +1003,7 @@ public:
         for (const auto& p : g.color_points) c.stops.push_back(Stop{p.offset, color_of(p.color)});
     }
     void draw_linear_gradient(litehtml::uint_ptr, const litehtml::background_layer& layer, const litehtml::background_layer::linear_gradient& g) override {
+        if (litehtml::g_paint_trace) return;
         Command c;
         c.kind = Cmd::Linear;
         gradient_common(c, layer, g);
@@ -999,6 +1011,7 @@ public:
         list_.push_back(std::move(c));
     }
     void draw_radial_gradient(litehtml::uint_ptr, const litehtml::background_layer& layer, const litehtml::background_layer::radial_gradient& g) override {
+        if (litehtml::g_paint_trace) return;
         Command c;
         c.kind = Cmd::Radial;
         gradient_common(c, layer, g);
@@ -1006,6 +1019,7 @@ public:
         list_.push_back(std::move(c));
     }
     void draw_conic_gradient(litehtml::uint_ptr, const litehtml::background_layer& layer, const litehtml::background_layer::conic_gradient& g) override {
+        if (litehtml::g_paint_trace) return;
         Command c;
         c.kind = Cmd::Conic;
         gradient_common(c, layer, g);
@@ -1015,6 +1029,7 @@ public:
 
     // ── borders: one stroke when uniform, otherwise a strip per side (dashed/dotted drawn solid) ──
     void draw_borders(litehtml::uint_ptr, const litehtml::borders& b, const litehtml::position& draw_pos, bool) override {
+        if (litehtml::g_paint_trace) return;
         auto visible = [](const litehtml::border& s) { return float(s.width) > 0 && s.style != litehtml::border_style_none && s.style != litehtml::border_style_hidden && s.color.alpha != 0; };
         bool l = visible(b.left), t = visible(b.top), rr = visible(b.right), bt = visible(b.bottom);
         if (!l && !t && !rr && !bt) return;
@@ -1072,6 +1087,7 @@ public:
     }
     void import_css(std::string& text, const std::string&, std::string&) override { text.clear(); }  // @import is dropped by the validator anyway
     void set_clip(const litehtml::position& pos, const litehtml::border_radiuses& r) override {
+        if (litehtml::g_paint_trace) return;
         Command c;
         c.kind = Cmd::ClipPush;
         c.rect = rect_of(pos);
@@ -1080,6 +1096,7 @@ public:
         list_.push_back(std::move(c));
     }
     void del_clip() override {
+        if (litehtml::g_paint_trace) return;
         if (!clips_.empty()) clips_.pop_back();
         Command c;
         c.kind = Cmd::ClipPop;
@@ -1087,6 +1104,7 @@ public:
     }
 #ifdef TW_LITEHTML_TWIDGET
     void set_clip_path(const litehtml::vector_path& path) override {
+        if (litehtml::g_paint_trace) return;
         auto p = std::make_shared<Path>();
         p->ops.reserve(path.ops.size());
         for (auto op : path.ops) p->ops.push_back(Path::Op(op));
@@ -1114,6 +1132,7 @@ public:
     // A fixed element outside every group escapes its ancestors' overflow clips, as in WebKit: the clips
     // are popped around it and pushed again after.
     void suspend_clips() override {
+        if (litehtml::g_paint_trace) return;
         Command pop;
         pop.kind = Cmd::ClipPop;
         for (size_t i = 0; i < clips_.size(); i++) list_.push_back(pop);
@@ -1121,6 +1140,7 @@ public:
         clips_.clear();
     }
     void resume_clips() override {
+        if (litehtml::g_paint_trace) return;
         if (suspended_.empty()) return;
         Command pop;
         pop.kind = Cmd::ClipPop;
@@ -1132,6 +1152,7 @@ public:
 #endif
 #ifdef TW_LITEHTML_TWIDGET
     void draw_box_shadow(litehtml::uint_ptr, const litehtml::position& box, const litehtml::border_radiuses& radius, const litehtml::shadow_paint& shadow) override {
+        if (litehtml::g_paint_trace) return;
         if (shadow.color.alpha == 0) return;
         Command c;
         c.kind = Cmd::Shadow;
@@ -1146,6 +1167,7 @@ public:
         list_.push_back(std::move(c));
     }
     void begin_group(litehtml::uint_ptr, const litehtml::paint_group& group) override {
+        if (litehtml::g_paint_trace) return;
         // Backface visibility needs the accumulated matrix: a flip undone by an outer flip is a front face.
         litehtml::transform_matrix total = groups_.empty() ? group.matrix : group.matrix.then(groups_.back());
         groups_.push_back(total);
@@ -1160,12 +1182,14 @@ public:
         list_.push_back(std::move(c));
     }
     void end_group(litehtml::uint_ptr) override {
+        if (litehtml::g_paint_trace) return;
         if (!groups_.empty()) groups_.pop_back();
         Command c;
         c.kind = Cmd::GroupPop;
         list_.push_back(std::move(c));
     }
     void draw_path(litehtml::uint_ptr, const litehtml::vector_path& path) override {
+        if (litehtml::g_paint_trace) return;
         if (!path.fill && !path.stroke) return;
         auto p = std::make_shared<Path>();
         p->ops.reserve(path.ops.size());
@@ -1350,6 +1374,8 @@ private:
 #endif
     uint64_t layouts_ = 0;
     bool patched_ = false;
+    std::vector<const litehtml::render_item*> trace_;
+    std::tuple<const litehtml::document*, uint32_t, uint64_t> trace_key_{};
     std::unordered_map<int64_t, litehtml::element::ptr> elements_;
     std::map<FaceKey, std::unique_ptr<Face>> faces_;
     uint64_t face_clock_ = 0;
@@ -2146,35 +2172,69 @@ void Renderer::update_composition(double now) {
     std::vector<std::pair<int64_t, Want>> wanted;
     bool iterations = interest_.count("animationiteration") > 0;
     auto ids = animator_.animated_ids(now);
+    // What decides the layers: the layout, the animations and where their plans stand. The same as
+    // last time, nothing below can come out differently, so a frame stops here.
+    struct Planned {
+        int64_t id;
+        Animator::Plan plan;
+        uint64_t signature;
+    };
+    std::vector<Planned> planned;
     uint64_t key = container_->layouts() * 0x9E3779B97F4A7C15ull ^ std::hash<double>()(width_);
-    std::unordered_set<int64_t> local_backgrounds;
-    for (int64_t id : ids) {
-        auto properties = animator_.animated_properties(id);
-        if (properties.size() == 1 && properties[0] == "background-color" && container_->background_is_local(id)) local_backgrounds.insert(id);
-    }
     for (int64_t id : ids) {
         auto plan = animator_.plan(id, now, iterations);
         if (!plan) continue;
         wake_at_ = std::min(wake_at_, plan->wake);
-        if (!plan->ready || (!plan->repeat && plan->duration < MIN_LAYER_SPAN)) continue;
-        auto properties = animator_.animated_properties(id);
-        if (!std::all_of(properties.begin(), properties.end(), [](const std::string& p) { return is_layer_property(p); })) continue;
+        bool usable = plan->ready && (plan->repeat || plan->duration >= MIN_LAYER_SPAN);
+        uint64_t signature = animator_.signature(id);
+        key = (key * 1099511628211ull) ^ uint64_t(id) ^ (signature << 2) ^ uint64_t(plan->repeat) ^ (uint64_t(usable) << 1);
+        if (usable) planned.push_back({id, *plan, signature});
+    }
+    if (key == composition_key_ && composition_key_ != 0) return;
+    composition_key_ = key;
+
+    // A layer holds a still picture: nothing inside or around it may animate, but for an ancestor
+    // that only repaints its own background. One walk up from each animated element marks the
+    // elements with something animated inside.
+    std::unordered_set<int64_t> animated(ids.begin(), ids.end());
+    std::unordered_set<int64_t> holds_animated;
+    for (int64_t id : ids) {
         const Node* n = node(id);
+        for (const Node* p = n ? n->parent : nullptr; p; p = p->parent)
+            if (p->id && !holds_animated.insert(p->id).second) break;
+    }
+    std::unordered_map<int64_t, bool> local_background;
+    auto blocks = [&](int64_t ancestor) {
+        if (!animated.count(ancestor)) return false;
+        auto [it, fresh] = local_background.try_emplace(ancestor, false);
+        if (fresh) {
+            auto properties = animator_.animated_properties(ancestor);
+            it->second = properties.size() == 1 && properties[0] == "background-color" && container_->background_is_local(ancestor);
+        }
+        return !it->second;
+    };
+    for (const Planned& p : planned) {
+        int64_t id = p.id;
+        auto properties = animator_.animated_properties(id);
+        if (!std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_layer_property(name); })) continue;
+        const Node* n = node(id);
+        if (!n || n->svg || n->tag == "svg" || holds_animated.count(id)) continue;
+        bool blocked = false;
+        for (const Node* a = n->parent; a && !blocked; a = a->parent) blocked = a->id && blocks(a->id);
+        if (blocked) continue;
         auto el = container_->element(id);
         Rect box;
-        if (!n || n->svg || n->tag == "svg" || !el || !container_->layer_candidate(el, box)) continue;
-        // A layer holds a still picture: nothing inside or around it may animate, but for an ancestor
-        // that only repaints its own background.
-        if (std::any_of(ids.begin(), ids.end(), [&](int64_t other) {
-                return other != id && ((is_ancestor(other, id) && !local_backgrounds.count(other)) || is_ancestor(id, other));
-            })) continue;
-        uint64_t signature = animator_.signature(id);
-        key = (key * 1099511628211ull) ^ uint64_t(id) ^ (signature << 1) ^ uint64_t(plan->repeat);
-        wanted.emplace_back(id, Want{std::move(el), *plan, box, signature});
+        if (!el || !container_->layer_candidate(el, box)) continue;
+        wanted.emplace_back(id, Want{std::move(el), p.plan, box, p.signature});
     }
-    if (wanted.empty()) return drop_all();
-    if (key == composition_key_) return;
-    composition_key_ = key;
+    if (wanted.empty()) {
+        if (!promoted_.empty()) {
+            promoted_.clear();
+            layer_ids_.clear();
+            dirty_ = true;
+        }
+        return;
+    }
 
     std::map<int64_t, Promotion> next;
     std::unordered_map<int64_t, litehtml::element::ptr> elements;
@@ -2246,7 +2306,7 @@ void Renderer::update_composition(double now) {
 
     // Only a layer nothing paints over can go above the document. Dropping one can uncover
     // another's neighbour or put back what covered another, so this runs until nothing changes.
-    auto trace = container_->paint_order();
+    const auto& trace = container_->paint_order();
     for (auto& [id, p] : next) {
         auto ri = elements[id]->get_render_item();
         p.order = size_t(std::find(trace.begin(), trace.end(), ri.get()) - trace.begin());

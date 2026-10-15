@@ -224,16 +224,39 @@ Scenario swarm(int count, int frames) {
     return s;
 }
 
+/// CSS animations the core runs itself, composited: frames are ticks, with no ops at all. Rows of
+/// spinners, every tenth row with a pulsing background behind it.
+Scenario css_animations(int count) {
+    Scenario s;
+    auto ops = document("body { margin: 0; } @keyframes spin { to { transform: rotate(360deg) } } @keyframes glow { to { background-color: #fc0 } } "
+                        ".row { padding: 2px; } .glow { animation: glow 2s infinite alternate; } "
+                        ".s { display: inline-block; width: 10px; height: 10px; margin: 4px; background: #39f; animation: spin 1s linear infinite; }");
+    int next = 100, row = 0;
+    for (int i = 0; i < count; i++) {
+        if (i % 20 == 0) {
+            row = next++;
+            ops.push_back(el(row, "div", attr("class", (i / 20) % 10 == 0 ? "row glow" : "row")));
+            ops.push_back(ins(row, 1));
+        }
+        int id = next++;
+        ops.push_back(el(id, "div", attr("class", "s") + "," + attr("style", "animation-delay:-" + std::to_string(i % 17) + "0ms")));
+        ops.push_back(ins(id, row));
+    }
+    s.setup = message(ops);
+    return s;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "mixed";
     int count = argc > 2 ? std::atoi(argv[2]) : (mode == "swarm" ? 800 : 1000);
     int frames = argc > 3 ? std::atoi(argv[3]) : 300;
-    Scenario scenario = mode == "swarm" ? swarm(count, frames) : busy(mode, count, frames);
+    Scenario scenario = mode == "swarm" ? swarm(count, frames) : mode == "css" ? css_animations(count) : busy(mode, count, frames);
 
     StubBackend backend;
     Renderer r(400, 2, false, backend);
+    if (mode == "css") r.set_compositing(true);
     double t = now_us();
     r.receive(parse(scenario.setup));
     r.paint();
@@ -246,7 +269,7 @@ int main(int argc, char** argv) {
     for (int f = 0; f < frames; f++) {
         double a = now_us();
         int before = r.stats().builds;
-        r.receive(parse(scenario.frames[size_t(f)]));
+        if (size_t(f) < scenario.frames.size()) r.receive(parse(scenario.frames[size_t(f)]));
         if (r.stats().builds != before) {
             serialize += r.stats().serialize_ms * 1000;
             build += r.stats().parse_ms * 1000;
