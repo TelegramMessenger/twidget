@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <set>
 #include <string_view>
 #include <tuple>
@@ -236,7 +237,9 @@ bool coalesced(const std::string& type) {
 constexpr int MAX_CANVASES = 64;
 /// Layers: at most this many per widget, this many device pixels in all, and no track shorter
 /// than this (a frame or two is cheaper to paint than to hand over).
-constexpr size_t MAX_LAYERS = 64;
+constexpr size_t MAX_LAYERS = 256;
+/// Static elements painted over a wanted layer that may become layers of their own to let it be one.
+constexpr size_t MAX_OBSCURERS = 3;
 constexpr double MAX_LAYER_PIXELS = 4096.0 * 4096.0;
 constexpr double MIN_LAYER_SPAN = 0.1;
 constexpr float LAYER_MARGIN = 48;
@@ -644,6 +647,32 @@ public:
             return true;
         }
         return false;
+    }
+    /// The widget elements painted after `el` that meet `area`, as `covered` finds them; nullopt when
+    /// there are more than `limit` or one has no widget id.
+    std::optional<std::vector<int64_t>> obscurers(const litehtml::element::ptr& el, const Rect& area, const std::vector<const litehtml::render_item*>& trace,
+                                                  const std::unordered_set<const litehtml::element*>& ignore, size_t limit) const {
+        std::vector<int64_t> out;
+        auto ri = el->get_render_item();
+        auto self = std::find(trace.begin(), trace.end(), ri.get());
+        if (self == trace.end()) return std::nullopt;
+        for (auto it = std::next(self); it != trace.end(); ++it) {
+            const litehtml::render_item* item = *it;
+            Rect box = clipped_border_box(item);
+            if (box.w <= 0 || box.h <= 0) continue;
+            if (!(box.x < area.x + area.w && area.x < box.x + box.w && box.y < area.y + area.h && area.y < box.y + box.h)) continue;
+            if (item->src_el()->is_space() || item->src_el()->css().get_visibility() != litehtml::visibility_visible) continue;
+            bool skip = false;
+            for (const litehtml::render_item* walk = item; walk && !skip; walk = walk->parent().get())
+                skip = walk == ri.get() || ignore.count(walk->src_el().get()) || walk->src_el()->css().get_opacity() <= 0;
+            if (skip) continue;
+            int64_t id = widget_id(item->src_el(), nullptr);
+            if (!id) return std::nullopt;
+            if (std::find(out.begin(), out.end(), id) != out.end()) continue;
+            if (out.size() == limit) return std::nullopt;
+            out.push_back(id);
+        }
+        return out;
     }
     /// Paints the document without the elements in `skip`.
     DisplayList draw(const std::vector<litehtml::element::ptr>& skip) {
@@ -2307,6 +2336,57 @@ void Renderer::update_composition(double now) {
     // Only a layer nothing paints over can go above the document. Dropping one can uncover
     // another's neighbour or put back what covered another, so this runs until nothing changes.
     const auto& trace = container_->paint_order();
+
+    // A few static elements over a wanted layer (labels on a moving card) become layers of their own,
+    // still ones, so the moving one can go under them.
+    {
+        std::unordered_set<const litehtml::element*> ignore_all;
+        for (const auto& [id, p] : next) ignore_all.insert(elements[id].get());
+        size_t budget = MAX_LAYERS > next.size() ? MAX_LAYERS - next.size() : 0;
+        std::vector<int64_t> queue;
+        for (const auto& [id, p] : next) queue.push_back(id);
+        for (int64_t id : queue) {
+            if (budget == 0) break;
+            const Promotion& wanted_layer = next[id];
+            if (wanted_layer.reach.empty() || !container_->covered(elements[id], wanted_layer.reach, trace, ignore_all)) continue;
+            auto found = container_->obscurers(elements[id], wanted_layer.reach, trace, ignore_all, MAX_OBSCURERS);
+            if (!found || found->empty() || found->size() > budget) continue;
+            std::vector<std::pair<int64_t, Promotion>> still;
+            for (int64_t other : *found) {
+                const Node* n = node(other);
+                auto el = container_->element(other);
+                Promotion s;
+                if (next.count(other) || animated.count(other) || !n || (n->svg && n->tag != "svg") || is_ancestor(other, id) || is_ancestor(id, other) || !el ||
+                    !container_->layer_candidate(el, s.box) || !container_->clip_of(el, s.has_clip, s.clip, s.clip_radii)) {
+                    still.clear();
+                    break;
+                }
+                s.signature = 0x57A71Cull ^ uint64_t(other);
+                auto old = promoted_.find(other);
+                if (old != promoted_.end() && old->second.signature == s.signature && std::memcmp(&old->second.box, &s.box, sizeof(Rect)) == 0) {
+                    s.track = old->second.track;
+                    s.track_version = old->second.track_version;
+                } else {
+                    s.track.start = now;
+                    s.track.keys.push_back(LayerKey{});
+                    s.track_version = next_version_++;
+                }
+                s.reach = s.box;
+                if (s.has_clip) {
+                    float cx0 = std::max(s.reach.x, s.clip.x), cy0 = std::max(s.reach.y, s.clip.y);
+                    float cx1 = std::min(s.reach.x + s.reach.w, s.clip.x + s.clip.w), cy1 = std::min(s.reach.y + s.reach.h, s.clip.y + s.clip.h);
+                    s.reach = Rect{cx0, cy0, std::max(0.0f, cx1 - cx0), std::max(0.0f, cy1 - cy0)};
+                }
+                elements[other] = el;
+                still.emplace_back(other, std::move(s));
+            }
+            for (auto& [other, s] : still) {
+                ignore_all.insert(elements[other].get());
+                next.emplace(other, std::move(s));
+                budget--;
+            }
+        }
+    }
     for (auto& [id, p] : next) {
         auto ri = elements[id]->get_render_item();
         p.order = size_t(std::find(trace.begin(), trace.end(), ri.get()) - trace.begin());

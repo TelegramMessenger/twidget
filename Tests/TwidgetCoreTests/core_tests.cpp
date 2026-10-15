@@ -349,8 +349,12 @@ int main() {
         double wake = c.next_tick_in();
         check(wake > 0.2 && wake < 1.01, "the core wakes for the next animationiteration or the transition's end (" + std::to_string(wake) + " s)");
 
-        // Something painted over the spinner's sweep: it goes back to per-frame paint.
-        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":42,"tag":"div","attrs":[["style","position:absolute;left:0;top:0;width:30px;height:30px;background:#000"]]},{"op":"ins","parent":4,"id":42,"before":null}]})"));
+        // More painted over the spinner's sweep than can be made still layers: back to per-frame paint.
+        std::string cover;
+        for (int k = 0; k < 4; k++)
+            cover += std::string(k ? "," : "") + R"({"op":"el","id":)" + std::to_string(42 + k * 10) + R"(,"tag":"div","attrs":[["style","position:absolute;left:)" + std::to_string(k * 8) +
+                     R"(px;top:0;width:30px;height:30px;background:#000"]]},{"op":"ins","parent":4,"id":)" + std::to_string(42 + k * 10) + R"(,"before":null})";
+        c.receive(parse(R"({"type":"ops","ops":[)" + cover + "]}"));
         c.paint();
         bool spinning = false;
         for (const Layer& l : c.composition().layers) spinning = spinning || l.id == 40;
@@ -358,7 +362,7 @@ int main() {
         check(c.wants_tick(), "which then needs frames again");
 
         // Width cannot be composited.
-        c.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":42},{"op":"el","id":43,"tag":"div","attrs":[["id","w"]]},{"op":"ins","parent":4,"id":43,"before":null}]})"));
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":42},{"op":"rm","id":52},{"op":"rm","id":62},{"op":"rm","id":72},{"op":"el","id":43,"tag":"div","attrs":[["id","w"]]},{"op":"ins","parent":4,"id":43,"before":null}]})"));
         c.paint();
         bool grows = false;
         for (const Layer& l : c.composition().layers) grows = grows || l.id == 43;
@@ -690,19 +694,28 @@ int main() {
             {"op":"el","id":30,"tag":"div","attrs":[["class","g"]]},{"op":"ins","parent":4,"id":30,"before":null},
             {"op":"el","id":40,"tag":"div","attrs":[["class","s"]]},{"op":"ins","parent":30,"id":40,"before":null})J");
         check(glowing.size() == 1 && glowing[0].id == 40, "a parent's background animation leaves its child a layer (" + std::to_string(glowing.size()) + " layers)");
+        // A label over a spinner becomes a still layer, so the spinner can be one under it.
+        auto labelled = layers_of(R"J({"op":"el","id":40,"tag":"div","attrs":[["class","s"],["style","margin:20px"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"el","id":41,"tag":"div","attrs":[["style","position:absolute;left:25px;top:30px;width:30px;height:12px;background:white"]]},{"op":"ins","parent":4,"id":41,"before":null})J");
+        bool spinner = false, label = false;
+        for (const Layer& layer : labelled) {
+            spinner = spinner || (layer.id == 40 && layer.track.keys.size() > 2);
+            label = label || (layer.id == 41 && layer.track.keys.size() == 1);
+        }
+        check(labelled.size() == 2 && spinner && label && labelled.back().id == 41, "a label over a spinner becomes a still layer above it (" + std::to_string(labelled.size()) + " layers)");
         // Past the layer cap the topmost spinners are composited and the rest painted.
         std::string many;
-        for (int i = 0; i < 70; i++)
+        for (int i = 0; i < 300; i++)
             many += R"J({"op":"el","id":)J" + std::to_string(100 + i) + R"J(,"tag":"div","attrs":[["class","s"],["style","display:inline-block;width:10px;height:10px;margin:10px"]]},{"op":"ins","parent":4,"id":)J" +
                     std::to_string(100 + i) + R"J(,"before":null},)J";
         many.pop_back();
         auto capped = layers_of(many.c_str());
         bool top = false, bottom = false;
         for (const Layer& layer : capped) {
-            top = top || layer.id == 169;
+            top = top || layer.id == 399;
             bottom = bottom || layer.id == 100;
         }
-        check(capped.size() == 64 && top && !bottom, "past the cap, the topmost layers win (" + std::to_string(capped.size()) + " layers)");
+        check(capped.size() == 256 && top && !bottom, "past the cap, the topmost layers win (" + std::to_string(capped.size()) + " layers)");
         // A layer is hit where its track shows it: half way through a 200 px slide, 100 px along.
         StubBackend hb;
         Renderer h(300, 1, false, hb);
