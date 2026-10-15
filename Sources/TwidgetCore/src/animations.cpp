@@ -1294,7 +1294,7 @@ StyleValues Animator::peek(int64_t id, double t) const {
 
 std::optional<Animator::Plan> Animator::plan(int64_t id, double now, bool iterations) const {
     Plan plan;
-    double end = INF, loop = 0, wait = INF, next_iteration = INF;
+    double end = INF, loop = 0, loop_origin = 0, wait = INF, next_iteration = INF;
     bool looping = false;
     // An animation's local time runs `rate` times as fast as the clock from `origin`; it begins
     // after `delay` local seconds and repeats every `period` local seconds.
@@ -1309,6 +1309,7 @@ std::optional<Animator::Plan> Animator::plan(int64_t id, double now, bool iterat
         if (std::isinf(count)) {
             double period = iteration * (alternate ? 2 : 1);
             if (looping && std::fabs(period - loop) > 1e-6) return false;
+            if (!looping) loop_origin = begin;
             looping = true;
             loop = period;
         } else {
@@ -1364,6 +1365,9 @@ std::optional<Animator::Plan> Animator::plan(int64_t id, double now, bool iterat
     if (end < INF) {
         plan.duration = end - now;
     } else if (looping) {
+        // From the loop's last start, which the platform runs from part way in: a loop baked from now
+        // would carry its wrap from end to start inside the track.
+        plan.start = loop_origin + std::floor((now - loop_origin) / loop) * loop;
         plan.duration = loop;
         plan.repeat = true;
     } else {

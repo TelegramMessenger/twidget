@@ -1081,6 +1081,29 @@ int main() {
         check(layered && n.composition().layers[0].content_version != content, "and gives the layer a new content version");
     }
 
+    // ── Web Animations on the compositor ──
+    {
+        StubBackend wb;
+        Renderer w(400, 1, false, wb);
+        w.set_compositing(true);
+        w.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":70,"tag":"div","attrs":[["style","width:40px;height:40px;background-color:#f00"]]},{"op":"ins","parent":4,"id":70,"before":null}]})"));
+        w.receive(parse(R"J({"type":"anim","now":0,"anims":[{"aid":1,"target":70,"keyframes":[{"offset":0,"values":{"transform":"translateX(0px)"}},{"offset":1,"values":{"transform":"translateX(100px)"}}],"timing":{"duration":1000,"iterations":null,"easing":"linear"},"startTime":0}]})J"));
+        w.paint();
+        const auto& layers = w.composition().layers;
+        bool layered = layers.size() == 1 && layers[0].id == 70;
+        check(layered, "a Web Animation of transform is a layer");
+        if (layered) {
+            const LayerTrack& t = layers[0].track;
+            // Baked from the loop's start, the track has no wrap from 100 back to 0 inside it.
+            bool rising = std::is_sorted(t.keys.begin(), t.keys.end(), [](const LayerKey& a, const LayerKey& b) { return a.matrix.e < b.matrix.e; });
+            check(t.repeat && std::fabs(t.duration - 1) < 1e-6 && rising && std::fabs(t.keys.front().matrix.e) < 0.01f && std::fabs(t.keys.back().matrix.e - 100) < 0.05f,
+                  "its loop is baked from 0 to 100 px (" + std::to_string(t.keys.size()) + " keys)");
+        }
+        check(!w.wants_tick(), "and the document needs no frames for it");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
