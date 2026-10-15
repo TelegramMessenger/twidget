@@ -703,6 +703,27 @@ int main() {
             label = label || (layer.id == 41 && layer.track.keys.size() == 1);
         }
         check(labelled.size() == 2 && spinner && label && labelled.back().id == 41, "a label over a spinner becomes a still layer above it (" + std::to_string(labelled.size()) + " layers)");
+        {
+            // A layer keeps its content while what changes is elsewhere, and records it again when it is inside.
+            StubBackend kb;
+            Renderer k(300, 1, false, kb);
+            k.set_compositing(true);
+            k.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":20,"tag":"style"},
+                {"op":"css","id":20,"text":"@keyframes spin{to{transform:rotate(360deg)}} .s{width:40px;height:40px;animation:spin 1s linear infinite}"},{"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":40,"tag":"div","attrs":[["class","s"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                {"op":"el","id":41,"tag":"span","attrs":[["style","color:red"]]},{"op":"ins","parent":40,"id":41,"before":null},{"op":"text","id":42,"data":"x"},{"op":"ins","parent":41,"id":42,"before":null},
+                {"op":"el","id":50,"tag":"div","attrs":[["style","height:10px;background:blue"]]},{"op":"ins","parent":4,"id":50,"before":null}]})J"));
+            k.paint();
+            auto version = [&] { return k.composition().layers.empty() ? 0 : k.composition().layers[0].content_version; };
+            uint64_t first = version();
+            k.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":50,"name":"background-color","value":"green"}]})"));
+            k.paint();
+            check(first != 0 && version() == first, "a layer keeps its content when something outside it changes");
+            k.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":41,"name":"color","value":"blue"}]})"));
+            k.paint();
+            check(version() != first, "and records it again when something inside it changes");
+        }
         // Past the layer cap the topmost spinners are composited and the rest painted.
         std::string many;
         for (int i = 0; i < 300; i++)

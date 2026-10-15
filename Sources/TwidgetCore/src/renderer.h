@@ -219,6 +219,11 @@ private:
     bool dirty_ = true;
     bool document_changed_ = false;
     PatchLog patch_log_;
+    // What changed since the last paint, for layers to keep their content: the elements patched, or
+    // everything (a build, a layout, hover state).
+    std::unordered_set<int64_t> touched_;
+    bool touched_all_ = true;
+    uint64_t painted_layouts_ = 0;
     bool patching_ = true;  // an op since the last build changed what serialize() writes
     mutable std::string html_;
     mutable bool html_stale_ = false;

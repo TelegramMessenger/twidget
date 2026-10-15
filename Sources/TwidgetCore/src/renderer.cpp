@@ -1928,7 +1928,10 @@ void Renderer::build_document(bool patch) {
     }
     doc_height_ = std::ceil(container_->height());
     stats_.builds++;
-    if (changed) dirty_ = true;
+    if (changed) {
+        dirty_ = true;
+        touched_all_ = true;
+    }
 }
 
 bool Renderer::attached(const Node* n) const {
@@ -2016,6 +2019,8 @@ bool Renderer::patch_document() {
     stats_.parse_ms = now_ms() - t0;
     stats_.serialize_ms = 0;
     stats_.passes = 1;
+    for (const auto& [n, names] : log.attributes) touched_.insert(n->id);
+    for (const Node* n : log.texts) touched_.insert(n->id);
     stats_.builds++;
     stats_.patched++;
     stats_.in_place++;
@@ -2119,6 +2124,7 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
             stats_.patched++;
             dirty_ = true;
             html_stale_ = true;
+            touched_.insert(changed.begin(), changed.end());
             return;
         }
     }
@@ -2538,14 +2544,28 @@ DisplayList Renderer::paint() {
         std::sort(order.begin(), order.end());
         Composition next;
         bool changed = order.size() != composition_.layers.size();
+        // A layer whose element and descendants nothing touched since the last paint keeps its content.
+        bool all = touched_all_ || container_->layouts() != painted_layouts_;
+        std::unordered_map<int64_t, const Layer*> before;
+        if (!all)
+            for (const Layer& old : composition_.layers) before.emplace(old.id, &old);
         for (const auto& [index, id] : order) {
             const Promotion& p = promoted_.at(id);
             Layer layer;
             layer.id = id;
-            layer.content = container_->draw_layer(container_->element(id), skip, layer.bounds);
-            // A canvas repaints without its command changing: such a layer is always new.
-            bool canvas = std::any_of(layer.content.begin(), layer.content.end(), [](const Command& c) { return c.canvas != 0; });
-            layer.content_version = canvas ? next_version_++ : paint_digest(layer.content);
+            auto old = before.find(id);
+            auto has_canvas = [](const DisplayList& list) { return std::any_of(list.begin(), list.end(), [](const Command& c) { return c.canvas != 0; }); };
+            bool keep = old != before.end() && !has_canvas(old->second->content) &&
+                        std::none_of(touched_.begin(), touched_.end(), [&](int64_t t) { return t == id || is_ancestor(id, t); });
+            if (keep) {
+                layer.content = old->second->content;
+                layer.bounds = old->second->bounds;
+                layer.content_version = old->second->content_version;
+            } else {
+                layer.content = container_->draw_layer(container_->element(id), skip, layer.bounds);
+                // A canvas repaints without its command changing: such a layer is always new.
+                layer.content_version = has_canvas(layer.content) ? next_version_++ : paint_digest(layer.content);
+            }
             layer.raster_scale = p.raster_scale;
             layer.has_clip = p.has_clip;
             layer.clip = p.clip;
@@ -2563,9 +2583,14 @@ DisplayList Renderer::paint() {
         }
         next.version = changed ? next_version_++ : composition_.version;
         composition_ = std::move(next);
+        touched_.clear();
+        touched_all_ = false;
+        painted_layouts_ = container_->layouts();
         return list;
     }
 #endif
+    touched_.clear();
+    touched_all_ = true;
     return container_->draw();
 }
 
@@ -2895,7 +2920,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         t.target = widget_id_at(x, y, &t.target_rect);
         touches_[pointer] = t;
         if (primary) out.push_back(Json::object().set("type", "gesture").set("wants", wants_gesture(t.target)));
-        if (container_->mouse(0, x, y)) dirty_ = true;
+        if (container_->mouse(0, x, y)) dirty_ = touched_all_ = true;
         if (t.target) {
             emit_event("pointerdown", t.target, t.target_rect, t, 0, out);
             emit_event("mousedown", t.target, t.target_rect, t, 0, out);
@@ -2915,7 +2940,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             if (std::fabs(x - t.x0) < TAP_SLOP && std::fabs(y - t.y0) < TAP_SLOP) return out;
             t.moved = true;
         }
-        if (container_->mouse(1, x, y)) dirty_ = true;
+        if (container_->mouse(1, x, y)) dirty_ = touched_all_ = true;
         if (t.target) {
             // A finger's events stay with the element it pressed; a mouse's go to the element under
             // it. Either way a capture takes the pointer events.
@@ -2931,7 +2956,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     }
     Touch done = t;
     touches_.erase(it);
-    if (container_->mouse(action, x, y, done.mouse && action == 2)) dirty_ = true;
+    if (container_->mouse(action, x, y, done.mouse && action == 2)) dirty_ = touched_all_ = true;
     if (action == 2) {
         Rect up_rect;
         int64_t up_target = widget_id_at(x, y, &up_rect);
@@ -2984,12 +3009,12 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
     if (action == 0) {
         in.x = hover_x_ = x;
         in.y = hover_y_ = y;
-        if (container_->mouse(1, x, y)) dirty_ = true;
+        if (container_->mouse(1, x, y)) dirty_ = touched_all_ = true;
         target = widget_id_at(x, y, nullptr);
     } else {
         in.x = hover_x_;
         in.y = hover_y_;
-        if (container_->leave()) dirty_ = true;
+        if (container_->leave()) dirty_ = touched_all_ = true;
     }
     if (target != previous) {
         hover_ = target;
