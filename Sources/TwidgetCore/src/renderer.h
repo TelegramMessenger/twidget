@@ -242,12 +242,23 @@ private:
         bool scripted = false;
         /// What the document declared for the layer properties at the last build.
         Declared base;
+        /// A shimmer: the element's background tile alone, `box`, sliding under `clip`; the document
+        /// paints the rest of the element.
+        bool shimmer = false;
+        DisplayList tile;
+        uint64_t tile_version = 0;
+        /// An SVG a script keeps changing: a still layer whose content repaints without the document.
+        bool svg = false;
     };
     void update_composition(double now);
     // Scripted layers (the Swift renderer's): an element a script moves batch after batch through the
     // layer properties alone becomes a layer, and a batch that only moves such layers moves them
     // without a build or a paint. The document takes the batch with its next build.
     bool scripted_only(const twidget::Json::Array& ops, std::vector<int64_t>& touched) const;
+    /// Counts the batches running that change each SVG; three make it an SVG layer.
+    void note_svg(const twidget::Json::Array& ops);
+    std::unordered_map<int64_t, int> svg_streaks_;
+    std::set<int64_t> svg_layers_;
     void note_scripted(const twidget::Json::Array& ops);
     bool apply_scripted(const std::vector<int64_t>& ids);
     /// The layer's matrix and opacity as the element's style has them now.

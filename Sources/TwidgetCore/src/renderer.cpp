@@ -233,6 +233,13 @@ Rect bounds_under(const Rect& r, const Affine& m) {
     return Rect{x0, y0, x1 - x0, y1 - y0};
 }
 
+/// When a track's key at `t` (0..1) applies. A loop's end is the next iteration's start already, so
+/// its last key reads a moment before.
+double plan_time(const Animator::Plan& plan, double t) {
+    if (plan.repeat && t >= 1) t = 1 - 1e-6;
+    return plan.start + t * plan.duration;
+}
+
 Rect intersection(const Rect& a, const Rect& b) {
     float x0 = std::max(a.x, b.x), y0 = std::max(a.y, b.y);
     float x1 = std::min(a.x + a.w, b.x + b.w), y1 = std::min(a.y + a.h, b.y + b.h);
@@ -242,6 +249,42 @@ Rect intersection(const Rect& a, const Rect& b) {
 bool contains(const Rect& outer, const Rect& inner) {
     constexpr float slack = 0.01f;
     return inner.x >= outer.x - slack && inner.y >= outer.y - slack && inner.x + inner.w <= outer.x + outer.w + slack && inner.y + inner.h <= outer.y + outer.h + slack;
+}
+
+/// What a shimmer layer animates: its background tile's position along x.
+bool is_shimmer_property(const std::string& property) { return property == "background-position" || property == "background-position-x"; }
+
+/// Where a background-position value puts a tile `tile` wide in `area`, along x; and along y when the
+/// value has a second component, which must leave the tile where `tile` has it.
+std::optional<float> shimmer_x(const std::string& value, const Rect& area, const Rect& tile) {
+    auto length = [](const std::string& token, float room) -> std::optional<float> {
+        if (token == "left" || token == "top") return 0.0f;
+        if (token == "center") return room / 2;
+        if (token == "right" || token == "bottom") return room;
+        char* end = nullptr;
+        float v = std::strtof(token.c_str(), &end);
+        if (end == token.c_str()) return std::nullopt;
+        std::string unit(end);
+        if (unit == "%") return room * v / 100;
+        if (unit == "px" || (unit.empty() && v == 0)) return v;
+        return std::nullopt;
+    };
+    std::vector<std::string> tokens;
+    for (size_t at = 0; at < value.size();) {
+        size_t start = value.find_first_not_of(' ', at);
+        if (start == std::string::npos) break;
+        size_t stop = value.find(' ', start);
+        tokens.push_back(value.substr(start, stop == std::string::npos ? std::string::npos : stop - start));
+        at = stop == std::string::npos ? value.size() : stop;
+    }
+    if (tokens.empty() || tokens.size() > 2) return std::nullopt;
+    auto x = length(tokens[0], area.w - tile.w);
+    if (!x) return std::nullopt;
+    if (tokens.size() == 2) {
+        auto y = length(tokens[1], area.h - tile.h);
+        if (!y || std::fabs(area.y + *y - tile.y) > 0.5f) return std::nullopt;
+    }
+    return area.x + *x;
 }
 
 /// What a compositor layer animates; an element animating anything else is painted per frame.
@@ -780,12 +823,57 @@ public:
         return ids && !ids->empty() ? 1 : 0;
     }
     /// Paints the document without the elements in `skip`.
-    DisplayList draw(const std::vector<litehtml::element::ptr>& skip) {
+    /// The document without `skip` and without the background images of `backgrounds`.
+    DisplayList draw(const std::vector<litehtml::element::ptr>& skip, const std::vector<litehtml::element::ptr>& backgrounds) {
         if (!doc_) return {};
         for (const auto& el : skip) doc_->skip_paint.insert(el.get());
+        for (const auto& el : backgrounds) doc_->skip_background_images.insert(el.get());
         DisplayList list = draw();
         doc_->skip_paint.clear();
+        doc_->skip_background_images.clear();
         return list;
+    }
+    /// A shimmer's tile (the Swift renderer's backgroundTile): `el`'s background is one gradient, not
+    /// repeated, on a box without children or borders, which its position can slide under the clip
+    /// without changing anything else. `content` gets the tile drawn whole where it is.
+    bool background_tile(const litehtml::element::ptr& el, Rect& tile, Rect& area, Rect& clip, Radii& radii, DisplayList& content) {
+        auto ri = el->get_render_item();
+        if (!doc_ || !ri || el->is_root() || el->is_inline() || !el->children().empty() || el->css().is_paint_group()) return false;
+        // The layer goes over the document, and would cover the borders the background lies under.
+        if (el->css().get_borders().is_visible()) return false;
+        const litehtml::background* bg = el->get_background();
+        if (!bg || bg->m_image.size() != 1 || bg->m_repeat.empty() || bg->m_repeat[0] != litehtml::background_repeat_no_repeat) return false;
+        auto type = bg->get_layer_type(0);
+        if (type != litehtml::background::type_linear_gradient && type != litehtml::background::type_radial_gradient &&
+            type != litehtml::background::type_conic_gradient)
+            return false;
+        if (!bg->m_origin.empty() && bg->m_origin[0] != litehtml::background_box_padding) return false;
+        if (!bg->m_attachment.empty() && bg->m_attachment[0] != litehtml::background_attachment_scroll) return false;
+        for (auto p = ri->parent(); p; p = p->parent()) {
+            const auto& css = p->src_el()->css();
+            if (css.is_paint_group() || css.get_position() == litehtml::element_position_fixed) return false;
+        }
+        litehtml::position box = ri->get_placement();
+        litehtml::background_layer layer;
+        if (!bg->get_layer(0, box, el.get(), ri, layer)) return false;
+        tile = rect_of(layer.origin_box);
+        clip = rect_of(layer.clip_box);
+        radii = radii_of(layer.border_radius);
+        litehtml::position padding = box;
+        padding += ri->get_paddings();
+        area = rect_of(padding);
+        if (tile.empty() || clip.empty()) return false;
+        litehtml::background_layer whole = layer;
+        whole.clip_box = layer.origin_box;
+        whole.border_box = layer.origin_box;
+        whole.border_radius = litehtml::border_radiuses();
+        list_.clear();
+        groups_.clear();
+        clips_.clear();
+        suspended_.clear();
+        bg->draw_layer(0, 0, whole, this);
+        content = std::move(list_);
+        return !content.empty();
     }
     /// `el` and its descendants alone, without `el`'s own transform, opacity and stacking group
     /// (the layer applies them) and without the other layers in `skip`. `bounds` gets the area the
@@ -1646,6 +1734,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
             // Moved past what its layer allows, a scripted layer is planned again where it is now.
             if (fast) composition_key_ = 0;
             else note_scripted(ops);
+            note_svg(ops);
             // A batch of canvas drawing, scrolling or focus leaves the document as it was: its canvases
             // repaint (run_canvas marks the paint dirty) without a build.
             if (document_changed_ && coalesce) {
@@ -2442,11 +2531,12 @@ void Renderer::set_compositing(bool enabled) {
 }
 
 void Renderer::strip_layers(StyleOverrides& sampled) const {
-    for (int64_t id : layer_ids_) {
+    for (const auto& [id, p] : promoted_) {
         auto it = sampled.find(id);
         if (it == sampled.end()) continue;
         auto& values = it->second;
-        values.erase(std::remove_if(values.begin(), values.end(), [](const auto& v) { return is_layer_property(v.first); }), values.end());
+        bool shimmer = p.shimmer;
+        values.erase(std::remove_if(values.begin(), values.end(), [&](const auto& v) { return shimmer ? is_shimmer_property(v.first) : is_layer_property(v.first); }), values.end());
         if (values.empty()) sampled.erase(it);
     }
 }
@@ -2512,10 +2602,15 @@ void Renderer::update_composition(double now) {
         }
         return !it->second;
     };
+    std::vector<const Planned*> shimmers;
     for (const Planned& p : planned) {
         int64_t id = p.id;
         auto properties = animator_.animated_properties(id);
-        if (!std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_layer_property(name); })) continue;
+        if (!std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_layer_property(name); })) {
+            if (!properties.empty() && std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_shimmer_property(name); }))
+                shimmers.push_back(&p);
+            continue;
+        }
         const Node* n = node(id);
         if (!n || n->svg || n->tag == "svg" || holds_animated.count(id)) continue;
         bool blocked = false;
@@ -2528,7 +2623,9 @@ void Renderer::update_composition(double now) {
     }
     for (auto it = scripted_candidates_.begin(); it != scripted_candidates_.end();)
         it = node(*it) ? std::next(it) : scripted_candidates_.erase(it);
-    if (wanted.empty() && scripted_candidates_.empty()) {
+    for (auto it = svg_layers_.begin(); it != svg_layers_.end();)
+        it = node(*it) ? std::next(it) : svg_layers_.erase(it);
+    if (wanted.empty() && scripted_candidates_.empty() && shimmers.empty() && svg_layers_.empty()) {
         if (!promoted_.empty()) {
             promoted_.clear();
             layer_ids_.clear();
@@ -2563,7 +2660,7 @@ void Renderer::update_composition(double now) {
             const Animator::Plan& plan = want.plan;
             int64_t target = id;
             auto sample = [&](double t, LayerKey& out) {
-                StyleValues values = animator_.peek(target, plan.start + t * plan.duration);
+                StyleValues values = animator_.peek(target, plan_time(plan, t));
                 auto value = [&](const char* property) {
                     for (auto it = values.rbegin(); it != values.rend(); ++it)
                         if (it->first == property) return it->second;
@@ -2611,6 +2708,67 @@ void Renderer::update_composition(double now) {
             p.reach = Rect{cx0, cy0, std::max(0.0f, cx1 - cx0), std::max(0.0f, cy1 - cy0)};
         }
         elements[id] = want.el;
+        next.emplace(id, std::move(p));
+    }
+
+    // Shimmers (the Swift renderer's WidgetShimmers): a background-position animation of a lone
+    // gradient tile is the tile sliding under the element's clip, baked like any other track.
+    for (const Planned* planned_shimmer : shimmers) {
+        int64_t id = planned_shimmer->id;
+        const Animator::Plan& plan = planned_shimmer->plan;
+        const Node* n = node(id);
+        if (!n || !n->children.empty() || next.count(id) || holds_animated.count(id)) continue;
+        bool blocked = false;
+        for (const Node* a = n->parent; a && !blocked; a = a->parent) blocked = a->id && blocks(a->id);
+        auto el = container_->element(id);
+        Promotion p;
+        Rect area;
+        if (blocked || !el || !container_->background_tile(el, p.box, area, p.clip, p.clip_radii, p.tile)) continue;
+        // An ancestor's clip must not cut into the tile's: a layer carries one.
+        bool outer = false;
+        Rect outer_clip;
+        Radii outer_radii;
+        if (!container_->clip_of(el, outer, outer_clip, outer_radii)) continue;
+        if (outer) {
+            float corner = std::max({outer_radii.tlx, outer_radii.tly, outer_radii.trx, outer_radii.try_, outer_radii.brx, outer_radii.bry, outer_radii.blx, outer_radii.bly});
+            if (!contains(Rect{outer_clip.x + corner, outer_clip.y + corner, outer_clip.w - 2 * corner, outer_clip.h - 2 * corner}, p.clip)) continue;
+        }
+        p.shimmer = true;
+        p.has_clip = true;
+        p.signature = planned_shimmer->signature;
+        p.tile_version = paint_digest(p.tile);
+        auto old = promoted_.find(id);
+        bool same_span = old != promoted_.end() && old->second.shimmer &&
+                         (plan.repeat ? old->second.track.repeat && std::fabs(old->second.track.duration - plan.duration) < 1e-6
+                                      : !old->second.track.repeat && std::fabs(old->second.track.start + old->second.track.duration - (plan.start + plan.duration)) < 1e-3);
+        if (same_span && old->second.signature == p.signature && std::memcmp(&old->second.box, &p.box, sizeof(Rect)) == 0) {
+            p.track = old->second.track;
+            p.track_version = old->second.track_version;
+        } else {
+            std::string base = animator_.base_value(id, "background-position");
+            auto sample = [&](double t, LayerKey& out) {
+                StyleValues values = animator_.peek(id, plan_time(plan, t));
+                std::optional<float> x;
+                bool found = false;
+                for (auto it = values.rbegin(); it != values.rend() && !found; ++it)
+                    if (is_shimmer_property(it->first)) {
+                        found = true;
+                        x = shimmer_x(it->second, area, p.box);
+                    }
+                if (!found) x = shimmer_x(base.empty() ? "0% 0%" : base, area, p.box);
+                if (!x) return false;
+                out.matrix = Affine::translate(*x - p.box.x, 0);
+                out.opacity = 1;
+                return true;
+            };
+            p.track.start = plan.start;
+            p.track.duration = plan.duration;
+            p.track.repeat = plan.repeat;
+            if (!bake_track(sample, p.box, p.track.keys)) continue;
+            p.track_version = next_version_++;
+        }
+        p.reach = p.clip;
+        elements[id] = el;
         next.emplace(id, std::move(p));
     }
 
@@ -2675,6 +2833,33 @@ void Renderer::update_composition(double now) {
             elements[id] = el;
             next.emplace(id, std::move(p));
         }
+    }
+
+    // SVG layers (the Swift renderer's WidgetSVGLayers): an SVG a script changes batch after batch
+    // repaints alone, and the document around it does not.
+    for (int64_t id : svg_layers_) {
+        const Node* n = node(id);
+        if (!n || next.count(id) || animated.count(id) || holds_animated.count(id)) continue;
+        bool alone = true;
+        for (const auto& [other, p] : next) alone = alone && !is_ancestor(other, id) && !is_ancestor(id, other);
+        for (const Node* a = n->parent; a && alone; a = a->parent) alone = !(a->id && blocks(a->id));
+        auto el = container_->element(id);
+        Promotion p;
+        if (!alone || !el || !container_->layer_candidate(el, p.box) || !container_->clip_of(el, p.has_clip, p.clip, p.clip_radii)) continue;
+        p.svg = true;
+        p.signature = 0x5F6ull ^ uint64_t(id);
+        auto old = promoted_.find(id);
+        if (old != promoted_.end() && old->second.svg && std::memcmp(&old->second.box, &p.box, sizeof(Rect)) == 0) {
+            p.track = old->second.track;
+            p.track_version = old->second.track_version;
+        } else {
+            p.track.start = now;
+            p.track.keys.assign(1, LayerKey{});
+            p.track_version = next_version_++;
+        }
+        p.reach = p.has_clip ? intersection(p.box, p.clip) : p.box;
+        elements[id] = el;
+        next.emplace(id, std::move(p));
     }
 
     // A few static elements over a wanted layer (labels on a moving card) become layers of their own,
@@ -2960,6 +3145,28 @@ void Renderer::note_scripted(const Json::Array& ops) {
     if (changed) composition_key_ = 0;
 }
 
+void Renderer::note_svg(const Json::Array& ops) {
+    std::set<int64_t> touched;
+    for (const Json& op : ops) {
+        const std::string& kind = op["op"].asString();
+        // An insertion changes its parent; a removed node is gone, and so is the way to its SVG.
+        const Node* n = node(int64_t(kind == "ins" ? op["parent"].asNumber() : op["id"].asNumber()));
+        int64_t root = 0;
+        for (; n; n = n->parent)
+            if (n->kind == Node::Element && n->tag == "svg") root = n->id;
+        if (root) touched.insert(root);
+    }
+    std::unordered_map<int64_t, int> streaks;
+    bool added = false;
+    for (int64_t id : touched) {
+        auto it = svg_streaks_.find(id);
+        int count = streaks[id] = it == svg_streaks_.end() ? 1 : it->second + 1;
+        if (count >= 3 && svg_layers_.size() < MAX_LAYERS && svg_layers_.insert(id).second) added = true;
+    }
+    svg_streaks_ = std::move(streaks);
+    if (added) composition_key_ = 0;
+}
+
 bool Renderer::scripted_key(int64_t id, const Promotion& p, LayerKey& out) const {
     const Node* n = node(id);
     if (!n) return false;
@@ -3056,14 +3263,14 @@ DisplayList Renderer::paint_document() {
 #ifdef TW_LITEHTML_TWIDGET
     if (!promoted_.empty() || !composition_.layers.empty()) {
         std::vector<std::pair<size_t, int64_t>> order;
-        std::vector<litehtml::element::ptr> skip;
+        std::vector<litehtml::element::ptr> skip, backgrounds;
         for (const auto& [id, p] : promoted_) {
             if (auto el = container_->element(id)) {
                 order.emplace_back(p.order, id);
-                skip.push_back(std::move(el));
+                (p.shimmer ? backgrounds : skip).push_back(std::move(el));
             }
         }
-        DisplayList list = container_->draw(skip);
+        DisplayList list = container_->draw(skip, backgrounds);
         std::sort(order.begin(), order.end());
         Composition next;
         bool changed = order.size() != composition_.layers.size();
@@ -3080,7 +3287,11 @@ DisplayList Renderer::paint_document() {
             auto has_canvas = [](const DisplayList& list) { return std::any_of(list.begin(), list.end(), [](const Command& c) { return c.canvas != 0; }); };
             bool keep = old != before.end() && !has_canvas(old->second->content) &&
                         std::none_of(touched_.begin(), touched_.end(), [&](int64_t t) { return t == id || is_ancestor(id, t); });
-            if (keep) {
+            if (p.shimmer) {
+                layer.content = p.tile;
+                layer.bounds = p.box;
+                layer.content_version = p.tile_version;
+            } else if (keep) {
                 layer.content = old->second->content;
                 layer.bounds = old->second->bounds;
                 layer.content_version = old->second->content_version;
@@ -3299,6 +3510,8 @@ int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
         double now = now_s();
         for (const auto& [rank, id] : order) {
             const Promotion& p = promoted_.at(id);
+            // A shimmer's element stays in the document, which takes the point.
+            if (p.shimmer) continue;
             if (p.has_clip && !(x >= p.clip.x && y >= p.clip.y && x < p.clip.x + p.clip.w && y < p.clip.y + p.clip.h)) continue;
             double span = 0;
             auto keys = resume_track(p.track, now - p.track.start, span);

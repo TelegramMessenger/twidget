@@ -41,7 +41,9 @@ Animations timing all become linear keys, so any compositor with linear keyframe
 `resume_track()` helps one that cannot start an animation part way through. An element a script
 moves through transform or opacity three batches running becomes a layer too, holding one key; a
 batch that only moves such layers changes their keys without a build, and the next `paint()` hands
-out the last list with empty damage. Without compositing, the core paints every frame.
+out the last list with empty damage. A shimmer (a gradient tile whose background-position
+animates) is its tile sliding under the element's clip, and an SVG a script keeps changing is a layer
+that repaints alone. Without compositing, the core paints every frame.
 
 The renderer is not thread-safe: one widget's calls must not overlap.
 

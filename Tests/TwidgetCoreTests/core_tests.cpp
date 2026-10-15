@@ -2,6 +2,7 @@
 // stub backend that measures text as 8 px per byte.
 #include "renderer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -986,6 +987,62 @@ int main() {
             c.paint();
         }
         check(c.composition().layers.empty() && c.stats().scripted == 0, "more than the layer budget moving together: no scripted layers");
+    }
+
+    // ── shimmer layers ──
+    {
+        StubBackend hb;
+        Renderer h(400, 1, false, hb);
+        h.set_compositing(true);
+        h.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style"},{"op":"css","id":20,"text":".sk{margin:10px;width:200px;height:20px;border-radius:6px;background-color:#ddd;background-image:linear-gradient(90deg,#ddd,#fff,#ddd);background-size:50% 100%;background-repeat:no-repeat;animation:shimmer 1s linear infinite} @keyframes shimmer{from{background-position:-100% 0}to{background-position:200% 0}}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":30,"tag":"div","attrs":[["class","sk"]]},{"op":"ins","parent":4,"id":30,"before":null}]})"));
+        DisplayList list = h.paint();
+        const auto& layers = h.composition().layers;
+        bool layered = layers.size() == 1 && layers[0].id == 30;
+        check(layered, "a background-position animation of a lone gradient tile is a layer");
+        if (layered) {
+            const Layer& l = layers[0];
+            auto gradient = [](const DisplayList& d) { return std::count_if(d.begin(), d.end(), [](const Command& c) { return c.kind == Cmd::Linear; }); };
+            check(gradient(l.content) == 1 && gradient(list) == 0, "the layer holds the tile, the document the rest of the element");
+            check(l.bounds.w == 100 && l.bounds.h == 20 && l.has_clip && l.clip.x == 10 && l.clip.w == 200 && l.clip_radii.tlx == 6, "the tile, under the element's rounded box");
+            check(l.track.repeat && l.track.keys.size() >= 2, "sliding forever");
+            // -100% of (200 - 100) is -100 px from the box; 200% is 200 px.
+            float first = l.track.keys.front().matrix.e, last = l.track.keys.back().matrix.e;
+            check(std::fabs(l.bounds.x + first - (10 - 100)) < 0.5f && std::fabs(l.bounds.x + last - (10 + 200)) < 0.5f,
+                  "from -100% to 200% of the room (got " + std::to_string(l.bounds.x + first) + " to " + std::to_string(l.bounds.x + last) + ")");
+            check(!h.wants_tick(), "and the document needs no frames for it");
+        }
+    }
+
+    // ── SVG layers ──
+    {
+        StubBackend vb;
+        Renderer v(400, 1, false, vb);
+        v.set_compositing(true);
+        v.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":40,"tag":"svg","attrs":[["width","60"],["height","60"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"el","id":41,"tag":"circle","attrs":[["cx","30"],["cy","30"],["r","10"],["fill","#f00"]]},{"op":"ins","parent":40,"id":41,"before":null},
+            {"op":"el","id":50,"tag":"div","attrs":[["style","margin-top:100px;height:20px;background-color:#00f"]]},{"op":"ins","parent":4,"id":50,"before":null}]})"));
+        v.paint();
+        auto grow = [&](int r) {
+            v.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":41,"name":"r","value":")" + std::to_string(r) + R"("}]})"));
+            return v.paint();
+        };
+        // Building it counts as the first change.
+        grow(11);
+        check(v.composition().layers.empty(), "two changes are not a streak yet");
+        grow(12);
+        bool layered = v.composition().layers.size() == 1 && v.composition().layers[0].id == 40;
+        check(layered, "a third makes the SVG a layer");
+        uint64_t content = layered ? v.composition().layers[0].content_version : 0;
+        grow(14);
+        std::vector<Rect> damage;
+        check(v.damage(damage) && damage.empty(), "its next change leaves the document as it was");
+        check(layered && v.composition().layers[0].content_version != content, "and repaints the layer");
     }
 
     std::printf("%d failure(s)\n", failures);
