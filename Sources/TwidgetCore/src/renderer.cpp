@@ -248,6 +248,17 @@ constexpr float LAYER_MARGIN = 48;
 constexpr double DOUBLE_CLICK_MS = 500;
 /// After user input, ops batches build at once: they likely answer it.
 constexpr double INPUT_IMMEDIATE_S = 0.25;
+/// The render throttle (the Swift renderer's): a pass costlier than a frame holds the next one back
+/// for THROTTLE_FACTOR times its cost, 25 % of the thread at most; under sustained load, more than
+/// SUSTAINED_LIMIT of SUSTAINED_WINDOW with two passes over HEAVY_PASS_S, 5 %. Nothing is charged in
+/// the first LOAD_GRACE_S, while a widget sets itself up.
+constexpr double THROTTLE_FREE_S = 0.016;
+constexpr double THROTTLE_FACTOR = 3;
+constexpr double SUSTAINED_THROTTLE_FACTOR = 19;
+constexpr double SUSTAINED_WINDOW_S = 2;
+constexpr double SUSTAINED_LIMIT = 0.1;
+constexpr double HEAVY_PASS_S = 0.05;
+constexpr double LOAD_GRACE_S = 1;
 /// Backend fonts kept for documents to come, beyond those a document holds.
 constexpr size_t MAX_FACES = 256;
 
@@ -1505,9 +1516,9 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
-        // Ticking already (something animates), a batch waits for the frame: a script sending several a
-        // frame builds once. Input wants its answer now.
-        bool coalesce = wants_tick() && now_s() - last_input_ > INPUT_IMMEDIATE_S;
+        // Ticking already (something animates), or held back by the throttle, a batch waits for the
+        // frame: a script sending several a frame builds once. Input wants its answer now.
+        bool coalesce = (wants_tick() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S;
         document_changed_ = false;
         for (const Json& op : msg["ops"].arr()) apply_op(op, out);
         // A batch of canvas drawing, scrolling or focus leaves the document as it was: its canvases
@@ -1958,9 +1969,32 @@ void Renderer::settle(std::vector<Json>& out) {
 }
 
 void Renderer::rebuild(bool patch) {
+    Meter meter(*this);
     stale_ = false;
     build_document(patch);
     animate();
+}
+
+void Renderer::charge(double spent) {
+    double now = now_s();
+    if (first_charge_ < 0) first_charge_ = now;
+    if (spent <= 0 || now - first_charge_ < LOAD_GRACE_S) return;
+    charges_.emplace_back(now, spent);
+    while (!charges_.empty() && now - charges_.front().first > SUSTAINED_WINDOW_S) charges_.pop_front();
+    if (spent <= THROTTLE_FREE_S) return;
+    double total = 0;
+    int heavy = 0;
+    for (const auto& [at, cost] : charges_) {
+        total += cost;
+        heavy += cost > HEAVY_PASS_S;
+    }
+    double factor = total > SUSTAINED_LIMIT * SUSTAINED_WINDOW_S && heavy >= 2 ? SUSTAINED_THROTTLE_FACTOR : THROTTLE_FACTOR;
+    throttled_until_ = std::max(throttled_until_, now) + spent * factor;
+    stats_.throttled++;
+}
+
+bool Renderer::throttled() const {
+    return now_s() < throttled_until_ && now_s() - last_input_ > INPUT_IMMEDIATE_S;
 }
 
 void Renderer::build_document(bool patch) {
@@ -2235,6 +2269,13 @@ void Renderer::queue_animation_events() {
 
 std::vector<Json> Renderer::tick() {
     std::vector<Json> out;
+    // Held back, a frame only hands out the coalesced moves; the build and the animation step wait.
+    if (throttled()) {
+        flush_moves(out);
+        flush_pending(out);
+        return out;
+    }
+    Meter meter(*this);
     settle(out);
     flush_moves(out);
     double now = now_s();
@@ -2256,6 +2297,7 @@ bool Renderer::wants_tick() const {
 
 double Renderer::next_tick_in() const {
     if (frozen_) return std::numeric_limits<double>::infinity();
+    if (stale_) return std::max(0.0, throttled_until_ - now_s());
     return std::max(0.0, wake_at_ - now_s());
 }
 
@@ -2629,6 +2671,7 @@ void Renderer::report_size(std::vector<Json>& out) {
 }
 
 DisplayList Renderer::paint() {
+    Meter meter(*this);
     // Messages from a build here go out with the next ones.
     settle(pending_events_);
     DisplayList list = paint_document();

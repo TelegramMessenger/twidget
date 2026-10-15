@@ -588,6 +588,22 @@ int main() {
         check(width == 90, "and a query sees it (" + std::to_string(width) + ")");
     }
 
+    // ── render throttle ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(PAGE));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));  // past the load grace
+        t.charge(0.05);  // a costly paint: three times as long held back
+        int builds = t.stats().builds;
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":4,"name":"padding-top","value":"3px"}]})"));
+        t.tick();
+        check(t.stats().builds == builds && t.wants_tick(), "after a costly pass, a batch waits out the throttle");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        t.tick();
+        check(t.stats().builds > builds, "and builds once it is over");
+    }
+
     // ── damage ──
     {
         StubBackend db;

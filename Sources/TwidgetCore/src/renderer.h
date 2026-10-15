@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <map>
 #include <memory>
@@ -39,6 +40,8 @@ struct BuildStats {
     int builds = 0;
     /// Builds that patched the previous document instead of parsing a new one (TW_LITEHTML_TWIDGET).
     int patched = 0;
+    /// Passes after which the render throttle held the widget back.
+    int throttled = 0;
     /// Of those, builds that went into the document without serialising it (ops patched in place).
     int in_place = 0;
 };
@@ -103,6 +106,9 @@ public:
     /// Drops caches that are made again on demand, for memory pressure or a widget off screen; the
     /// next paint is a whole one.
     void trim();
+    /// Seconds of work done for this widget, toward the render throttle. The renderer charges its own
+    /// builds, frames and paints; a host charges its rasterising of them too.
+    void charge(double seconds);
     /// damage() as JSON for the C ABI: `null` (paint everything) or `[[x, y, w, h], ...]`.
     std::string damage_json() const;
     const BuildStats& stats() const { return stats_; }
@@ -161,6 +167,20 @@ private:
     void rebuild(bool patch = false);
     /// Builds a document a coalesced batch left stale.
     void settle(std::vector<twidget::Json>& out);
+    bool throttled() const;
+    /// Charges the outermost pass it spans, whatever nests inside.
+    struct Meter {
+        Renderer& r;
+        double start;
+        explicit Meter(Renderer& renderer) : r(renderer), start(r.meter_depth_++ ? 0 : now_s()) {}
+        ~Meter() {
+            if (--r.meter_depth_ == 0) r.charge(now_s() - start);
+        }
+    };
+    int meter_depth_ = 0;
+    std::deque<std::pair<double, double>> charges_;  // when, and how long, the passes of the last window took
+    double first_charge_ = -1;
+    double throttled_until_ = 0;
     void report_size(std::vector<twidget::Json>& out);
     // queries & events
     twidget::Json answer(const twidget::Json& q);
