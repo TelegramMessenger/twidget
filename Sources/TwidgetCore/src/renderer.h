@@ -94,7 +94,14 @@ public:
     /// Layouts of the document so far: full renders after a parse, a patch or a restyle that moved boxes.
     uint64_t layouts() const;
     /// The HTML of the last build (diagnostics).
-    const std::string& last_html() const { return html_; }
+    /// The document as HTML; serialised again when style patches changed it since the last build.
+    const std::string& last_html() const {
+        if (html_stale_) {
+            html_ = serialize();
+            html_stale_ = false;
+        }
+        return html_;
+    }
 
 private:
     friend class Container;
@@ -192,7 +199,9 @@ private:
     int vp_height_;
     double doc_height_ = 0;
     bool dirty_ = true;
-    std::string html_;
+    bool document_changed_ = false;  // an op since the last build changed what serialize() writes
+    mutable std::string html_;
+    mutable bool html_stale_ = false;
     BuildStats stats_;
     std::vector<std::string> pending_violations_;
 

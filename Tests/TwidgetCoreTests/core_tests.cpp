@@ -221,6 +221,12 @@ int main() {
     q = r.receive(parse(R"({"type":"query","qid":4,"query":{"q":"imageData","id":30,"x":0,"y":0,"w":2,"h":1}})"))[0];
     check(q["binaryBase64"].asString() == "BwcHBwcHBwc=" && q["result"]["width"].asNumber() == 2, "getImageData returns the backend's pixels as base64");
     {
+        int builds = r.stats().builds;
+        r.paint();
+        r.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":30,"cmds":[["c","fillRect",0,0,5,5]]},{"op":"prop","id":30,"name":"scrollTop","value":4}]})"));
+        check(r.stats().builds == builds && r.dirty(), "a canvas-only batch repaints without building the document");
+    }
+    {
         // A widget that makes gradients every frame keeps drawing them once there are more than the cap.
         std::string cmds;
         for (int g = 2; g <= 5001; g++) cmds += "[\"g\"," + std::to_string(g) + ",\"linear\",0,0,10,0],[\"gs\"," + std::to_string(g) + ",0,\"red\"],";

@@ -377,7 +377,8 @@ public:
     /// True when the last build patched the previous document instead of parsing a new one.
     bool patched() const { return patched_; }
 
-    void build(const std::string& html, int vp_height) {
+    /// False when the document is exactly as it was: same HTML, viewport and width.
+    bool build(const std::string& html, int vp_height) {
         bool viewport_changed = vp_height != vp_height_;
         vp_height_ = vp_height;
         patched_ = false;
@@ -397,7 +398,7 @@ public:
             patched_ = true;
             if (viewport_changed) doc_->media_changed();
             float width = float(r_.width_);
-            if (!changed && !viewport_changed && width == rendered_width_) return;
+            if (!changed && !viewport_changed && width == rendered_width_) return false;
             if (!doc_->last_patch_paint_only() || viewport_changed || width != rendered_width_) {
                 doc_->render(litehtml::pixel_t(width));
                 rendered_width_ = width;
@@ -405,7 +406,7 @@ public:
             }
             // A child-list patch replaces elements; a paint-only one cannot.
             if (!doc_->last_patch_paint_only()) index();
-            return;
+            return true;
         }
 #endif
         elements_.clear();
@@ -416,11 +417,12 @@ public:
 #else
         doc_ = litehtml::document::createFromString(litehtml::estring(html), this, std::string(litehtml::master_css) + UA_EXTRA);
 #endif
-        if (!doc_) return;
+        if (!doc_) return true;
         rendered_width_ = float(r_.width_);
         doc_->render(litehtml::pixel_t(rendered_width_));
         layouts_++;
         index();
+        return true;
     }
 
     void index() {
@@ -1300,9 +1302,14 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
+        document_changed_ = false;
         for (const Json& op : msg["ops"].arr()) apply_op(op, out);
-        rebuild();
-        report_size(out);
+        // A batch of canvas drawing, scrolling or focus leaves the document as it was: its canvases
+        // repaint (run_canvas marks the paint dirty) without a build.
+        if (document_changed_) {
+            rebuild();
+            report_size(out);
+        }
     } else if (type == "query") {
         Json res = Json::object();
         binary_.clear();
@@ -1367,6 +1374,8 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
     const std::string& kind = op["op"].asString();
     int64_t id = int64_t(op["id"].asNumber());
     auto str = [&](const char* k) -> const std::string& { return op[k].asString(); };
+    // What changes the serialised document; `call` marks it itself when it toggles an attribute.
+    if (kind != "canvas" && kind != "call" && !(kind == "prop" && (str("name") == "scrollTop" || str("name") == "scrollLeft"))) document_changed_ = true;
     if (kind == "el") {
         const std::string& adopt_name = str("adopt");
         if (!adopt_name.empty()) {
@@ -1504,8 +1513,10 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         if (method == "showModal" || method == "show" || method == "showPopover") {
             for (auto& p : n->attrs) if (p.first == "open") return;
             n->attrs.emplace_back("open", "");
+            document_changed_ = true;
         } else if (method == "close" || method == "hidePopover") {
             n->attrs.erase(std::remove_if(n->attrs.begin(), n->attrs.end(), [](auto& p) { return p.first == "open"; }), n->attrs.end());
+            document_changed_ = true;
         }
         else if (method == "setPointerCapture" || method == "releasePointerCapture") {
             // The pointer id as event_json gives it out: the mouse is 1, a finger its pointer + 2.
@@ -1698,15 +1709,17 @@ void Renderer::rebuild() {
 void Renderer::build_document() {
     double t0 = now_ms();
     html_ = serialize();
+    html_stale_ = false;
     double t1 = now_ms();
     stats_.serialize_ms = t1 - t0;
     stats_.html_bytes = html_.size();
     stats_.parse_ms = 0;
     stats_.passes = 0;
     // Like the web iframe: the viewport follows the document height (100vh must not explode), converging in a few passes.
+    bool changed = false;
     for (int pass = 0; pass < MAX_PASSES; pass++) {
         double a = now_ms();
-        container_->build(html_, vp_height_);
+        changed = container_->build(html_, vp_height_) || changed;
         double b = now_ms();
         stats_.parse_ms += b - a;  // litehtml lays out inside createFromString+render; not separable
         stats_.passes++;
@@ -1717,7 +1730,7 @@ void Renderer::build_document() {
     }
     doc_height_ = std::ceil(container_->height());
     stats_.builds++;
-    dirty_ = true;
+    if (changed) dirty_ = true;
 }
 
 // ───────────────────────── animations ─────────────────────────
@@ -1766,10 +1779,9 @@ void Renderer::animate() {
     auto sampled = animator_.sample(now);
     strip_layers(sampled);
     queue_animation_events();
-    if (sampled != overrides_) {
-        overrides_ = std::move(sampled);
-        build_document();
-    }
+    // Changed overrides patch the style attributes of the document just built; only a change the
+    // patch cannot take builds again.
+    apply_overrides(std::move(sampled));
     animating_ = false;
 #endif
 }
@@ -1812,6 +1824,7 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
             stats_.builds++;
             stats_.patched++;
             dirty_ = true;
+            html_stale_ = true;
             return;
         }
     }
