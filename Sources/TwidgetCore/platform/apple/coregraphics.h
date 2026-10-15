@@ -43,6 +43,12 @@ private:
         int w = 0, h = 0;
     };
     CTLineRef make_line(const Font& f, const std::string& text, CGColorRef color);
+    /// make_line through a bounded cache keyed by font, colour and text; the caller releases it.
+    CTLineRef line(int font, const Font& f, const std::string& text, const Color* color);
+    static constexpr size_t MAX_LINES = 2048;
+    static constexpr size_t MAX_GRADIENTS = 256;
+    std::unordered_map<std::string, CTLineRef> lines_;
+    std::unordered_map<std::string, CGGradientRef> gradients_;
     CGColorRef cg_color(const Color& c);
     CGGradientRef gradient(const std::vector<Stop>& stops);
     void draw_path(CGContextRef ctx, const Path& p);

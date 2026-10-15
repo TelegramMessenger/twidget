@@ -139,6 +139,8 @@ CGPathRef vector_path(const Path& path) {
 CGBackend::CGBackend() : rgb_(CGColorSpaceCreateDeviceRGB()) {}
 
 CGBackend::~CGBackend() {
+    for (auto& [k, l] : lines_) CFRelease(l);
+    for (auto& [k, g] : gradients_) CGGradientRelease(g);
     for (auto& [_, f] : fonts_) if (f.font) CFRelease(f.font);
     for (auto& [_, i] : images_) if (i) CGImageRelease(i);
     for (auto& [_, c] : canvases_) if (c.ctx) CGContextRelease(c.ctx);
@@ -226,10 +228,31 @@ CTLineRef CGBackend::make_line(const Font& f, const std::string& text, CGColorRe
     return CTLineCreateWithAttributedString((CFAttributedStringRef)attributed.ref);
 }
 
+CTLineRef CGBackend::line(int font, const Font& f, const std::string& text, const Color* color) {
+    // A widget draws the same words in the same colours every frame: a typeset line is kept per font,
+    // colour and text, and handed out retained, as make_line's are.
+    std::string key = std::to_string(font);
+    key.push_back('\x1f');
+    if (color) key.append(reinterpret_cast<const char*>(color), sizeof(Color));
+    key.push_back('\x1f');
+    key += text;
+    if (auto it = lines_.find(key); it != lines_.end()) return (CTLineRef)CFRetain(it->second);
+    if (lines_.size() >= MAX_LINES) {
+        for (auto& [k, l] : lines_) CFRelease(l);
+        lines_.clear();
+    }
+    CGColorRef col = color ? cg_color(*color) : nullptr;
+    CTLineRef made = make_line(f, text, col);
+    if (col) CGColorRelease(col);
+    if (!made) return nullptr;
+    lines_.emplace(std::move(key), made);
+    return (CTLineRef)CFRetain(made);
+}
+
 float CGBackend::text_width(int font, const std::string& text) {
     auto it = fonts_.find(font);
     if (it == fonts_.end()) return 0;
-    CTLineRef line = make_line(it->second, text, nullptr);
+    CTLineRef line = this->line(font, it->second, text, nullptr);
     if (!line) return 0;
     double w = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
     CFRelease(line);
@@ -267,12 +290,22 @@ CGColorRef CGBackend::cg_color(const Color& c) {
 
 CGGradientRef CGBackend::gradient(const std::vector<Stop>& stops) {
     if (stops.empty()) return nullptr;
+    // Compiled once per set of stops, handed out retained.
+    std::string key(reinterpret_cast<const char*>(stops.data()), stops.size() * sizeof(Stop));
+    if (auto it = gradients_.find(key); it != gradients_.end()) return CGGradientRetain(it->second);
+    if (gradients_.size() >= MAX_GRADIENTS) {
+        for (auto& [k, g] : gradients_) CGGradientRelease(g);
+        gradients_.clear();
+    }
     std::vector<CGFloat> comps, locs;
     for (const Stop& s : stops) {
         comps.insert(comps.end(), {s.color.r / 255.0, s.color.g / 255.0, s.color.b / 255.0, s.color.a / 255.0});
         locs.push_back(std::clamp(s.offset, 0.0f, 1.0f));
     }
-    return CGGradientCreateWithColorComponents(rgb_, comps.data(), locs.data(), stops.size());
+    CGGradientRef made = CGGradientCreateWithColorComponents(rgb_, comps.data(), locs.data(), stops.size());
+    if (!made) return nullptr;
+    gradients_.emplace(std::move(key), made);
+    return CGGradientRetain(made);
 }
 
 namespace {
@@ -538,14 +571,12 @@ void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint
         case Cmd::Text: {
             auto it = fonts_.find(c.font);
             if (it == fonts_.end()) break;
-            CGColorRef col = cg_color(c.color);
-            CTLineRef line = make_line(it->second, c.text, col);
+            CTLineRef line = this->line(c.font, it->second, c.text, &c.color);
             if (line) {
                 CGContextSetTextPosition(ctx, c.x, c.y);
                 CTLineDraw(line, ctx);
                 CFRelease(line);
             }
-            CGColorRelease(col);
             break;
         }
         case Cmd::Image: {
@@ -762,7 +793,7 @@ void CGBackend::canvas_paint(CGContextRef ctx, const CanvasOp& op) {
     case CanvasOp::Text: {
         auto it = fonts_.find(op.font);
         if (it == fonts_.end() || op.scale_x == 0 || std::fabs(m.a * m.d - m.b * m.c) < 1e-12) return;
-        CTLineRef line = make_line(it->second, op.text, nullptr);
+        CTLineRef line = this->line(op.font, it->second, op.text, nullptr);
         if (!line) return;
         CGContextSaveGState(ctx);
         CGContextConcatCTM(ctx, m);
