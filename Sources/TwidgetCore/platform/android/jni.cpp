@@ -354,6 +354,15 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     return new_string(env, guarded<std::string>(h, "null", "damage", [&](Handle& hd) { return hd.renderer->damage_json(); }));
 }
 
+/// Drops caches that are made again on demand: onTrimMemory, or a widget scrolled away.
+JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_trim(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    guarded<int>(h, 0, "trim", [&](Handle& hd) {
+        hd.renderer->trim();
+        return 0;
+    });
+}
+
 /// The layers above the last displayList (src/compositor.h, to_json(Composition)).
 JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_composition(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);

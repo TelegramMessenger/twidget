@@ -100,6 +100,9 @@ public:
     /// Where the last `paint()` differs from the one before, in CSS px; false when everything must be
     /// painted (the first paint, a new size). Empty when nothing moved.
     bool damage(std::vector<Rect>& out) const;
+    /// Drops caches that are made again on demand, for memory pressure or a widget off screen; the
+    /// next paint is a whole one.
+    void trim();
     /// damage() as JSON for the C ABI: `null` (paint everything) or `[[x, y, w, h], ...]`.
     std::string damage_json() const;
     const BuildStats& stats() const { return stats_; }

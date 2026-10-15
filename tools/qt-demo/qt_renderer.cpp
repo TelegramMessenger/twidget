@@ -112,6 +112,10 @@ void QtRenderer::key(const std::string& type, const std::string& key, const std:
 }
 
 void QtRenderer::setVisible(bool visible) {
+    if (!visible) {
+        std::lock_guard l(mutex_);
+        if (!destroyed_) core_->trim();
+    }
     {
         std::lock_guard l(clockMutex_);
         visible_ = visible;

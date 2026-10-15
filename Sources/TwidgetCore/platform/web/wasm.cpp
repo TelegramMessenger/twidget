@@ -274,6 +274,10 @@ EMSCRIPTEN_KEEPALIVE char* twl_damage(Handle* h) {
     return ret_string(h->renderer->damage_json());
 }
 
+EMSCRIPTEN_KEEPALIVE void twl_trim(Handle* h) {
+    if (h) h->renderer->trim();
+}
+
 EMSCRIPTEN_KEEPALIVE char* twl_stats(Handle* h) {
     if (!h) return ret_string("{}");
     const auto& s = h->renderer->stats();

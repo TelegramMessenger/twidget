@@ -119,6 +119,9 @@ private:
     // collects the ones a widget dropped, rather than the newest being refused.
     std::map<int, Gradient> gradients_;
     bool color_of(const std::string& text, Color& out);
+public:
+    void trim() { colors_.clear(); }
+private:
     std::unordered_map<std::string, std::optional<Color>> colors_;
     std::map<int, Builder> paths_;
 };

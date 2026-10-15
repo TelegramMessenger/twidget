@@ -622,6 +622,10 @@ int main() {
         d.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":6,"name":"z-index","value":"2"},{"op":"style","id":7,"name":"z-index","value":"1"}]})"));
         d.paint();
         check(d.damage(rects) && covers(105, 15, 15, 15), "boxes that swap paint order damage where they overlap");
+        std::string before = to_json(d.paint());
+        d.trim();
+        std::string after = to_json(d.paint());
+        check(!d.damage(rects) && after == before, "after a trim the next paint is whole, and the same");
     }
 
     // ── height bound ──

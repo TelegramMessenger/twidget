@@ -524,6 +524,29 @@ public:
         }
         return false;
     }
+    /// Lets go of what is made again on demand: fonts no document holds, measured widths, the paint
+    /// trace and what was worked out from it, the declaration scans.
+    void trim() {
+        for (auto it = faces_.begin(); it != faces_.end();) {
+            if (it->second->uses == 0) {
+                backend_.delete_font(it->second->handle);
+                it = faces_.erase(it);
+            } else {
+                it->second->widths.clear();
+                ++it;
+            }
+        }
+        trace_.clear();
+        trace_.shrink_to_fit();
+        trace_key_ = {};
+        cover_.clear();
+        cover_.shrink_to_fit();
+        cover_index_.clear();
+        cover_trace_ = nullptr;
+#ifdef TW_LITEHTML_TWIDGET
+        scans_.clear();
+#endif
+    }
     /// The document was laid out at the current width and viewport: a patch can go straight in.
     bool can_patch() const { return doc_ && float(r_.width_) == rendered_width_; }
     /// Attribute values and sole texts into the document in place (the fork's holes), relaying out
@@ -2619,6 +2642,15 @@ DisplayList Renderer::paint() {
     painted_size_ = {px_width(), px_height()};
     canvases_drawn_.clear();
     return list;
+}
+
+void Renderer::trim() {
+    container_->trim();
+    for (auto& [id, canvas] : canvases_) canvas->trim();
+    // The paint summary goes too: the next paint is painted whole.
+    painted_ = PaintSummary{};
+    painted_valid_ = false;
+    declared_generation_ = 0;
 }
 
 bool Renderer::damage(std::vector<Rect>& out) const {

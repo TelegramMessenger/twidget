@@ -59,6 +59,8 @@ char *twl_display_list(twl_renderer *handle);
 /// Where the last display list differs from the one before, CSS px: `[[x, y, w, h], ...]`, or `null`
 /// when everything must be painted. A host keeps its last frame and repaints only these areas.
 char *twl_damage(twl_renderer *handle);
+/// Drops caches that are made again on demand: on memory pressure, or when the widget goes off screen.
+void twl_trim(twl_renderer *handle);
 /// Diagnostics: the last rebuild as JSON (`serializeMs`, `parseLayoutMs`, `passes`, `htmlBytes`, `builds`, `displayOps`). Release with twl_string_free.
 char *twl_stats(twl_renderer *handle);
 /// Diagnostics: the HTML the document was last built from. Release with twl_string_free.

@@ -152,6 +152,10 @@ void MacRenderer::key(const std::string& type, const std::string& key, const std
 }
 
 void MacRenderer::setVisible(bool visible) {
+    if (!visible) {
+        std::lock_guard l(mutex_);
+        if (!destroyed_) core_->trim();
+    }
     {
         std::lock_guard l(clockMutex_);
         visible_ = visible;

@@ -42,6 +42,8 @@ internal object LitehtmlNative {
     external fun displayList(handle: Long): String
     /** Where the last displayList differs from the one before: `[[x, y, w, h], ...]`, or "null" for all. */
     external fun damage(handle: Long): String
+    /** Drops caches that are made again on demand: from onTrimMemory, or for a widget scrolled away. */
+    external fun trim(handle: Long)
     /** The last rebuild as JSON: serializeMs, parseLayoutMs, passes, htmlBytes, builds, displayOps. */
     external fun stats(handle: Long): String
 }
