@@ -107,8 +107,10 @@ public:
     /// Layouts of the document so far: full renders after a parse, a patch or a restyle that moved boxes.
     uint64_t layouts() const;
     /// The HTML of the last build (diagnostics).
-    /// The document as HTML; serialised again when style patches changed it since the last build.
-    const std::string& last_html() const {
+    /// The document as HTML, built first when a batch is waiting for its frame, and serialised again
+    /// when style patches changed it since the last build.
+    const std::string& last_html() {
+        if (stale_) settle(pending_events_);
         if (html_stale_) {
             html_ = serialize();
             html_stale_ = false;
@@ -153,6 +155,8 @@ private:
     void serialize_node(const Node* n, std::string& out) const;
     /// `patch`: an ops batch, which may go into the document in place (patch_document).
     void rebuild(bool patch = false);
+    /// Builds a document a coalesced batch left stale.
+    void settle(std::vector<twidget::Json>& out);
     void report_size(std::vector<twidget::Json>& out);
     // queries & events
     twidget::Json answer(const twidget::Json& q);
@@ -226,6 +230,8 @@ private:
     double doc_height_ = 0;
     bool dirty_ = true;
     bool document_changed_ = false;
+    bool stale_ = false;  // ops applied, the build waits for the next frame
+    double last_input_ = -1e9;
     DisplayList paint_document();
     PaintSummary painted_;
     bool painted_valid_ = false;

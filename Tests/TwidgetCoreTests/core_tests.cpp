@@ -83,6 +83,8 @@ const char* PAGE = R"({"type":"ops","ops":[
 } // namespace
 
 int main() {
+    // Unbuffered: a crash still shows the last check that ran.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     StubBackend backend;
     Renderer r(300, 1, false, backend);
     r.receive(parse(PAGE));
@@ -563,6 +565,27 @@ int main() {
                   "a fill carries its paint, blend mode and clip, and no alpha when opaque");
             check(c[size_t(1)]["px"].asString() == "AQIDBA==", "putImageData pixels are base64");
         }
+    }
+
+    // ── coalescing ──
+    {
+        StubBackend cb2;
+        Renderer c(300, 1, false, cb2);
+        c.receive(parse(PAGE));
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":12,"name":"class","value":"spin"}]})"));
+        int builds = c.stats().builds;
+        for (int i = 0; i < 3; i++) c.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":4,"name":"padding-top","value":")" + std::to_string(1 + i) + R"(px"}]})"));
+        check(c.stats().builds == builds && c.wants_tick(), "while something animates, batches wait for the frame");
+        int patched = c.stats().in_place, serialised = c.stats().builds - c.stats().patched;
+        c.tick();
+        // One build of the three batches (in place), and the animation's own style patches.
+        check(c.stats().in_place == patched + 1 && c.stats().builds - c.stats().patched == serialised, "and the frame builds them once, in place");
+        c.touch(0, 250, 250, 0, true, true, 0);
+        int before = c.stats().builds;
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"width","value":"90px"}]})"));
+        check(c.stats().builds > before, "a batch right after input builds at once");
+        double width = c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
+        check(width == 90, "and a query sees it (" + std::to_string(width) + ")");
     }
 
     // ── damage ──

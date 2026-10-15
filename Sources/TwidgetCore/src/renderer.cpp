@@ -245,6 +245,8 @@ constexpr double MAX_LAYER_PIXELS = 4096.0 * 4096.0;
 constexpr double MIN_LAYER_SPAN = 0.1;
 constexpr float LAYER_MARGIN = 48;
 constexpr double DOUBLE_CLICK_MS = 500;
+/// After user input, ops batches build at once: they likely answer it.
+constexpr double INPUT_IMMEDIATE_S = 0.25;
 /// Backend fonts kept for documents to come, beyond those a document holds.
 constexpr size_t MAX_FACES = 256;
 
@@ -1453,15 +1455,21 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
+        // Ticking already (something animates), a batch waits for the frame: a script sending several a
+        // frame builds once. Input wants its answer now.
+        bool coalesce = wants_tick() && now_s() - last_input_ > INPUT_IMMEDIATE_S;
         document_changed_ = false;
         for (const Json& op : msg["ops"].arr()) apply_op(op, out);
         // A batch of canvas drawing, scrolling or focus leaves the document as it was: its canvases
         // repaint (run_canvas marks the paint dirty) without a build.
-        if (document_changed_) {
+        if (document_changed_ && coalesce) {
+            stale_ = true;
+        } else if (document_changed_ || stale_) {
             rebuild(true);
             report_size(out);
         }
     } else if (type == "query") {
+        settle(out);
         Json res = Json::object();
         binary_.clear();
         res.set("type", "result").set("qid", msg["qid"]);
@@ -1470,6 +1478,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         binary_.clear();
         out.push_back(std::move(res));
     } else if (type == "anim") {
+        settle(out);
         if (!frozen_) {
             // `now` is the sandbox clock when the batch was sent: it maps the records' start times onto ours.
             double now = now_ms();
@@ -1892,7 +1901,14 @@ std::string Renderer::serialize() const {
     return out;
 }
 
+void Renderer::settle(std::vector<Json>& out) {
+    if (!stale_) return;
+    rebuild(true);
+    report_size(out);
+}
+
 void Renderer::rebuild(bool patch) {
+    stale_ = false;
     build_document(patch);
     animate();
 }
@@ -2156,6 +2172,7 @@ void Renderer::queue_animation_events() {
 
 std::vector<Json> Renderer::tick() {
     std::vector<Json> out;
+    settle(out);
     flush_moves(out);
     double now = now_s();
     if (!frozen_ && (animator_.active(now) || now >= wake_at_)) {
@@ -2171,7 +2188,7 @@ std::vector<Json> Renderer::tick() {
 }
 
 bool Renderer::wants_tick() const {
-    return !frozen_ && (!pending_moves_.empty() || animator_.active(now_s(), layer_ids_));
+    return !frozen_ && (stale_ || !pending_moves_.empty() || animator_.active(now_s(), layer_ids_));
 }
 
 double Renderer::next_tick_in() const {
@@ -2541,6 +2558,8 @@ void Renderer::report_size(std::vector<Json>& out) {
 }
 
 DisplayList Renderer::paint() {
+    // Messages from a build here go out with the next ones.
+    settle(pending_events_);
     DisplayList list = paint_document();
     // What changed against the last paint, for a platform to repaint only that.
     PaintSummary summary = summarize(list);
@@ -2952,6 +2971,8 @@ std::vector<int64_t> Renderer::chain(int64_t id) const {
 
 std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, bool primary, bool mouse, int modifiers) {
     std::vector<Json> out;
+    last_input_ = now_s();
+    settle(out);
     if (frozen_) return out;
     if (action == 0) {
         Touch t{x, y, x, y, 0, Rect{}, false, primary, pointer, mouse, modifiers};
@@ -3036,6 +3057,8 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
 
 std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers) {
     std::vector<Json> out;
+    last_input_ = now_s();
+    settle(out);
     if (frozen_) return out;
     auto box = [this](int64_t id) { return box_of(id); };
     Input in;
@@ -3092,6 +3115,8 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
 
 std::vector<Json> Renderer::wheel(double x, double y, double dx, double dy, int mode, int modifiers) {
     std::vector<Json> out;
+    last_input_ = now_s();
+    settle(out);
     if (frozen_) return out;
     Rect rect;
     int64_t target = widget_id_at(x, y, &rect);
@@ -3110,6 +3135,8 @@ std::vector<Json> Renderer::wheel(double x, double y, double dx, double dy, int 
 
 std::vector<Json> Renderer::key(const std::string& type, const std::string& key, const std::string& code, bool repeat, int modifiers) {
     std::vector<Json> out;
+    last_input_ = now_s();
+    settle(out);
     if (frozen_ || (type != "keydown" && type != "keyup")) return out;
     int64_t target = body_node_->id ? body_node_->id : html_node_->id;
     if (!target) return out;
