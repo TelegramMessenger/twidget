@@ -565,6 +565,18 @@ int main() {
         }
     }
 
+    // ── height bound ──
+    {
+        StubBackend hb2;
+        Renderer t(300, 1, false, hb2);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"div","attrs":[["style","height:2000px"]]},{"op":"ins","parent":4,"id":5,"before":null}]})"));
+        check(t.viewport_height() == 900, "a widget stops at 900 px unless the host says otherwise");
+        std::vector<Json> out;
+        t.set_max_height(3000, out);
+        check(t.viewport_height() == 2000 && !out.empty(), "a host's own bound lets it grow to its content");
+    }
+
     // ── font cache ──
     {
         StubBackend fb;

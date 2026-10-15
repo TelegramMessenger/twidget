@@ -28,7 +28,8 @@ namespace twlite {
 namespace {
 
 constexpr double MIN_HEIGHT = 24.0;
-constexpr double MAX_HEIGHT = 900.0;
+/// The tallest a host may let a widget grow: past this a document is a runaway, not content.
+constexpr double HEIGHT_CEILING = 16384.0;
 constexpr int MAX_PASSES = 4;
 /// A finger jitters a few px during a tap (see renderer.rs TAP_SLOP): moves inside this radius are not forwarded.
 constexpr double TAP_SLOP = 8.0;
@@ -1502,6 +1503,14 @@ void Renderer::set_width(double width, std::vector<Json>& out) {
     report_size(out);
 }
 
+void Renderer::set_max_height(double height, std::vector<Json>& out) {
+    height = std::clamp(height, MIN_HEIGHT, HEIGHT_CEILING);
+    if (height == max_height_) return;
+    max_height_ = height;
+    rebuild();
+    report_size(out);
+}
+
 void Renderer::set_theme(bool dark, std::vector<Json>& out) {
     if (dark == dark_) return;
     dark_ = dark;
@@ -1916,7 +1925,7 @@ void Renderer::build_document(bool patch) {
         stats_.parse_ms += b - a;  // litehtml lays out inside createFromString+render; not separable
         stats_.passes++;
         if (pass == 0 && container_->patched()) stats_.patched++;
-        int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, MAX_HEIGHT)));
+        int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
         if (h == vp_height_) break;
         bool again = container_->depends_on_viewport_height(html_);
         vp_height_ = h;
@@ -2007,7 +2016,7 @@ bool Renderer::patch_document() {
         changes.push_back(std::move(change));
     }
     if (!container_->patch(changes)) return false;
-    int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, MAX_HEIGHT)));
+    int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
     // A new height moves the viewport: when the layout depends on it, the full path settles that, with
     // the patch already in. Style sheets only change through that path, so html_'s are current.
     if (h != vp_height_) {
@@ -2114,7 +2123,7 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
     }
     double t0 = now_ms();
     if (ok && container_->restyle(patches)) {
-        int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, MAX_HEIGHT)));
+        int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
         if (h == vp_height_) {
             doc_height_ = std::ceil(container_->height());
             stats_.parse_ms = now_ms() - t0;

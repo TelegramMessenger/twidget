@@ -89,6 +89,14 @@ char* twl_set_width(twl_renderer* h, double width) {
     }));
 }
 
+char* twl_set_max_height(twl_renderer* h, double height) {
+    return ret_string(guarded<std::string>(h, "[]", "set_max_height", [&](twlite::Renderer& r) {
+        std::vector<Json> out;
+        r.set_max_height(height, out);
+        return messages(out);
+    }));
+}
+
 char* twl_set_theme(twl_renderer* h, const char* theme) {
     return ret_string(guarded<std::string>(h, "[]", "set_theme", [&](twlite::Renderer& r) {
         std::vector<Json> out;

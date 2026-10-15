@@ -172,6 +172,13 @@ EMSCRIPTEN_KEEPALIVE char* twl_set_width(Handle* h, double width) {
     return ret_string(messages(out));
 }
 
+EMSCRIPTEN_KEEPALIVE char* twl_set_max_height(Handle* h, double height) {
+    if (!h) return ret_string("[]");
+    std::vector<Json> out;
+    h->renderer->set_max_height(height, out);
+    return ret_string(messages(out));
+}
+
 EMSCRIPTEN_KEEPALIVE char* twl_set_theme(Handle* h, const char* theme) {
     if (!h) return ret_string("[]");
     std::vector<Json> out;

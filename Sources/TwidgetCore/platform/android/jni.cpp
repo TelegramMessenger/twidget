@@ -277,6 +277,15 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     }));
 }
 
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setMaxHeight(JNIEnv* env, jclass, jlong h, jdouble height) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "setMaxHeight", [&](Handle& hd) {
+        std::vector<Json> out;
+        hd.renderer->set_max_height(height, out);
+        return messages(out);
+    }));
+}
+
 JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setTheme(JNIEnv* env, jclass, jlong h, jstring theme) {
     EnvScope scope(env);
     bool dark = get_string(env, theme) == "dark";

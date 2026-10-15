@@ -12,6 +12,7 @@ internal object LitehtmlNative {
     /** Host → renderer JSON message; returns a JSON array of renderer → host messages. */
     external fun receive(handle: Long, json: String): String
     external fun setWidth(handle: Long, widthDp: Double): String
+    external fun setMaxHeight(handle: Long, heightDp: Double): String
     external fun setTheme(handle: Long, theme: String): String
     /** action: 0 down, 1 move, 2 up, 3 cancel; coordinates in CSS px. Returns renderer → host messages. */
     external fun touch(handle: Long, action: Int, x: Double, y: Double, pointer: Int, primary: Boolean): String

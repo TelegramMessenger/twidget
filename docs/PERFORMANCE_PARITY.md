@@ -41,7 +41,7 @@ Found by running the macOS demo against the Swift renderer with the `widget-stre
 | # | Item | Apple | TwidgetCore before | Status |
 |---|---|---|---|---|
 | 21 | **Canvas-market charts** show a flat fill instead of their content, in replay and live. | correct | wrong | open: needs the fixture |
-| 22 | **Configurable height bound.** A chat host needs a bounded height of its own choosing; the core stops at a fixed 900 CSS px. | host-configured | `MAX_HEIGHT` constant | open |
+| 22 | **Configurable height bound.** A chat host needs a bounded height of its own choosing; the core stops at a fixed 900 CSS px. | host-configured | `MAX_HEIGHT` constant | done: Renderer::set_max_height (900 by default, up to 16384), twl_set_max_height on Apple and the web, setMaxHeight over JNI |
 | 23 | **Layer budget and nesting.** 256 layers; nested animated elements and their overlapping labels promoted together (dense overlap promotion, b3670ec). | `WidgetCompositor.swift` | 64 layers; an animated ancestor or descendant rules a layer out | partly: 256 layers and overlap promotion (up to 3 still layers over a wanted one) done; nested layers need a parent link in Composition and every player (23b), open |
 | 24 | **CoreGraphics caches.** Bounded canvas text and compiled-gradient caches (b3670ec); text lines and gradients made once. | `WidgetCanvas.swift` | `CGBackend` creates lines and gradients per draw | open |
 | 25 | **Collapsed transforms** clip to nothing instead of inverting a singular matrix (d2832ed). | `LHContainer.mm` | not affected: clips are recorded in the group's own space and painters only concatenate the matrix, never invert it | n/a |

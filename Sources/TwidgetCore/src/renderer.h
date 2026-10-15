@@ -53,6 +53,9 @@ public:
     /// Host → renderer message (parsed JSON). Returns renderer → host messages.
     std::vector<twidget::Json> receive(const twidget::Json& msg);
     void set_width(double width, std::vector<twidget::Json>& out);
+    /// The tallest the widget may grow, in CSS px (900 unless the host says otherwise); past it the
+    /// document is cut off. A chat that scrolls tall widgets sets its own bound.
+    void set_max_height(double height, std::vector<twidget::Json>& out);
     /// The chat theme changed: `prefers-color-scheme` inside the document follows.
     void set_theme(bool dark, std::vector<twidget::Json>& out);
     /// A pointer from the host view, in CSS px. `action`: 0 down, 1 move, 2 up, 3 cancel. A mouse
@@ -218,6 +221,7 @@ private:
     double doc_height_ = 0;
     bool dirty_ = true;
     bool document_changed_ = false;
+    double max_height_ = 900;
     PatchLog patch_log_;
     // What changed since the last paint, for layers to keep their content: the elements patched, or
     // everything (a build, a layout, hover state).

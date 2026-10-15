@@ -22,6 +22,8 @@ void twl_destroy(twl_renderer *handle);
 /// Host → renderer message (JSON, docs/protocol.md). Returns a JSON array of renderer → host messages.
 char *twl_receive(twl_renderer *handle, const char *json);
 char *twl_set_width(twl_renderer *handle, double width);
+/// The tallest the widget may grow, in CSS px; 900 until set.
+char *twl_set_max_height(twl_renderer *handle, double height);
 char *twl_set_theme(twl_renderer *handle, const char *theme);
 /// A touch in CSS px. action: 0 down, 1 move, 2 up, 3 cancel. Returns renderer → host messages.
 char *twl_touch(twl_renderer *handle, int32_t action, double x, double y, int32_t pointer, bool primary);
