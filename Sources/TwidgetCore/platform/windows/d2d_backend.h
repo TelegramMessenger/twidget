@@ -37,6 +37,9 @@ namespace twlite
         void trim();
         size_t cached_rasters() const { return m_rasters.size(); }
 
+        // The DirectWrite family a CSS family list draws with; a platform editor over a text control takes it too.
+        std::wstring resolve_family(const std::string& families);
+
     private:
         struct Layout
         {
@@ -61,7 +64,6 @@ namespace twlite
         // when missing. False when it cannot be rastered: the transform turns it, or it is too large.
         bool draw_raster(ID2D1DeviceContext* ctx, const Command& push, std::span<const Command> inner);
         const Layout* layout(Face& face, const std::string& text);
-        std::wstring resolve_family(const std::string& families);
         winrt::com_ptr<ID2D1Geometry> rounded(const Rect& r, const Radii& q);
         winrt::com_ptr<ID2D1GradientStopCollection> stops(const std::vector<Stop>& stops);
         void conic(const Command& c);
