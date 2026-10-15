@@ -1293,6 +1293,7 @@ Renderer::~Renderer() {
 double Renderer::now_s() { return now_ms() / 1000; }
 
 uint32_t Renderer::px_width() const { return uint32_t(std::ceil(width_ * dpr_)); }
+uint64_t Renderer::layouts() const { return container_->layouts(); }
 uint32_t Renderer::px_height() const { return uint32_t(std::ceil(vp_height_ * dpr_)); }
 
 std::vector<Json> Renderer::receive(const Json& msg) {

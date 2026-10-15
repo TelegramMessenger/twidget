@@ -91,6 +91,8 @@ public:
     /// Records the current document into a display list (clears `dirty`).
     DisplayList paint();
     const BuildStats& stats() const { return stats_; }
+    /// Layouts of the document so far: full renders after a parse, a patch or a restyle that moved boxes.
+    uint64_t layouts() const;
     /// The HTML of the last build (diagnostics).
     const std::string& last_html() const { return html_; }
 
