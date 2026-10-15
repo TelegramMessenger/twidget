@@ -44,6 +44,83 @@ bool litehtml::render_item::same_layout_input(const layout_entry& entry, const c
            c.context_idx == cb.context_idx && c.size_mode == cb.size_mode;
 }
 
+bool litehtml::render_item::same_resolved_layout_input(const layout_entry& entry,
+                                                       const containing_block_context& cb, bool second_pass)
+{
+    if(!entry.valid || entry.second_pass != second_pass ||
+       entry.cb.size_mode != containing_block_context::size_mode_normal ||
+       cb.size_mode != containing_block_context::size_mode_normal ||
+       entry.cb.context_idx != cb.context_idx)
+        return false;
+    const auto& style = css();
+    auto fixed = [](const css_length& value) {
+        return !value.is_predefined() && value.units() == css_units_px && std::isfinite(value.val());
+    };
+    if(style.get_display() != display_flex || style.get_position() != element_position_static ||
+       style.get_float() != float_none || !src_el()->is_block_formatting_context() ||
+       !fixed(style.get_width()) || !fixed(style.get_height()) ||
+       style.get_width().val() <= 0 || style.get_height().val() <= 0)
+        return false;
+    const auto& margin = style.get_margins();
+    const auto& padding = style.get_padding();
+    const auto& border = style.get_borders();
+    for(const auto* value : {&margin.left, &margin.right, &margin.top, &margin.bottom,
+                             &padding.left, &padding.right, &padding.top, &padding.bottom,
+                             &border.left.width, &border.right.width, &border.top.width, &border.bottom.width})
+        if(!fixed(*value))
+            return false;
+    for(const auto* value : {&style.get_min_width(), &style.get_max_width(),
+                             &style.get_min_height(), &style.get_max_height()})
+        if(!value->is_predefined())
+            return false;
+    if(getenv("LH_NO_FIXED_LAYOUT_REUSE"))
+        return false;
+    for(const auto* context : {&entry.cb, &cb})
+        for(const auto* value : {&context->width, &context->render_width, &context->height})
+            if(!std::isfinite(value->value.value()))
+                return false;
+    if(m_resolved_layout_safe < 0)
+    {
+        m_resolved_layout_safe = 1;
+        std::vector<render_item*> pending{this};
+        size_t count = 0;
+        while(!pending.empty())
+        {
+            render_item* item = pending.back();
+            pending.pop_back();
+            if(++count > 256 || item->css().get_position() != element_position_static ||
+               item->css().get_float() != float_none || item->src_el()->has_external_intrinsic_size())
+            {
+                m_resolved_layout_safe = 0;
+                break;
+            }
+            for(const auto& child : item->children())
+            {
+                if(pending.size() + count >= 256)
+                {
+                    m_resolved_layout_safe = 0;
+                    break;
+                }
+                pending.push_back(child.get());
+            }
+            if(!m_resolved_layout_safe)
+                break;
+        }
+    }
+    if(!m_resolved_layout_safe)
+        return false;
+    auto before = calculate_containing_block_context(entry.cb);
+    auto after = calculate_containing_block_context(cb);
+    auto normalize = [](containing_block_context& context) {
+        for(auto* value : {&context.min_width, &context.max_width, &context.min_height, &context.max_height})
+            if(value->type == containing_block_context::cbc_value_type_none)
+                value->value = 0_px;
+    };
+    normalize(before);
+    normalize(after);
+    return same_layout_input({before, {}, second_pass, true, 0_px}, after, second_pass);
+}
+
 bool litehtml::render_item::layout_cacheable(formatting_context* fmt_ctx) const
 {
     const document* doc = src_el()->doc_ptr();
@@ -128,7 +205,9 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
         m_measured[0].valid = false;
         m_measured[1].valid = false;
     }
-    if(cacheable && layout_reusable() && same_layout_input(m_last_layout, containing_block_size, second_pass))
+    if(cacheable && layout_reusable() &&
+       (same_layout_input(m_last_layout, containing_block_size, second_pass) ||
+        same_resolved_layout_input(m_last_layout, containing_block_size, second_pass)))
     {
         m_pos     = m_last_pos;
         m_margins = m_last_margins;
@@ -153,6 +232,7 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
     if(cacheable && doc)
         doc->note_layout_miss();
 
+    m_resolved_layout_safe = -1;
     calc_outlines(containing_block_size.width);
 
     m_pos.clear();
