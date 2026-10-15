@@ -81,6 +81,23 @@ std::string to_json(const Composition& composition);
 /// A digest of everything `list` paints: equal digests paint equal pixels.
 uint64_t paint_digest(const DisplayList& list);
 
+/// A paint as damage tracking needs to keep it: for each drawing command, a key for what it draws
+/// (with the clips and groups around it) and where its pixels can land, in document coordinates.
+struct PaintSummary {
+    struct Entry {
+        uint64_t key = 0;
+        Rect ink;
+        int canvas = 0;
+    };
+    std::vector<Entry> entries;
+};
+PaintSummary summarize(const DisplayList& list);
+
+/// The areas where `after` paints differently from `before`: commands one has and the other not,
+/// commands whose paint order changed, and canvases `canvas_changed` says drew since. Merged into
+/// one area when there are many.
+bool damage_between(const PaintSummary& before, const PaintSummary& after, const std::function<bool(int canvas)>& canvas_changed, std::vector<Rect>& out);
+
 /// Bakes `sample` (the layer's key at 0..1 of the track) into linear keys: halves each span until
 /// the box's corners stray at most 0.05 px and the opacity 0.002 from the straight line. False when
 /// a sample fails or the track needs more keys than a compositor should get.

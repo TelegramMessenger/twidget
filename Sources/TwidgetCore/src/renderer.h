@@ -96,6 +96,9 @@ public:
     bool dirty() const { return dirty_; }
     /// Records the current document into a display list (clears `dirty`).
     DisplayList paint();
+    /// Where the last `paint()` differs from the one before, in CSS px; false when everything must be
+    /// painted (the first paint, a new size). Empty when nothing moved.
+    bool damage(std::vector<Rect>& out) const;
     const BuildStats& stats() const { return stats_; }
     /// Off: every batch serialises the document again. For checks that patching changes nothing.
     void set_patching(bool enabled) { patching_ = enabled; }
@@ -221,6 +224,13 @@ private:
     double doc_height_ = 0;
     bool dirty_ = true;
     bool document_changed_ = false;
+    DisplayList paint_document();
+    PaintSummary painted_;
+    bool painted_valid_ = false;
+    std::pair<uint32_t, uint32_t> painted_size_{0, 0};
+    std::vector<Rect> damage_;
+    bool damage_valid_ = false;
+    std::unordered_set<int> canvases_drawn_;
     double max_height_ = 900;
     PatchLog patch_log_;
     // What changed since the last paint, for layers to keep their content: the elements patched, or

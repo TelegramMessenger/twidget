@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <unordered_map>
 
 namespace twlite {
 
@@ -15,6 +16,8 @@ constexpr int INITIAL_SPANS = 8;
 // is played as a ramp this short.
 constexpr int MAX_DEPTH = 9;
 constexpr size_t MAX_KEYS = 1024;
+// More changed areas than this are merged into the one around them all.
+constexpr size_t MAX_DAMAGE_RECTS = 32;
 
 struct Digest {
     uint64_t h = 1469598103934665603ull;
@@ -92,52 +95,212 @@ std::vector<LayerKey> resume_track(const LayerTrack& track, double elapsed, doub
     return out;
 }
 
+namespace {
+
+void digest(Digest& d, const Command& c) {
+    d.value(c.kind);
+    d.value(c.rect);
+    d.value(c.radii);
+    d.value(c.clip);
+    d.value(c.has_clip);
+    d.value(c.color);
+    d.value(c.width);
+    d.value(c.font);
+    d.text(c.text);
+    d.value(c.x);
+    d.value(c.y);
+    d.value(c.image);
+    d.value(c.canvas);
+    d.value(c.ax);
+    d.value(c.ay);
+    d.value(c.bx);
+    d.value(c.by);
+    d.stops(c.stops);
+    d.value(c.opacity);
+    d.value(c.matrix);
+    d.value(c.hidden);
+    d.value(c.inset);
+    if (const Path* p = c.path.get()) {
+        d.bytes(p->ops.data(), p->ops.size() * sizeof(Path::Op));
+        d.bytes(p->points.data(), p->points.size() * sizeof(float));
+        d.value(p->fill);
+        d.value(p->evenodd);
+        d.value(p->fill_color);
+        d.value(p->gradient);
+        float g[7] = {p->x1, p->y1, p->x2, p->y2, p->r, p->fx, p->fy};
+        d.value(g);
+        d.stops(p->stops);
+        d.value(p->stroke);
+        d.value(p->stroke_color);
+        d.value(p->stroke_width);
+        d.value(p->line_cap);
+        d.value(p->line_join);
+        d.value(p->miter_limit);
+        d.bytes(p->dashes.data(), p->dashes.size() * sizeof(float));
+        d.value(p->dash_offset);
+    }
+}
+
+/// Where a drawing command can put pixels, in its own space; empty for the commands that only set
+/// up clips and groups.
+Rect ink_of(const Command& c) {
+    auto grow = [](Rect r, float by) { return Rect{r.x - by, r.y - by, r.w + 2 * by, r.h + 2 * by}; };
+    switch (c.kind) {
+    case Cmd::FillRect:
+    case Cmd::FillEllipse:
+    case Cmd::Image:
+    case Cmd::Linear:
+    case Cmd::Radial:
+    case Cmd::Conic:
+        return grow(c.rect, 1);
+    case Cmd::StrokeRect:
+    case Cmd::StrokeEllipse:
+        return grow(c.rect, c.width / 2 + 1);
+    case Cmd::Text: {
+        // Glyphs overhang their advance (italics, swashes): a quarter of the line on each side.
+        float size = std::max(c.rect.h, 1.0f);
+        return grow(c.rect, size / 4 + 1);
+    }
+    case Cmd::Shadow:
+        return grow(c.rect, c.bx * 1.5f + std::fabs(c.by) + std::max(std::fabs(c.ax), std::fabs(c.ay)) + 2);
+    case Cmd::Path: {
+        const Path* p = c.path.get();
+        if (!p || p->points.size() < 2) return {};
+        float x0 = p->points[0], y0 = p->points[1], x1 = x0, y1 = y0;
+        for (size_t i = 0; i + 1 < p->points.size(); i += 2) {
+            x0 = std::min(x0, p->points[i]);
+            x1 = std::max(x1, p->points[i]);
+            y0 = std::min(y0, p->points[i + 1]);
+            y1 = std::max(y1, p->points[i + 1]);
+        }
+        float reach = p->stroke ? p->stroke_width * std::max(p->miter_limit, 1.0f) / 2 : 0;
+        return grow(Rect{x0, y0, x1 - x0, y1 - y0}, reach + 1);
+    }
+    default:
+        return {};
+    }
+}
+
+Rect transformed(const Rect& r, const Affine& m) {
+    if (m == Affine{}) return r;
+    float xs[4] = {r.x, r.x + r.w, r.x, r.x + r.w}, ys[4] = {r.y, r.y, r.y + r.h, r.y + r.h};
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int i = 0; i < 4; i++) {
+        float x = m.apply_x(xs[i], ys[i]), y = m.apply_y(xs[i], ys[i]);
+        x0 = std::min(x0, x);
+        y0 = std::min(y0, y);
+        x1 = std::max(x1, x);
+        y1 = std::max(y1, y);
+    }
+    return Rect{x0, y0, x1 - x0, y1 - y0};
+}
+
+} // namespace
+
 uint64_t paint_digest(const DisplayList& list) {
     Digest d;
-    for (const Command& c : list) {
-        d.value(c.kind);
-        d.value(c.rect);
-        d.value(c.radii);
-        d.value(c.clip);
-        d.value(c.has_clip);
-        d.value(c.color);
-        d.value(c.width);
-        d.value(c.font);
-        d.text(c.text);
-        d.value(c.x);
-        d.value(c.y);
-        d.value(c.image);
-        d.value(c.canvas);
-        d.value(c.ax);
-        d.value(c.ay);
-        d.value(c.bx);
-        d.value(c.by);
-        d.stops(c.stops);
-        d.value(c.opacity);
-        d.value(c.matrix);
-        d.value(c.hidden);
-        d.value(c.inset);
-        if (const Path* p = c.path.get()) {
-            d.bytes(p->ops.data(), p->ops.size() * sizeof(Path::Op));
-            d.bytes(p->points.data(), p->points.size() * sizeof(float));
-            d.value(p->fill);
-            d.value(p->evenodd);
-            d.value(p->fill_color);
-            d.value(p->gradient);
-            float g[7] = {p->x1, p->y1, p->x2, p->y2, p->r, p->fx, p->fy};
-            d.value(g);
-            d.stops(p->stops);
-            d.value(p->stroke);
-            d.value(p->stroke_color);
-            d.value(p->stroke_width);
-            d.value(p->line_cap);
-            d.value(p->line_join);
-            d.value(p->miter_limit);
-            d.bytes(p->dashes.data(), p->dashes.size() * sizeof(float));
-            d.value(p->dash_offset);
-        }
-    }
+    for (const Command& c : list) digest(d, c);
     return d.h;
+}
+
+PaintSummary summarize(const DisplayList& list) {
+    PaintSummary out;
+    out.entries.reserve(list.size());
+    // What a command draws depends on the clips and groups around it: its key carries them.
+    struct Frame {
+        uint64_t context;
+        Affine matrix;
+        bool hidden;
+    };
+    std::vector<Frame> stack{{1469598103934665603ull, Affine{}, false}};
+    for (const Command& c : list) {
+        Digest d;
+        d.value(stack.back().context);
+        digest(d, c);
+        switch (c.kind) {
+        case Cmd::ClipPush:
+            stack.push_back({d.h, stack.back().matrix, stack.back().hidden});
+            continue;
+        case Cmd::GroupPush: {
+            Affine own{c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]};
+            stack.push_back({d.h, stack.back().matrix * own, stack.back().hidden || c.hidden || c.opacity <= 0});
+            continue;
+        }
+        case Cmd::ClipPop:
+        case Cmd::GroupPop:
+            if (stack.size() > 1) stack.pop_back();
+            continue;
+        default:
+            break;
+        }
+        PaintSummary::Entry e;
+        e.key = d.h;
+        e.canvas = c.canvas;
+        if (!stack.back().hidden) e.ink = transformed(ink_of(c), stack.back().matrix);
+        out.entries.push_back(e);
+    }
+    return out;
+}
+
+bool damage_between(const PaintSummary& before, const PaintSummary& after, const std::function<bool(int canvas)>& canvas_changed, std::vector<Rect>& out) {
+    out.clear();
+    const auto& a = before.entries;
+    const auto& b = after.entries;
+    auto add = [&](const Rect& r) {
+        if (r.w > 0 && r.h > 0) out.push_back(r);
+    };
+    // What both start and end with paints the same, unless a canvas behind it drew again.
+    size_t head = 0;
+    while (head < a.size() && head < b.size() && a[head].key == b[head].key) head++;
+    size_t tail = 0;
+    while (tail < a.size() - head && tail < b.size() - head && a[a.size() - 1 - tail].key == b[b.size() - 1 - tail].key) tail++;
+    // The middle: commands matched by key, in order where they can be; the rest painted anew.
+    std::unordered_map<uint64_t, std::vector<size_t>> waiting;
+    for (size_t i = a.size() - tail; i-- > head;) waiting[a[i].key].push_back(i);
+    std::vector<char> matched(a.size(), 0);
+    std::vector<std::pair<size_t, size_t>> pairs;  // (after, before)
+    for (size_t j = head; j < b.size() - tail; j++) {
+        auto it = waiting.find(b[j].key);
+        if (it == waiting.end() || it->second.empty()) {
+            add(b[j].ink);
+            continue;
+        }
+        size_t i = it->second.back();
+        it->second.pop_back();
+        matched[i] = 1;
+        pairs.emplace_back(j, i);
+    }
+    for (size_t i = head; i < a.size() - tail; i++)
+        if (!matched[i]) add(a[i].ink);
+    // Matched commands whose paint order changed: those off the longest run kept in order.
+    std::vector<size_t> run, at;  // run[k]: smallest `before` index ending a run of k + 1; at[k]: its pair
+    std::vector<long> back(pairs.size(), -1);
+    for (size_t p = 0; p < pairs.size(); p++) {
+        size_t k = size_t(std::lower_bound(run.begin(), run.end(), pairs[p].second) - run.begin());
+        if (k == run.size()) {
+            run.push_back(pairs[p].second);
+            at.push_back(p);
+        } else {
+            run[k] = pairs[p].second;
+            at[k] = p;
+        }
+        back[p] = k > 0 ? long(at[k - 1]) : -1;
+    }
+    std::vector<char> kept(pairs.size(), 0);
+    for (long p = at.empty() ? -1 : long(at.back()); p >= 0; p = back[size_t(p)]) kept[size_t(p)] = 1;
+    for (size_t p = 0; p < pairs.size(); p++)
+        if (!kept[p]) add(b[pairs[p].first].ink);
+    for (const auto& e : b)
+        if (e.canvas && canvas_changed && canvas_changed(e.canvas)) add(e.ink);
+    if (out.size() > MAX_DAMAGE_RECTS) {
+        Rect u = out[0];
+        for (const Rect& r : out) {
+            float x0 = std::min(u.x, r.x), y0 = std::min(u.y, r.y);
+            u = Rect{x0, y0, std::max(u.x + u.w, r.x + r.w) - x0, std::max(u.y + u.h, r.y + r.h) - y0};
+        }
+        out.assign(1, u);
+    }
+    return true;
 }
 
 bool bake_track(const std::function<bool(double t, LayerKey& key)>& sample, const Rect& box, std::vector<LayerKey>& keys) {

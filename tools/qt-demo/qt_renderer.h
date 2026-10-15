@@ -62,6 +62,7 @@ private:
     twlite::QtBackend backend_;
     std::unique_ptr<twlite::Renderer> core_;
     std::mutex mutex_;  // every call into core_ and backend_
+    QImage last_;       // the last frame painted, which the next one starts from
 
     // One tick per display refresh at most.
     std::mutex clockMutex_;

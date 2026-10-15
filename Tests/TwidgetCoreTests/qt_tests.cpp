@@ -208,6 +208,64 @@ static void test_canvas_through_renderer(double dpr) {
     check(near(at(image, int(50 * dpr), int(25 * dpr)), QColor(255, 0, 0)), "the canvas bitmap is painted where the element is");
 }
 
+/// Random changes painted twice, whole and over the last frame where the renderer reports damage:
+/// the same pixels every time.
+static void test_damage_repaints() {
+    QtBackend backend;
+    Renderer r(240, 1.5, false, backend);
+    std::string setup = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+        {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:13px sans-serif"]]},{"op":"el","id":5,"tag":"style"},
+        {"op":"css","id":5,"text":".b{display:inline-block;width:30px;height:20px;margin:3px;border-radius:6px;background:#39f;box-shadow:0 2px 6px rgba(0,0,0,.4)} .on{background:#f60} .d{display:inline-block;width:24px;height:16px;margin:3px;border-radius:5px;background:#3c6}"},
+        {"op":"ins","parent":3,"id":5,"before":null})";
+    // Rotation goes on boxes without text or shadow. Qt rasterises transformed glyphs differently once
+    // its glyph cache holds them, and samples a transformed image (a rotated shadow) from where each
+    // clipped span starts, so neither repeats exactly under another clip.
+    for (int i = 0; i < 16; i++) {
+        std::string e = std::to_string(100 + i), t = std::to_string(200 + i), d = std::to_string(300 + i);
+        setup += R"(,{"op":"el","id":)" + e + R"(,"tag":"span","attrs":[["class","b"],["style","opacity:1"]]},{"op":"ins","parent":4,"id":)" + e +
+                 R"(,"before":null},{"op":"text","id":)" + t + R"(,"data":"x"},{"op":"ins","parent":)" + e + R"(,"id":)" + t + R"(,"before":null})" +
+                 R"(,{"op":"el","id":)" + d + R"(,"tag":"span","attrs":[["class","d"]]},{"op":"ins","parent":4,"id":)" + d + R"(,"before":null})";
+    }
+    setup += "]}";
+    r.receive(parse(setup));
+    QTransform scale = QTransform::fromScale(1.5, 1.5);
+    QImage incremental;
+    uint32_t seed = 11;
+    auto next = [&] { return seed = seed * 1664525u + 1013904223u, seed >> 8; };
+    int same = 0, partial = 0, rounds = 120;
+    for (int round = 0; round < rounds; round++) {
+        std::string ops;
+        for (int k = 0; k < 2; k++) {
+            std::string e = std::to_string(100 + next() % 16), t = std::to_string(200 + next() % 16);
+            if (!ops.empty()) ops += ",";
+            switch (next() % 4) {
+            case 0: {
+                std::string d = std::to_string(300 + next() % 16);
+                ops += "{\"op\":\"style\",\"id\":" + e + ",\"name\":\"transform\",\"value\":\"translate(" + std::to_string(next() % 9) + "px,1px)\"},";
+                ops += "{\"op\":\"style\",\"id\":" + d + ",\"name\":\"transform\",\"value\":\"rotate(" + std::to_string(next() % 40) + "deg) scale(0.9)\"}";
+                break;
+            }
+            case 1: ops += "{\"op\":\"attr\",\"id\":" + e + ",\"name\":\"class\",\"value\":\"" + (next() % 2 ? "b" : "b on") + "\"}"; break;
+            case 2: ops += "{\"op\":\"data\",\"id\":" + t + ",\"data\":\"" + std::string(1 + next() % 3, char('a' + next() % 26)) + "\"}"; break;
+            default: ops += "{\"op\":\"style\",\"id\":" + e + ",\"name\":\"opacity\",\"value\":\"0." + std::to_string(3 + next() % 7) + "\"}"; break;
+            }
+        }
+        r.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        DisplayList list = r.paint();
+        std::vector<Rect> damage;
+        bool has = r.damage(damage) && incremental.width() == int(r.px_width()) && incremental.height() == int(r.px_height());
+        QImage whole = QtBackend::make_image(int(r.px_width()), int(r.px_height()));
+        backend.paint(list, whole, scale);
+        if (!has) incremental = QtBackend::make_image(int(r.px_width()), int(r.px_height()));
+        else partial++;
+        backend.paint(list, incremental, scale, has ? &damage : nullptr);
+        if (whole == incremental) same++;
+        else if (same == round) whole.save("damage-whole.png"), incremental.save("damage-partial.png");
+    }
+    check(same == rounds, ("repainting only the damage gives the same pixels as painting everything (" + std::to_string(same) + " of " + std::to_string(rounds) + ")").c_str());
+    check(partial > rounds / 2, "and most frames repaint only part");
+}
+
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
@@ -216,6 +274,7 @@ int main(int argc, char** argv) {
     test_canvas_ops();
     test_canvas_through_renderer(1);
     test_canvas_through_renderer(1.5);
+    test_damage_repaints();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

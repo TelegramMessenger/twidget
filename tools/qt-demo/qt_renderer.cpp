@@ -158,8 +158,13 @@ void QtRenderer::paint() {
         if (w == 0 || h == 0) return;
         double t0 = nowMs();
         twlite::DisplayList list = core_->paint();
-        frame = twlite::QtBackend::make_image(int(w), int(h));
-        backend_.paint(list, frame, QTransform::fromScale(dpr_, dpr_));
+        // Only what changed is painted again, over the last frame.
+        std::vector<twlite::Rect> damage;
+        bool partial = core_->damage(damage) && last_.width() == int(w) && last_.height() == int(h);
+        if (partial && damage.empty()) return;
+        if (!partial) last_ = twlite::QtBackend::make_image(int(w), int(h));
+        backend_.paint(list, last_, QTransform::fromScale(dpr_, dpr_), partial ? &damage : nullptr);
+        frame = last_;
         lastPaintMs_ = nowMs() - t0;
     }
     // Set after painting: QPainter would otherwise scale by it a second time.

@@ -565,6 +565,42 @@ int main() {
         }
     }
 
+    // ── damage ──
+    {
+        StubBackend db;
+        Renderer d(300, 1, false, db);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"div","attrs":[["style","position:absolute;left:10px;top:10px;width:20px;height:20px;background:red"]]},{"op":"ins","parent":4,"id":5,"before":null},
+            {"op":"el","id":6,"tag":"div","attrs":[["style","position:absolute;left:100px;top:10px;width:20px;height:20px;background:blue"]]},{"op":"ins","parent":4,"id":6,"before":null},
+            {"op":"el","id":7,"tag":"div","attrs":[["style","position:absolute;left:105px;top:15px;width:20px;height:20px;background:green"]]},{"op":"ins","parent":4,"id":7,"before":null},
+            {"op":"el","id":8,"tag":"canvas","attrs":[["width","10"],["height","10"],["style","position:absolute;left:200px;top:10px"]]},{"op":"ins","parent":4,"id":8,"before":null}]})"));
+        std::vector<Rect> rects;
+        d.paint();
+        check(!d.damage(rects), "the first paint is all damage");
+        d.paint();
+        check(d.damage(rects) && rects.empty(), "an unchanged paint damages nothing");
+        auto covers = [&](float x, float y, float w, float h) {
+            for (const Rect& r : rects)
+                if (r.x <= x && r.y <= y && r.x + r.w >= x + w && r.y + r.h >= y + h) return true;
+            return false;
+        };
+        auto within = [&](float x, float y, float w, float h) {
+            for (const Rect& r : rects)
+                if (r.x < x || r.y < y || r.x + r.w > x + w || r.y + r.h > y + h) return false;
+            return true;
+        };
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":5,"name":"background-color","value":"yellow"}]})"));
+        d.paint();
+        check(d.damage(rects) && covers(10, 10, 20, 20) && within(5, 5, 30, 30), "a new colour damages its box and nothing else");
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":8,"cmds":[["c","fillRect",0,0,5,5]]}]})"));
+        d.paint();
+        check(d.damage(rects) && covers(200, 10, 10, 10) && within(195, 5, 20, 20), "a canvas that drew damages itself");
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":6,"name":"z-index","value":"2"},{"op":"style","id":7,"name":"z-index","value":"1"}]})"));
+        d.paint();
+        check(d.damage(rects) && covers(105, 15, 15, 15), "boxes that swap paint order damage where they overlap");
+    }
+
     // ── height bound ──
     {
         StubBackend hb2;

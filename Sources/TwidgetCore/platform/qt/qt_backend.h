@@ -32,8 +32,9 @@ public:
     void canvas_release(int id) override;
 
     /// Paints `list` (CSS px) into `target`, an ARGB32 premultiplied image, under `transform` (CSS px →
-    /// image px; usually a scale by the device pixel ratio).
-    void paint(const DisplayList& list, QImage& target, const QTransform& transform);
+    /// image px; usually a scale by the device pixel ratio). With `damage` (Renderer::damage, CSS px),
+    /// only those areas are cleared and painted again; the rest of `target` is kept.
+    void paint(const DisplayList& list, QImage& target, const QTransform& transform, const std::vector<Rect>* damage = nullptr);
 
     /// An image with this backend's resolution: fonts are sized for 96 dpi, where a point is 4/3 px.
     static QImage make_image(int w, int h);
@@ -47,6 +48,8 @@ private:
     using FaceKey = std::tuple<std::string, float, int, bool>;
 
     Face* face(int font);
+    /// One pass of paint(): everything, or only `area_only` (device px), cleared first.
+    void paint_area(const DisplayList& list, QImage& target, const QTransform& transform, const QRect* area_only);
     QStringList resolve_families(const std::string& families);
     void canvas_op(QImage& target, const CanvasOp& op, int id);
     void canvas_content(QPainter& p, const CanvasOp& op, const QImage* self);

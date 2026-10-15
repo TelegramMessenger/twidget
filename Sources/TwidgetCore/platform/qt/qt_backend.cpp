@@ -639,9 +639,37 @@ void QtBackend::canvas_release(int id) { canvases_.erase(id); }
 
 // ───────────────────────── display list ─────────────────────────
 
-void QtBackend::paint(const DisplayList& list, QImage& target, const QTransform& transform) {
+void QtBackend::paint(const DisplayList& list, QImage& target, const QTransform& transform, const std::vector<Rect>* damage) {
+    if (!damage) {
+        paint_area(list, target, transform, nullptr);
+        return;
+    }
+    // Damage in device px, whole pixels around it. Each area is its own pass under a plain rectangle
+    // clip: a clip region of several rectangles makes the raster engine scale antialiased coverage,
+    // and the edges would come out a shade off a whole repaint.
+    QRegion region;
+    for (const Rect& r : *damage) region += transform.mapRect(QRectF(r.x, r.y, r.w, r.h)).toAlignedRect().adjusted(-1, -1, 1, 1);
+    region &= target.rect();
+    if (region.isEmpty()) return;
+    if (region.rectCount() > 4) {
+        QRect all = region.boundingRect();
+        paint_area(list, target, transform, &all);
+        return;
+    }
+    for (const QRect& r : region) paint_area(list, target, transform, &r);
+}
+
+void QtBackend::paint_area(const DisplayList& list, QImage& target, const QTransform& transform, const QRect* area_only) {
     QPainter root(&target);
     hints(root);
+    QRect limit = target.rect();
+    if (area_only) {
+        root.setClipRect(*area_only);
+        root.setCompositionMode(QPainter::CompositionMode_Source);
+        root.fillRect(*area_only, Qt::transparent);
+        root.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        limit = *area_only;
+    }
     root.setTransform(transform);
 
     // The raster engine clips without antialiasing, so a rounded or path clip and an opacity group
@@ -665,6 +693,9 @@ void QtBackend::paint(const DisplayList& list, QImage& target, const QTransform&
 
     auto current = [&]() -> QPainter& { return layers.empty() ? root : *layers.back()->painter; };
     auto origin = [&] { return layers.empty() ? QPoint() : layers.back()->origin; };
+    // Layers sit where a whole paint puts them, whatever the damage: glyphs are placed on the device's
+    // pixel grid, and a layer at another origin would draw its text a pixel off. A damaged area only
+    // clips what a layer draws.
     auto area = [&] { return layers.empty() ? target.rect() : QRect(layers.back()->origin, layers.back()->image.size()); };
     // User space → target px.
     auto device = [&] { return current().transform() * QTransform::fromTranslate(origin().x(), origin().y()); };
@@ -684,6 +715,7 @@ void QtBackend::paint(const DisplayList& list, QImage& target, const QTransform&
         QTransform to_layer = device() * QTransform::fromTranslate(-bounds.x(), -bounds.y());
         layer->painter = std::make_unique<QPainter>(&layer->image);
         hints(*layer->painter);
+        if (area_only) layer->painter->setClipRect(limit.translated(-bounds.topLeft()));
         layer->painter->setTransform(to_layer);
         layers.push_back(layer.get());
         e.layer = std::move(layer);

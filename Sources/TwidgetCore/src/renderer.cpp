@@ -915,6 +915,8 @@ public:
         c.x = float(pos.x);
         // litehtml hands the line box; the baseline sits `descent` above its bottom (as the cairo container does).
         c.y = float(pos.y) + float(pos.height) - f.metrics.descent;
+        // The line box, for damage: where the run can paint.
+        c.rect = Rect{float(pos.x), float(pos.y), float(pos.width) > 0 ? float(pos.width) : f.face->width(backend_, text), float(pos.height)};
         list_.push_back(std::move(c));
         if (f.decoration != litehtml::text_decoration_line_none) {
             float w = float(pos.width);
@@ -2482,6 +2484,7 @@ void Renderer::run_canvas(Canvas& canvas, const Json& cmds) {
     canvas.run(cmds, ops);
     if (ops.empty()) return;
     backend_.canvas_run(canvas.id(), canvas.width(), canvas.height(), ops);
+    canvases_drawn_.insert(canvas.id());
     dirty_ = true;
 }
 
@@ -2538,6 +2541,25 @@ void Renderer::report_size(std::vector<Json>& out) {
 }
 
 DisplayList Renderer::paint() {
+    DisplayList list = paint_document();
+    // What changed against the last paint, for a platform to repaint only that.
+    PaintSummary summary = summarize(list);
+    damage_valid_ = painted_valid_ && painted_size_ == std::make_pair(px_width(), px_height()) &&
+                    damage_between(painted_, summary, [this](int canvas) { return canvases_drawn_.count(canvas) != 0; }, damage_);
+    painted_ = std::move(summary);
+    painted_valid_ = true;
+    painted_size_ = {px_width(), px_height()};
+    canvases_drawn_.clear();
+    return list;
+}
+
+bool Renderer::damage(std::vector<Rect>& out) const {
+    if (!damage_valid_) return false;
+    out = damage_;
+    return true;
+}
+
+DisplayList Renderer::paint_document() {
     dirty_ = false;
 #ifdef TW_LITEHTML_TWIDGET
     if (!promoted_.empty() || !composition_.layers.empty()) {
