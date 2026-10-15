@@ -105,6 +105,11 @@ build-qt/twidget-qt-demo [corpus folder or .html file]
 `tools/macos-demo` is the same demo for macOS on `CGBackend`, with the compositor's layers on Core
 Animation. Its README records the build and visual checks.
 
+`tools/android-demo` is the same demo for Android, set up as Telegram for Android is: Java with no
+Kotlin or AndroidX, views built in code, and one native library built by CMake, holding the core with
+`platform/android/jni.cpp` and widget-sandbox's C++ WidgetHost behind a small JNI bridge. Its Java
+copies the Kotlin backend and painter under `platform/android`. Not yet built: see its README.
+
 ## Portability check, 2026-10-14
 
 Checked on Apple Silicon with Xcode's AppleClang and Emscripten 6.0.12:
