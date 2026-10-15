@@ -143,6 +143,8 @@ public:
     StyleValues peek(int64_t id, double t) const;
     /// `property` of `id` without its animations: as declared, or the property's initial value.
     std::string base_value(int64_t id, const std::string& property) const { return underlying_value(id, property); }
+    /// `id` declares an animation or a transition, whether or not one runs now.
+    bool declares_motion(int64_t id) const;
     struct Plan {
         /// False while an animation still waits out its delay: nothing to hand over before `wake`.
         bool ready = true;

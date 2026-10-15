@@ -945,6 +945,16 @@ void Animator::set_style_sheets(const std::vector<std::string>& texts) {
     keyframes_ = std::move(rules);
 }
 
+bool Animator::declares_motion(int64_t id) const {
+    auto b = bases_.find(id);
+    if (b == bases_.end()) return false;
+    for (const char* property : {"animation", "animation-name", "transition", "transition-property"}) {
+        auto v = b->second.find(property);
+        if (v != b->second.end() && !v->second.empty() && v->second != "none") return true;
+    }
+    return false;
+}
+
 std::string Animator::underlying_value(int64_t id, const std::string& property) const {
     if (auto b = bases_.find(id); b != bases_.end())
         if (auto v = b->second.find(property); v != b->second.end()) return v->second;

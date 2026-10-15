@@ -219,6 +219,31 @@ double now_ms() {
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
 
+/// The bounding box of `r` mapped through `m`.
+Rect bounds_under(const Rect& r, const Affine& m) {
+    float xs[4] = {r.x, r.x + r.w, r.x, r.x + r.w}, ys[4] = {r.y, r.y, r.y + r.h, r.y + r.h};
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int i = 0; i < 4; i++) {
+        float x = m.apply_x(xs[i], ys[i]), y = m.apply_y(xs[i], ys[i]);
+        x0 = std::min(x0, x);
+        y0 = std::min(y0, y);
+        x1 = std::max(x1, x);
+        y1 = std::max(y1, y);
+    }
+    return Rect{x0, y0, x1 - x0, y1 - y0};
+}
+
+Rect intersection(const Rect& a, const Rect& b) {
+    float x0 = std::max(a.x, b.x), y0 = std::max(a.y, b.y);
+    float x1 = std::min(a.x + a.w, b.x + b.w), y1 = std::min(a.y + a.h, b.y + b.h);
+    return Rect{x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
+}
+
+bool contains(const Rect& outer, const Rect& inner) {
+    constexpr float slack = 0.01f;
+    return inner.x >= outer.x - slack && inner.y >= outer.y - slack && inner.x + inner.w <= outer.x + outer.w + slack && inner.y + inner.h <= outer.y + outer.h + slack;
+}
+
 /// What a compositor layer animates; an element animating anything else is painted per frame.
 bool is_layer_property(const std::string& property) {
     return property == "transform" || property == "opacity" || property == "translate" || property == "rotate" || property == "scale";
@@ -244,6 +269,11 @@ constexpr size_t MAX_LAYERS = 256;
 constexpr size_t MAX_OBSCURERS = 3;
 constexpr double MAX_LAYER_PIXELS = 4096.0 * 4096.0;
 constexpr double MIN_LAYER_SPAN = 0.1;
+/// An element moved by style ops in three batches running becomes a scripted layer: batches at most
+/// this many apart, or this close in time, continue a streak.
+constexpr uint64_t SCRIPTED_STREAK_BATCHES = 4;
+constexpr double SCRIPTED_STREAK_GAP_S = 0.12;
+constexpr double MAX_SCRIPTED_AREA = 2e6;
 constexpr float LAYER_MARGIN = 48;
 constexpr double DOUBLE_CLICK_MS = 500;
 /// After user input, ops batches build at once: they likely answer it.
@@ -510,6 +540,19 @@ public:
         if (generation) *generation = scans_.front().generation;
         return scans_.front().result;
     }
+    /// What `id` declares for `names` after the cascade, its style attribute included.
+    Declared declared(int64_t id, const std::vector<std::string>& names) const {
+        Declared out;
+        auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(element(id));
+        if (!tag) return out;
+        for (const std::string& name : names) {
+            std::string raw = tag->raw_declaration(name);
+            if (!raw.empty()) out.emplace(name, std::move(raw));
+        }
+        return out;
+    }
+    /// Equal keys draw equal lists.
+    std::tuple<const void*, uint32_t, uint64_t> paint_key() const { return {doc_.get(), doc_ ? doc_->paint_generation() : 0, layouts_}; }
     /// Whether the layout can change with the viewport's height, which follows the document's: fixed
     /// boxes, percentage heights on html or body, viewport lengths, height media queries, and absolute boxes
     /// placed against the viewport. Otherwise a new height needs no second layout.
@@ -1587,20 +1630,34 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
+        const auto& ops = msg["ops"].arr();
+        std::vector<int64_t> scripted;
+        bool fast = scripted_only(ops, scripted);
         // Ticking already (something animates), or held back by the throttle, a batch waits for the
         // frame: a script sending several a frame builds once. Input wants its answer now.
         bool coalesce = (wants_tick() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S;
         document_changed_ = false;
-        for (const Json& op : msg["ops"].arr()) apply_op(op, out);
-        // A batch of canvas drawing, scrolling or focus leaves the document as it was: its canvases
-        // repaint (run_canvas marks the paint dirty) without a build.
-        if (document_changed_ && coalesce) {
-            stale_ = true;
-        } else if (document_changed_ || stale_) {
-            rebuild(true);
-            report_size(out);
+        for (const Json& op : ops) apply_op(op, out);
+        if (fast && apply_scripted(scripted)) {
+            document_changed_ = false;
+            scripted_pending_ = true;
+            stats_.scripted++;
+        } else {
+            // Moved past what its layer allows, a scripted layer is planned again where it is now.
+            if (fast) composition_key_ = 0;
+            else note_scripted(ops);
+            // A batch of canvas drawing, scrolling or focus leaves the document as it was: its canvases
+            // repaint (run_canvas marks the paint dirty) without a build.
+            if (document_changed_ && coalesce) {
+                stale_ = true;
+            } else if (document_changed_ || stale_) {
+                rebuild(true);
+                report_size(out);
+            }
         }
     } else if (type == "query") {
+        // A query reads the document, which must have what only the layers show.
+        if (scripted_pending_) stale_ = true;
         settle(out);
         Json res = Json::object();
         binary_.clear();
@@ -2042,6 +2099,8 @@ void Renderer::settle(std::vector<Json>& out) {
 void Renderer::rebuild(bool patch) {
     Meter meter(*this);
     stale_ = false;
+    // Scripted layers follow what the build declares, which the composition key does not cover.
+    if (!scripted_candidates_.empty()) composition_key_ = 0;
     build_document(patch);
     animate();
 }
@@ -2069,6 +2128,7 @@ bool Renderer::throttled() const {
 }
 
 void Renderer::build_document(bool patch) {
+    scripted_pending_ = false;
     PatchLog log = std::move(patch_log_);
     patch_log_ = PatchLog{};
 #ifdef TW_LITEHTML_TWIDGET
@@ -2466,10 +2526,13 @@ void Renderer::update_composition(double now) {
         if (!el || !container_->layer_candidate(el, box)) continue;
         wanted.emplace_back(id, Want{std::move(el), p.plan, box, p.signature});
     }
-    if (wanted.empty()) {
+    for (auto it = scripted_candidates_.begin(); it != scripted_candidates_.end();)
+        it = node(*it) ? std::next(it) : scripted_candidates_.erase(it);
+    if (wanted.empty() && scripted_candidates_.empty()) {
         if (!promoted_.empty()) {
             promoted_.clear();
             layer_ids_.clear();
+            composition_only_ = false;
             dirty_ = true;
         }
         return;
@@ -2554,6 +2617,65 @@ void Renderer::update_composition(double now) {
     // Only a layer nothing paints over can go above the document. Dropping one can uncover
     // another's neighbour or put back what covered another, so this runs until nothing changes.
     const auto& trace = container_->paint_order();
+
+    // Scripted layers: still pictures apply_scripted moves, each alone in its branch of the tree, with
+    // room to move around where it is now and the raster scale its transform asks for.
+    {
+        std::unordered_set<const litehtml::element*> others;
+        for (const auto& [id, p] : next) others.insert(elements[id].get());
+        std::vector<std::pair<int64_t, litehtml::element::ptr>> candidates;
+        for (int64_t id : scripted_candidates_) {
+            const Node* n = node(id);
+            if (next.count(id) || animated.count(id) || holds_animated.count(id) || animator_.declares_motion(id) || !n || n->svg || n->tag == "svg") continue;
+            bool alone = true;
+            for (const auto& [other, p] : next) alone = alone && !is_ancestor(other, id) && !is_ancestor(id, other);
+            for (int64_t other : scripted_candidates_) alone = alone && (other == id || (!is_ancestor(other, id) && !is_ancestor(id, other)));
+            for (const Node* a = n->parent; a && alone; a = a->parent) alone = !(a->id && blocks(a->id));
+            auto el = container_->element(id);
+            if (!alone || !el) continue;
+            others.insert(el.get());
+            candidates.emplace_back(id, std::move(el));
+        }
+        for (auto& [id, el] : candidates) {
+            Promotion p;
+            if (!container_->layer_candidate(el, p.box) || double(p.box.w) * p.box.h >= MAX_SCRIPTED_AREA || !container_->clip_of(el, p.has_clip, p.clip, p.clip_radii)) continue;
+            p.scripted = true;
+            p.base = container_->declared(id, {"transform", "translate", "rotate", "scale", "opacity", "transform-origin"});
+            LayerKey key;
+            if (!scripted_key(id, p, key)) continue;
+            const Affine& m = key.matrix;
+            bool translating = m.a == 1 && m.b == 0 && m.c == 0 && m.d == 1;
+            bool rotated = std::fabs(m.b) > 1e-4f || std::fabs(m.c) > 1e-4f;
+            float scale = std::sqrt(std::fabs(m.a * m.d - m.b * m.c));
+            p.raster_scale = translating ? 1 : std::min(3.0f, std::max(rotated ? 2.0f : 1.0f, scale * 1.25f));
+            p.signature = 0x5C819ull ^ uint64_t(id);
+            auto old = promoted_.find(id);
+            if (old != promoted_.end() && old->second.scripted && old->second.track.keys.size() == 1 && old->second.track.keys[0].matrix == m &&
+                old->second.track.keys[0].opacity == key.opacity && std::memcmp(&old->second.box, &p.box, sizeof(Rect)) == 0) {
+                p.track = old->second.track;
+                p.track_version = old->second.track_version;
+            } else {
+                p.track.start = now;
+                p.track.keys.assign(1, key);
+                p.track_version = next_version_++;
+            }
+            // The widest margin around it that nothing paints over.
+            Rect at = bounds_under(p.box, m);
+            for (float margin : {std::max(48.0f, std::max(p.box.w, p.box.h) / 2), 16.0f, 2.0f}) {
+                p.reach = Rect{at.x - margin, at.y - margin, at.w + 2 * margin, at.h + 2 * margin};
+                if (p.has_clip) p.reach = intersection(p.reach, p.clip);
+                if (!container_->covered(el, p.reach, trace, others)) break;
+            }
+            if (p.has_clip) {
+                const Radii& q = p.clip_radii;
+                float corner = std::max({q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly});
+                Rect inner{p.clip.x + corner, p.clip.y + corner, p.clip.w - 2 * corner, p.clip.h - 2 * corner};
+                if (contains(inner, p.reach)) p.has_clip = false;
+            }
+            elements[id] = el;
+            next.emplace(id, std::move(p));
+        }
+    }
 
     // A few static elements over a wanted layer (labels on a moving card) become layers of their own,
     // still ones, so the moving one can go under them.
@@ -2647,7 +2769,10 @@ void Renderer::update_composition(double now) {
     promoted_ = std::move(next);
     layer_ids_.clear();
     for (const auto& [id, p] : promoted_) layer_ids_.insert(id);
-    if (changed) dirty_ = true;
+    if (changed) {
+        composition_only_ = false;
+        dirty_ = true;
+    }
 #else
     (void)now;
     drop_all();
@@ -2745,6 +2870,16 @@ DisplayList Renderer::paint() {
     Meter meter(*this);
     // Messages from a build here go out with the next ones.
     settle(pending_events_);
+    if (reuse_paint()) {
+        dirty_ = false;
+        composition_only_ = false;
+        damage_.clear();
+        damage_valid_ = true;
+        canvases_drawn_.clear();
+        stats_.reused++;
+        return painted_list_;
+    }
+    composition_only_ = false;
     DisplayList list = paint_document();
     drop_inert_clips(list);
     // What changed against the last paint, for a platform to repaint only that.
@@ -2755,7 +2890,141 @@ DisplayList Renderer::paint() {
     painted_valid_ = true;
     painted_size_ = {px_width(), px_height()};
     canvases_drawn_.clear();
+    painted_list_valid_ = std::any_of(promoted_.begin(), promoted_.end(), [](const auto& p) { return p.second.scripted; });
+#ifdef TW_LITEHTML_TWIDGET
+    if (painted_list_valid_) {
+        painted_list_ = list;
+        painted_key_ = container_->paint_key();
+    } else {
+        painted_list_ = DisplayList{};
+    }
+#endif
     return list;
+}
+
+bool Renderer::reuse_paint() const {
+#ifdef TW_LITEHTML_TWIDGET
+    if (!composition_only_ || !painted_list_valid_ || !painted_valid_ || !touched_.empty() || touched_all_ || !canvases_drawn_.empty()) return false;
+    if (container_->paint_key() != painted_key_ || painted_size_ != std::make_pair(px_width(), px_height())) return false;
+    if (promoted_.size() != composition_.layers.size()) return false;
+    for (size_t i = 0; i < composition_.layers.size(); i++) {
+        auto it = promoted_.find(composition_.layers[i].id);
+        if (it == promoted_.end() || it->second.track_version != composition_.layers[i].track_version) return false;
+        if (i > 0 && it->second.order <= promoted_.at(composition_.layers[i - 1].id).order) return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool Renderer::scripted_only(const Json::Array& ops, std::vector<int64_t>& touched) const {
+    if (frozen_ || ops.empty() || promoted_.empty()) return false;
+    for (const Json& op : ops) {
+        if (op["op"].asString() != "style" || op["important"].asBool()) return false;
+        // Taking a property away goes back to what the document declares, which only a build knows.
+        const std::string& value = op["value"].asString();
+        if (value.empty() || value.size() > 256 || !is_layer_property(lower(op["name"].asString()))) return false;
+        int64_t id = int64_t(op["id"].asNumber());
+        auto it = promoted_.find(id);
+        if (it == promoted_.end() || !it->second.scripted) return false;
+        if (std::find(touched.begin(), touched.end(), id) == touched.end()) touched.push_back(id);
+    }
+    return true;
+}
+
+void Renderer::note_scripted(const Json::Array& ops) {
+    ops_batch_++;
+    double now = now_s();
+    std::vector<int64_t> moving;
+    for (const Json& op : ops)
+        if (op["op"].asString() == "style" && is_layer_property(lower(op["name"].asString()))) moving.push_back(int64_t(op["id"].asNumber()));
+    if (moving.empty()) return;
+    bool changed = false;
+    if (moving.size() > MAX_LAYERS) {
+        // A crowd moves together: layers would not fit, and the document paints them in one pass anyway.
+        for (int64_t id : moving) changed = scripted_candidates_.erase(id) > 0 || changed;
+    } else {
+        for (int64_t id : moving) {
+            auto [it, fresh] = scripted_hits_.try_emplace(id);
+            ScriptedHit& hit = it->second;
+            if (!fresh && hit.batch == ops_batch_) continue;
+            bool continues = !fresh && (ops_batch_ - hit.batch <= SCRIPTED_STREAK_BATCHES || now - hit.at <= SCRIPTED_STREAK_GAP_S);
+            hit = ScriptedHit{continues ? hit.count + 1 : 1, ops_batch_, now};
+            if (hit.count >= 3 && scripted_candidates_.size() < MAX_LAYERS && scripted_candidates_.insert(id).second) changed = true;
+        }
+    }
+    if (scripted_hits_.size() > 4096)
+        for (auto it = scripted_hits_.begin(); it != scripted_hits_.end();)
+            it = ops_batch_ - it->second.batch >= 8 && now - it->second.at >= 1 ? scripted_hits_.erase(it) : std::next(it);
+    if (changed) composition_key_ = 0;
+}
+
+bool Renderer::scripted_key(int64_t id, const Promotion& p, LayerKey& out) const {
+    const Node* n = node(id);
+    if (!n) return false;
+    auto value = [&](const char* property) -> std::string {
+        for (const auto& [name, v] : n->styles)
+            if (name == property) return v;
+        if (auto it = p.base.find(property); it != p.base.end()) return it->second;
+        return animator_.base_value(id, property);
+    };
+    const Rect& box = p.box;
+    auto origin = css::parse_origin(value("transform-origin"), box.w, box.h);
+    auto translate = css::parse_translate(value("translate"), box.w, box.h);
+    auto rotate = css::parse_rotate(value("rotate"));
+    auto scale = css::parse_scale(value("scale"));
+    auto transform = css::parse_transform(value("transform"), box.w, box.h);
+    auto opacity = css::parse_opacity(value("opacity"));
+    if (!origin || !translate || !rotate || !scale || !transform || !opacity) return false;
+    Affine to = Affine::translate(box.x + origin->first, box.y + origin->second);
+    Affine from = Affine::translate(-(box.x + origin->first), -(box.y + origin->second));
+    out.t = 0;
+    out.matrix = to * *translate * *rotate * *scale * *transform * from;
+    out.opacity = *opacity;
+    return true;
+}
+
+bool Renderer::apply_scripted(const std::vector<int64_t>& ids) {
+    std::vector<std::pair<int64_t, LayerKey>> moves;
+    for (int64_t id : ids) {
+        const Promotion& p = promoted_.at(id);
+        LayerKey key;
+        if (!scripted_key(id, p, key)) return false;
+        const Affine& m = key.matrix;
+        if (std::sqrt(std::fabs(m.a * m.d - m.b * m.c)) > p.raster_scale + 0.001f) return false;
+        // Where the layer shows must stay where the plan found nothing painting over it.
+        Rect at = bounds_under(p.box, m);
+        if (p.has_clip) at = intersection(at, p.clip);
+        if (!at.empty() && !contains(p.reach, at)) return false;
+        moves.emplace_back(id, key);
+    }
+    bool clean = !dirty_ || composition_only_;
+    bool synced = true, changed = false;
+    double now = now_s();
+    for (const auto& [id, key] : moves) {
+        Promotion& p = promoted_.at(id);
+        if (p.track.keys.size() == 1 && p.track.keys[0].matrix == key.matrix && p.track.keys[0].opacity == key.opacity) continue;
+        p.track.start = now;
+        p.track.duration = 0;
+        p.track.repeat = false;
+        p.track.keys.assign(1, key);
+        p.track_version = next_version_++;
+        changed = true;
+        auto layer = std::find_if(composition_.layers.begin(), composition_.layers.end(), [&](const Layer& l) { return l.id == id; });
+        if (layer == composition_.layers.end()) {
+            synced = false;
+            continue;
+        }
+        layer->track = p.track;
+        layer->track_version = p.track_version;
+    }
+    if (changed) {
+        composition_.version = next_version_++;
+        composition_only_ = clean && synced;
+        dirty_ = true;
+    }
+    return true;
 }
 
 void Renderer::trim() {
@@ -2764,6 +3033,8 @@ void Renderer::trim() {
     // The paint summary goes too: the next paint is painted whole.
     painted_ = PaintSummary{};
     painted_valid_ = false;
+    painted_list_ = DisplayList{};
+    painted_list_valid_ = false;
     declared_generation_ = 0;
 }
 

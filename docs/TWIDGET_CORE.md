@@ -38,8 +38,10 @@ With `set_compositing(true)`, the platform also plays `composition()`: a list of
 element's own display list with a track of linear keys (a 2D matrix and an opacity per key) that the
 core has already baked from the CSS timing. Easing, `steps()`, direction, iterations and Web
 Animations timing all become linear keys, so any compositor with linear keyframes can play them.
-`resume_track()` helps one that cannot start an animation part way through. Without compositing,
-the core paints every frame.
+`resume_track()` helps one that cannot start an animation part way through. An element a script
+moves through transform or opacity three batches running becomes a layer too, holding one key; a
+batch that only moves such layers changes their keys without a build, and the next `paint()` hands
+out the last list with empty damage. Without compositing, the core paints every frame.
 
 The renderer is not thread-safe: one widget's calls must not overlap.
 

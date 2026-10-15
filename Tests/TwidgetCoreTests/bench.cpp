@@ -2,7 +2,7 @@
 // FrameCostBenchTests (Tests/TwidgetRendererTests), sent as the same protocol ops, so the two can be
 // compared. It measures the core alone: the stub backend measures text at 8 px a byte and rasters
 // nothing, so a platform's painting is not in the numbers.
-//   twidget_core_bench [mixed|transform|swarm] [count] [frames]
+//   twidget_core_bench [mixed|transform|swarm|css|drag|drag-doc] [count] [frames]
 #include "renderer.h"
 
 #include <chrono>
@@ -109,12 +109,19 @@ Scenario busy(const std::string& mode, int count, int frames) {
 
     for (int f = 0; f < frames; f++) {
         std::vector<std::string> frame;
-        int moving = std::min(int(boxes.size()), 300);
+        bool drag = mode.rfind("drag", 0) == 0;
+        int moving = std::min(int(boxes.size()), drag ? 6 : 300);
         for (int k = 0; k < moving; k++) {
+            if (drag) {
+                // The same few, in the last row where nothing paints over them, as a drag would have it.
+                int id = boxes[boxes.size() - 1 - size_t(k) % boxes.size()];
+                frame.push_back(style(id, "transform", "translate(" + std::to_string(f % 13) + "px, " + std::to_string((f + k) % 9) + "px)"));
+                continue;
+            }
             int id = boxes[size_t((k * 7 + f) % int(boxes.size()))];
             frame.push_back(style(id, "transform", "translate(" + std::to_string(f % 13) + "px, " + std::to_string((f + k) % 9) + "px) rotate(" + std::to_string((f * 3 + k) % 360) + "deg)"));
         }
-        if (mode != "transform") {
+        if (mode != "transform" && !drag) {
             for (int k = 0; k < 20; k++)
                 frame.push_back(style(boxes[size_t((k * 31 + f) % int(boxes.size()))], "background-color", "rgb(" + std::to_string(f % 255) + ", " + std::to_string(k * 10) + ", 120)"));
             for (size_t k = 0; k < texts.size(); k++) frame.push_back(data(texts[k], "label " + std::to_string(k) + " frame " + std::to_string(f)));
@@ -122,7 +129,7 @@ Scenario busy(const std::string& mode, int count, int frames) {
         }
         s.frames.push_back(message(frame));
     }
-    if (mode != "transform")
+    if (mode != "transform" && mode.rfind("drag", 0) != 0)
         for (int q = 0; q < 3; q++) s.queries.push_back("{\"type\":\"query\",\"qid\":" + std::to_string(q) + ",\"query\":{\"q\":\"rect\",\"id\":" + std::to_string(boxes[size_t(q * 50) % boxes.size()]) + "}}");
     s.hover = mode == "mixed";
     return s;
@@ -256,7 +263,8 @@ int main(int argc, char** argv) {
 
     StubBackend backend;
     Renderer r(400, 2, false, backend);
-    if (mode == "css") r.set_compositing(true);
+    // drag: a few elements a script moves, as scripted layers; drag-doc: the same, painted in the document.
+    if (mode == "css" || mode == "drag") r.set_compositing(true);
     double t = now_us();
     r.receive(parse(scenario.setup));
     r.paint();

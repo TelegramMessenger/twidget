@@ -44,6 +44,10 @@ struct BuildStats {
     int throttled = 0;
     /// Of those, builds that went into the document without serialising it (ops patched in place).
     int in_place = 0;
+    /// Batches that only moved scripted layers: no build.
+    int scripted = 0;
+    /// Paints that handed out the last list again, only layers having moved.
+    int reused = 0;
 };
 
 class Renderer : private CanvasHost {
@@ -234,8 +238,35 @@ private:
         uint64_t track_version = 0;
         LayerTrack track;
         size_t order = 0;
+        /// A still layer a script moves (apply_scripted), within `reach` and up to `raster_scale`.
+        bool scripted = false;
+        /// What the document declared for the layer properties at the last build.
+        Declared base;
     };
     void update_composition(double now);
+    // Scripted layers (the Swift renderer's): an element a script moves batch after batch through the
+    // layer properties alone becomes a layer, and a batch that only moves such layers moves them
+    // without a build or a paint. The document takes the batch with its next build.
+    bool scripted_only(const twidget::Json::Array& ops, std::vector<int64_t>& touched) const;
+    void note_scripted(const twidget::Json::Array& ops);
+    bool apply_scripted(const std::vector<int64_t>& ids);
+    /// The layer's matrix and opacity as the element's style has them now.
+    bool scripted_key(int64_t id, const Promotion& p, LayerKey& out) const;
+    /// Nothing but layer tracks changed since the last paint: its list stands.
+    bool reuse_paint() const;
+    struct ScriptedHit {
+        int count = 0;
+        uint64_t batch = 0;
+        double at = 0;
+    };
+    std::unordered_map<int64_t, ScriptedHit> scripted_hits_;
+    uint64_t ops_batch_ = 0;
+    std::set<int64_t> scripted_candidates_;
+    bool scripted_pending_ = false;  // DOM changes only the layers show; the document takes them when it builds
+    bool composition_only_ = false;  // since the last paint, only scripted layers moved
+    DisplayList painted_list_;       // kept while there are scripted layers, for reuse_paint
+    bool painted_list_valid_ = false;
+    std::tuple<const void*, uint32_t, uint64_t> painted_key_{};
     /// Drops what the layers animate from `sampled`: the compositor shows it, the document must not.
     void strip_layers(StyleOverrides& sampled) const;
     // canvas

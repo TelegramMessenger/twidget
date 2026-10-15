@@ -923,6 +923,71 @@ int main() {
         check(width(7) == 50, "and in a style sheet (got " + std::to_string(width(7)) + ")");
     }
 
+    // ── scripted layers ──
+    {
+        StubBackend sb;
+        Renderer s(400, 1, false, sb);
+        s.set_compositing(true);
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:40px;height:40px;background-color:#f00"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","margin-top:200px;width:300px;height:100px;background-color:#00f"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+        s.paint();
+        auto move = [&](int x) {
+            s.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"transform","value":"translateX()" + std::to_string(x) + R"J(px)"}]})J"));
+        };
+        auto layer_x = [&]() -> float {
+            const auto& layers = s.composition().layers;
+            return layers.size() == 1 && layers[0].id == 10 && layers[0].track.keys.size() == 1 ? layers[0].track.keys[0].matrix.e : -1;
+        };
+        move(1);
+        s.paint();
+        move(2);
+        s.paint();
+        check(s.composition().layers.empty(), "two moves are not a streak yet");
+        move(3);
+        s.paint();
+        check(layer_x() == 3, "a third makes the element a layer, where the script put it");
+        int builds = s.stats().builds, reused = s.stats().reused;
+        move(4);
+        check(s.stats().scripted == 1 && s.stats().builds == builds, "the next move goes to the layer without a build");
+        check(s.dirty() && layer_x() == 4, "its track holds the new transform");
+        s.paint();
+        std::vector<Rect> damage;
+        check(s.stats().reused == reused + 1 && s.damage(damage) && damage.empty(), "the paint hands out the last list: the document did not change");
+        move(200);
+        check(s.stats().builds > builds, "a move past the room the layer has builds");
+        s.paint();
+        check(layer_x() == 200, "and plans the layer again where it went");
+        move(201);
+        int settled = s.stats().builds;
+        s.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"));
+        check(s.stats().builds > settled, "a query first builds what only the layer showed");
+        check(s.last_html().find("translateX(201px)") != std::string::npos, "the document has it");
+    }
+
+    // ── a crowd moved by script stays in the document ──
+    {
+        StubBackend cb;
+        Renderer c(400, 1, false, cb);
+        c.set_compositing(true);
+        std::string ops = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]})";
+        for (int i = 0; i < 260; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","display:inline-block;width:4px;height:4px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        c.receive(parse(ops + "]}"));
+        for (int f = 0; f < 4; f++) {
+            std::string frame = R"({"type":"ops","ops":[)";
+            for (int i = 0; i < 260; i++)
+                frame += std::string(i ? "," : "") + R"({"op":"style","id":)" + std::to_string(100 + i) + R"(,"name":"transform","value":"translateY()" + std::to_string(f) + R"J(px)"})J";
+            c.receive(parse(frame + "]}"));
+            c.paint();
+        }
+        check(c.composition().layers.empty() && c.stats().scripted == 0, "more than the layer budget moving together: no scripted layers");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
