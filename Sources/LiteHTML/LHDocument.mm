@@ -7,6 +7,7 @@
 #include "LHSimpleText.h"
 #include "lhx_local_paint_key.h"
 #include "lhx_alpha_bounds.h"
+#include "lhx_paint_exclusion_cache.h"
 #include "render_item.h"
 #include "render_inline_context.h"
 #include "html_tag.h"
@@ -133,6 +134,18 @@ struct LHExclusionLookup
         return values;
     }
 };
+
+static bool LHExclusionStateMatches(NSSet<NSString *> *saved, NSString *savedAttribute, NSSet<NSString *> *values, NSString *attribute)
+{
+    return (saved == values || [saved isEqualToSet:values]) &&
+           (savedAttribute == attribute || [savedAttribute isEqualToString:attribute]);
+}
+
+static bool LHPaintExclusionCacheEnabled()
+{
+    static const bool enabled = !getenv("TW_PAINT_EXCLUSION_CACHE") || strcmp(getenv("TW_PAINT_EXCLUSION_CACHE"), "0") != 0;
+    return enabled;
+}
 
 static bool SubtreeNeedsBackdrop(const lh::element *root)
 {
@@ -756,6 +769,13 @@ struct LHCoverVisit
     BOOL                         _itemIndexValid;
     NSString                    *_scrollAttribute;
     LHExclusionLookup            _paintLookup, _layerLookup, _backgroundLookup, _scrollLookup;
+    lhx::PaintExclusionCache<lh::element> _paintExclusionCache;
+    uint64_t                     _exclusionStyleEpoch;
+    uint64_t                     _exclusionLayoutEpoch;
+    uint64_t                     _exclusionTreeSerial;
+    uint64_t                     _exclusionCacheHits;
+    uint64_t                     _exclusionCacheMisses;
+    BOOL                         _exclusionCacheDisabled;
     std::vector<LHDeclarationsEntry> _declarations;
     uint64_t                     _paintTraceGeneration;
     std::vector<LHCoverEntry>    _coverEntries;
@@ -1346,6 +1366,7 @@ static std::string MasterWithCSS(NSString *css)
     if(!_consumed || _doc)
         return;
     _consumed     = NO;
+    _paintExclusionCache.clear();
     _declarations.clear();
     _paintTraceValid = NO;
     _itemIndexValid  = NO;
@@ -1563,7 +1584,52 @@ static std::string MasterWithCSS(NSString *css)
     [self resolveExclusionsLockedInRoot:_doc->root()];
 }
 
+- (void)setPaintExclusionCacheDisabled:(BOOL)disabled
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _exclusionCacheDisabled = disabled;
+    _paintExclusionCache.clear();
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)paintExclusionCacheStats
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return @{@"hits": @(_exclusionCacheHits), @"misses": @(_exclusionCacheMisses),
+             @"entries": @(_paintExclusionCache.size()), @"pointers": @(_paintExclusionCache.pointerCount())};
+}
+
 - (void)resolveExclusionsLockedInRoot:(const lh::element::ptr &)requestedRoot
+{
+    if(_exclusionCacheDisabled || !LHPaintExclusionCacheEnabled() || requestedRoot != _doc->root())
+    {
+        [self rebuildExclusionsLockedInRoot:requestedRoot];
+        _exclusionCacheMisses++;
+        return;
+    }
+    const uint64_t style = _doc->style_epoch(), layout = _doc->layout_epoch(), tree = _doc->m_render_tree_serial;
+    if(style != _exclusionStyleEpoch || layout != _exclusionLayoutEpoch || tree != _exclusionTreeSerial)
+    {
+        _paintExclusionCache.clear();
+        _exclusionStyleEpoch = style;
+        _exclusionLayoutEpoch = layout;
+        _exclusionTreeSerial = tree;
+    }
+    const bool snapshot = _snapshotDepth != 0;
+    if(const auto *sets = _paintExclusionCache.find(requestedRoot.get(), snapshot))
+    {
+        _doc->skip_paint = sets->paint;
+        _doc->skip_scroll_content = sets->scroll;
+        _doc->skip_background_images = sets->background;
+        _exclusionCacheHits++;
+        return;
+    }
+    [self rebuildExclusionsLockedInRoot:requestedRoot];
+    _exclusionCacheMisses++;
+    _paintExclusionCache.store(requestedRoot.get(), snapshot,
+        _doc->skip_paint, _doc->skip_scroll_content, _doc->skip_background_images);
+}
+
+- (void)rebuildExclusionsLockedInRoot:(const lh::element::ptr &)requestedRoot
 {
     const auto root = requestedRoot && requestedRoot != _doc->root() && SubtreeNeedsBackdrop(requestedRoot.get()) ? _doc->root() : requestedRoot;
     _doc->skip_paint.clear();
@@ -1630,6 +1696,8 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_scrollExclusions, _scrollAttribute, values, attribute))
+        _paintExclusionCache.clear();
     _scrollExclusions = [values copy];
     _scrollAttribute  = [attribute copy];
 }
@@ -1884,6 +1952,8 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setBackgroundImageExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_backgroundExclusions, _backgroundAttribute, values, attribute))
+        _paintExclusionCache.clear();
     _backgroundExclusions = [values copy];
     _backgroundAttribute  = [attribute copy];
 }
@@ -1902,6 +1972,8 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setLayerExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_layerExclusions, _layerAttribute, values, attribute))
+        _paintExclusionCache.clear();
     _layerExclusions = [values copy];
     _layerAttribute  = [attribute copy];
 }
@@ -1909,6 +1981,8 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_exclusions, _exclusionAttribute, values, attribute))
+        _paintExclusionCache.clear();
     _exclusions         = [values copy];
     _exclusionAttribute = [attribute copy];
 }
@@ -1916,6 +1990,8 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setTextPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_textExclusions, _textExclusionAttribute, values, attribute))
+        _paintExclusionCache.clear();
     _textExclusions = [values copy];
     _textExclusionAttribute = [attribute copy];
     _paintTraceValid = NO;
@@ -3435,9 +3511,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     NSMutableSet<NSString *> *merged  = [NSMutableSet setWithSet:values];
     if(savedValues.count > 0 && [savedAttribute isEqualToString:attribute])
         [merged unionSet:savedValues];
+    _paintExclusionCache.clear();
     _exclusions         = merged;
     _exclusionAttribute = [attribute copy];
     CGImageRef image    = [self copyImageLockedWithRect:rect scale:scale];
+    _paintExclusionCache.clear();
     _exclusions         = savedValues;
     _exclusionAttribute = savedAttribute;
     return image;

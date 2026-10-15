@@ -339,6 +339,7 @@ final class LocalPaintWorkloadTests: XCTestCase {
             let cpuMilliseconds = (cpuSeconds() - cpuStart) * 1000
             let elapsedMilliseconds = (CACurrentMediaTime() - start) * 1000
             let after = harness.completion
+            let exclusionStats = harness.renderer.document?.paintExclusionCacheStats ?? [:]
             let tileJobs = WidgetTileStats.snapshot.jobs - tilesBefore.jobs
             cpu += cpuMilliseconds
             elapsed += elapsedMilliseconds
@@ -357,6 +358,10 @@ final class LocalPaintWorkloadTests: XCTestCase {
             completed += 1
             rows.append([
                 "step": step, "cpu_ms": cpuMilliseconds, "elapsed_ms": elapsedMilliseconds,
+                "exclusion_cache_hits": exclusionStats["hits"]?.intValue ?? 0,
+                "exclusion_cache_misses": exclusionStats["misses"]?.intValue ?? 0,
+                "exclusion_cache_entries": exclusionStats["entries"]?.intValue ?? 0,
+                "exclusion_cache_pointers": exclusionStats["pointers"]?.intValue ?? 0,
                 "render_callbacks": after.scheduled - before.scheduled, "render_queue_remaining": harness.work.count,
                 "layouts": after.layouts - before.layouts, "document_jobs": after.tileJobs - before.tileJobs,
                 "document_installs": after.tileInstalls - before.tileInstalls, "tile_jobs": tileJobs,

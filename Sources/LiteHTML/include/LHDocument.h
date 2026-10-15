@@ -116,6 +116,8 @@ typedef struct LHKeyedRect {
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:scale:));
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:gpu:scale:));
 - (CGRect)boundsOfElementsMatching:(NSString *)selector NS_SWIFT_NAME(bounds(matching:));
+- (void)setPaintExclusionCacheDisabled:(BOOL)disabled;
+@property (readonly) NSDictionary<NSString *, NSNumber *> *paintExclusionCacheStats;
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setPaintExclusions(_:attribute:));
 - (void)setTextPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setTextPaintExclusions(_:attribute:));
 /// Elements drawn by layers instead of tiles, keyed by the paint-exclusion attribute: skipped when drawing tiles but drawn into snapshots.
