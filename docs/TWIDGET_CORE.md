@@ -122,16 +122,11 @@ This is not yet a replacement for Telegram's Swift renderer. The three fixtures 
 `tools/perflab/widget-stress` expose gaps beyond the existing unit coverage:
 
 - The canvas-market replay and the live Mac demo show a flat fill in place of the chart content.
-- Live-board and orbit-wall output stops at the core's fixed 900 CSS px height limit. A chat host
-  needs a configurable bounded height so the outer chat can scroll the complete widget.
-- `Renderer::update_composition` admits at most 64 layers and rejects nested animated elements.
-  The Swift compositor supports 256 layers and can promote the orbit fixture's nested motion
-  together with its overlapping labels. Raising the number alone does not provide that behavior.
-- The CoreGraphics backend creates text lines and gradients repeatedly. The bounded canvas text
-  and compiled-gradient caches added to `WidgetCanvas.swift` are not shared with it.
-- The Qt demo paints a new QImage for each repaint and does not enable composition. It cannot
-  inherit the Swift renderer's render-server animation savings through the current adapter.
+- `Renderer::update_composition` rejects nested animated elements. The Swift compositor can promote
+  the orbit fixture's nested motion; that needs a parent link in `Composition` and in every player.
 - The core has no input focus model; its focus and selection operations are ignored.
+
+`docs/PERFORMANCE_PARITY.md` tracks the rest against the Swift renderer, item by item.
 
 The path to one implementation is to move renderer decisions into this core while retaining
 platform painting, text, input, and compositor playback adapters. Port and verify the existing
