@@ -84,7 +84,7 @@ elseif(APPLE)
         "-framework CoreGraphics" "-framework CoreText" "-framework ImageIO" "-framework CoreFoundation")
 elseif(EMSCRIPTEN)
     set(TW_WASM_EXPORTS twl_create twl_backend_id twl_destroy twl_receive twl_set_width twl_set_max_height twl_set_theme twl_touch
-        twl_image_ready twl_size twl_dirty twl_display_list twl_stats twl_html twl_string_free twl_alloc twl_free
+        twl_image_ready twl_size twl_dirty twl_display_list twl_damage twl_stats twl_html twl_string_free twl_alloc twl_free
         twl_pointer twl_hover twl_wheel twl_key twl_tick twl_wants_tick twl_next_tick_in twl_set_compositing
         twl_composition twl_clock twl_layer_content)
     list(TRANSFORM TW_WASM_EXPORTS PREPEND "_")

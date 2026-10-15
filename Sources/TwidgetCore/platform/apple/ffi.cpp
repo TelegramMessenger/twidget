@@ -197,6 +197,10 @@ char* twl_display_list(twl_renderer* h) {
     }));
 }
 
+char* twl_damage(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "null", "damage", [&](twlite::Renderer& r) { return r.damage_json(); }));
+}
+
 char* twl_stats(twl_renderer* h) {
     return ret_string(guarded<std::string>(h, "{}", "stats", [&](twlite::Renderer& r) {
         const auto& s = r.stats();

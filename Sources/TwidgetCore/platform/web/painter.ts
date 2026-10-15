@@ -146,8 +146,23 @@ function addStops(g: CanvasGradient, s: number[]) {
 
 /** Executes display lists. Clips and groups nest in paint order and unwind together, as on every platform. */
 export class DisplayListPainter {
-  /** Paints `list` on `ctx`, already scaled to CSS px. */
-  paint(root: Ctx, list: Cmd[], res: PaintResources) {
+  /**
+   * Paints `list` on `ctx`, already scaled to CSS px. With `damage` (twl_damage, CSS px), only those
+   * areas are cleared and painted again; the rest of the canvas is kept. `null` paints everything.
+   */
+  paint(root: Ctx, list: Cmd[], res: PaintResources, damage: number[][] | null = null) {
+    if (damage) {
+      if (!damage.length) return;
+      root.save();
+      root.beginPath();
+      for (const d of damage) {
+        // Whole CSS px, one more around, for the antialiased edges.
+        const x = Math.floor(d[0]) - 1, y = Math.floor(d[1]) - 1, w = Math.ceil(d[0] + d[2]) + 1 - x, h = Math.ceil(d[1] + d[3]) + 1 - y;
+        root.clearRect(x, y, w, h);
+        root.rect(x, y, w, h);
+      }
+      root.clip();
+    }
     // A group with opacity draws into its own surface, composited once at its end: canvas 2D has no
     // transparency layer, and an alpha per primitive would darken where children overlap.
     type Frame = { kind: 'save' } | { kind: 'layer'; parent: Ctx; surface: Surface; alpha: number };
@@ -269,6 +284,7 @@ export class DisplayListPainter {
       }
     }
     while (stack.length) pop();
+    if (damage) root.restore();
   }
 
   private static svgPath(ctx: Ctx, p: SvgPathJson) {

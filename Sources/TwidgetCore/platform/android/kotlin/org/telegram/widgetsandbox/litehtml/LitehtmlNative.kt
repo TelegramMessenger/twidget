@@ -40,6 +40,8 @@ internal object LitehtmlNative {
     external fun dirty(handle: Long): Boolean
     /** Records the document into a display list (JSON, src/display_list.h), CSS px; clears `dirty`. */
     external fun displayList(handle: Long): String
+    /** Where the last displayList differs from the one before: `[[x, y, w, h], ...]`, or "null" for all. */
+    external fun damage(handle: Long): String
     /** The last rebuild as JSON: serializeMs, parseLayoutMs, passes, htmlBytes, builds, displayOps. */
     external fun stats(handle: Long): String
 }

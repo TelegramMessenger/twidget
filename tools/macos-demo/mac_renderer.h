@@ -106,6 +106,7 @@ private:
     void paint();
     // Under mutex_: the image of `list` (CSS px) over `area`, `scale` device px per CSS px.
     Image raster(const twlite::DisplayList& list, const twlite::Rect& area, double scale);
+    static Image image_of(const std::vector<uint8_t>& pixels, size_t w, size_t h);
     static double nowMs();
 
     double dpr_;
@@ -114,6 +115,8 @@ private:
     std::unique_ptr<twlite::Renderer> core_;
     std::mutex mutex_;  // every call into core_ and backend_
     uint64_t compositionVersion_ = 0;
+    std::vector<uint8_t> pixels_;  // the last document frame, which the next one starts from
+    size_t pixelsWidth_ = 0;
     std::map<int64_t, std::pair<uint64_t, uint64_t>> shown_;  // layer id → content and track versions handed out
 
     // One tick per display refresh at most.

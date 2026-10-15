@@ -99,6 +99,8 @@ public:
     /// Where the last `paint()` differs from the one before, in CSS px; false when everything must be
     /// painted (the first paint, a new size). Empty when nothing moved.
     bool damage(std::vector<Rect>& out) const;
+    /// damage() as JSON for the C ABI: `null` (paint everything) or `[[x, y, w, h], ...]`.
+    std::string damage_json() const;
     const BuildStats& stats() const { return stats_; }
     /// Off: every batch serialises the document again. For checks that patching changes nothing.
     void set_patching(bool enabled) { patching_ = enabled; }

@@ -78,8 +78,11 @@ class LitehtmlBackend {
     @Keep
     fun canvasRelease(id: Int) = canvases.release(id)
 
-    /** Executes a display list (the JSON of `LitehtmlNative.displayList`) on `canvas`, already scaled to CSS px by `density`. */
-    fun paint(canvas: Canvas, list: JSONArray, density: Float) = painter.paint(canvas, list, resources, density)
+    /**
+     * Executes a display list (the JSON of `LitehtmlNative.displayList`) on `canvas`, already scaled to CSS px by
+     * `density`; with `damage` (`LitehtmlNative.damage`), only the areas that changed on a canvas that keeps the last frame.
+     */
+    fun paint(canvas: Canvas, list: JSONArray, density: Float, damage: JSONArray? = null) = painter.paint(canvas, list, resources, density, damage)
 
     fun release() {
         images.values.forEach { it.recycle() }

@@ -8,6 +8,8 @@ import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -16,6 +18,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 
 /** Fonts, images and canvas bitmaps the painter draws with. */
@@ -29,6 +32,7 @@ internal class DisplayListPainter {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
     private val path = Path()
     private val clipPath = Path()
     private val rectF = RectF()
@@ -39,9 +43,30 @@ internal class DisplayListPainter {
 
     /**
      * Paints `list` on `canvas`, already scaled to CSS px. `density` is device px per CSS px: shadows are
-     * blurred into bitmaps at that resolution.
+     * blurred into bitmaps at that resolution. With `damage` (LitehtmlNative.damage, CSS px), only those
+     * areas are cleared and painted again on a canvas that keeps the last frame; null paints everything.
      */
-    fun paint(canvas: Canvas, list: JSONArray, res: PaintResources, density: Float) {
+    fun paint(canvas: Canvas, list: JSONArray, res: PaintResources, density: Float, damage: JSONArray? = null) {
+        val base = canvas.save()
+        if (damage != null) {
+            if (damage.length() == 0) return
+            // Whole CSS px, one more around, for the antialiased edges.
+            clipPath.rewind()
+            for (i in 0 until damage.length()) {
+                val d = damage.optJSONArray(i) ?: continue
+                val x = floor(d.optDouble(0)).toFloat() - 1
+                val y = floor(d.optDouble(1)).toFloat() - 1
+                rectF.set(x, y, ceil(d.optDouble(0) + d.optDouble(2)).toFloat() + 1, ceil(d.optDouble(1) + d.optDouble(3)).toFloat() + 1)
+                clipPath.addRect(rectF, Path.Direction.CW)
+            }
+            canvas.clipPath(clipPath)
+            canvas.drawPaint(clear)
+        }
+        paintAll(canvas, list, res, density)
+        canvas.restoreToCount(base)
+    }
+
+    private fun paintAll(canvas: Canvas, list: JSONArray, res: PaintResources, density: Float) {
         // Clips and groups nest in paint order and unwind together, as on every platform: each is one save.
         var depth = 0
         for (i in 0 until list.length()) {

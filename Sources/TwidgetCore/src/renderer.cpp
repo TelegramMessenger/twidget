@@ -2559,6 +2559,13 @@ bool Renderer::damage(std::vector<Rect>& out) const {
     return true;
 }
 
+std::string Renderer::damage_json() const {
+    if (!damage_valid_) return "null";
+    Json out = Json::array();
+    for (const Rect& r : damage_) out.push(Json::array().push(double(r.x)).push(double(r.y)).push(double(r.w)).push(double(r.h)));
+    return out.dump();
+}
+
 DisplayList Renderer::paint_document() {
     dirty_ = false;
 #ifdef TW_LITEHTML_TWIDGET

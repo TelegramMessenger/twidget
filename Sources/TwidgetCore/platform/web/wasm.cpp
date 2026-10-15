@@ -269,6 +269,11 @@ EMSCRIPTEN_KEEPALIVE char* twl_display_list(Handle* h) {
     return ret_string(twlite::to_json(list));
 }
 
+EMSCRIPTEN_KEEPALIVE char* twl_damage(Handle* h) {
+    if (!h) return ret_string("null");
+    return ret_string(h->renderer->damage_json());
+}
+
 EMSCRIPTEN_KEEPALIVE char* twl_stats(Handle* h) {
     if (!h) return ret_string("{}");
     const auto& s = h->renderer->stats();

@@ -28,7 +28,9 @@ public:
     void canvas_release(int id) override;
 
     /// Paints `list` (CSS px) into `buffer` (premultiplied RGBA8, `w`×`h` physical px, scale `dpr`).
-    void paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint32_t h, double dpr);
+    /// With `damage` (Renderer::damage, CSS px), only those areas are cleared and painted again; the
+    /// rest of `buffer` is kept.
+    void paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint32_t h, double dpr, const std::vector<Rect>* damage = nullptr);
 
 private:
     struct Font {

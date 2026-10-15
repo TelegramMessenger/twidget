@@ -408,11 +408,31 @@ CGImageRef CGBackend::canvas_image(int id) {
     return CGBitmapContextCreateImage(it->second.ctx);
 }
 
-void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint32_t h, double dpr) {
+void CGBackend::paint(const DisplayList& list, uint8_t* buffer, uint32_t w, uint32_t h, double dpr, const std::vector<Rect>* damage) {
     if (!buffer || w == 0 || h == 0) return;
-    std::fill(buffer, buffer + size_t(w) * h * 4, 0);
+    // The damaged areas in whole device pixels, a pixel around each for antialiasing.
+    std::vector<CGRect> areas;
+    if (damage) {
+        for (const Rect& r : *damage) {
+            double x0 = std::max(0.0, std::floor(r.x * dpr) - 1), y0 = std::max(0.0, std::floor(r.y * dpr) - 1);
+            double x1 = std::min(double(w), std::ceil((r.x + r.w) * dpr) + 1), y1 = std::min(double(h), std::ceil((r.y + r.h) * dpr) + 1);
+            if (x1 > x0 && y1 > y0) areas.push_back(CGRectMake(x0, y0, x1 - x0, y1 - y0));
+        }
+        if (areas.empty()) return;
+        for (const CGRect& a : areas)
+            for (size_t y = size_t(a.origin.y); y < size_t(a.origin.y + a.size.height); y++)
+                std::fill(buffer + (y * w + size_t(a.origin.x)) * 4, buffer + (y * w + size_t(a.origin.x + a.size.width)) * 4, 0);
+    } else {
+        std::fill(buffer, buffer + size_t(w) * h * 4, 0);
+    }
     CGContextRef ctx = CGBitmapContextCreate(buffer, w, h, 8, size_t(w) * 4, rgb_, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     if (!ctx) return;
+    if (!areas.empty()) {
+        // Device px with y up, as the bitmap context starts.
+        std::vector<CGRect> flipped;
+        for (const CGRect& a : areas) flipped.push_back(CGRectMake(a.origin.x, h - a.origin.y - a.size.height, a.size.width, a.size.height));
+        CGContextClipToRects(ctx, flipped.data(), flipped.size());
+    }
     // CSS px, y down
     CGContextTranslateCTM(ctx, 0, h);
     CGContextScaleCTM(ctx, dpr, -dpr);

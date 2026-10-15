@@ -190,6 +190,19 @@ void MacRenderer::dispatch(std::vector<Json> messages) {
     }
 }
 
+Image MacRenderer::image_of(const std::vector<uint8_t>& pixels, size_t w, size_t h) {
+    if (w == 0 || h == 0) return {};
+    CFDataRef data = CFDataCreate(kCFAllocatorDefault, pixels.data(), CFIndex(pixels.size()));
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
+    CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
+    CGImageRef image = CGImageCreate(w, h, 8, 32, w * 4, rgb, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big, provider, nullptr, false,
+                                     kCGRenderingIntentDefault);
+    CGColorSpaceRelease(rgb);
+    CGDataProviderRelease(provider);
+    CFRelease(data);
+    return Image(image);
+}
+
 Image MacRenderer::raster(const twlite::DisplayList& list, const twlite::Rect& area, double scale) {
     size_t w = size_t(std::ceil(area.w * scale)), h = size_t(std::ceil(area.h * scale));
     if (w == 0 || h == 0 || w * h > (size_t(1) << 26)) return {};
@@ -211,15 +224,7 @@ Image MacRenderer::raster(const twlite::DisplayList& list, const twlite::Rect& a
         moved.push_back(pop);
         backend_.paint(moved, pixels.data(), uint32_t(w), uint32_t(h), scale);
     }
-    CFDataRef data = CFDataCreate(kCFAllocatorDefault, pixels.data(), CFIndex(pixels.size()));
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
-    CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
-    CGImageRef image = CGImageCreate(w, h, 8, 32, w * 4, rgb, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big, provider, nullptr, false,
-                                     kCGRenderingIntentDefault);
-    CGColorSpaceRelease(rgb);
-    CGDataProviderRelease(provider);
-    CFRelease(data);
-    return Image(image);
+    return image_of(pixels, w, h);
 }
 
 void MacRenderer::paint() {
@@ -233,7 +238,16 @@ void MacRenderer::paint() {
         frame->width = core_->width();
         frame->height = core_->viewport_height();
         frame->dpr = dpr_;
-        frame->document = raster(list, twlite::Rect{0, 0, float(frame->width), float(frame->height)}, dpr_);
+        // Only what changed is painted again, over the last frame's pixels.
+        size_t w = size_t(core_->px_width()), h = size_t(core_->px_height());
+        std::vector<twlite::Rect> damage;
+        bool partial = core_->damage(damage) && pixels_.size() == w * h * 4 && pixelsWidth_ == w;
+        if (!partial) {
+            pixels_.assign(w * h * 4, 0);
+            pixelsWidth_ = w;
+        }
+        if (!partial || !damage.empty()) backend_.paint(list, pixels_.data(), uint32_t(w), uint32_t(h), dpr_, partial ? &damage : nullptr);
+        frame->document = image_of(pixels_, w, h);
 
         // The layers go with the document they were cut from: the view shows both in one transaction.
         const twlite::Composition& composition = core_->composition();

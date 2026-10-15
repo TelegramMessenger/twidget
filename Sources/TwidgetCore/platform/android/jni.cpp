@@ -348,6 +348,12 @@ JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_s
     });
 }
 
+/// Where the last displayList differs from the one before (Renderer::damage_json): null means all.
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_damage(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "null", "damage", [&](Handle& hd) { return hd.renderer->damage_json(); }));
+}
+
 /// The layers above the last displayList (src/compositor.h, to_json(Composition)).
 JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_composition(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);

@@ -119,6 +119,13 @@ async function main() {
   check(ctx.log.some((l) => l.startsWith('fill:rgba(255,0,0,1)')) && ctx.log.includes('dash:3,1') && ctx.log.some((l) => l.startsWith('stroke:rgba(0,0,255,1):2')), 'an SVG path fills, then strokes dashed');
   check(ctx.log.some((l) => l.startsWith('fill:#000:nonzero:6')), 'a box shadow draws with its blur');
 
+  const partial = new FakeSurface(100, 100).ctx as any;
+  new DisplayListPainter().paint(partial, [{ k: 0, r: [0, 0, 10, 10], c: red }] as any, res, [[2.5, 3, 4, 4]]);
+  check(partial.log[0] === 'clearRect' && partial.log.includes('clip:nonzero') && partial.depth === 0, 'damage clears and clips its areas, and unwinds');
+  const nothing = new FakeSurface(100, 100).ctx as any;
+  new DisplayListPainter().paint(nothing, [{ k: 0, r: [0, 0, 10, 10], c: red }] as any, res, []);
+  check(nothing.log.length === 0, 'no damage paints nothing');
+
   const bitmaps = new CanvasBitmaps(res);
   bitmaps.run(7, 20, 10, JSON.stringify([
     { k: 0 },
