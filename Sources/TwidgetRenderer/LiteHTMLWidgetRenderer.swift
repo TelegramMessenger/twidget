@@ -3277,6 +3277,63 @@ class WidgetDocumentView: NSView {
         return anchorHistory.last(where: { abs($0.height - height) < 0.5 })?.anchor
     }
 
+    private final class InstallGate {
+        private let lock = NSLock()
+        private var claimed = false
+        let finished = DispatchSemaphore(value: 0)
+
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if claimed {
+                return false
+            }
+            claimed = true
+            return true
+        }
+    }
+
+    static let installOnMainTimeout: TimeInterval = 0.02
+    static let installBurstGap: CFTimeInterval = 0.1
+    static let gateDisabled = ProcessInfo.processInfo.environment["TW_NO_GATE"] != nil
+    private var lastHeightInstall: CFTimeInterval = 0
+
+    func scheduleInstall(_ document: LHDocument, schedule: @escaping (@escaping () -> Void) -> Void, _ body: @escaping () -> Void) {
+        let height = ceil(document.size.height)
+        let now = CACurrentMediaTime()
+        alignmentLock.lock()
+        let changesHeight = presentedHeight > 0 && abs(height - presentedHeight) >= 0.5
+        let isolated = now - lastHeightInstall > WidgetDocumentView.installBurstGap
+        if changesHeight {
+            lastHeightInstall = now
+        }
+        alignmentLock.unlock()
+        guard changesHeight, isolated, !WidgetDocumentView.gateDisabled else {
+            schedule(body)
+            return
+        }
+        schedule {
+            if Thread.isMainThread {
+                body()
+                return
+            }
+            let gate = InstallGate()
+            DispatchQueue.main.async {
+                if gate.claim() {
+                    body()
+                }
+                gate.finished.signal()
+            }
+            if gate.finished.wait(timeout: .now() + WidgetDocumentView.installOnMainTimeout) == .timedOut {
+                if gate.claim() {
+                    body()
+                } else {
+                    gate.finished.wait()
+                }
+            }
+        }
+    }
+
     private func layoutContent(viewSize: CGSize) {
         var offset: CGFloat = 0
         if presentedHeight > 0, abs(viewSize.height - presentedHeight) >= 0.5, let viewAnchor = anchor(forHeight: viewSize.height) {
@@ -3607,9 +3664,17 @@ class WidgetDocumentView: NSView {
                 }
             }
             if synchronously {
-                finish()
+                if let view = self {
+                    view.scheduleInstall(document, schedule: { $0() }, finish)
+                } else {
+                    finish()
+                }
             } else if let schedule = schedule {
-                schedule(finish)
+                if let view = self {
+                    view.scheduleInstall(document, schedule: schedule, finish)
+                } else {
+                    schedule(finish)
+                }
             } else {
                 DispatchQueue.main.async(execute: finish)
             }
@@ -4228,9 +4293,17 @@ class WidgetDocumentView: NSView {
                 }
             }
             if synchronously {
-                finish()
+                if let view = self {
+                    view.scheduleInstall(document, schedule: { $0() }, finish)
+                } else {
+                    finish()
+                }
             } else if let schedule = schedule {
-                schedule(finish)
+                if let view = self {
+                    view.scheduleInstall(document, schedule: schedule, finish)
+                } else {
+                    schedule(finish)
+                }
             } else {
                 DispatchQueue.main.async(execute: finish)
             }
