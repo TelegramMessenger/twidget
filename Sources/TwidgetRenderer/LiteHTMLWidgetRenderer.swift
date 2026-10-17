@@ -127,6 +127,8 @@ public final class LiteHTMLWidgetRenderer {
     static let resizeBurstGap: CFTimeInterval = 0.15
     private var resizeDiffAt: CFTimeInterval = 0
     private var resizeClickY: CGFloat = 0
+    private var resizePressId = 0
+    private var nextBounds: (document: LHDocument, bounds: [Int: CGRect])?
     private var resizePrefersBottom = false
 
     public var lastResizeDiff: WidgetResizeDiff? {
@@ -148,6 +150,17 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
+    private func adoptNextBounds(_ document: LHDocument) {
+        guard let next = nextBounds else {
+            return
+        }
+        nextBounds = nil
+        if next.document === document {
+            bounds = next.bounds
+            boundsValid = true
+        }
+    }
+
     private func noteResize(to next: LHDocument) {
         guard let previous = document else {
             return
@@ -164,7 +177,14 @@ public final class LiteHTMLWidgetRenderer {
         let prefersBottom = resizePrefersBottom
         resizeDiffLock.unlock()
         let pointer = recent ? CGPoint(x: lastClick.point.x, y: resizeClickY) : nil
-        let diff = WidgetResizeDiff.compute(old: elementBounds(), new: next.idBounds(), oldHeight: oldHeight, newHeight: newHeight, exactOldHeight: previous.size.height, exactNewHeight: next.size.height, pointer: pointer, pointerTarget: recent ? pressId : nil, prefersBottom: prefersBottom, previousKeepsBottom: previousKeepsBottom)
+        let diff: WidgetResizeDiff
+        if let keepsBottom = previousKeepsBottom, abs(newHeight - oldHeight) <= 1.5 {
+            diff = WidgetResizeDiff(oldHeight: oldHeight, newHeight: newHeight, unchangedTop: keepsBottom ? 0 : oldHeight, unchangedBottom: keepsBottom ? oldHeight : 0, keepsBottom: keepsBottom)
+        } else {
+            let fresh = next.idBounds()
+            diff = WidgetResizeDiff.compute(old: elementBounds(), new: fresh, oldHeight: oldHeight, newHeight: newHeight, exactOldHeight: previous.size.height, exactNewHeight: next.size.height, pointer: pointer, pointerTarget: recent ? resizePressId : nil, prefersBottom: prefersBottom, previousKeepsBottom: previousKeepsBottom)
+            nextBounds = (next, fresh)
+        }
         if diff.keepsBottom {
             resizeClickY += next.size.height - previous.size.height
         }
@@ -1861,6 +1881,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         retiredURLs.removeAll()
         boundsValid = false
+        adoptNextBounds(next)
         documentView.document = next
         reportSize()
         reportResize()
@@ -1891,6 +1912,7 @@ public final class LiteHTMLWidgetRenderer {
         noteResize(to: next)
         document = next
         boundsValid = false
+        adoptNextBounds(next)
     }
 
     private static let scriptedProperties: Set<String> = ["transform", "opacity"]
@@ -3083,6 +3105,7 @@ public final class LiteHTMLWidgetRenderer {
         }
         lastClick = (now, point)
         resizeClickY = point.y
+        resizePressId = id
         if !frozen {
             post(["type": "gesture", "wants": prevented.contains("\(id):pointerdown") || prevented.contains("\(id):touchstart")])
         }
