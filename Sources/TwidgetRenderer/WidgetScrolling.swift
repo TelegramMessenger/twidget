@@ -65,9 +65,11 @@ final class WidgetScrollLayer {
     static let tileSize = CGSize(width: 512, height: 256)
     static let queue = DispatchQueue(label: "twidget.scroll.raster", qos: .userInitiated)
     private(set) var rasterCount = 0
+    private let schedule: (@escaping () -> Void) -> Void
 
-    init(id: Int, geometry: WidgetScrollGeometry) {
+    init(id: Int, geometry: WidgetScrollGeometry, schedule: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }) {
         self.id = id
+        self.schedule = schedule
         self.geometry = geometry
         clip.anchorPoint = .zero
         clip.masksToBounds = true
@@ -242,9 +244,10 @@ final class WidgetScrollLayer {
                 continue
             }
             pending.insert(index)
+            let schedule = self.schedule
             WidgetScrollLayer.queue.async { [weak self] in
                 let image = lifetime.isActive ? document.copyScrollContent(attribute: attribute, value: value, rect: rasterRect, scale: scale) : nil
-                DispatchQueue.main.async {
+                schedule {
                     guard let self = self else {
                         return
                     }
@@ -313,6 +316,7 @@ final class WidgetScrolling {
     private var depths: [Int: Int] = [:]
     private(set) var hitViewports: [Int: CGRect] = [:]
     private weak var host: CALayer?
+    var schedule: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     static let enabled = ProcessInfo.processInfo.environment["TW_NO_SCROLL_LAYERS"] == nil
 
     struct Gesture {
@@ -418,7 +422,7 @@ final class WidgetScrolling {
             layers[id] = nil
         }
         for (id, geometry) in wanted {
-            let layer = layers[id] ?? WidgetScrollLayer(id: id, geometry: geometry)
+            let layer = layers[id] ?? WidgetScrollLayer(id: id, geometry: geometry, schedule: schedule)
             if layers[id] == nil {
                 layers[id] = layer
                 host?.twAddSublayer(layer.clip)

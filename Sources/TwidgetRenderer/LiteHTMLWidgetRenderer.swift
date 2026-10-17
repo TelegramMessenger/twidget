@@ -232,6 +232,9 @@ public final class LiteHTMLWidgetRenderer {
         documentView = WidgetDocumentView.backingStore ? WidgetBackingStoreDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300)) : WidgetDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300))
         view = documentView
         documentView.owner = self
+        scrolling.schedule = { [weak self] block in
+            self?.schedule(block)
+        }
         dom.onViolation = { [weak self] detail in
             self?.post(["type": "violation", "detail": detail])
         }
