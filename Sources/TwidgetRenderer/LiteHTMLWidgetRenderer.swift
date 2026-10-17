@@ -121,6 +121,59 @@ public final class LiteHTMLWidgetRenderer {
     private var clickCount = 0
     private var lastClick: (time: CFTimeInterval, point: CGPoint) = (0, .zero)
     private var observedResize: Set<Int> = []
+    private let resizeDiffLock = NSLock()
+    private var resizeDiff: WidgetResizeDiff?
+    static let resizePointerAge: CFTimeInterval = 1.5
+    static let resizeBurstGap: CFTimeInterval = 0.15
+    private var resizeDiffAt: CFTimeInterval = 0
+    private var resizeClickY: CGFloat = 0
+    private var resizePrefersBottom = false
+
+    public var lastResizeDiff: WidgetResizeDiff? {
+        resizeDiffLock.lock()
+        defer { resizeDiffLock.unlock() }
+        return resizeDiff
+    }
+
+    public var prefersBottomResize: Bool {
+        get {
+            resizeDiffLock.lock()
+            defer { resizeDiffLock.unlock() }
+            return resizePrefersBottom
+        }
+        set {
+            resizeDiffLock.lock()
+            resizePrefersBottom = newValue
+            resizeDiffLock.unlock()
+        }
+    }
+
+    private func noteResize(to next: LHDocument) {
+        guard let previous = document else {
+            return
+        }
+        let oldHeight = ceil(previous.size.height)
+        let newHeight = ceil(next.size.height)
+        guard abs(oldHeight - newHeight) > WidgetResizeDiff.tolerance else {
+            return
+        }
+        let now = CACurrentMediaTime()
+        let recent = now - lastClick.time < LiteHTMLWidgetRenderer.resizePointerAge
+        resizeDiffLock.lock()
+        let previousKeepsBottom = now - resizeDiffAt < LiteHTMLWidgetRenderer.resizeBurstGap ? resizeDiff?.keepsBottom : nil
+        let prefersBottom = resizePrefersBottom
+        resizeDiffLock.unlock()
+        let pointer = recent ? CGPoint(x: lastClick.point.x, y: resizeClickY) : nil
+        let diff = WidgetResizeDiff.compute(old: elementBounds(), new: next.idBounds(), oldHeight: oldHeight, newHeight: newHeight, exactOldHeight: previous.size.height, exactNewHeight: next.size.height, pointer: pointer, pointerTarget: recent ? pressId : nil, prefersBottom: prefersBottom, previousKeepsBottom: previousKeepsBottom)
+        if diff.keepsBottom {
+            resizeClickY += next.size.height - previous.size.height
+        }
+        resizeDiffLock.lock()
+        resizeDiff = diff
+        resizeDiffAt = now
+        resizeDiffLock.unlock()
+    }
+
     private var displayList: LHDisplayList?
     private let animator = WidgetAnimator()
     private lazy var compositor = WidgetCompositor(host: documentView.contentLayer)
@@ -1784,6 +1837,7 @@ public final class LiteHTMLWidgetRenderer {
             }
             stage("diff")
         }
+        noteResize(to: next)
         document = next
         let shimmerBefore = shimmers.ids
         if shimmers.update(document: next, animator: animator, width: width, host: documentView.contentLayer, scale: documentView.scale, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs).union(svgLayers.ids), suspended: magic.isActive) || shimmers.dropped || shimmerBefore != shimmers.ids {
@@ -1834,6 +1888,7 @@ public final class LiteHTMLWidgetRenderer {
         if silentDebt.count > 32 {
             silentDebt = [silentDebt.reduce(CGRect.null) { $0.union($1) }]
         }
+        noteResize(to: next)
         document = next
         boundsValid = false
     }
@@ -3027,6 +3082,7 @@ public final class LiteHTMLWidgetRenderer {
             clickCount = 1
         }
         lastClick = (now, point)
+        resizeClickY = point.y
         if !frozen {
             post(["type": "gesture", "wants": prevented.contains("\(id):pointerdown") || prevented.contains("\(id):touchstart")])
         }
