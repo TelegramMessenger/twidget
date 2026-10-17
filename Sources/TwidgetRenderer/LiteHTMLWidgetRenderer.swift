@@ -192,6 +192,13 @@ public final class LiteHTMLWidgetRenderer {
         resizeDiff = diff
         resizeDiffAt = now
         resizeDiffLock.unlock()
+        let shift: CGFloat
+        if let from = diff.pointerFrom, let to = diff.pointerTo {
+            shift = to - from
+        } else {
+            shift = diff.keepsBottom ? newHeight - oldHeight : 0
+        }
+        documentView.noteAnchorShift(shift, height: newHeight)
     }
 
     private var displayList: LHDisplayList?
@@ -1883,6 +1890,7 @@ public final class LiteHTMLWidgetRenderer {
         boundsValid = false
         adoptNextBounds(next)
         documentView.document = next
+        documentView.presentAlignmentIfDrawnSynchronously(next)
         reportSize()
         reportResize()
         placeSurfaces()
@@ -3240,9 +3248,62 @@ class WidgetDocumentView: NSView {
     }
 
     private let content = CALayer()
+    private let alignmentLock = NSLock()
+    private var anchorHistory: [(height: CGFloat, anchor: CGFloat, time: CFTimeInterval)] = []
+    private var anchorTotal: CGFloat = 0
+    private var presentedAnchor: CGFloat = 0
+    private var presentedHeight: CGFloat = 0
 
     var contentLayer: CALayer? {
         return content
+    }
+
+    func noteAnchorShift(_ shift: CGFloat, height: CGFloat) {
+        alignmentLock.lock()
+        let now = CACurrentMediaTime()
+        if anchorHistory.count >= 2, abs(anchorHistory[anchorHistory.count - 2].height - height) < 0.5, now - anchorHistory[anchorHistory.count - 2].time < 0.05 {
+            anchorTotal = anchorHistory[anchorHistory.count - 2].anchor
+        } else {
+            anchorTotal += shift
+        }
+        anchorHistory.append((height, anchorTotal, now))
+        if anchorHistory.count > 32 {
+            anchorHistory.removeFirst(anchorHistory.count - 32)
+        }
+        alignmentLock.unlock()
+    }
+
+    private func anchor(forHeight height: CGFloat) -> CGFloat? {
+        return anchorHistory.last(where: { abs($0.height - height) < 0.5 })?.anchor
+    }
+
+    private func layoutContent(viewSize: CGSize) {
+        var offset: CGFloat = 0
+        if presentedHeight > 0, abs(viewSize.height - presentedHeight) >= 0.5, let viewAnchor = anchor(forHeight: viewSize.height) {
+            offset = viewAnchor - presentedAnchor
+        }
+        let frame = CGRect(origin: CGPoint(x: 0, y: offset), size: viewSize)
+        if content.frame != frame {
+            content.frame = frame
+        }
+    }
+
+    var drawsSynchronously = false
+
+    func presentAlignmentIfDrawnSynchronously(_ document: LHDocument) {
+        if drawsSynchronously {
+            drawsSynchronously = false
+            presentAlignment(for: document)
+        }
+    }
+
+    func presentAlignment(for document: LHDocument) {
+        alignmentLock.lock()
+        let height = ceil(document.size.height)
+        presentedHeight = height
+        presentedAnchor = anchor(forHeight: height) ?? anchorTotal
+        layoutContent(viewSize: size)
+        alignmentLock.unlock()
     }
 
     required init?(coder: NSCoder) {
@@ -3256,7 +3317,9 @@ class WidgetDocumentView: NSView {
         captureSize(newSize)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        content.frame = CGRect(origin: .zero, size: newSize)
+        alignmentLock.lock()
+        layoutContent(viewSize: newSize)
+        alignmentLock.unlock()
         CATransaction.commit()
         if widthChanged || heightChanged {
             toOwner { $0.viewResized() }
@@ -3535,6 +3598,7 @@ class WidgetDocumentView: NSView {
                         tile.prepared = true
                         self.preparedTiles += 1
                     }
+                    self.presentAlignment(for: document)
                     CATransaction.commit()
                 }
                 completion()
@@ -4146,6 +4210,7 @@ class WidgetDocumentView: NSView {
                         self.asyncCounts.installed += 1
                         self.drawStatsLock.unlock()
                     }
+                    self.presentAlignment(for: document)
                     CATransaction.commit()
                 }
                 for (index, dirty) in pending where !installed.contains(index) {
@@ -4192,6 +4257,7 @@ class WidgetDocumentView: NSView {
             invalidateAsync(rects)
             return
         }
+        drawsSynchronously = true
         syncInvalidations += 1
         if rects.count <= 32 || WidgetDocumentView.backingStore || tiles.isEmpty {
             for rect in rects {
@@ -4242,6 +4308,7 @@ class WidgetDocumentView: NSView {
             invalidateAsync([rect ?? CGRect(x: 0, y: 0, width: size.width, height: CGFloat.greatestFiniteMagnitude / 4)])
             return
         }
+        drawsSynchronously = true
         syncInvalidations += 1
         if WidgetDocumentView.backingStore {
             if let rect = rect {
@@ -4578,6 +4645,7 @@ class WidgetDocumentView: NSView {
             tile.shown = surface
             tile.pending = false
         }
+        presentAlignment(for: document)
         CATransaction.commit()
     }
 
