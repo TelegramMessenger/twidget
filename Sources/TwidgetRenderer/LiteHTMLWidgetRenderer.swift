@@ -131,6 +131,10 @@ public final class LiteHTMLWidgetRenderer {
     private var nextBounds: (document: LHDocument, bounds: [Int: CGRect])?
     private var resizePrefersBottom = false
 
+    public var alignmentDebug: String {
+        return documentView.alignmentDebug
+    }
+
     public var lastResizeDiff: WidgetResizeDiff? {
         resizeDiffLock.lock()
         defer { resizeDiffLock.unlock() }
@@ -3293,22 +3297,14 @@ class WidgetDocumentView: NSView {
         }
     }
 
-    static let installOnMainTimeout: TimeInterval = 0.02
-    static let installBurstGap: CFTimeInterval = 0.1
+    static let installOnMainTimeout: TimeInterval = 0.05
     static let gateDisabled = ProcessInfo.processInfo.environment["TW_NO_GATE"] != nil
-    private var lastHeightInstall: CFTimeInterval = 0
 
-    func scheduleInstall(_ document: LHDocument, schedule: @escaping (@escaping () -> Void) -> Void, _ body: @escaping () -> Void) {
-        let height = ceil(document.size.height)
-        let now = CACurrentMediaTime()
+    func scheduleInstall(height: CGFloat, schedule: @escaping (@escaping () -> Void) -> Void, _ body: @escaping () -> Void) {
         alignmentLock.lock()
         let changesHeight = presentedHeight > 0 && abs(height - presentedHeight) >= 0.5
-        let isolated = now - lastHeightInstall > WidgetDocumentView.installBurstGap
-        if changesHeight {
-            lastHeightInstall = now
-        }
         alignmentLock.unlock()
-        guard changesHeight, isolated, !WidgetDocumentView.gateDisabled else {
+        guard changesHeight, !WidgetDocumentView.gateDisabled else {
             schedule(body)
             return
         }
@@ -3354,9 +3350,18 @@ class WidgetDocumentView: NSView {
         }
     }
 
-    func presentAlignment(for document: LHDocument) {
+    var alignmentDebug: String {
         alignmentLock.lock()
-        let height = ceil(document.size.height)
+        defer { alignmentLock.unlock() }
+        return String(format: "view %.0f presented %.0f origin %.0f pres %.0f", size.height, presentedHeight, content.frame.origin.y, content.presentation()?.frame.origin.y ?? -999)
+    }
+
+    func presentAlignment(for document: LHDocument) {
+        presentAlignment(height: ceil(document.size.height))
+    }
+
+    func presentAlignment(height: CGFloat) {
+        alignmentLock.lock()
         presentedHeight = height
         presentedAnchor = anchor(forHeight: height) ?? anchorTotal
         layoutContent(viewSize: size)
@@ -3565,6 +3570,7 @@ class WidgetDocumentView: NSView {
         tilesTrimmed = false
         let scale = self.scale
         let detached = self.detached
+        let drawnHeight = ceil(document.size.height)
         guard syncTiles(layer: layer, document: document, scale: scale) else {
             return false
         }
@@ -3646,6 +3652,10 @@ class WidgetDocumentView: NSView {
                         }
                         let previous = WidgetDocumentView.surface(of: tile.layer)
                         self.dropSpare(tile)
+                        if tile.layer.frame != tile.rect {
+                            tile.layer.frame = tile.rect
+                            tile.layer.contentsScale = scale
+                        }
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
                         tile.note("prepare-install")
@@ -3655,7 +3665,7 @@ class WidgetDocumentView: NSView {
                         tile.prepared = true
                         self.preparedTiles += 1
                     }
-                    self.presentAlignment(for: document)
+                    self.presentAlignment(height: drawnHeight)
                     CATransaction.commit()
                 }
                 completion()
@@ -3665,13 +3675,13 @@ class WidgetDocumentView: NSView {
             }
             if synchronously {
                 if let view = self {
-                    view.scheduleInstall(document, schedule: { $0() }, finish)
+                    view.scheduleInstall(height: drawnHeight, schedule: { $0() }, finish)
                 } else {
                     finish()
                 }
             } else if let schedule = schedule {
                 if let view = self {
-                    view.scheduleInstall(document, schedule: schedule, finish)
+                    view.scheduleInstall(height: drawnHeight, schedule: schedule, finish)
                 } else {
                     schedule(finish)
                 }
@@ -4121,6 +4131,7 @@ class WidgetDocumentView: NSView {
             return
         }
         let scale = self.scale
+        let drawnHeight = ceil(document.size.height)
         var jobs: [(index: Int, rect: CGRect, dirty: CGRect, base: IOSurfaceRef?, spare: IOSurfaceRef?, spareStale: CGRect)] = []
         var reservations: [Int: WidgetTileSpares.Reservation] = [:]
         let epoch = WidgetTileSpares.epoch
@@ -4262,6 +4273,10 @@ class WidgetDocumentView: NSView {
                             WidgetDocumentView.checkPrepared(item.surface, document: document, rect: item.rect, width: self.size.width, scale: scale, label: "async:" + (self.owner?.debugName ?? "?") + (item.usedSpare ? ":spare" : (item.partial ? ":partial" : ":full")))
                         }
                         let previous = WidgetDocumentView.surface(of: tile.layer)
+                        if tile.layer.frame != tile.rect {
+                            tile.layer.frame = tile.rect
+                            tile.layer.contentsScale = scale
+                        }
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
                         tile.note("async-install partial=\(item.partial) dirty=\(item.dirty)")
@@ -4275,7 +4290,7 @@ class WidgetDocumentView: NSView {
                         self.asyncCounts.installed += 1
                         self.drawStatsLock.unlock()
                     }
-                    self.presentAlignment(for: document)
+                    self.presentAlignment(height: drawnHeight)
                     CATransaction.commit()
                 }
                 for (index, dirty) in pending where !installed.contains(index) {
@@ -4294,13 +4309,13 @@ class WidgetDocumentView: NSView {
             }
             if synchronously {
                 if let view = self {
-                    view.scheduleInstall(document, schedule: { $0() }, finish)
+                    view.scheduleInstall(height: drawnHeight, schedule: { $0() }, finish)
                 } else {
                     finish()
                 }
             } else if let schedule = schedule {
                 if let view = self {
-                    view.scheduleInstall(document, schedule: schedule, finish)
+                    view.scheduleInstall(height: drawnHeight, schedule: schedule, finish)
                 } else {
                     schedule(finish)
                 }
@@ -4617,8 +4632,10 @@ class WidgetDocumentView: NSView {
             if tile.layer.frame != rect || tile.layer.contentsScale != scale {
                 tile.note("frame \(tile.layer.frame) -> \(rect)")
                 syncInvalidations += 1
-                tile.layer.frame = rect
-                tile.layer.contentsScale = scale
+                if !(detached && tile.prepared && tile.layer.contents != nil && tile.layer.contentsScale == scale) {
+                    tile.layer.frame = rect
+                    tile.layer.contentsScale = scale
+                }
                 if tile.prepared {
                     unprepare(tile)
                 } else if !detached {
