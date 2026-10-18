@@ -3297,6 +3297,7 @@ class WidgetDocumentView: NSView {
     private var anchorTotal: CGFloat = 0
     private var presentedAnchor: CGFloat = 0
     private var presentedHeight: CGFloat = 0
+    private var resizeInstallsUntil: CFTimeInterval = 0
 
     var contentLayer: CALayer? {
         return content
@@ -3338,11 +3339,27 @@ class WidgetDocumentView: NSView {
     }
 
     static let installOnMainTimeout: TimeInterval = 0.05
+    static let resizeInstallWindow: CFTimeInterval = 0.25
+
+    static func beginInstallTransaction() -> Bool {
+        if Thread.isMainThread && WidgetDocumentView.joinsMainCommit {
+            return false
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        return true
+    }
+
+    static let joinsMainCommit = ProcessInfo.processInfo.environment["TW_INSTALL_OWN_COMMIT"] == nil
     static let gateDisabled = ProcessInfo.processInfo.environment["TW_NO_GATE"] != nil
 
     func scheduleInstall(height: CGFloat, schedule: @escaping (@escaping () -> Void) -> Void, _ body: @escaping () -> Void) {
         alignmentLock.lock()
-        let changesHeight = presentedHeight > 0 && abs(height - presentedHeight) >= 0.5
+        let now = CACurrentMediaTime()
+        if presentedHeight > 0 && abs(height - presentedHeight) >= 0.5 {
+            resizeInstallsUntil = now + WidgetDocumentView.resizeInstallWindow
+        }
+        let changesHeight = now < resizeInstallsUntil
         alignmentLock.unlock()
         guard changesHeight, !WidgetDocumentView.gateDisabled else {
             schedule(body)
@@ -3680,8 +3697,7 @@ class WidgetDocumentView: NSView {
                 self.preparing = false
                 self.preparedMilliseconds += spent
                 if lifetime.isActive && self.document === document && ((detached && self.detached) || (self.invalidations == epoch && self.syncInvalidations == syncEpoch)) && !self.tilesTrimmed && self.tileScale == scale {
-                    CATransaction.begin()
-                    CATransaction.setDisableActions(true)
+                    let explicit = WidgetDocumentView.beginInstallTransaction()
                     for item in made where item.index < self.tiles.count {
                         let tile = self.tiles[item.index]
                         guard tile.rect == item.rect, !tile.prepared else {
@@ -3706,7 +3722,9 @@ class WidgetDocumentView: NSView {
                         self.preparedTiles += 1
                     }
                     self.presentAlignment(height: drawnHeight)
-                    CATransaction.commit()
+                    if explicit {
+                        CATransaction.commit()
+                    }
                 }
                 completion()
                 if detached && self.detached {
@@ -4302,8 +4320,7 @@ class WidgetDocumentView: NSView {
                 var installed = Set<Int>()
                 if aborted || !lifetime.isActive || self.syncInvalidations != syncEpoch {
                 } else if self.windowState.inWindow && !self.tilesTrimmed && self.tileScale == scale {
-                    CATransaction.begin()
-                    CATransaction.setDisableActions(true)
+                    let explicit = WidgetDocumentView.beginInstallTransaction()
                     for item in made where item.index < self.tiles.count {
                         let tile = self.tiles[item.index]
                         guard tile.rect == item.rect, self.detached ? tile.prepared : !tile.layer.needsDisplay() else {
@@ -4331,7 +4348,9 @@ class WidgetDocumentView: NSView {
                         self.drawStatsLock.unlock()
                     }
                     self.presentAlignment(height: drawnHeight)
-                    CATransaction.commit()
+                    if explicit {
+                        CATransaction.commit()
+                    }
                 }
                 for (index, dirty) in pending where !installed.contains(index) {
                     self.asyncDirty[index] = (self.asyncDirty[index] ?? .null).union(dirty)
