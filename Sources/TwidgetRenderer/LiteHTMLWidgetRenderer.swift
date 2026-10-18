@@ -165,10 +165,35 @@ public final class LiteHTMLWidgetRenderer {
         }
     }
 
+    private var probing = false
+    private var probeBase: (document: LHDocument, bounds: [Int: CGRect]?)?
+    private var probePending = false
+
     private func noteResize(to next: LHDocument) {
-        guard let previous = document else {
+        if let base = probeBase {
+            probeBase = nil
+            noteResize(from: base.document, oldBounds: { base.bounds ?? base.document.idBounds() }, to: next)
+        } else if let previous = document {
+            noteResize(from: previous, oldBounds: { [unowned self] in self.elementBounds() }, to: next)
+        }
+    }
+
+    private func finishProbe() {
+        probing = false
+        guard probePending else {
+            probeBase = nil
             return
         }
+        probePending = false
+        if let document = document {
+            noteResize(to: document)
+            documentView.presentAlignmentIfDrawnSynchronously(document)
+        }
+        reportSize()
+        reportResize()
+    }
+
+    private func noteResize(from previous: LHDocument, oldBounds: () -> [Int: CGRect], to next: LHDocument) {
         let oldHeight = ceil(previous.size.height)
         let newHeight = ceil(next.size.height)
         guard abs(oldHeight - newHeight) > WidgetResizeDiff.tolerance else {
@@ -186,7 +211,7 @@ public final class LiteHTMLWidgetRenderer {
             diff = WidgetResizeDiff(oldHeight: oldHeight, newHeight: newHeight, unchangedTop: keepsBottom ? 0 : oldHeight, unchangedBottom: keepsBottom ? oldHeight : 0, keepsBottom: keepsBottom)
         } else {
             let fresh = next.idBounds()
-            diff = WidgetResizeDiff.compute(old: elementBounds(), new: fresh, oldHeight: oldHeight, newHeight: newHeight, exactOldHeight: previous.size.height, exactNewHeight: next.size.height, pointer: pointer, pointerTarget: recent ? resizePressId : nil, prefersBottom: prefersBottom, previousKeepsBottom: previousKeepsBottom)
+            diff = WidgetResizeDiff.compute(old: oldBounds(), new: fresh, oldHeight: oldHeight, newHeight: newHeight, exactOldHeight: previous.size.height, exactNewHeight: next.size.height, pointer: pointer, pointerTarget: recent ? resizePressId : nil, prefersBottom: prefersBottom, previousKeepsBottom: previousKeepsBottom)
             nextBounds = (next, fresh)
         }
         if diff.keepsBottom {
@@ -1221,7 +1246,10 @@ public final class LiteHTMLWidgetRenderer {
                 overrides = presampled
             }
         }
+        probing = true
         layout(overrides)
+        probing = false
+        defer { finishProbe() }
         let scanStart = CACurrentMediaTime()
         var generation: UInt64 = 0
         let scanned = document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: LiteHTMLWidgetRenderer.declarationGates, changedSince: scannedDeclarations.generation, generation: &generation)
@@ -1819,7 +1847,15 @@ public final class LiteHTMLWidgetRenderer {
             }
             stage("diff")
         }
-        noteResize(to: next)
+        if probing {
+            if probeBase == nil, let document = document {
+                probeBase = (document, boundsValid ? bounds : nil)
+            }
+            probePending = true
+        } else {
+            probePending = false
+            noteResize(to: next)
+        }
         document = next
         let shimmerBefore = shimmers.ids
         if shimmers.update(document: next, animator: animator, width: width, host: documentView.contentLayer, scale: documentView.scale, composited: compositor.ids.union(magic.excluded).union(scrolling.promotedIDs).union(svgLayers.ids), suspended: magic.isActive) || shimmers.dropped || shimmerBefore != shimmers.ids {
@@ -1845,9 +1881,11 @@ public final class LiteHTMLWidgetRenderer {
         boundsValid = false
         adoptNextBounds(next)
         documentView.document = next
-        documentView.presentAlignmentIfDrawnSynchronously(next)
-        reportSize()
-        reportResize()
+        if !probing {
+            documentView.presentAlignmentIfDrawnSynchronously(next)
+            reportSize()
+            reportResize()
+        }
         placeSurfaces()
         schedulePrepare()
         documentView.flushIfDetached()
