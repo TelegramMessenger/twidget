@@ -61,8 +61,8 @@ public:
     /// Host → renderer message (parsed JSON). Returns renderer → host messages.
     std::vector<twidget::Json> receive(const twidget::Json& msg);
     void set_width(double width, std::vector<twidget::Json>& out);
-    /// The tallest the widget may grow, in CSS px (900 unless the host says otherwise); past it the
-    /// document is cut off. A chat that scrolls tall widgets sets its own bound.
+    /// The tallest the widget may grow, in CSS px (600, widget-sandbox's shared bound, unless the host
+    /// says otherwise); past it the document is cut off.
     void set_max_height(double height, std::vector<twidget::Json>& out);
     /// The chat theme changed: `prefers-color-scheme` inside the document follows.
     void set_theme(bool dark, std::vector<twidget::Json>& out);
@@ -229,7 +229,9 @@ private:
     twidget::Json answer(const twidget::Json& q);
     bool match_media(const std::string& query) const;
     int64_t widget_id_at(double x, double y, Rect* placement) const;
-    bool wants_gesture(int64_t target) const;
+    /// Whether the widget takes horizontal and vertical drags of a press on `target`: its `touch-action`
+    /// and its preventDefault on pointerdown or touchstart.
+    std::pair<bool, bool> gesture_claim(int64_t target) const;
     void set_capture(Touch& t, int64_t id, std::vector<twidget::Json>& out);
     /// The border box of element `id`, empty when it is not laid out.
     Rect box_of(int64_t id) const;
@@ -237,6 +239,7 @@ private:
     twidget::Json event_json(const char* type, int64_t target, const Rect& target_rect, const Input& in) const;
     /// Sends `ev` if the sandbox listens for its type; move-type events wait for the next tick, the
     /// latest one per type and pointer.
+    static twidget::Json event_message(twidget::Json ev);
     void dispatch(twidget::Json ev, std::vector<twidget::Json>& out);
     void flush_moves(std::vector<twidget::Json>& out);
     void flush_pending(std::vector<twidget::Json>& out);
@@ -375,7 +378,7 @@ private:
     std::vector<Rect> damage_;
     bool damage_valid_ = false;
     std::unordered_set<int> canvases_drawn_;
-    double max_height_ = 900;
+    double max_height_ = 600;
     PatchLog patch_log_;
     // What changed since the last paint, for layers to keep their content: the elements patched, or
     // everything (a build, a layout, hover state).
@@ -393,6 +396,8 @@ private:
     std::unordered_map<int64_t, Node*> aliases_;
     std::unique_ptr<Node> html_node_, head_node_, body_node_;
     std::unordered_set<std::string> interest_;
+    /// From the host's `theme` message, set on the root after the widget's own style.
+    std::vector<std::pair<std::string, std::string>> theme_vars_;
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
     std::string frozen_reason_;

@@ -15,8 +15,9 @@ magic move). Until then both exist side by side.
 | Area | Where |
 |---|---|
 | The protocol: ops into a shadow tree, queries, events, theme, freeze | `src/renderer.*` |
+| SDK v1's theme variables (palette, colour scheme, button tokens) | `src/css.*` |
 | CSS animations and transitions, Web Animations records (`anim`), the `anims` query | `src/animations.*` |
-| Pointer, hover, wheel and key events; moves coalesced per frame | `src/renderer.cpp` |
+| Pointer and hover events, trusted; moves coalesced per frame; the gesture claim | `src/renderer.cpp` |
 | Canvas 2D: the command interpreter, resolved into `CanvasOp`s a backend draws | `src/canvas.*`, `src/canvas_ops.h` |
 | Compositor layers for transform and opacity animations | `src/compositor.*` |
 | `light-dark()`, name checks on everything written into the generated HTML | `src/css.*` |
@@ -32,8 +33,10 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   gradients, clips, paths, groups and shadows, in CSS px.
 - **A clock.** Call `tick()` while `wants_tick()` holds, and once `next_tick_in()` seconds have passed
   when it does not.
-- **Input.** `touch`, `hover`, `wheel` and `key`; for text controls, `editor()` describes the one being
-  edited for the platform to cover with its own editor, which reports back through `edit()` and `end_editing()`.
+- **Input.** `touch` and `hover`. `wheel` and `key` remain but do nothing: widget profile 1 gives a
+  widget no wheel and no keyboard. For text controls, `editor()` describes the one being edited for
+  the platform to cover with its own editor, which reports back through `edit()` and `end_editing()`;
+  profile 1 has no text controls, so it only matters to a host that hands the renderer one.
 
 With `set_compositing(true)`, the platform also plays `composition()`: a list of layers, each an
 element's own display list with a track of linear keys (a 2D matrix and an opacity per key) that the
@@ -84,7 +87,8 @@ ctest --test-dir build
 
 widget-sandbox has to be checked out next to twidget (`../widget-sandbox`), or its path given in
 `TWIDGET_WIDGET_SANDBOX`, as for `Package.swift`: TwidgetCore reads the protocol's JSON helper
-(`twidget/json.h`) from it.
+(`twidget/json.h`) from it. TwidgetCore follows release `v0.1.0`: check out that tag, never a branch,
+and its QuickJS submodule with `git submodule update --init` (widget-sandbox's `docs/integration.md`).
 
 The build produces `twidget::litehtml` (the fork and its gumbo), `twidget::core` and the platform's
 backend; Android and Emscripten builds go through their toolchain files. With `TWIDGET_BUILD_TESTS`

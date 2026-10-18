@@ -3,6 +3,7 @@
 #pragma once
 
 #include "display_list.h"
+#include "twidget/json.h"
 
 #include <optional>
 #include <string>
@@ -69,5 +70,12 @@ std::optional<Affine> parse_scale(std::string_view text);
 std::optional<std::pair<float, float>> parse_origin(std::string_view text, float w, float h);
 /// `opacity`: a number or a percentage, clamped to 0..1.
 std::optional<float> parse_opacity(std::string_view text);
+
+/// The custom properties the host's `theme` message sets on the widget's root (widget-sandbox
+/// docs/sdk-v1.md §2.3, §2.4): the palette completed from the scheme's defaults, `--tg-color-scheme`,
+/// and each button token whose value passes its grammar. Twin of `themeVariables` in sdk-policy.ts.
+std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::Json& theme);
+/// A name `theme_variables` may set: the widget's own style ops cannot set it on the root.
+bool is_theme_variable(std::string_view name);
 
 } // namespace twlite::css

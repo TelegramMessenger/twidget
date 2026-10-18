@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 
 namespace twlite::css {
 
@@ -717,6 +718,189 @@ std::optional<float> parse_opacity(std::string_view text) {
     auto v = scalar(text);
     if (!v) return std::nullopt;
     return float(std::clamp(*v, 0.0, 1.0));
+}
+
+// ───────────────────────── theme variables ─────────────────────────
+
+namespace {
+
+constexpr const char* THEME_KEYS[] = {
+    "bg_color", "text_color", "hint_color", "link_color", "button_color", "button_text_color",
+    "secondary_bg_color", "accent_text_color", "subtitle_text_color", "destructive_text_color",
+    "section_bg_color", "section_header_text_color", "section_separator_color", "header_bg_color", "bottom_bar_bg_color",
+};
+constexpr size_t THEME_KEY_COUNT = std::size(THEME_KEYS);
+
+// DEFAULT_THEME_PARAMS in sdk-policy.ts, light then dark, in THEME_KEYS order.
+constexpr const char* THEME_DEFAULTS[2][THEME_KEY_COUNT] = {
+    {"#ffffff", "#000000", "#707579", "#3390ec", "#3390ec", "#ffffff", "#f4f4f5", "#3390ec", "#707579", "#e53935",
+     "#ffffff", "#3390ec", "#e7e7e7", "#ffffff", "#ffffff"},
+    {"#212121", "#ffffff", "#aaaaaa", "#8774e1", "#8774e1", "#ffffff", "#181818", "#8774e1", "#aaaaaa", "#ff595a",
+     "#212121", "#8774e1", "#3d3d3d", "#212121", "#212121"},
+};
+
+constexpr const char* BUTTON_VARS[][2] = {
+    {"bg", "--tg-button-bg"},
+    {"text", "--tg-button-text"},
+    {"radius", "--tg-button-radius"},
+    {"font", "--tg-button-font"},
+    {"padding", "--tg-button-padding"},
+    {"height", "--tg-button-height"},
+    {"pressedOpacity", "--tg-button-pressed-opacity"},
+    {"disabledOpacity", "--tg-button-disabled-opacity"},
+};
+
+constexpr const char* GENERIC_FAMILIES[] = {"system-ui", "sans-serif", "serif", "monospace", "ui-sans-serif", "ui-serif", "ui-monospace", "ui-rounded"};
+
+bool is_digit(char c) { return c >= '0' && c <= '9'; }
+
+bool hex_color(std::string_view v) {
+    if (v.size() != 7 || v[0] != '#') return false;
+    for (char c : v.substr(1))
+        if (!std::isxdigit(static_cast<unsigned char>(c))) return false;
+    return true;
+}
+
+// Consumes `[0-9]{1,int_digits}(\.[0-9]{1,frac_digits})?` at `i`.
+bool consume_number(std::string_view v, size_t& i, size_t int_digits, size_t frac_digits) {
+    size_t start = i;
+    while (i < v.size() && is_digit(v[i]) && i - start < int_digits) i++;
+    if (i == start) return false;
+    if (i < v.size() && v[i] == '.') {
+        size_t frac = ++i;
+        while (i < v.size() && is_digit(v[i]) && i - frac < frac_digits) i++;
+        if (i == frac) return false;
+    }
+    return true;
+}
+
+bool consume_unit(std::string_view v, size_t& i) {
+    for (std::string_view unit : {"px", "rem", "em"}) {
+        if (v.substr(i, unit.size()) == unit) {
+            i += unit.size();
+            return true;
+        }
+    }
+    return false;
+}
+
+// `0`, or a length in px, em or rem: what a button token may hold.
+bool token_length(std::string_view v) {
+    if (v == "0") return true;
+    size_t i = 0;
+    return consume_number(v, i, 4, 3) && consume_unit(v, i) && i == v.size();
+}
+
+// `[normal|italic] [normal|bold|N00] size[/line-height] family, …` with generic families only.
+bool token_font(std::string_view v) {
+    size_t i = 0;
+    auto word = [&](std::initializer_list<std::string_view> words) {
+        for (std::string_view w : words) {
+            if (v.substr(i, w.size()) == w && i + w.size() < v.size() && v[i + w.size()] == ' ') {
+                i += w.size() + 1;
+                return true;
+            }
+        }
+        return false;
+    };
+    word({"normal", "italic"});
+    if (!word({"normal", "bold"}) && i + 3 < v.size() && v[i] >= '1' && v[i] <= '9' && v.substr(i + 1, 3) == "00 ") i += 4;
+    if (!consume_number(v, i, 3, 2) || !consume_unit(v, i)) return false;
+    if (i < v.size() && v[i] == '/') {
+        i++;
+        if (!consume_number(v, i, 3, 2)) return false;
+        consume_unit(v, i);
+    }
+    if (i >= v.size() || v[i] != ' ') return false;
+    std::string_view families = v.substr(i + 1);
+    if (families.empty()) return false;
+    size_t start = 0;
+    while (start <= families.size()) {
+        size_t comma = families.find(',', start);
+        std::string_view family = families.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+        if (comma != std::string_view::npos && comma + 1 < families.size() && families[comma + 1] == ' ') comma++;
+        if (family.empty() || std::find(std::begin(GENERIC_FAMILIES), std::end(GENERIC_FAMILIES), family) == std::end(GENERIC_FAMILIES)) return false;
+        if (comma == std::string_view::npos) break;
+        start = comma + 1;
+    }
+    return true;
+}
+
+// 0 to 1 with at most three decimals: `0`, `.5`, `0.25`, `1`, `1.0`.
+bool token_opacity(std::string_view v) {
+    size_t i = 0;
+    if (v.empty()) return false;
+    if (v[0] == '1') {
+        i = 1;
+        if (i < v.size() && v[i] == '.') {
+            size_t frac = ++i;
+            while (i < v.size() && v[i] == '0' && i - frac < 3) i++;
+            if (i == frac) return false;
+        }
+        return i == v.size();
+    }
+    if (v[0] == '0') i = 1;
+    if (i < v.size() && v[i] == '.') {
+        size_t frac = ++i;
+        while (i < v.size() && is_digit(v[i]) && i - frac < 3) i++;
+        if (i == frac) return false;
+    }
+    return i > 0 && i == v.size();
+}
+
+std::optional<std::string> button_token(std::string_view field, const twidget::Json& value) {
+    if (field == "pressedOpacity" || field == "disabledOpacity") {
+        std::string s = value.isNumber() ? twidget::Json::number(value.asNumber()) : value.asString();
+        return token_opacity(s) ? std::optional(s) : std::nullopt;
+    }
+    if (!value.isString()) return std::nullopt;
+    const std::string& v = value.asString();
+    if (field == "bg" || field == "text") return hex_color(v) ? std::optional(lower(v)) : std::nullopt;
+    if (field == "radius" || field == "height") return token_length(v) ? std::optional(v) : std::nullopt;
+    if (field == "font") return token_font(v) ? std::optional(v) : std::nullopt;
+    // padding: one to four lengths, one space apart
+    size_t parts = 0, start = 0;
+    while (true) {
+        size_t space = v.find(' ', start);
+        if (++parts > 4 || !token_length(std::string_view(v).substr(start, space == std::string::npos ? std::string::npos : space - start))) return std::nullopt;
+        if (space == std::string::npos) return v;
+        start = space + 1;
+    }
+}
+
+std::string theme_variable_name(const char* key) {
+    std::string name = std::string("--tg-theme-") + key;
+    std::replace(name.begin(), name.end(), '_', '-');
+    return name;
+}
+
+} // namespace
+
+std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::Json& theme) {
+    bool dark = theme["colorScheme"].asString() == "dark";
+    const twidget::Json& params = theme["params"];
+    std::vector<std::pair<std::string, std::string>> vars;
+    vars.reserve(THEME_KEY_COUNT + 1 + std::size(BUTTON_VARS));
+    for (size_t k = 0; k < THEME_KEY_COUNT; k++) {
+        const std::string& v = params[THEME_KEYS[k]].asString();
+        vars.emplace_back(theme_variable_name(THEME_KEYS[k]), hex_color(v) ? lower(v) : THEME_DEFAULTS[dark][k]);
+    }
+    vars.emplace_back("--tg-color-scheme", dark ? "dark" : "light");
+    const twidget::Json& button = theme["button"];
+    for (const auto& [field, name] : BUTTON_VARS) {
+        if (const twidget::Json* value = button.find(field))
+            if (auto token = button_token(field, *value)) vars.emplace_back(name, std::move(*token));
+    }
+    return vars;
+}
+
+bool is_theme_variable(std::string_view name) {
+    if (name == "--tg-color-scheme") return true;
+    for (const auto& [field, var] : BUTTON_VARS)
+        if (name == var) return true;
+    for (const char* key : THEME_KEYS)
+        if (name == theme_variable_name(key)) return true;
+    return false;
 }
 
 } // namespace twlite::css

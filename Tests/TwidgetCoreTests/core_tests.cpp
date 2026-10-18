@@ -1,5 +1,6 @@
 // Drives TwidgetCore without a platform: ops in, events, display lists and layers out, against a
 // stub backend that measures text as 8 px per byte.
+#include "css.h"
 #include "renderer.h"
 
 #include <algorithm>
@@ -125,7 +126,7 @@ int main() {
         if (e["type"].asString() == "dblclick") dbl = true;
         if (e["type"].asString() == "click") detail = e["detail"].asInt();
     }
-    check(dbl && detail == 2, "two quick clicks: click detail 2 and a dblclick");
+    check(!dbl && detail == 2, "two quick clicks: click detail 2 and no dblclick (profile 1 leaves the double tap to the bubble)");
     check(types(second).find("touch") == std::string::npos, "a mouse sends no touch events");
     r.touch(0, 10, 10, 0, true, true, 0);
     out = r.touch(2, 150, 10, 0, true, true, 0);
@@ -137,15 +138,12 @@ int main() {
         if (e["type"].asString() == "click") outer = e["targetId"].asNumber() == 10;
     check(outer, "press on A1, release on A: the click goes to A");
 
-    // ── wheel and keys ──
+    // ── wheel and keys: profile 1 has neither, listened to or not ──
     r.wheel(150, 10, 0, 50, 0);
-    r.wheel(150, 10, 0, 30, 0);
     out = r.tick();
-    evs = events(out);
-    check(evs.size() == 1 && evs[0]["deltaY"].asNumber() == 80 && evs[0]["targetId"].asNumber() == 12, "two wheels in a frame arrive as one with the sum");
+    check(events(out).empty(), "no wheel reaches the widget");
     out = r.key("keydown", "a", "KeyA", false, 8);
-    evs = events(out);
-    check(evs.size() == 1 && evs[0]["targetId"].asNumber() == 4 && evs[0]["key"].asString() == "a" && evs[0]["modifiers"].asNumber() == 8, "keydown goes to the body with key, code and modifiers");
+    check(events(out).empty(), "no key reaches the widget");
 
     // ── CSS animation ──
     out = r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":12,"name":"class","value":"spin"}]})"));
@@ -651,7 +649,7 @@ int main() {
         Renderer t(300, 1, false, hb2);
         t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
             {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"div","attrs":[["style","height:2000px"]]},{"op":"ins","parent":4,"id":5,"before":null}]})"));
-        check(t.viewport_height() == 900, "a widget stops at 900 px unless the host says otherwise");
+        check(t.viewport_height() == 600, "a widget stops at 600 px unless the host says otherwise");
         std::vector<Json> out;
         t.set_max_height(3000, out);
         check(t.viewport_height() == 2000 && !out.empty(), "a host's own bound lets it grow to its content");
@@ -742,12 +740,12 @@ int main() {
         c.receive(parse(R"({"type":"listen","types":["pointermove","mousemove","pointerup","mouseup","gotpointercapture","lostpointercapture"]})"));
         c.touch(0, 10, 10, 0, true, true, 0);
         auto got = c.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":11,"method":"setPointerCapture","args":[1]}]})"));
-        check(types(got) == "gotpointercapture:11 ", "setPointerCapture on the pressed mouse: gotpointercapture (got " + types(got) + ")");
+        check(types(got).empty(), "setPointerCapture on the pressed mouse: no gotpointercapture, outside profile 1 (got " + types(got) + ")");
         c.touch(1, 150, 10, 0, true, true, 0);
         auto moved = c.tick();
         check(types(moved) == "pointermove:11 mousemove:12 ", "captured: pointermove to the capture, mousemove to the element under the mouse (got " + types(moved) + ")");
         auto up = c.touch(2, 150, 10, 0, true, true, 0);
-        check(types(up) == "pointerup:11 mouseup:12 lostpointercapture:11 ", "release: pointerup to the capture, mouseup under the mouse, then the capture is lost (got " + types(up) + ")");
+        check(types(up) == "pointerup:11 mouseup:12 ", "release: pointerup to the capture, mouseup under the mouse (got " + types(up) + ")");
         c.touch(0, 10, 10, 0, true, true, 0);
         auto click = events(c.touch(2, 10, 10, 0, true, true, 0));
         bool actions = false;
@@ -1139,8 +1137,10 @@ int main() {
             f.touch(0, x, y, 0, true, true, 0);
             return f.touch(2, x, y, 0, true, true, 0);
         };
+        // Profile 1 drops form controls in the validator and forwards no focus, input, change or blur;
+        // the editor still works for a host that hands the renderer a control.
         auto out = tap(50, 10);
-        check(types(out).find("focus:10 ") != std::string::npos, "a tap on a text input focuses it (got " + types(out) + ")");
+        check(types(out).find("focus") == std::string::npos && f.editor(), "a tap on a text input edits it, with no focus event (got " + types(out) + ")");
         const Renderer::EditorSpec* spec = f.editor();
         check(spec && spec->id == 10 && spec->text == "ab" && spec->placeholder == "Name" && spec->input_type == "text" && std::fabs(spec->frame.w - 190) < 0.5f && std::fabs(spec->frame.x - 5) < 0.5f && spec->color.a == 255 && spec->font != 0,
               "the editor spec has the control's content box (inside its padding and border), font, colour, text and placeholder");
@@ -1148,12 +1148,11 @@ int main() {
               "the document stops drawing the edited text and placeholder");
         uint64_t generation = spec ? spec->generation : 0;
         out = f.edit(generation, "abc");
-        auto evs = events(out);
-        check(evs.size() == 1 && evs[0]["type"].asString() == "input" && evs[0]["value"].asString() == "abc", "an edit is an input event with the new value");
+        check(events(out).empty(), "an edit is no input event");
         check(f.last_html().find("value=\"abc\"") != std::string::npos, "and the value is the document's");
         check(f.edit(generation + 100, "x").empty(), "a stale generation is ignored");
         out = tap(50, 50);
-        check(types(out).find("change:10 blur:10 ") != std::string::npos && !f.editor(), "a tap elsewhere ends it: change, then blur (got " + types(out) + ")");
+        check(types(out).find("change") == std::string::npos && types(out).find("blur") == std::string::npos && !f.editor(), "a tap elsewhere ends it, with no change or blur (got " + types(out) + ")");
         check(f.last_html().find("color:transparent") == std::string::npos, "and the text shows again");
         // A script's focus() right after the user's input takes the keyboard; later it does not.
         out = f.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":10,"method":"focus"}]})"));
@@ -1164,6 +1163,80 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1100));
         f.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":10,"method":"focus"}]})"));
         check(!f.editor(), "focus() long after the user's input does not");
+    }
+
+    // ── widget-sandbox v0.1.0: trusted input, the gesture claim, the theme ──
+    {
+        StubBackend vb;
+        Renderer v(300, 1, false, vb);
+        v.receive(parse(PAGE));
+        v.touch(0, 10, 10, 0, true, true, 0);
+        bool trusted = false;
+        for (const Json& m : v.touch(2, 10, 10, 0, true, true, 0))
+            if (m["type"].asString() == "event" && m["ev"]["type"].asString() == "click") trusted = m["trusted"].asBool();
+        check(trusted, "a click is trusted, as the hosts require before they count a gesture");
+    }
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","height:40px;touch-action:pan-y"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","height:40px;touch-action:none"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["style","height:40px"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["style","height:40px"]]},{"op":"ins","parent":4,"id":13,"before":null}]})"));
+        g.receive(parse(R"({"type":"preventDefault","keys":["13:pointerdown"]})"));
+        // "xy" for the axes claimed; "!" when `wants` is not `y`
+        auto claim = [&](double y) {
+            auto out = g.touch(0, 10, y, 0, true, true, 0);
+            g.touch(3, 10, y, 0, true, true, 0);
+            for (const Json& m : out)
+                if (m["type"].asString() == "gesture")
+                    return std::string(m["x"].asBool() ? "x" : "-") + (m["y"].asBool() ? "y" : "-") + (m["wants"].asBool() == m["y"].asBool() ? "" : "!");
+            return std::string("none");
+        };
+        std::string pan_y = claim(20), none = claim(60), plain = claim(100), prevented = claim(140);
+        check(pan_y == "x-", "touch-action: pan-y claims horizontal drags only (got " + pan_y + ")");
+        check(none == "xy", "touch-action: none claims both (got " + none + ")");
+        check(plain == "--", "no touch-action leaves the touch to the chat (got " + plain + ")");
+        check(prevented == "xy", "a prevented pointerdown claims both (got " + prevented + ")");
+    }
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"button","attrs":[["style","width:100px;height:30px"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        t.receive(parse(R"({"type":"theme","theme":{"colorScheme":"light","params":{"bg_color":"#12AB34","text_color":"red"},
+            "button":{"bg":"#ff0000","radius":"12px","font":"14px Arial","padding":"8px  14px","pressedOpacity":0.6,"disabledOpacity":"2"}}})"));
+        std::string html = t.last_html();
+        auto has = [&](const char* s) { return html.find(s) != std::string::npos; };
+        check(has("--tg-theme-bg-color:#12ab34 !important") && has("--tg-theme-text-color:#000000 !important") && has("--tg-color-scheme:light !important"),
+              "the palette goes on the root, lowercased, a bad value replaced by the scheme's default");
+        check(has("--tg-button-bg:#ff0000") && has("--tg-button-radius:12px") && has("--tg-button-pressed-opacity:0.6") && !has("--tg-button-font") &&
+                  !has("--tg-button-padding") && !has("--tg-button-disabled-opacity"),
+              "button tokens pass only with their grammar");
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":2,"name":"--tg-theme-bg-color","value":"#000000"},{"op":"style","id":10,"name":"--tg-theme-bg-color","value":"#000001"}]})"));
+        html = t.last_html();
+        check(!has("--tg-theme-bg-color:#000000") && has("--tg-theme-bg-color:#000001"), "the widget cannot set a theme variable on the root, only shadow it below");
+        DisplayList list = t.paint();
+        bool button = std::any_of(list.begin(), list.end(), [](const Command& c) {
+            return c.kind == Cmd::FillRect && c.color.r == 255 && c.color.g == 0 && c.color.b == 0 && c.radii.tlx == 12;
+        });
+        check(button, "an unstyled <button> draws in the theme's button colour and radius");
+
+        auto vars = css::theme_variables(parse(R"({"colorScheme":"dark","button":{"font":"italic 600 15px/1.25 system-ui, sans-serif","padding":"6px 1.5em 0 2rem",
+            "pressedOpacity":".5","disabledOpacity":"1.0","height":"0","text":"#ABCDEF"}})"));
+        auto var = [&](const char* name) {
+            for (const auto& [n, v] : vars) if (n == name) return v;
+            return std::string("-");
+        };
+        check(var("--tg-button-font") == "italic 600 15px/1.25 system-ui, sans-serif" && var("--tg-button-padding") == "6px 1.5em 0 2rem" &&
+                  var("--tg-button-pressed-opacity") == ".5" && var("--tg-button-disabled-opacity") == "1.0" && var("--tg-button-height") == "0" &&
+                  var("--tg-button-text") == "#abcdef",
+              "button tokens within their grammar pass as given, colours lowercased");
+        check(var("--tg-color-scheme") == "dark" && var("--tg-theme-bg-color") == "#212121" && var("--tg-button-bg") == "-",
+              "a dark theme without a palette takes the dark defaults; a missing token sets no variable");
     }
 
     std::printf("%d failure(s)\n", failures);

@@ -28,23 +28,38 @@ namespace twlite {
 
 namespace {
 
-constexpr double MIN_HEIGHT = 24.0;
+/// widget-sandbox's shared bubble bounds are 50 to 600 CSS px; the host may raise the top (set_max_height).
+constexpr double MIN_HEIGHT = 50.0;
 /// The tallest a host may let a widget grow: past this a document is a runaway, not content.
 constexpr double HEIGHT_CEILING = 16384.0;
 constexpr int MAX_PASSES = 4;
 /// A finger jitters a few px during a tap (see renderer.rs TAP_SLOP): moves inside this radius are not forwarded.
 constexpr double TAP_SLOP = 8.0;
-const char* const ALWAYS_FORWARD[] = {"click", "input", "change", "submit", "reset", "load", "error", "toggle", "focus", "blur"};
+const char* const ALWAYS_FORWARD[] = {"click", "load", "error", "toggle"};
+/// Every event the widget may get (profile 1, `tables.events` in widget-sandbox's profile.json): no keys,
+/// focus, input, dblclick, contextmenu, touch, wheel or scroll.
+const char* const PROFILE_EVENTS[] = {
+    "click", "pointerdown", "pointerup", "pointermove", "pointerenter", "pointerleave", "pointerover", "pointerout", "pointercancel",
+    "mousedown", "mouseup", "mousemove", "mouseenter", "mouseleave", "mouseover", "mouseout",
+    "load", "error", "toggle", "animationstart", "animationend", "animationiteration", "transitionend",
+};
 /// A script's focus() takes the keyboard only this soon after the user's input (as Swift's scriptFocusWindow).
 constexpr double SCRIPT_FOCUS_S = 1;
 
 /// Chromium/WebKit UA rules litehtml's master.css lacks and widgets rely on. Form controls get a
 /// visible box: litehtml has no controls of its own (the container would own them), so they are
 /// bordered inline blocks here, with the value as text where the shadow tree knows it.
+///
+/// `<button>` is profile 1's: `uaStylesheet` in widget-sandbox's profile.json, out of its `@layer`
+/// (the fork has no layers; the master sheet is below every author rule anyway). Its
+/// `user-select: none` rule is left out: the renderer has no text selection.
 const char* const UA_EXTRA = R"css(
 button,input,select,textarea,meter,progress{box-sizing:border-box}
-input,select,textarea,button{display:inline-block;border:1px solid #8f8f8f;border-radius:3px;background:#fff;color:#000;padding:2px 6px;font:13.333px -apple-system,system-ui,sans-serif;min-height:1.8em;min-width:2em;vertical-align:middle}
-button{background:#efefef;padding:1px 6px;text-align:center}
+input,select,textarea{display:inline-block;border:1px solid #8f8f8f;border-radius:3px;background:#fff;color:#000;padding:2px 6px;font:13.333px -apple-system,system-ui,sans-serif;min-height:1.8em;min-width:2em;vertical-align:middle}
+:where(button){display:inline-block;text-align:center}
+:where(button){appearance:none;-webkit-appearance:none;margin:0;border:0;border-radius:var(--tg-button-radius,8px);padding:var(--tg-button-padding,8px 14px);min-height:var(--tg-button-height,auto);font:var(--tg-button-font,500 14px/1.2 system-ui,sans-serif);background:var(--tg-button-bg,rgba(51,144,236,.12));color:var(--tg-button-text,inherit);cursor:pointer;-webkit-tap-highlight-color:transparent}
+:where(button:not([disabled])):active{opacity:var(--tg-button-pressed-opacity,.7)}
+:where(button[disabled]){opacity:var(--tg-button-disabled-opacity,.5);cursor:default}
 input[type=checkbox],input[type=radio]{min-width:13px;width:13px;height:13px;min-height:13px;padding:0;margin:3px 3px 3px 4px;vertical-align:middle}
 input[type=radio]{border-radius:50%}
 input[type=range]{border:none;background:transparent;padding:0}
@@ -1795,6 +1810,13 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     } else if (type == "preventDefault") {
         prevent_.clear();
         for (const Json& k : msg["keys"].arr()) if (k.isString()) prevent_.insert(k.asString());
+    } else if (type == "theme") {
+        auto vars = css::theme_variables(msg["theme"]);
+        if (vars != theme_vars_) {
+            theme_vars_ = std::move(vars);
+            rebuild();
+            report_size(out);
+        }
     } else if (type == "frozen") {
         freeze(msg["reason"].asString(), msg["fatal"].asBool());
         rebuild();
@@ -1953,6 +1975,8 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             out.push_back(Json::object().set("type", "violation").set("detail", "property name"));
             return;
         }
+        // The host's theme variables on the root are not the widget's to change (it can shadow them on its own elements).
+        if (n == html_node_.get() && css::is_theme_variable(name)) return;
         note_attribute(n, "style");
         std::string value = str("value");
         if (op["important"].asBool() && !value.empty()) value += " !important";
@@ -2165,6 +2189,9 @@ void Renderer::write_style(const Node* n, std::string& out) const {
     };
     for (const auto& [name, value] : n->styles)
         if (css::is_property_name(name)) declare(name, value);
+    // Last and important: neither the widget's stylesheets nor its own style on the root replace them.
+    if (n == html_node_.get())
+        for (const auto& [name, value] : theme_vars_) declare(name, value + " !important");
     auto it = n->id ? overrides_.find(n->id) : overrides_.end();
     bool edited = n->id && n->id == editing_.id;
     if (it != overrides_.end() || edited) {
@@ -2189,7 +2216,7 @@ std::string Renderer::serialize() const {
     out += "<html";
     if (html->id) out += " data-twid=\"" + std::to_string(html->id) + "\"";
     if (frozen_) out += frozen_fatal_ ? " data-tw-frozen=\"fatal\"" : " data-tw-frozen=\"paused\"";
-    bool styled = !html->styles.empty() || overrides_.count(html->id);
+    bool styled = !html->styles.empty() || !theme_vars_.empty() || overrides_.count(html->id);
     for (const auto& [name, value] : html->attrs) {
         if (name == "style") { styled = true; continue; }
         if (!css::is_attribute_name(name)) continue;
@@ -2534,12 +2561,12 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
 
 void Renderer::queue_animation_events() {
     for (const AnimationEvent& e : animator_.take_events()) {
-        if (frozen_ || !interest_.count(e.type)) continue;
+        if (frozen_ || !listened(e.type.c_str())) continue;
         Json ev = Json::object();
         ev.set("type", e.type).set("targetId", double(e.target));
         ev.set(e.type == "transitionend" ? "propertyName" : "animationName", e.name);
         ev.set("elapsedTime", e.elapsed);
-        pending_events_.push_back(Json::object().set("type", "event").set("ev", std::move(ev)));
+        pending_events_.push_back(event_message(std::move(ev)));
     }
 }
 
@@ -3723,22 +3750,26 @@ int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
 
 // ───────────────────────── events ─────────────────────────
 
-bool Renderer::wants_gesture(int64_t target) const {
-    const Node* n = node(target);
-    while (n) {
-        if (n->id && (prevent_.count(std::to_string(n->id) + ":pointerdown") || prevent_.count(std::to_string(n->id) + ":touchstart"))) return true;
-        if (n->tag == "input") {
-            for (const auto& a : n->attrs) if (a.first == "type" && lower(a.second) == "range") return true;
+std::pair<bool, bool> Renderer::gesture_claim(int64_t target) const {
+    if (prevent_.count(std::to_string(target) + ":pointerdown") || prevent_.count(std::to_string(target) + ":touchstart")) return {true, true};
+    bool x = false, y = false;
+    for (const Node* n = node(target); n && n != html_node_.get(); n = n->parent) {
+        // Only an inline `touch-action`: the fork does not compute the property from stylesheets.
+        for (const auto& [name, value] : n->styles) {
+            if (name != "touch-action") continue;
+            std::string v = css::trim(lower(value));
+            if (v == "auto" || v == "manipulation") continue;
+            if (v == "none") return {true, true};
+            auto pans = [&](std::initializer_list<const char*> axis) {
+                for (const char* p : axis)
+                    if (v.find(p) != std::string::npos) return true;
+                return false;
+            };
+            if (!pans({"pan-x", "pan-left", "pan-right"})) x = true;
+            if (!pans({"pan-y", "pan-up", "pan-down"})) y = true;
         }
-        for (const auto& s : n->styles) {
-            if (s.first == "touch-action") {
-                std::string v = lower(s.second);
-                if (v == "none" || (v.find("pan-y") == std::string::npos && v != "auto" && v != "manipulation")) return true;
-            }
-        }
-        n = n->parent;
     }
-    return false;
+    return {x, y};
 }
 
 Json Renderer::event_json(const char* type, int64_t target, const Rect& target_rect, const Input& in) const {
@@ -3770,12 +3801,16 @@ Json Renderer::event_json(const char* type, int64_t target, const Rect& target_r
     return ev;
 }
 
+Json Renderer::event_message(Json ev) {
+    // Every event comes from real input (no script runs in this document): trusted, like the WebView
+    // renderer's isTrusted, which the hosts require before they count a user gesture.
+    return Json::object().set("type", "event").set("ev", std::move(ev)).set("trusted", true);
+}
+
 void Renderer::dispatch(Json ev, std::vector<Json>& out) {
     if (frozen_) return;
     const std::string& type = ev["type"].asString();
-    bool always = false;
-    for (const char* a : ALWAYS_FORWARD) if (type == a) always = true;
-    if (!always && !interest_.count(type)) return;
+    if (!listened(type.c_str())) return;
     if (coalesced(type)) {
         std::string key = type + ":" + std::to_string(int64_t(ev["pointerId"].asNumber()));
         for (auto& [k, pending] : pending_moves_) {
@@ -3793,11 +3828,11 @@ void Renderer::dispatch(Json ev, std::vector<Json>& out) {
     }
     // Anything else keeps its order relative to the moves before it.
     flush_moves(out);
-    out.push_back(Json::object().set("type", "event").set("ev", std::move(ev)));
+    out.push_back(event_message(std::move(ev)));
 }
 
 void Renderer::flush_moves(std::vector<Json>& out) {
-    for (auto& [key, ev] : pending_moves_) out.push_back(Json::object().set("type", "event").set("ev", std::move(ev)));
+    for (auto& [key, ev] : pending_moves_) out.push_back(event_message(std::move(ev)));
     pending_moves_.clear();
 }
 
@@ -3954,6 +3989,7 @@ std::vector<Json> Renderer::end_editing() {
 }
 
 bool Renderer::listened(const char* type) const {
+    if (std::none_of(std::begin(PROFILE_EVENTS), std::end(PROFILE_EVENTS), [&](const char* e) { return std::strcmp(type, e) == 0; })) return false;
     for (const char* a : ALWAYS_FORWARD)
         if (std::strcmp(type, a) == 0) return true;
     return interest_.count(type) != 0;
@@ -4016,7 +4052,10 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         Touch t{x, y, x, y, 0, Rect{}, false, primary, pointer, mouse, modifiers};
         t.target = widget_id_at(x, y, &t.target_rect);
         touches_[pointer] = t;
-        if (primary) out.push_back(Json::object().set("type", "gesture").set("wants", wants_gesture(t.target)));
+        if (primary) {
+            auto [claim_x, claim_y] = gesture_claim(t.target);
+            out.push_back(Json::object().set("type", "gesture").set("wants", claim_y).set("x", claim_x).set("y", claim_y));
+        }
         if (container_->mouse(0, x, y)) dirty_ = touched_all_ = true;
         if (t.target) {
             emit_event("pointerdown", t.target, t.target_rect, t, 0, out);
@@ -4158,38 +4197,14 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
     return out;
 }
 
-std::vector<Json> Renderer::wheel(double x, double y, double dx, double dy, int mode, int modifiers) {
-    std::vector<Json> out;
-    last_input_ = now_s();
-    settle(out);
-    if (frozen_) return out;
-    Rect rect;
-    int64_t target = widget_id_at(x, y, &rect);
-    if (!target) return out;
-    Input in;
-    in.x = x;
-    in.y = y;
-    in.mouse = true;
-    in.pointer = 1;
-    in.modifiers = modifiers;
-    Json ev = event_json("wheel", target, rect, in);
-    ev.set("deltaX", dx).set("deltaY", dy).set("deltaMode", mode);
-    dispatch(std::move(ev), out);
-    return out;
+// Profile 1 gives a widget no wheel and no keyboard (widget-sandbox docs/profile-v1.md, "Input"): both
+// stay entry points so that hosts need not change, and do nothing.
+std::vector<Json> Renderer::wheel(double, double, double, double, int, int) {
+    return {};
 }
 
-std::vector<Json> Renderer::key(const std::string& type, const std::string& key, const std::string& code, bool repeat, int modifiers) {
-    std::vector<Json> out;
-    last_input_ = now_s();
-    settle(out);
-    if (frozen_ || (type != "keydown" && type != "keyup")) return out;
-    int64_t target = editing_.id ? editing_.id : body_node_->id ? body_node_->id : html_node_->id;
-    if (!target) return out;
-    Json ev = Json::object();
-    ev.set("type", type).set("targetId", double(target)).set("key", key).set("code", code).set("repeat", repeat).set("modifiers", modifiers);
-    dispatch(std::move(ev), out);
-    flush_pending(out);
-    return out;
+std::vector<Json> Renderer::key(const std::string&, const std::string&, const std::string&, bool, int) {
+    return {};
 }
 
 std::vector<Json> Renderer::image_ready(int id, float w, float h) {
