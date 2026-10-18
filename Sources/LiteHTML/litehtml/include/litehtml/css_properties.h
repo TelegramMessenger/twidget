@@ -160,6 +160,8 @@ namespace litehtml
         void       set_text_align(text_align mTextAlign);
 
         overflow get_overflow() const;
+        overflow get_overflow_x() const { return m_overflow_x; }
+        overflow get_overflow_y() const { return m_overflow_y; }
         void     set_overflow(overflow mOverflow);
 
         white_space get_white_space() const;

@@ -1,5 +1,6 @@
 #include "renderer.h"
 
+#include "computed_style.h"
 #include "css.h"
 
 #include <litehtml.h>
@@ -3587,39 +3588,12 @@ Json Renderer::answer(const Json& q) {
         return o;
     }
     if (kind == "cs") {
-        // litehtml keeps resolved values as typed fields; the handful widgets read most are answered, the rest is "".
-        Json o = Json::object();
-        if (el) {
-            const auto& css = el->css();
-            const char* display = "block";
-            switch (css.get_display()) {
-            case litehtml::display_none: display = "none"; break;
-            case litehtml::display_inline: display = "inline"; break;
-            case litehtml::display_inline_block: display = "inline-block"; break;
-            case litehtml::display_flex: display = "flex"; break;
-            case litehtml::display_inline_flex: display = "inline-flex"; break;
-            case litehtml::display_table: display = "table"; break;
-            case litehtml::display_list_item: display = "list-item"; break;
-            default: break;
-            }
-            auto color = [](const litehtml::web_color& c) {
-                char buf[48];
-                std::snprintf(buf, sizeof buf, "rgba(%d, %d, %d, %g)", c.red, c.green, c.blue, c.alpha / 255.0);
-                return std::string(buf);
-            };
-            Rect r = placement();
-            o.set("display", display);
-            o.set("visibility", css.get_visibility() == litehtml::visibility_hidden ? "hidden" : "visible");
-            o.set("color", color(css.get_color()));
-            o.set("background-color", color(css.get_bg().m_color));
-            o.set("font-size", std::to_string(int(css.get_font_size())) + "px");
-            o.set("width", std::to_string(r.w) + "px").set("height", std::to_string(r.h) + "px");
-        }
-        if (q.find("prop")) {
-            const Json* v = o.find(q["prop"].asString());
-            return v ? *v : Json("");
-        }
-        return o;
+        if (!el) return q.find("prop") ? Json("") : Json::object();
+        // `prop` is only ever a custom property: the shim reads the rest from the whole answer.
+        if (q.find("prop")) return computed_custom_property(el, q["prop"].asString());
+        ComputedExtras extras;
+        extras.direction = direction_of(shadow);
+        return computed_style(el, q["pseudo"].asString(), extras);
     }
     if (kind == "elementFromPoint") return double(widget_id_at(q["x"].asNumber(), q["y"].asNumber(), nullptr));
     if (kind == "measureText") return container_->measure_text(q["font"].isString() ? q["font"].asString() : "10px sans-serif", q["text"].asString());
@@ -3750,14 +3724,52 @@ int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
 
 // ───────────────────────── events ─────────────────────────
 
+std::string Renderer::direction_of(const Node* n) const {
+    // The first strong character, depth first: Hebrew, Arabic and the scripts between are right to left.
+    std::function<int(const Node*)> strong = [&](const Node* t) -> int {
+        if (t->kind == Node::Text) {
+            const std::string& s = t->data;
+            for (size_t i = 0; i < s.size();) {
+                unsigned char c = s[i];
+                uint32_t cp = c;
+                int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4;
+                if (len > 1) {
+                    cp = c & (0xFF >> (len + 1));
+                    for (int k = 1; k < len && i + k < s.size(); k++) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+                }
+                i += len;
+                if (cp >= 0x0590 && cp <= 0x08FF) return 1;
+                if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= 0x00C0 && cp < 0x0590)) return -1;
+            }
+            return 0;
+        }
+        for (const Node* c : t->children)
+            if (int d = strong(c)) return d;
+        return 0;
+    };
+    for (; n; n = n->parent) {
+        for (const auto& [name, value] : n->styles) {
+            std::string v = css::trim(lower(value));
+            if (name == "direction" && (v == "rtl" || v == "ltr")) return v;
+        }
+        for (const auto& [name, value] : n->attrs) {
+            if (name != "dir") continue;
+            std::string v = css::trim(lower(value));
+            if (v == "rtl" || v == "ltr") return v;
+            if (v == "auto") return strong(n) > 0 ? "rtl" : "ltr";
+        }
+    }
+    return "ltr";
+}
+
 std::pair<bool, bool> Renderer::gesture_claim(int64_t target) const {
     if (prevent_.count(std::to_string(target) + ":pointerdown") || prevent_.count(std::to_string(target) + ":touchstart")) return {true, true};
     bool x = false, y = false;
     for (const Node* n = node(target); n && n != html_node_.get(); n = n->parent) {
-        // Only an inline `touch-action`: the fork does not compute the property from stylesheets.
-        for (const auto& [name, value] : n->styles) {
-            if (name != "touch-action") continue;
-            std::string v = css::trim(lower(value));
+        // From any stylesheet: the fork keeps the declaration as written, which is all this needs.
+        auto el = n->id ? container_->element(n->id) : nullptr;
+        if (el) {
+            std::string v = css::trim(lower(computed_touch_action(el)));
             if (v == "auto" || v == "manipulation") continue;
             if (v == "none") return {true, true};
             auto pans = [&](std::initializer_list<const char*> axis) {

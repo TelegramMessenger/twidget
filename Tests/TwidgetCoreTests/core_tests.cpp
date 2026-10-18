@@ -1239,6 +1239,46 @@ int main() {
               "a dark theme without a palette takes the dark defaults; a missing token sets no variable");
     }
 
+    // ── getComputedStyle ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style"},{"op":"css","id":20,"text":"#a{width:100px;padding:8px;margin:4px 0;--accent:rgb(0,120,0);overflow:hidden;touch-action:pan-y;font-style:italic} #a::before{content:'x'} b{font-weight:bold}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"b"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"text","id":12,"text":"bold"},{"op":"ins","parent":11,"id":12,"before":null}]})"));
+        auto cs = [&](int id, const char* pseudo = nullptr) {
+            Json q = Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id));
+            if (pseudo) q.set("query", Json::object().set("q", "cs").set("id", id).set("pseudo", pseudo));
+            for (const Json& m : s.receive(q))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        Json a = cs(10);
+        check(a["width"].asString() == "100px" && a["padding-left"].asString() == "8px" && a["margin"].asString() == "4px 0px",
+              "width is the content box, padding and margin as used, margin shortened (got " + a["width"].asString() + ", " + a["margin"].asString() + ")");
+        check(a["overflow"].asString() == "hidden" && a["font-style"].asString() == "italic" && a["touch-action"].asString() == "pan-y",
+              "overflow, font-style and a stylesheet's touch-action");
+        check(cs(11)["font-weight"].asString() == "700", "b is bold: font-weight 700 (got " + cs(11)["font-weight"].asString() + ")");
+        Json custom = Json::object().set("type", "query").set("qid", 2).set("query", Json::object().set("q", "cs").set("id", 11).set("prop", "--accent"));
+        std::string accent;
+        for (const Json& m : s.receive(custom))
+            if (m["type"].asString() == "result") accent = m["result"].asString();
+        check(accent == "rgb(0,120,0)", "a custom property inherits and reads as written (got " + accent + ")");
+        check(cs(10, "::before")["content"].asString() == "\"x\"", "::before has its content, quoted (got " + cs(10, "::before")["content"].asString() + ")");
+        bool claim_x = false, claim_y = true;
+        for (const Json& m : s.touch(0, 20, 20, 0, true, false, 0)) {
+            if (m["type"].asString() != "gesture") continue;
+            claim_x = m["x"].asBool();
+            claim_y = m["y"].asBool();
+        }
+        s.touch(3, 20, 20, 0, true, false, 0);
+        check(claim_x && !claim_y, "a stylesheet's touch-action: pan-y claims horizontal drags");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

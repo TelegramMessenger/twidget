@@ -56,6 +56,7 @@ endif()
 
 add_library(twidget_core STATIC
     "${TW_CORE}/src/renderer.cpp"
+    "${TW_CORE}/src/computed_style.cpp"
     "${TW_CORE}/src/css.cpp"
     "${TW_CORE}/src/animations.cpp"
     "${TW_CORE}/src/canvas.cpp"
