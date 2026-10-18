@@ -436,7 +436,7 @@ public final class MagicMoveStage {
             ctx.setBlendMode(.sourceAtop)
         } else if flight.clips {
             ctx.addPath(MagicMoveStage.clipPath(bounds, radius: flight.radius(at: time), corners: flight.corners.to))
-            ctx.clip()
+            ctx.twClip()
         }
         for piece in flight.pieces {
             MagicMoveStage.drawImage(piece.snapshot.image, in: CGRect(origin: piece.origin, size: piece.snapshot.ink.size), alpha: piece.opacity(at: time), ctx: ctx)

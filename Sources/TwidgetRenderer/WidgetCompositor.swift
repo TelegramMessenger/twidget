@@ -1986,7 +1986,7 @@ final class WidgetCompositor {
             ctx.translateBy(x: container.frame.minX, y: container.frame.minY)
             let clip = clipOf.values.first { $0.rect == container.frame }
             ctx.addPath(WidgetCompositor.roundedPath(CGRect(origin: .zero, size: container.bounds.size), clip?.radii ?? [CGFloat](repeating: 0, count: 8)))
-            ctx.clip()
+            ctx.twClip()
             for child in (container.twSublayers ?? []).filter({ layers.contains(ObjectIdentifier($0)) }).sorted(by: { WidgetCompositor.order($0) < WidgetCompositor.order($1) }) {
                 paint(child, into: ctx)
             }

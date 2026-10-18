@@ -485,13 +485,13 @@ final class WidgetCanvas {
                 let saved = ctx.path
                 ctx.beginPath()
                 ctx.addPath(path)
-                ctx.clip(using: WidgetCanvas.evenOdd(a, 1) ? .evenOdd : .winding)
+                ctx.twClip(using: WidgetCanvas.evenOdd(a, 1) ? .evenOdd : .winding)
                 state.clipped = true
                 restorePath(ctx, saved)
-            } else if !ctx.isPathEmpty {
+            } else {
                 let saved = ctx.path
                 state.clipped = true
-                ctx.clip(using: WidgetCanvas.evenOdd(a, 0) ? .evenOdd : .winding)
+                ctx.twClip(using: WidgetCanvas.evenOdd(a, 0) ? .evenOdd : .winding)
                 restorePath(ctx, saved)
             }
         case .fillText, .strokeText:
@@ -593,7 +593,7 @@ final class WidgetCanvas {
             ctx.fillPath(using: evenOdd ? .evenOdd : .winding)
         case let .gradient(id):
             ctx.saveGState()
-            ctx.clip(using: evenOdd ? .evenOdd : .winding)
+            ctx.twClip(using: evenOdd ? .evenOdd : .winding)
             drawGradient(ctx, id)
             ctx.restoreGState()
         }
@@ -610,7 +610,7 @@ final class WidgetCanvas {
         case let .gradient(id):
             ctx.saveGState()
             ctx.replacePathWithStrokedPath()
-            ctx.clip()
+            ctx.twClip()
             drawGradient(ctx, id)
             ctx.restoreGState()
         }

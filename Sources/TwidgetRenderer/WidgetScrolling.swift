@@ -364,7 +364,7 @@ final class WidgetScrollLayer {
         }
         ctx.saveGState()
         ctx.addPath(WidgetCompositor.roundedPath(geometry.viewport, geometry.radii))
-        ctx.clip()
+        ctx.twClip()
         ctx.translateBy(x: geometry.viewport.minX, y: geometry.viewport.maxY)
         ctx.scaleBy(x: 1, y: -1)
         ctx.draw(image, in: CGRect(origin: .zero, size: geometry.viewport.size))

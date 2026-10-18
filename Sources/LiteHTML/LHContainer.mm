@@ -16,6 +16,18 @@
 #include <string>
 #include <utility>
 
+static inline void TWClipPath(CGContextRef ctx, bool evenOdd) {
+    if (CGContextIsPathEmpty(ctx)) {
+        CGContextClipToRect(ctx, CGRectZero);
+        return;
+    }
+    if (evenOdd) {
+        CGContextEOClip(ctx);
+    } else {
+        CGContextClip(ctx);
+    }
+}
+
 namespace lh = litehtml;
 using lh::operator""_px;
 
@@ -168,7 +180,7 @@ static void ClipToRoundedRect(CGContextRef ctx, CGRect r, const lh::border_radiu
     CGMutablePathRef p = CGPathCreateMutable();
     AddRoundedRect(p, r, rad);
     CGContextAddPath(ctx, p);
-    CGContextClip(ctx);
+    TWClipPath(ctx, false);
     CGPathRelease(p);
 }
 
@@ -2669,8 +2681,8 @@ void LHContainer::apply_clips(CGContextRef ctx, CGRect bounds) const
             CGPathRef path = CreateVectorPath(*c.path);
             CGPathRef transformed = CGPathCreateCopyByTransformingPath(path, &t);
             CGContextAddPath(ctx, transformed);
-            if(c.path->evenodd) CGContextEOClip(ctx);
-            else CGContextClip(ctx);
+            if(c.path->evenodd) TWClipPath(ctx, true);
+            else TWClipPath(ctx, false);
             CGPathRelease(transformed);
             CGPathRelease(path);
             continue;
@@ -3322,7 +3334,7 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
     {
         CGFloat w = T;
         CGContextAddPath(ctx, ring);
-        CGContextEOClip(ctx);
+        TWClipPath(ctx, true);
         lh::border_radiuses mrad = orad;
         mrad -= Uniform(w / 2);
         CGMutablePathRef mid = CGPathCreateMutable();
@@ -3364,7 +3376,7 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
     else
     {
         CGContextAddPath(ctx, ring);
-        CGContextEOClip(ctx);
+        TWClipPath(ctx, true);
         auto drawSides = [&](CGRect o, CGRect i, int pass) {
             CGFloat ox0 = CGRectGetMinX(o), oy0 = CGRectGetMinY(o), ox1 = CGRectGetMaxX(o), oy1 = CGRectGetMaxY(o);
             CGFloat ix0 = CGRectGetMinX(i), iy0 = CGRectGetMinY(i), ix1 = CGRectGetMaxX(i), iy1 = CGRectGetMaxY(i);
@@ -3422,7 +3434,7 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
                 CGContextClosePath(ctx);
                 if(s.b->style == lh::border_style_dotted || s.b->style == lh::border_style_dashed)
                 {
-                    CGContextClip(ctx);
+                    TWClipPath(ctx, false);
                     CGFloat dots[]   = {0, s.w * 2};
                     CGFloat dashes[] = {s.w * 2.5, s.w * 1.5};
                     bool    dotted   = s.b->style == lh::border_style_dotted;
@@ -3464,7 +3476,7 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
             CGMutablePathRef midPath = CGPathCreateMutable();
             AddRoundedRect(midPath, mid, mrad);
             CGContextAddPath(ctx, midPath);
-            CGContextClip(ctx);
+            TWClipPath(ctx, false);
             CGPathRelease(midPath);
             drawSides(mid, inner, 2);
         }
@@ -3632,9 +3644,9 @@ void LHContainer::draw_box_shadow(lh::uint_ptr hdc, const lh::position& box, con
             AddRoundedRect(clip, r, radius);
             CGContextAddPath(ctx, clip);
             if(shadow.inset)
-                CGContextClip(ctx);
+                TWClipPath(ctx, false);
             else
-                CGContextEOClip(ctx);
+                TWClipPath(ctx, true);
             CGPathRelease(clip);
             AppendNumber(key, r.size.width);
             AppendNumber(key, r.size.height);
@@ -3677,7 +3689,7 @@ void LHContainer::paint_box_shadow(CGContextRef ctx, CGRect r, const lh::border_
         CGMutablePathRef clip = CGPathCreateMutable();
         AddRoundedRect(clip, r, radius);
         CGContextAddPath(ctx, clip);
-        CGContextClip(ctx);
+        TWClipPath(ctx, false);
         CGPathRelease(clip);
         CGRect frame = CGRectInset(r, -reach * 2, -reach * 2);
         CGPathAddRect(path, nullptr, CGRectOffset(frame, far, 0));
@@ -3689,7 +3701,7 @@ void LHContainer::paint_box_shadow(CGContextRef ctx, CGRect r, const lh::border_
         CGPathAddRect(clip, nullptr, CGRectInset(ink, -1, -1));
         AddRoundedRect(clip, r, radius);
         CGContextAddPath(ctx, clip);
-        CGContextEOClip(ctx);
+        TWClipPath(ctx, true);
         CGPathRelease(clip);
         AddRoundedRect(path, CGRectOffset(shape, far, 0), shape_radius);
     }
@@ -3962,9 +3974,9 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
         CGContextSaveGState(ctx);
         CGContextAddPath(ctx, cgpath);
         if(path.evenodd)
-            CGContextEOClip(ctx);
+            TWClipPath(ctx, true);
         else
-            CGContextClip(ctx);
+            TWClipPath(ctx, false);
         draw_gradient(path.fill_gradient);
         CGContextRestoreGState(ctx);
     } else if(path.fill && path.fill_color.alpha > 0)
@@ -3995,7 +4007,7 @@ void LHContainer::draw_path(lh::uint_ptr hdc, const lh::vector_path& path)
         if(path.stroke_gradient.type != 0)
         {
             CGContextReplacePathWithStrokedPath(ctx);
-            CGContextClip(ctx);
+            TWClipPath(ctx, false);
             draw_gradient(path.stroke_gradient);
         } else
         {
@@ -4348,7 +4360,7 @@ void LHContainer::draw_backdrop(lh::uint_ptr hdc, const lh::filter_paint& filter
     CGMutablePathRef clip = CGPathCreateMutable();
     AddRoundedRect(clip, box, filter.radius);
     CGContextAddPath(ctx, clip);
-    CGContextClip(ctx);
+    TWClipPath(ctx, false);
     CGPathRelease(clip);
     CGContextSetBlendMode(ctx, kCGBlendModeCopy);
     DrawFilterResult(ctx, target, filtered);

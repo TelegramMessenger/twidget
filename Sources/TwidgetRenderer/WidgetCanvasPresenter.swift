@@ -187,7 +187,7 @@ final class WidgetCanvasPresenter {
             path.addArc(tangent1End: CGPoint(x: r.minX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.minY), radius: tl)
             path.closeSubpath()
             ctx.addPath(path)
-            ctx.clip()
+            ctx.twClip()
         }
         ctx.translateBy(x: frame.minX, y: frame.maxY)
         ctx.scaleBy(x: 1, y: -1)

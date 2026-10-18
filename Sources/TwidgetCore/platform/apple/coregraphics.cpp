@@ -7,6 +7,18 @@
 #include <cmath>
 #include <vector>
 
+static inline void TWClipPath(CGContextRef ctx, bool evenOdd) {
+    if (CGContextIsPathEmpty(ctx)) {
+        CGContextClipToRect(ctx, CGRectZero);
+        return;
+    }
+    if (evenOdd) {
+        CGContextEOClip(ctx);
+    } else {
+        CGContextClip(ctx);
+    }
+}
+
 namespace twlite {
 
 namespace {
@@ -347,8 +359,8 @@ void CGBackend::draw_path(CGContextRef ctx, const Path& p) {
         if (CGGradientRef g = gradient(p.stops)) {
             CGContextSaveGState(ctx);
             CGContextAddPath(ctx, shape);
-            if (p.evenodd) CGContextEOClip(ctx);
-            else CGContextClip(ctx);
+            if (p.evenodd) TWClipPath(ctx, true);
+            else TWClipPath(ctx, false);
             const auto extend = kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation;
             if (p.gradient == 1) CGContextDrawLinearGradient(ctx, g, CGPointMake(p.x1, p.y1), CGPointMake(p.x2, p.y2), extend);
             else CGContextDrawRadialGradient(ctx, g, CGPointMake(p.fx, p.fy), 0, CGPointMake(p.x1, p.y1), p.r, extend);
@@ -399,7 +411,7 @@ void CGBackend::draw_shadow(CGContextRef ctx, const Command& c) {
     CGPathRef box = rounded_path(c.rect, c.radii);
     if (c.inset) {
         CGContextAddPath(ctx, box);
-        CGContextClip(ctx);
+        TWClipPath(ctx, false);
         CGRect frame = CGRectInset(r, -reach * 2, -reach * 2);
         CGPathAddRect(path, nullptr, CGRectOffset(frame, far, 0));
         if (!shape.empty()) {
@@ -411,7 +423,7 @@ void CGBackend::draw_shadow(CGContextRef ctx, const Command& c) {
         CGPathAddRect(clip, nullptr, CGRectInset(ink, -1, -1));
         CGPathAddPath(clip, nullptr, box);
         CGContextAddPath(ctx, clip);
-        CGContextEOClip(ctx);
+        TWClipPath(ctx, true);
         if (!shape.empty()) {
             CGPathRef outer = rounded_path(Rect{shape.x + far, shape.y, shape.w, shape.h}, shape_radii);
             CGPathAddPath(path, nullptr, outer);
@@ -564,7 +576,7 @@ void CGBackend::draw(CGContextRef ctx, std::span<const Command> list) {
     auto clip_to = [&](const Rect& r, const Radii& q) {
         CGPathRef p = rounded_path(r, q);
         CGContextAddPath(ctx, p);
-        CGContextClip(ctx);
+        TWClipPath(ctx, false);
         CGPathRelease(p);
     };
 
@@ -577,8 +589,8 @@ void CGBackend::draw(CGContextRef ctx, std::span<const Command> list) {
             if (c.path) {
                 CGPathRef p = vector_path(*c.path);
                 CGContextAddPath(ctx, p);
-                if (c.path->evenodd) CGContextEOClip(ctx);
-                else CGContextClip(ctx);
+                if (c.path->evenodd) TWClipPath(ctx, true);
+                else TWClipPath(ctx, false);
                 CGPathRelease(p);
             } else {
                 clip_to(c.rect, c.radii);
@@ -777,8 +789,8 @@ void CGBackend::canvas_op(Canvas& target, const CanvasOp& op) {
             p.points = clip.path.points;
             CGPathRef shape = vector_path(p);
             CGContextAddPath(ctx, shape);
-            if (clip.evenodd) CGContextEOClip(ctx);
-            else CGContextClip(ctx);
+            if (clip.evenodd) TWClipPath(ctx, true);
+            else TWClipPath(ctx, false);
             CGPathRelease(shape);
         }
     }
@@ -844,8 +856,8 @@ void CGBackend::canvas_paint(CGContextRef ctx, const CanvasOp& op) {
         CGPathRef shape = vector_path(p);
         CGContextSaveGState(ctx);
         CGContextAddPath(ctx, shape);
-        if (op.evenodd) CGContextEOClip(ctx);
-        else CGContextClip(ctx);
+        if (op.evenodd) TWClipPath(ctx, true);
+        else TWClipPath(ctx, false);
         paint_area();
         CGContextRestoreGState(ctx);
         CGPathRelease(shape);
@@ -867,7 +879,7 @@ void CGBackend::canvas_paint(CGContextRef ctx, const CanvasOp& op) {
         set_line_style(ctx, op.line_width, op.line_cap, op.line_join, op.miter_limit, op.dashes, op.dash_offset);
         CGContextAddPath(ctx, user);
         CGContextReplacePathWithStrokedPath(ctx);
-        CGContextClip(ctx);
+        TWClipPath(ctx, false);
         CGContextConcatCTM(ctx, inverse);
         paint_area();
         CGContextRestoreGState(ctx);

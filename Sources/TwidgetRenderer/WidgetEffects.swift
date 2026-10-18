@@ -589,7 +589,7 @@ final class WidgetEffectLayers {
         ctx.saveGState()
         if let mask = (shadow.mask as? CAShapeLayer)?.path {
             ctx.addPath(mask)
-            ctx.clip(using: .evenOdd)
+            ctx.twClip(using: .evenOdd)
         }
         let far = path.boundingBox.width + 10_000
         let offset = CGSize(width: shadow.shadowOffset.width - far, height: shadow.shadowOffset.height)
@@ -687,7 +687,7 @@ final class WidgetEffectLayers {
         let path = (backdrop.mask as? CAShapeLayer)?.path ?? CGPath(rect: backdrop.bounds, transform: nil)
         ctx.translateBy(x: frame.minX, y: frame.minY)
         ctx.addPath(path)
-        ctx.clip()
+        ctx.twClip()
         ctx.translateBy(x: 0, y: frame.height)
         ctx.scaleBy(x: 1, y: -1)
         ctx.setBlendMode(.copy)
