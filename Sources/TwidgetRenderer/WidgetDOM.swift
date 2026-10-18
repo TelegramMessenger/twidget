@@ -231,6 +231,26 @@ final class WidgetDOM {
         return node
     }
 
+    func reset() {
+        nodes.removeAll()
+        rootIds.removeAll()
+        resetPatchLog()
+        sheets = nil
+        usesTransitions = false
+        epoch += 1
+        lastSize = 16 * 1024
+        for root in [html, head, body] {
+            root.children.removeAll()
+            root.attributes.removeAll()
+            root.declarations.removeAll()
+            root.text = ""
+            root.formValue = nil
+            root.formChecked = nil
+            root.editing = false
+        }
+        html.children = [head, body]
+    }
+
     func node(_ id: Int) -> WidgetNode? {
         return nodes[id]
     }

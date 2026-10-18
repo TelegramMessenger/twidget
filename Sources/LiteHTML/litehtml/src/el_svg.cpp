@@ -585,8 +585,9 @@ namespace litehtml
         }
 
         bool svg_paint(const element::ptr& el, string_id name, web_color def, bool def_on, web_color& out,
-                       document_container* container)
+                       document_container* container, bool* gradient = nullptr)
         {
+            if(gradient) *gradient = false;
             css_token_vector tokens = svg_property(el, name, true);
             if(tokens.empty())
             {
@@ -604,6 +605,11 @@ namespace litehtml
                 {
                     out = el->css().get_color();
                     return true;
+                }
+                if(tok.type == URL || (tok.type == CV_FUNCTION && lowcase(tok.name()) == "url"))
+                {
+                    if(gradient) *gradient = true;
+                    continue;
                 }
                 web_color color;
                 if(tok.type != URL && tok.type != CV_FUNCTION && parse_color(tok, color, container))
@@ -716,7 +722,7 @@ namespace litehtml
                     maxy = std::max(maxy, y);
                 }
             }
-            const char* units = target->get_attr("gradientUnits");
+            const char* units = target->get_attr("gradientunits");
             bool        user  = units && std::string(units) == "userSpaceOnUse";
             float       w = maxx - minx, h = maxy - miny;
             auto        mapx = [&](float v) { return user ? v : minx + v * w; };
@@ -874,7 +880,8 @@ namespace litehtml
                     return;
                 }
                 path.fill   = svg_paint(el, _fill_, web_color::black, true, path.fill_color, m_container);
-                path.stroke = svg_paint(el, _stroke_, web_color::black, false, path.stroke_color, m_container);
+                bool stroke_gradient = false;
+                path.stroke = svg_paint(el, _stroke_, web_color::black, false, path.stroke_color, m_container, &stroke_gradient);
                 path.fill_color   = with_opacity(path.fill_color, svg_number(el, _fill_opacity_, 1));
                 if(!path.fill && svg_gradient_paint(el, _fill_, path, path.fill_gradient, svg_number(el, _fill_opacity_, 1), m_container))
                 {
@@ -882,6 +889,11 @@ namespace litehtml
                     path.fill_color = path.fill_gradient.stops.back().second;
                 }
                 path.stroke_color = with_opacity(path.stroke_color, svg_number(el, _stroke_opacity_, 1));
+                if(!path.stroke && stroke_gradient && svg_gradient_paint(el, _stroke_, path, path.stroke_gradient, svg_number(el, _stroke_opacity_, 1), m_container))
+                {
+                    path.stroke       = true;
+                    path.stroke_color = path.stroke_gradient.stops.back().second;
+                }
                 path.evenodd      = svg_ident(el, _fill_rule_) == "evenodd";
                 path.stroke_width = std::max(0.f, svg_number(el, _stroke_width_, 1));
                 std::string cap   = svg_ident(el, _stroke_linecap_);

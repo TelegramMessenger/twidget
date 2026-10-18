@@ -3,6 +3,7 @@
 #include <string_view>
 #include <unordered_set>
 #include "document_container.h"
+#include "css_parser.h"
 #include "el_anchor.h"
 #include "el_base.h"
 #include "el_body.h"
@@ -36,6 +37,7 @@
 #include "types.h"
 
 #include <cstdlib>
+#include <cmath>
 #include <iterator>
 #include <mutex>
 #include <typeinfo>
@@ -510,6 +512,72 @@ namespace litehtml
             patch.text += ';';
         }
         return !patch.names.empty();
+    }
+
+    static bool style_change_is_width_only(const std::string& before, const std::string& after)
+    {
+        std::map<std::string, std::string> declarations[2];
+        std::vector<std::pair<std::string, std::string>> unchanged[2];
+        size_t index = 0;
+        for(const std::string* text : {&before, &after})
+        {
+            const std::string lower = lowcase(*text);
+            if(text->find_first_of("\\{}!\"'") != std::string::npos || text->find("/*") != std::string::npos ||
+               lower.find("var(") != std::string::npos || lower.find("--") != std::string::npos ||
+               lower.find("counter") != std::string::npos || lower.find("-lh-") != std::string::npos ||
+               lower.find("url(") != std::string::npos)
+                return false;
+            auto& values = declarations[index++];
+            for(const auto& entry : split_style_declarations(*text))
+            {
+                if(entry.first.empty() || entry.first == "all" ||
+                   entry.first.find_first_not_of("abcdefghijklmnopqrstuvwxyz-") != std::string::npos ||
+                   !values.emplace(entry.first, entry.second).second)
+                    return false;
+                if(entry.first != "width")
+                    unchanged[index - 1].push_back(entry);
+            }
+            auto width = values.find("width");
+            if(width == values.end())
+                return false;
+            const css_token_vector tokens = normalize(width->second, f_componentize);
+            css_length length;
+            if(tokens.size() != 1 || !length.from_token(tokens.front(), f_length_percentage | f_positive) ||
+               length.is_predefined() || !std::isfinite(length.val()) ||
+               (length.units() != css_units_px && length.units() != css_units_percentage))
+                return false;
+            values.erase(width);
+        }
+        return unchanged[0] == unchanged[1];
+    }
+
+    static bool shallow_width_owner(const element::ptr& owner)
+    {
+        const std::type_info& type = typeid(*owner);
+        if(type != typeid(html_tag) && type != typeid(el_div) && type != typeid(el_para) && type != typeid(el_body))
+            return false;
+        switch(owner->css().get_display())
+        {
+        case display_block:
+        case display_inline_block:
+        case display_flex:
+        case display_inline_flex:
+        case display_grid:
+        case display_inline_grid:
+            return std::static_pointer_cast<html_tag>(owner)->can_restyle_width_shallow();
+        default:
+            return false;
+        }
+    }
+
+    static bool has_generated_children(const element::ptr& owner)
+    {
+        for(const auto& child : owner->children())
+        {
+            if(child->tag() == __tag_before_ || child->tag() == __tag_after_)
+                return true;
+        }
+        return false;
     }
 
     static bool style_change_is_paint_only(const std::string& before, const std::string& after)
@@ -1059,6 +1127,7 @@ namespace litehtml
         invalidate_paint();
         std::vector<size_t>                             dirty;
         std::vector<bool> background_changes(changes.size(), false);
+        std::vector<bool> width_changes(changes.size(), false);
         std::vector<property_patch> property_patches(changes.size());
         std::vector<std::pair<size_t, string_map>>      classes;
         for(const auto& change : changes)
@@ -1083,10 +1152,15 @@ namespace litehtml
                     return -1;
             } else if(!m_holes[i].src && m_holes[i].attr.empty())
             {
+                if(style_attributes_selectable())
+                    return template_requires_fresh_document;
                 property_patch& patch = property_patches[&change - changes.data()];
                 if(!style_change_property_patch(m_holes[i].value, v, patch))
                 {
                     patch.names.clear();
+                    width_changes[&change - changes.data()] = style_change_is_width_only(m_holes[i].value, v);
+                    if(width_changes[&change - changes.data()] && has_generated_children(m_holes[i].owner))
+                        return template_requires_fresh_document;
                     const bool background = style_change_is_background_color(m_holes[i].value, v);
                     background_changes[&change - changes.data()] = background;
                     if(!background && !style_change_is_local(m_holes[i].value, v))
@@ -1116,6 +1190,9 @@ namespace litehtml
         std::vector<element::ptr> restyle;
         std::unordered_set<const element*> background_only;
         std::unordered_map<const element*, const property_patch*> patched;
+        std::unordered_set<const element*> shallow_width;
+        bool allow_shallow_width = classes.empty() && !m_has_svg && m_tabular_elements.empty() &&
+                                   !getenv("LH_NO_SHALLOW_WIDTH_PATCH");
         std::vector<element::ptr> new_text;
         std::vector<element::ptr> retext;
         std::vector<std::string>  words;
@@ -1162,6 +1239,10 @@ namespace litehtml
             const bool         inplace = hole.text && retext_in_place(hole.text_elements, value.c_str(), words);
             const bool         background = background_changes[k];
             const property_patch* patch   = property_patches[k].names.empty() ? nullptr : &property_patches[k];
+            if(hole.text ? !inplace : hole.src || !hole.attr.empty() || (!width_changes[k] && !patch && !background))
+                allow_shallow_width = false;
+            if(allow_shallow_width && width_changes[k] && shallow_width_owner(hole.owner))
+                shallow_width.insert(hole.owner.get());
             if(!hole.text && !hole.src)
             {
                 const int kind = hole.attr.empty() ? (background ? 1 : patch ? (patch->box ? 1 : 0) : style_change_region(hole.value, value)) : 2;
@@ -1309,6 +1390,7 @@ namespace litehtml
             {
                 background_only.erase(el.get());
                 patched.erase(el.get());
+                shallow_width.erase(el.get());
             }
         for(const auto* list : {&restyle, &new_text, &retext})
             for(const auto& el : *list)
@@ -1317,7 +1399,9 @@ namespace litehtml
                     background_only.erase(parent.get());
                     patched.erase(parent.get());
                 }
-        restyle_after_patch(restyle, new_text, keep_tree, retext, background_only, patched);
+        if(!allow_shallow_width || !keep_tree || !new_text.empty())
+            shallow_width.clear();
+        restyle_after_patch(restyle, new_text, keep_tree, retext, background_only, patched, shallow_width);
         for(size_t k = 0; k < measured.size() && paint_only; k++)
         {
             size after;
@@ -1458,7 +1542,8 @@ namespace litehtml
     void document::restyle_after_patch(const std::vector<element::ptr>& restyle, const std::vector<element::ptr>& new_text,
                                        bool keep_tree, const std::vector<element::ptr>& retext,
                                        const std::unordered_set<const element*>& background_only,
-                                       const std::unordered_map<const element*, const property_patch*>& patched)
+                                       const std::unordered_map<const element*, const property_patch*>& patched,
+                                       const std::unordered_set<const element*>& shallow_width)
     {
         invalidate_paint();
         m_share_cache.clear();
@@ -1469,10 +1554,10 @@ namespace litehtml
             pending.insert(el.get());
         for(const auto& el : retext)
             pending.insert(el.get());
-        auto covered = [&pending](const element::ptr& el) {
+        auto covered = [&pending, &shallow_width](const element::ptr& el) {
             for(auto p = el->parent(); p; p = p->parent())
             {
-                if(pending.count(p.get()))
+                if(pending.count(p.get()) && !shallow_width.count(p.get()))
                     return true;
             }
             return false;
@@ -1491,7 +1576,12 @@ namespace litehtml
         const bool positioned_fresh = keep_tree && new_text.empty() && m_positioned_epoch == m_style_epoch &&
                                       m_positioned_tree == m_render_tree_serial;
         std::vector<std::pair<const element*, element_position>> positions;
-        auto collect_positions = [&positions](const element::ptr& root) {
+        auto collect_positions = [&positions, &shallow_width](const element::ptr& root) {
+            if(shallow_width.count(root.get()))
+            {
+                positions.emplace_back(root.get(), root->css().get_position());
+                return;
+            }
             std::vector<const element*> stack{root.get()};
             while(!stack.empty())
             {
@@ -1530,7 +1620,7 @@ namespace litehtml
             } else if(background_only.count(el.get()))
                 std::static_pointer_cast<html_tag>(el)->compute_background_style();
             else
-                el->compute_styles(true);
+                el->compute_styles(!shallow_width.count(el.get()));
         }
         if(positioned_fresh)
         {
@@ -1571,8 +1661,14 @@ namespace litehtml
             *changed = false;
         if(!m_gumbo || !m_root || !m_finalized)
             return false;
-        if(m_template_ok && !getenv("LH_NO_TEMPLATE") && update_from_template(html, changed) == 1)
-            return true;
+        if(m_template_ok && !getenv("LH_NO_TEMPLATE"))
+        {
+            const int result = update_from_template(html, changed);
+            if(result == 1)
+                return true;
+            if(result == template_requires_fresh_document)
+                return false;
+        }
         return update_structure(html, changed);
     }
 
@@ -1907,6 +2003,9 @@ namespace litehtml
                 }
                 if(unsafe_style(before) || unsafe_style(q->value))
                     return diff_replace;
+                if(style_attributes_selectable() ||
+                   (has_generated_children(el) && style_change_is_width_only(std::string(before), q->value)))
+                    return diff_failed;
                 style = q;
             }
             if(raw_text_element(a))
@@ -2218,6 +2317,41 @@ namespace litehtml
         if(changed)
             *changed = any;
         return true;
+    }
+
+    bool document::style_attributes_selectable()
+    {
+        if(m_style_attributes_selectable >= 0)
+            return m_style_attributes_selectable != 0;
+        std::function<bool(const css_selector&)> reads_style = [&](const css_selector& selector) {
+            for(const css_selector* sel = &selector; sel; sel = sel->m_left.get())
+            {
+                for(const auto& attr : sel->m_right.m_attrs)
+                {
+                    if(attr.type == select_attr && t_strcasecmp(_s(attr.name).c_str(), "style") == 0)
+                        return true;
+                    for(const auto& inner : attr.selector_list)
+                    {
+                        if(inner && reads_style(*inner))
+                            return true;
+                    }
+                }
+            }
+            return false;
+        };
+        for(const css* sheet : {&m_master_css, &m_styles, &m_user_css})
+        {
+            for(const auto& selector : sheet->selectors())
+            {
+                if(selector && reads_style(*selector))
+                {
+                    m_style_attributes_selectable = 1;
+                    return true;
+                }
+            }
+        }
+        m_style_attributes_selectable = 0;
+        return false;
     }
 
     bool document::ids_selectable()

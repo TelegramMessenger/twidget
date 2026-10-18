@@ -4,7 +4,12 @@
 #import "LHDocumentPainting.h"
 
 #include "LHContainer.h"
+#include "LHImmutableBitmap.h"
 #include "LHSimpleText.h"
+#include "lhx_local_paint_key.h"
+#include "lhx_alpha_bounds.h"
+#include "lhx_paint_exclusion_cache.h"
+#include "lhx_paint_exclusion_rules.h"
 #include "render_item.h"
 #include "render_inline_context.h"
 #include "html_tag.h"
@@ -18,6 +23,7 @@
 #include <cstring>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -112,6 +118,42 @@ struct LHDeclarationsEntry
     uint64_t      epoch;
     uint64_t      generation;
 };
+
+static bool LHExclusionStateMatches(NSSet<NSString *> *saved, NSString *savedAttribute, NSSet<NSString *> *values, NSString *attribute)
+{
+    return (saved == values || [saved isEqualToSet:values]) &&
+           (savedAttribute == attribute || [savedAttribute isEqualToString:attribute]);
+}
+
+static bool LHPaintExclusionCacheEnabled()
+{
+    static const bool enabled = !getenv("TW_PAINT_EXCLUSION_CACHE") || strcmp(getenv("TW_PAINT_EXCLUSION_CACHE"), "0") != 0;
+    return enabled;
+}
+
+static bool SubtreeNeedsBackdrop(const lh::element *root)
+{
+    if(!root->css().get_backdrop_filter().empty())
+        return true;
+    for(const auto &child : root->children())
+        if(SubtreeNeedsBackdrop(child.get()))
+            return true;
+    return false;
+}
+
+static void IncludeScrollSubtree(lh::document &document, const lh::element *root)
+{
+    for(auto it = document.skip_scroll_content.begin(); it != document.skip_scroll_content.end();)
+    {
+        auto owner = *it;
+        while(owner && owner != root)
+            owner = owner->parent().get();
+        if(owner == root)
+            it = document.skip_scroll_content.erase(it);
+        else
+            ++it;
+    }
+}
 
 static bool ParseKeyInteger(const char *text, int64_t &out)
 {
@@ -575,6 +617,10 @@ static CGFloat ChangedBottom(const std::vector<LHDrawOp> &ops, const std::unorde
 struct PixelSnap
 {
     float saved;
+    explicit PixelSnap(CGFloat scale) : saved(lh::pixel_snap_scale())
+    {
+        lh::pixel_snap_scale() = scale >= 1 && scale <= 16 && std::isfinite(scale) ? static_cast<float>(scale) : 1.0f;
+    }
     explicit PixelSnap(CGContextRef ctx) : saved(lh::pixel_snap_scale())
     {
         const CGAffineTransform m = CGContextGetCTM(ctx);
@@ -583,6 +629,28 @@ struct PixelSnap
     }
     ~PixelSnap() { lh::pixel_snap_scale() = saved; }
 };
+
+static bool LHScrollTextBatchingSafe(const std::shared_ptr<lh::render_item>& root)
+{
+    if(getenv("LH_NO_SCROLL_TEXT_BATCH"))
+        return false;
+    lh::render_item* pending[512];
+    size_t count = 1, visited = 0;
+    pending[0] = root.get();
+    while(count)
+    {
+        lh::render_item* item = pending[--count];
+        if(++visited > 512 || !item->css().get_text_shadows().empty())
+            return false;
+        for(const auto& child : item->children())
+        {
+            if(count == 512)
+                return false;
+            pending[count++] = child.get();
+        }
+    }
+    return true;
+}
 
 static bool LHPaintTraceUncached()
 {
@@ -706,6 +774,15 @@ struct LHCoverVisit
     std::string                  _itemIndexAttribute;
     BOOL                         _itemIndexValid;
     NSString                    *_scrollAttribute;
+    lhx::PaintExclusionRules     _paintExclusionRules;
+    BOOL                         _paintExclusionRulesValid;
+    lhx::PaintExclusionCache<lh::element> _paintExclusionCache;
+    uint64_t                     _exclusionStyleEpoch;
+    uint64_t                     _exclusionLayoutEpoch;
+    uint64_t                     _exclusionTreeSerial;
+    uint64_t                     _exclusionCacheHits;
+    uint64_t                     _exclusionCacheMisses;
+    BOOL                         _exclusionCacheDisabled;
     std::vector<LHDeclarationsEntry> _declarations;
     uint64_t                     _paintTraceGeneration;
     std::vector<LHCoverEntry>    _coverEntries;
@@ -734,15 +811,20 @@ struct LHCoverVisit
     CGContextRef ctx = [self createContextWithWidth:1 height:1];
     if(!ctx)
         return NO;
+    auto saved = _doc->skip_paint;
+    auto savedScroll = _doc->skip_scroll_content;
+    auto savedBackgrounds = _doc->skip_background_images;
     [self resolveExclusionsLocked];
-    auto saved        = _doc->skip_paint;
     lh::g_paint_trace = &_paintTrace;
     _doc->skip_paint.clear();
+    _doc->skip_scroll_content.clear();
     _backdropDepth++;
     _doc->draw(reinterpret_cast<lh::uint_ptr>(ctx), 0, 0, nullptr);
     _backdropDepth--;
     lh::g_paint_trace = nullptr;
-    _doc->skip_paint  = saved;
+    _doc->skip_paint = std::move(saved);
+    _doc->skip_scroll_content = std::move(savedScroll);
+    _doc->skip_background_images = std::move(savedBackgrounds);
     CGContextRelease(ctx);
     _paintTraceValid = YES;
     _paintTraceGeneration++;
@@ -1291,6 +1373,7 @@ static std::string MasterWithCSS(NSString *css)
     if(!_consumed || _doc)
         return;
     _consumed     = NO;
+    _paintExclusionCache.clear();
     _declarations.clear();
     _paintTraceValid = NO;
     _itemIndexValid  = NO;
@@ -1505,6 +1588,57 @@ static std::string MasterWithCSS(NSString *css)
 
 - (void)resolveExclusionsLocked
 {
+    [self resolveExclusionsLockedInRoot:_doc->root()];
+}
+
+- (void)setPaintExclusionCacheDisabled:(BOOL)disabled
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    _exclusionCacheDisabled = disabled;
+    _paintExclusionCache.clear();
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)paintExclusionCacheStats
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    return @{@"hits": @(_exclusionCacheHits), @"misses": @(_exclusionCacheMisses),
+             @"entries": @(_paintExclusionCache.size()), @"pointers": @(_paintExclusionCache.pointerCount())};
+}
+
+- (void)resolveExclusionsLockedInRoot:(const lh::element::ptr &)requestedRoot
+{
+    if(_exclusionCacheDisabled || !LHPaintExclusionCacheEnabled() || requestedRoot != _doc->root())
+    {
+        [self rebuildExclusionsLockedInRoot:requestedRoot];
+        _exclusionCacheMisses++;
+        return;
+    }
+    const uint64_t style = _doc->style_epoch(), layout = _doc->layout_epoch(), tree = _doc->m_render_tree_serial;
+    if(style != _exclusionStyleEpoch || layout != _exclusionLayoutEpoch || tree != _exclusionTreeSerial)
+    {
+        _paintExclusionCache.clear();
+        _exclusionStyleEpoch = style;
+        _exclusionLayoutEpoch = layout;
+        _exclusionTreeSerial = tree;
+    }
+    const bool snapshot = _snapshotDepth != 0;
+    if(const auto *sets = _paintExclusionCache.find(requestedRoot.get(), snapshot))
+    {
+        _doc->skip_paint = sets->paint;
+        _doc->skip_scroll_content = sets->scroll;
+        _doc->skip_background_images = sets->background;
+        _exclusionCacheHits++;
+        return;
+    }
+    [self rebuildExclusionsLockedInRoot:requestedRoot];
+    _exclusionCacheMisses++;
+    _paintExclusionCache.store(requestedRoot.get(), snapshot,
+        _doc->skip_paint, _doc->skip_scroll_content, _doc->skip_background_images);
+}
+
+- (void)rebuildExclusionsLockedInRoot:(const lh::element::ptr &)requestedRoot
+{
+    const auto root = requestedRoot && requestedRoot != _doc->root() && _doc->has_backdrop && SubtreeNeedsBackdrop(requestedRoot.get()) ? _doc->root() : requestedRoot;
     _doc->skip_paint.clear();
     _doc->skip_scroll_content.clear();
     _doc->skip_background_images.clear();
@@ -1520,65 +1654,52 @@ static std::string MasterWithCSS(NSString *css)
             }
         }
     }
-    if(_snapshotDepth == 0 && _backgroundExclusions.count > 0 && _doc->root())
+    if(!_paintExclusionRulesValid)
     {
-        std::unordered_set<std::string> images;
-        for(NSString *value in _backgroundExclusions)
-            images.insert(value.UTF8String);
-        const char *imageKey = _backgroundAttribute.UTF8String;
-        std::function<void(const lh::element::ptr &)> visitImages = [&](const lh::element::ptr &el) {
-            const char *value = el->get_attr(imageKey);
-            if(value && images.count(value))
-                _doc->skip_background_images.insert(el.get());
-            for(const auto &child : el->children())
-                visitImages(child);
+        _paintExclusionRules.clear();
+        auto add = [&](NSSet<NSString *> *values, NSString *attribute, uint8_t bits) {
+            const char *name = attribute.UTF8String;
+            if(!name)
+                return;
+            for(NSString *value in values)
+            {
+                const char *encoded = value.UTF8String;
+                if(encoded)
+                    _paintExclusionRules.add(name, encoded, bits);
+            }
         };
-        visitImages(_doc->root());
+        add(_exclusions, _exclusionAttribute, lhx::PaintExclusionRules::paint);
+        add(_layerExclusions, _layerAttribute, lhx::PaintExclusionRules::layer);
+        add(_backgroundExclusions, _backgroundAttribute, lhx::PaintExclusionRules::background);
+        add(_scrollExclusions, _scrollAttribute, lhx::PaintExclusionRules::scroll);
+        _paintExclusionRulesValid = YES;
     }
-    if(_scrollExclusions.count > 0 && _doc->root())
-    {
-        std::unordered_set<std::string> scrollers;
-        for(NSString *value in _scrollExclusions)
-            scrollers.insert(value.UTF8String);
-        const char *scrollKey = _scrollAttribute.UTF8String;
-        std::function<void(const lh::element::ptr &)> visitScrollers = [&](const lh::element::ptr &el) {
-            const char *value = el->get_attr(scrollKey);
-            if(value && scrollers.count(value))
-                _doc->skip_scroll_content.insert(el.get());
-            for(const auto &child : el->children())
-                visitScrollers(child);
-        };
-        visitScrollers(_doc->root());
-    }
-    const BOOL layered = _snapshotDepth == 0 && _layerExclusions.count > 0;
-    if((_exclusions.count == 0 && !layered) || !_doc->root())
+    const uint8_t active = lhx::PaintExclusionRules::paint | lhx::PaintExclusionRules::scroll |
+        (_snapshotDepth == 0 ? lhx::PaintExclusionRules::layer | lhx::PaintExclusionRules::background : 0);
+    if(!root || !_paintExclusionRules.active(active))
         return;
-    std::unordered_set<std::string> wanted, layers;
-    for(NSString *value in _exclusions)
-        wanted.insert(value.UTF8String);
-    if(layered)
-    {
-        for(NSString *value in _layerExclusions)
-            layers.insert(value.UTF8String);
-    }
-    const char *key      = _exclusionAttribute.UTF8String;
-    const char *layerKey = _layerAttribute.UTF8String;
     std::function<void(const lh::element::ptr &)> visit = [&](const lh::element::ptr &el) {
-        const char *value = key ? el->get_attr(key) : nullptr;
-        if(value && wanted.count(value))
+        const uint8_t matched = _paintExclusionRules.match([&](const char *attribute) { return el->get_attr(attribute); }, active);
+        if(matched & (lhx::PaintExclusionRules::paint | lhx::PaintExclusionRules::layer))
             _doc->skip_paint.insert(el.get());
-        const char *layer = layerKey && !layers.empty() ? el->get_attr(layerKey) : nullptr;
-        if(layer && layers.count(layer))
-            _doc->skip_paint.insert(el.get());
+        if(matched & lhx::PaintExclusionRules::scroll)
+            _doc->skip_scroll_content.insert(el.get());
+        if(matched & lhx::PaintExclusionRules::background)
+            _doc->skip_background_images.insert(el.get());
         for(const auto &child : el->children())
             visit(child);
     };
-    visit(_doc->root());
+    visit(root);
 }
 
 - (void)setScrollContentExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_scrollExclusions, _scrollAttribute, values, attribute))
+    {
+        _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _scrollExclusions = [values copy];
     _scrollAttribute  = [attribute copy];
 }
@@ -1763,13 +1884,27 @@ static std::string MasterWithCSS(NSString *css)
 {
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
+    return [self copyScrollContentLockedWithAttribute:attribute value:value rect:rect scale:scale];
+}
+
+- (CGImageRef)copyScrollContentIfCurrentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale shouldContinue:(BOOL (NS_NOESCAPE ^)(void))shouldContinue
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    if(_consumed || !_doc || !shouldContinue())
+        return nullptr;
+    return [self copyScrollContentLockedWithAttribute:attribute value:value rect:rect scale:scale];
+}
+
+- (CGImageRef)copyScrollContentLockedWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale
+{
     auto ri = [self renderItemLockedWithAttribute:attribute value:value];
     if(!ri || !ri->get_scroll_view())
         return nullptr;
     const size_t pw = (size_t)std::ceil(rect.size.width * scale), ph = (size_t)std::ceil(rect.size.height * scale);
     if(pw == 0 || ph == 0 || pw > 8192 || ph > 8192)
         return nullptr;
-    CGContextRef ctx = [self createContextWithWidth:pw height:ph];
+    LHImmutableBitmap bitmap([self createContextWithWidth:pw height:ph]);
+    CGContextRef ctx = bitmap.context();
     if(!ctx)
         return nullptr;
     const lh::position placement = ri->get_placement();
@@ -1783,7 +1918,7 @@ static std::string MasterWithCSS(NSString *css)
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
     _snapshotDepth++;
-    [self resolveExclusionsLocked];
+    [self resolveExclusionsLockedInRoot:ri->src_el()];
     _snapshotDepth--;
     _doc->skip_scroll_content.erase(ri->src_el().get());
     const lh::pixel_t left = ri->get_scroll_left(), top = ri->get_scroll_top();
@@ -1798,6 +1933,9 @@ static std::string MasterWithCSS(NSString *css)
         std::set<int> z;
         CollectPositionedZ(ri, z);
         auto hdc = reinterpret_cast<lh::uint_ptr>(ctx);
+        const bool batchText = LHScrollTextBatchingSafe(ri);
+        if(batchText)
+            _container->begin_text_batching(ctx);
         for(int index : z)
             if(index < 0)
                 ri->draw_children(hdc, x, y, &clip, lh::draw_positioned, index);
@@ -1807,19 +1945,24 @@ static std::string MasterWithCSS(NSString *css)
         for(int index : z)
             if(index >= 0)
                 ri->draw_children(hdc, x, y, &clip, lh::draw_positioned, index);
+        if(batchText)
+            _container->end_text_batching();
     }
     _doc->set_culls_paint(savedCull);
     _doc->unclipped_scroll = savedUnclipped;
     ri->scroll_to(left, top);
     _coverBoxesValid = NO;
-    CGImageRef image = CGBitmapContextCreateImage(ctx);
-    CGContextRelease(ctx);
-    return image;
+    return bitmap.takeImage(getenv("LH_NO_IMMUTABLE_SCROLL_BITMAP") == nullptr);
 }
 
 - (void)setBackgroundImageExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_backgroundExclusions, _backgroundAttribute, values, attribute))
+    {
+        _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _backgroundExclusions = [values copy];
     _backgroundAttribute  = [attribute copy];
 }
@@ -1838,6 +1981,11 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setLayerExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_layerExclusions, _layerAttribute, values, attribute))
+    {
+        _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _layerExclusions = [values copy];
     _layerAttribute  = [attribute copy];
 }
@@ -1845,6 +1993,11 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_exclusions, _exclusionAttribute, values, attribute))
+    {
+        _paintExclusionCache.clear();
+        _paintExclusionRulesValid = NO;
+    }
     _exclusions         = [values copy];
     _exclusionAttribute = [attribute copy];
 }
@@ -1852,6 +2005,8 @@ static std::string MasterWithCSS(NSString *css)
 - (void)setTextPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute
 {
     std::lock_guard<std::mutex> guard(_lock);
+    if(!LHExclusionStateMatches(_textExclusions, _textExclusionAttribute, values, attribute))
+        _paintExclusionCache.clear();
     _textExclusions = [values copy];
     _textExclusionAttribute = [attribute copy];
     _paintTraceValid = NO;
@@ -1958,37 +2113,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     const size_t   pw = CGBitmapContextGetWidth(ctx), ph = CGBitmapContextGetHeight(ctx), row = CGBitmapContextGetBytesPerRow(ctx);
     if(step == 0 || !data || CGBitmapContextGetBitsPerPixel(ctx) != 32 || (CGBitmapContextGetBitmapInfo(ctx) & kCGBitmapAlphaInfoMask) != kCGImageAlphaPremultipliedFirst || (CGBitmapContextGetBitmapInfo(ctx) & kCGBitmapByteOrderMask) != kCGBitmapByteOrder32Little)
         return ink;
-    size_t minX = pw, minY = ph, maxX = 0, maxY = 0;
-    for(size_t py = 0; py < ph; py++)
-    {
-        const uint32_t* line = reinterpret_cast<const uint32_t*>(data + py * row);
-        size_t first = pw;
-        for(size_t px = 0; px < pw; px++)
-        {
-            if(line[px] >> 24)
-            {
-                first = px;
-                break;
-            }
-        }
-        if(first == pw)
-            continue;
-        size_t last = first;
-        for(size_t px = pw; px-- > first;)
-        {
-            if(line[px] >> 24)
-            {
-                last = px;
-                break;
-            }
-        }
-        const size_t top = py;
-        minX = std::min(minX, first);
-        maxX = std::max(maxX, last + 1);
-        minY = std::min(minY, top);
-        maxY = std::max(maxY, top + 1);
-    }
-    CGRect painted = minX < maxX ? CGRectMake(ink.origin.x + minX / scale, ink.origin.y + minY / scale, (maxX - minX) / scale, (maxY - minY) / scale) : CGRectNull;
+    lhx::Alpha8Bounds bounds;
+    if(ph != 0 && row > std::numeric_limits<size_t>::max() / ph)
+        return ink;
+    if(!lhx::alpha8Bounds<4, 3>(data, row * ph, pw, ph, row, bounds))
+        return ink;
+    CGRect painted = bounds.empty() ? CGRectNull : CGRectMake(ink.origin.x + bounds.left / scale, ink.origin.y + bounds.top / scale, (bounds.right - bounds.left) / scale, (bounds.bottom - bounds.top) / scale);
     CGRect wanted = CGRectIntersection(CGRectUnion(painted, box), ink);
     if(CGRectIsNull(wanted) || CGRectIsEmpty(wanted))
         return ink;
@@ -2034,11 +2164,14 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     CGContextTranslateCTM(ctx, -ink.origin.x, -ink.origin.y);
     CGContextSetAllowsFontSmoothing(ctx, false);
     CGContextSetShouldAntialias(ctx, true);
-    auto skipped = _doc->skip_paint;
+    auto savedPaint = _doc->skip_paint;
+    auto savedScroll = _doc->skip_scroll_content;
+    auto savedBackgrounds = _doc->skip_background_images;
     _snapshotDepth++;
-    [self resolveExclusionsLocked];
+    [self resolveExclusionsLockedInRoot:ri->src_el()];
     _snapshotDepth--;
     _doc->skip_paint.erase(ri->src_el().get());
+    IncludeScrollSubtree(*_doc, ri->src_el().get());
     PixelSnap snap(ctx);
     _doc->bare_effects = ri->src_el().get();
     _doc->bare_shadows = bareShadows;
@@ -2047,6 +2180,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         DrawAsStackingContext(ri, reinterpret_cast<lh::uint_ptr>(ctx), x, y);
     _doc->bare_effects = nullptr;
     _doc->bare_shadows = false;
+    _doc->skip_paint = std::move(savedPaint);
+    _doc->skip_scroll_content = std::move(savedScroll);
+    _doc->skip_background_images = std::move(savedBackgrounds);
     CGRect tight = TightInk(ctx, ink, box, scale);
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
@@ -2075,6 +2211,63 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
             radiiOut[i] = std::max<CGFloat>(0, values[i]);
     }
     return image;
+}
+
+- (NSData *)localPaintKeyForAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri || !std::isfinite(scale) || scale < 1 || scale > 16)
+        return nil;
+    static const std::unordered_set<std::string> tags{"div", "span", "p", "section", "article", "header", "footer", "main", "aside", "nav", "b", "strong", "i", "em", "small", "label", "code", "pre", "h1", "h2", "h3", "h4", "h5", "h6", "br"};
+    std::vector<std::shared_ptr<lh::render_item>> pending{ri};
+    size_t count = 0;
+    while(!pending.empty())
+    {
+        auto item = std::move(pending.back());
+        pending.pop_back();
+        if(++count > 512)
+            return nil;
+        const auto &css = item->css();
+        if(!css.get_filter().empty() || !css.get_backdrop_filter().empty() || !css.get_clip_path().empty() ||
+           css.get_position() == lh::element_position_fixed || css.get_position() == lh::element_position_sticky ||
+           (item != ri && css.is_paint_group()))
+            return nil;
+        if(!dynamic_cast<lh::el_text *>(item->src_el().get()) && !tags.count(item->src_el()->get_tagName()))
+            return nil;
+        for(const auto &child : item->children())
+            pending.push_back(child);
+    }
+    const CGRect box = BorderBox(ri);
+    lhx::LocalPaintKey key(box.origin.x, box.origin.y, scale);
+    auto savedPaint = _doc->skip_paint;
+    auto savedScroll = _doc->skip_scroll_content;
+    auto savedBackgrounds = _doc->skip_background_images;
+    _snapshotDepth++;
+    [self resolveExclusionsLockedInRoot:ri->src_el()];
+    _snapshotDepth--;
+    _doc->skip_paint.erase(ri->src_el().get());
+    IncludeScrollSubtree(*_doc, ri->src_el().get());
+    const lh::position placement = ri->get_placement();
+    const lh::pixel_t x = placement.x - ri->pos().x;
+    const lh::pixel_t y = placement.y - ri->pos().y;
+    _container->set_painter(&key);
+    _doc->bare_effects = ri->src_el().get();
+    {
+        PixelSnap snap(scale);
+        ri->src_el()->draw(lh::uint_ptr(0), x, y, nullptr, ri);
+        if(ri->is_visible())
+            DrawAsStackingContext(ri, lh::uint_ptr(0), x, y);
+    }
+    _doc->bare_effects = nullptr;
+    _container->set_painter(nullptr);
+    _doc->skip_paint = std::move(savedPaint);
+    _doc->skip_scroll_content = std::move(savedScroll);
+    _doc->skip_background_images = std::move(savedBackgrounds);
+    if(!key.valid())
+        return nil;
+    return [NSData dataWithBytes:key.bytes().data() length:key.bytes().size()];
 }
 
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value isolatedInRect:(CGRect)rect
@@ -2152,16 +2345,38 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values
 {
+    return [self paintOrderOfAttribute:attribute values:values includingScrollContent:NO];
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values includingScrollContent:(BOOL)includingScrollContent
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     NSMutableDictionary<NSString *, NSNumber *> *result = [NSMutableDictionary dictionary];
     if(!_doc || !_doc->root_render() || values.count == 0)
         return result;
+    if(includingScrollContent)
+    {
+        if(![self ensurePaintTraceLocked])
+            return result;
+        const char *key = attribute.UTF8String;
+        for(size_t index = 0; index < _paintTrace.size(); index++)
+        {
+            const char *v = _paintTrace[index]->src_el()->get_attr(key);
+            if(!v)
+                continue;
+            NSString *string = @(v);
+            if([values containsObject:string] && !result[string])
+                result[string] = @(index);
+        }
+        return result;
+    }
     std::vector<const lh::render_item *> trace;
     trace.reserve(512);
     CGContextRef ctx = [self createContextWithWidth:1 height:1];
     if(!ctx)
         return result;
+    [self resolveExclusionsLocked];
     auto saved        = _doc->skip_paint;
     _doc->skip_paint.clear();
     lh::g_paint_trace = &trace;
@@ -3311,9 +3526,13 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     NSMutableSet<NSString *> *merged  = [NSMutableSet setWithSet:values];
     if(savedValues.count > 0 && [savedAttribute isEqualToString:attribute])
         [merged unionSet:savedValues];
+    _paintExclusionCache.clear();
+    _paintExclusionRulesValid = NO;
     _exclusions         = merged;
     _exclusionAttribute = [attribute copy];
     CGImageRef image    = [self copyImageLockedWithRect:rect scale:scale];
+    _paintExclusionCache.clear();
+    _paintExclusionRulesValid = NO;
     _exclusions         = savedValues;
     _exclusionAttribute = savedAttribute;
     return image;

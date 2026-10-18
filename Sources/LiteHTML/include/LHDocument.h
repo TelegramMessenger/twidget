@@ -116,6 +116,8 @@ typedef struct LHKeyedRect {
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:scale:));
 - (LHDisplayList *)displayListWithMaxWidth:(CGFloat)maxWidth gpu:(LHGPURenderer *)renderer scale:(CGFloat)scale NS_SWIFT_NAME(displayList(maxWidth:gpu:scale:));
 - (CGRect)boundsOfElementsMatching:(NSString *)selector NS_SWIFT_NAME(bounds(matching:));
+- (void)setPaintExclusionCacheDisabled:(BOOL)disabled;
+@property (readonly) NSDictionary<NSString *, NSNumber *> *paintExclusionCacheStats;
 - (void)setPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setPaintExclusions(_:attribute:));
 - (void)setTextPaintExclusions:(NSSet<NSString *> *)values attribute:(NSString *)attribute NS_SWIFT_NAME(setTextPaintExclusions(_:attribute:));
 /// Elements drawn by layers instead of tiles, keyed by the paint-exclusion attribute: skipped when drawing tiles but drawn into snapshots.
@@ -132,9 +134,11 @@ typedef struct LHKeyedRect {
 - (nullable NSDictionary<NSString *, NSNumber *> *)offsetMetricsWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(offsetMetrics(attribute:value:));
 - (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(setScrollOffset(_:attribute:value:));
 - (nullable CGImageRef)copyScrollContentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyScrollContent(attribute:value:rect:scale:));
+- (nullable CGImageRef)copyScrollContentIfCurrentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale shouldContinue:(BOOL (NS_NOESCAPE ^)(void))shouldContinue CF_RETURNS_RETAINED NS_SWIFT_NAME(copyScrollContentIfCurrent(attribute:value:rect:scale:shouldContinue:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox radii:(nullable CGFloat *)radii CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:radii:));
 - (nullable CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkBounds borderBox:(CGRect *)borderBox radii:(nullable CGFloat *)radii bareShadows:(BOOL)bareShadows CF_RETURNS_RETAINED NS_SWIFT_NAME(copyImageOfElement(attribute:value:scale:inkBounds:borderBox:radii:bareShadows:));
+- (nullable NSData *)localPaintKeyForAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale NS_SWIFT_NAME(localPaintKey(attribute:value:scale:));
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value isolatedInRect:(CGRect)rect NS_SWIFT_NAME(isElement(attribute:value:isolatedIn:));
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect NS_SWIFT_NAME(isElement(attribute:value:unobscuredIn:));
 - (BOOL)isElementWithAttribute:(NSString *)attribute value:(NSString *)value unobscuredInRect:(CGRect)rect ignoring:(NSSet<NSString *> *)ignoring NS_SWIFT_NAME(isElement(attribute:value:unobscuredIn:ignoring:));
@@ -145,6 +149,7 @@ typedef struct LHKeyedRect {
 - (BOOL)clipOfElementWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect *)rect radii:(CGFloat *)radii NS_SWIFT_NAME(clipOfElement(attribute:value:rect:radii:));
 - (BOOL)backgroundColorIsLocalWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(backgroundColorIsLocal(attribute:value:));
 - (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values NS_SWIFT_NAME(paintOrder(attribute:values:));
+- (NSDictionary<NSString *, NSNumber *> *)paintOrderOfAttribute:(NSString *)attribute values:(NSSet<NSString *> *)values includingScrollContent:(BOOL)includingScrollContent NS_SWIFT_NAME(paintOrder(attribute:values:includingScrollContent:));
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point NS_SWIFT_NAME(attribute(_:at:));
 - (nullable NSString *)attribute:(NSString *)name atPoint:(CGPoint)point withinAttribute:(nullable NSString *)attribute value:(nullable NSString *)value NS_SWIFT_NAME(attribute(_:at:withinAttribute:value:));
 - (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name NS_SWIFT_NAME(bounds(byAttribute:));

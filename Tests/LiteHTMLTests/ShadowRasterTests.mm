@@ -38,6 +38,7 @@ static LHDocument *ShadowDocument(NSString *style)
 - (void)tearDown
 {
     unsetenv("LH_NO_SHADOW_SLICES");
+    unsetenv("LH_NO_SHADOW_RESIZE_CACHE");
     [LHDocument purgeCaches];
     [super tearDown];
 }
@@ -134,6 +135,137 @@ static LHDocument *ShadowDocument(NSString *style)
         XCTAssertNotEqualObjects(before, warm);
         XCTAssertEqualObjects(warm, cold);
     }
+}
+
+- (void)testResizedShadowsReuseCompactRasterWithoutChangingPixels
+{
+    unsetenv("LH_NO_SHADOW_SLICES");
+    for(bool flipped : {false, true})
+        for(CGFloat scale : {1.0, 1.5, 2.0})
+            for(bool horizontal : {false, true})
+                @autoreleasepool
+                {
+                    NSArray<NSNumber *> *sizes = horizontal ? @[@320, @352, @400, @448, @368, @320] : @[@192, @224, @256, @288, @240, @192];
+                    NSMutableArray<LHDocument *> *documents = [NSMutableArray array];
+                    NSMutableArray<NSData *> *expected = [NSMutableArray array];
+                    setenv("LH_NO_SHADOW_RESIZE_CACHE", "1", 1);
+                    for(NSNumber *size in sizes)
+                    {
+                        CGFloat width = horizontal ? size.doubleValue : 48;
+                        CGFloat height = horizontal ? 64 : size.doubleValue;
+                        NSString *style = [NSString stringWithFormat:@"left:68.25px;top:50.125px;width:%gpx;height:%gpx;border-radius:6px;box-shadow:2px 3px 8px #3a7bd5aa", width, height];
+                        LHDocument *document = ShadowDocument(style);
+                        [documents addObject:document];
+                        [LHDocument purgeCaches];
+                        [expected addObject:RenderShadow(document, CGRectMake(0, 0, 640, 420), scale, flipped)];
+                    }
+                    unsetenv("LH_NO_SHADOW_RESIZE_CACHE");
+                    [LHDocument purgeCaches];
+                    NSUInteger single = 0;
+                    for(NSUInteger index = 0; index < documents.count; index++)
+                    {
+                        NSData *actual = RenderShadow(documents[index], CGRectMake(0, 0, 640, 420), scale, flipped);
+                        XCTAssertEqualObjects(actual, expected[index], @"horizontal=%d flipped=%d scale=%g size=%@", horizontal, flipped, scale, sizes[index]);
+                        if(index == 0)
+                        {
+                            single = [LHDocument rasterCacheBytes];
+                            XCTAssertGreaterThan(single, 0u);
+                        }
+                        else
+                        {
+                            XCTAssertEqual([LHDocument rasterCacheBytes], single, @"horizontal=%d flipped=%d scale=%g size=%@", horizontal, flipped, scale, sizes[index]);
+                        }
+                    }
+                }
+}
+
+- (void)testResizeCacheSeparatesPhaseShadowRadiusAndStyleChanges
+{
+    unsetenv("LH_NO_SHADOW_SLICES");
+    unsetenv("LH_NO_SHADOW_RESIZE_CACHE");
+    NSString *baseStyle = @"left:68.25px;top:50.125px;width:384px;height:64px;border-radius:6px;box-shadow:2px 3px 8px #3a7bd5aa;";
+    NSArray<NSString *> *variants = @[
+        @"transform:translate(.125px,0)",
+        @"transform:translate(0,.25px)",
+        @"box-shadow:-3px 3px 8px #3a7bd5aa",
+        @"box-shadow:2px -4px 8px #3a7bd5aa",
+        @"box-shadow:2px 3px 10px #3a7bd5aa",
+        @"box-shadow:2px 3px 8px 2px #3a7bd5aa",
+        @"box-shadow:2px 3px 8px #c93b7baa",
+        @"border-radius:6px 4px 3px 5px / 3px 6px 5px 4px",
+        @"box-shadow:2px 3px 8px #3a7bd5aa inset",
+        @"box-shadow:2px 3px 8px #3a7bd5aa,0 -2px 3px #e57399aa",
+    ];
+    for(bool flipped : {false, true})
+        for(CGFloat scale : {1.0, 1.5, 2.0})
+            for(NSString *variant in variants)
+                @autoreleasepool
+                {
+                    [LHDocument purgeCaches];
+                    LHDocument *base = ShadowDocument(baseStyle);
+                    NSData *before = RenderShadow(base, CGRectMake(0, 0, 640, 420), scale, flipped);
+                    NSUInteger baseBytes = [LHDocument rasterCacheBytes];
+                    XCTAssertGreaterThan(baseBytes, 0u);
+                    LHDocument *changed = ShadowDocument([baseStyle stringByAppendingString:variant]);
+                    NSData *warm = RenderShadow(changed, CGRectMake(0, 0, 640, 420), scale, flipped);
+                    NSUInteger changedBytes = [LHDocument rasterCacheBytes];
+                    XCTAssertGreaterThan(changedBytes, baseBytes, @"flipped=%d scale=%g %@", flipped, scale, variant);
+                    XCTAssertNotEqualObjects(before, warm, @"flipped=%d scale=%g %@", flipped, scale, variant);
+                    XCTAssertEqualObjects(before, RenderShadow(base, CGRectMake(0, 0, 640, 420), scale, flipped));
+                    XCTAssertEqual([LHDocument rasterCacheBytes], changedBytes);
+                    [LHDocument purgeCaches];
+                    NSData *cold = RenderShadow(changed, CGRectMake(0, 0, 640, 420), scale, flipped);
+                    XCTAssertEqualObjects(warm, cold, @"flipped=%d scale=%g %@", flipped, scale, variant);
+                }
+}
+
+- (void)testWholeDevicePixelPositionChangesReuseShadowRaster
+{
+    unsetenv("LH_NO_SHADOW_SLICES");
+    unsetenv("LH_NO_SHADOW_RESIZE_CACHE");
+    NSString *baseStyle = @"left:68.25px;top:50.125px;width:384px;height:64px;border-radius:6px;box-shadow:2px 3px 8px #3a7bd5aa;";
+    for(bool flipped : {false, true})
+        for(CGFloat scale : {1.0, 1.5, 2.0})
+            @autoreleasepool
+            {
+                [LHDocument purgeCaches];
+                LHDocument *base = ShadowDocument(baseStyle);
+                NSData *before = RenderShadow(base, CGRectMake(0, 0, 640, 420), scale, flipped);
+                NSUInteger single = [LHDocument rasterCacheBytes];
+                XCTAssertGreaterThan(single, 0u);
+                LHDocument *moved = ShadowDocument([baseStyle stringByAppendingString:@"left:70.25px;top:52.125px"]);
+                NSData *warm = RenderShadow(moved, CGRectMake(0, 0, 640, 420), scale, flipped);
+                XCTAssertEqual([LHDocument rasterCacheBytes], single, @"flipped=%d scale=%g", flipped, scale);
+                XCTAssertNotEqualObjects(before, warm, @"flipped=%d scale=%g", flipped, scale);
+                [LHDocument purgeCaches];
+                NSData *cold = RenderShadow(moved, CGRectMake(0, 0, 640, 420), scale, flipped);
+                XCTAssertEqualObjects(warm, cold, @"flipped=%d scale=%g", flipped, scale);
+            }
+}
+
+- (void)testDownsampledShadowsKeepOriginalSizesDistinct
+{
+    unsetenv("LH_NO_SHADOW_SLICES");
+    unsetenv("LH_NO_SHADOW_RESIZE_CACHE");
+    NSString *baseStyle = @"left:68px;top:90px;width:504px;height:154px;border-radius:16px;box-shadow:0 0 400px #000a;";
+    NSUInteger downsampledBytes = 79u * 58u * 4u;
+    for(bool flipped : {false, true})
+        @autoreleasepool
+        {
+            [LHDocument purgeCaches];
+            LHDocument *base = ShadowDocument(baseStyle);
+            NSData *before = RenderShadow(base, CGRectMake(0, 0, 640, 420), 2, flipped);
+            XCTAssertEqual([LHDocument rasterCacheBytes], downsampledBytes, @"flipped=%d", flipped);
+            LHDocument *changed = ShadowDocument([baseStyle stringByAppendingString:@"width:505px"]);
+            NSData *warm = RenderShadow(changed, CGRectMake(0, 0, 640, 420), 2, flipped);
+            XCTAssertEqual([LHDocument rasterCacheBytes], downsampledBytes * 2, @"flipped=%d", flipped);
+            XCTAssertEqualObjects(before, RenderShadow(base, CGRectMake(0, 0, 640, 420), 2, flipped));
+            XCTAssertEqual([LHDocument rasterCacheBytes], downsampledBytes * 2);
+            [LHDocument purgeCaches];
+            NSData *cold = RenderShadow(changed, CGRectMake(0, 0, 640, 420), 2, flipped);
+            XCTAssertEqual([LHDocument rasterCacheBytes], downsampledBytes, @"flipped=%d", flipped);
+            XCTAssertEqualObjects(warm, cold, @"flipped=%d", flipped);
+        }
 }
 
 @end

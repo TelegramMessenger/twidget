@@ -2,6 +2,28 @@ import Foundation
 import IOSurface
 
 enum WidgetTileSpares {
+    final class Reservation {
+        private let surface: IOSurfaceRef
+        private var transferred = false
+
+        init(_ surface: IOSurfaceRef) {
+            self.surface = surface
+        }
+
+        func transfer() {
+            transferred = true
+        }
+
+        deinit {
+            if !transferred {
+                WidgetTileSpares.release(surface)
+                if WidgetDocumentView.recycleSurfaces {
+                    WidgetSurfacePool.shared.recycle(surface)
+                }
+            }
+        }
+    }
+
     static let enabled = ProcessInfo.processInfo.environment["TW_NO_TILE_SPARES"] == nil
     static var budgetBytes = (ProcessInfo.processInfo.environment["TW_TILE_SPARE_MB"].flatMap { Int($0) } ?? 32) << 20
     static let streakNeeded = 2

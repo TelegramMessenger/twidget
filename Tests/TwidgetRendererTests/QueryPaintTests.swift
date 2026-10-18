@@ -107,4 +107,45 @@ final class QueryPaintTests: XCTestCase {
         XCTAssertEqual(renderer.elementBounds()[3]?.width, 120)
         renderer.destroy()
     }
+
+    func testSilentScrollContentQueryKeepsOldTilesUntilPresentation() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 120)
+        renderer.view.frame = window.contentView!.bounds
+        window.contentView?.addSubview(renderer.view)
+        defer { renderer.destroy() }
+        renderer.load()
+        send(renderer, [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [["style", "margin:0"]], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:120px;height:100px;overflow:auto"]]],
+            ["op": "ins", "id": 3, "parent": 1],
+            ["op": "el", "id": 4, "tag": "div", "attrs": [["style", "height:700px;background:red"]]],
+            ["op": "ins", "id": 4, "parent": 3],
+        ])
+        pump(2, until: { renderer.scrolling.layers[3].map { $0.rasterCount == $0.tileCount } == true })
+        let layer = try XCTUnwrap(renderer.scrolling.layers[3])
+        let tile = try XCTUnwrap(layer.content.sublayers?.first { $0.frame.minY == 0 })
+        let image = try XCTUnwrap(WidgetSurfaceImage.image(of: tile)) as! CGImage
+        let count = layer.rasterCount
+        let presented = renderer.presentedDocument
+        renderer.noteUserInput()
+        renderer.send("{\"type\":\"requestFrame\"}")
+        send(renderer, [["op": "attr", "id": 4, "name": "style", "value": "height:700px;background:blue"]])
+        renderer.send("{\"type\":\"query\",\"qid\":1,\"query\":{\"q\":\"box\",\"id\":4}}")
+        XCTAssertTrue(renderer.presentedDocument === presented)
+        XCTAssertEqual(layer.rasterCount, count)
+        XCTAssertTrue(WidgetSurfaceImage.image(of: tile) as AnyObject? === image)
+        pump(2, until: { renderer.presentedDocument !== presented && layer.rasterCount >= count + layer.tileCount })
+        let document = try XCTUnwrap(renderer.document)
+        for tile in layer.content.sublayers ?? [] {
+            let scale = tile.contentsScale
+            let expected = try XCTUnwrap(document.copyScrollContent(attribute: WidgetDOM.idAttribute, value: "3", rect: tile.frame.insetBy(dx: -1 / scale, dy: -1 / scale), scale: scale))
+            let actual = try XCTUnwrap(WidgetSurfaceImage.image(of: tile)) as! CGImage
+            XCTAssertEqual(actual.dataProvider?.data as Data?, expected.dataProvider?.data as Data?)
+        }
+    }
 }

@@ -161,7 +161,15 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
 
     position ink = pos;
     {
-        const pixel_t slack = std::max(pixel_t(4), ink.height / 2_px);
+        pixel_t slack = std::max(pixel_t(4), ink.height / 2_px);
+        if(auto owner = parent())
+        {
+            float reach = 0;
+            for(const auto& shadow : owner->css().get_text_shadows())
+                reach = std::max(reach, std::abs(shadow.blur.val()) * 2 + std::abs(shadow.spread.val()) +
+                                           std::max(std::abs(shadow.x.val()), std::abs(shadow.y.val())));
+            slack += pixel_t(reach);
+        }
         ink.x     -= slack;
         ink.y     -= slack;
         ink.width += slack * 2_px;

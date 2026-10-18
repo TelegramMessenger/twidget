@@ -112,10 +112,12 @@ namespace litehtml
         margins      m_last_borders;
         layout_entry m_measured[2];
         int          m_measured_next = 0;
+        int          m_resolved_layout_safe = -1;
 
         bool                 layout_cacheable(formatting_context* fmt_ctx) const;
         bool                 layout_reusable() const;
         static bool          same_layout_input(const layout_entry& entry, const containing_block_context& cb, bool second_pass);
+        bool                 same_resolved_layout_input(const layout_entry& entry, const containing_block_context& cb, bool second_pass);
 
         containing_block_context calculate_containing_block_context(const containing_block_context& cb_context);
         void                     calc_cb_length(const css_length& len, pixel_t percent_base,

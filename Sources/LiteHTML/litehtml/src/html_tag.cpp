@@ -707,6 +707,29 @@ namespace litehtml
         return true;
     }
 
+    bool html_tag::can_restyle_width_shallow() const
+    {
+        if(m_anonymous_style || !m_has_style_base || !m_pseudo_classes.empty() ||
+           m_style.has_var_property() || m_style_base.has_var_property() ||
+           m_style.declares_custom_property() || m_style_base.declares_custom_property())
+            return false;
+        const property_value& width = m_style.get_property(_width_);
+        if(!width.is<css_length>() || width.get<css_length>().is_predefined())
+            return false;
+        for(const auto& child : m_children)
+        {
+            if(child->tag() == __tag_before_ || child->tag() == __tag_after_)
+                return false;
+            if(auto tag = dynamic_cast<const html_tag*>(child.get()))
+            {
+                if(tag->m_anonymous_style || tag->m_style.get_property(_width_).is<inherit>() ||
+                   tag->m_style.has_var_property() || tag->m_style_base.has_var_property())
+                    return false;
+            }
+        }
+        return true;
+    }
+
     void litehtml::html_tag::compute_styles(bool recursive)
     {
         document::ptr doc = get_document();

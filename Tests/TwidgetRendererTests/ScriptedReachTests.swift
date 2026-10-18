@@ -64,6 +64,20 @@ final class ScriptedReachTests: XCTestCase {
         renderer.destroy()
     }
 
+    func testScriptedScaleUsesTheStylesheetTransformOrigin() throws {
+        let renderer = self.renderer(css: ".b{left:20px;top:20px;width:100px;transform-origin:right center}.bar{display:none}")
+        defer { renderer.destroy() }
+        send(renderer, [["op": "style", "id": 4, "name": "transform", "value": "scaleX(0.25)"]])
+        XCTAssertEqual(renderer.compositedCount, 1)
+        let image = try XCTUnwrap(renderer.snapshot())
+        XCTAssertGreaterThan(pixel(image, x: 105, y: 30).red, 0.9)
+        XCTAssertLessThan(pixel(image, x: 65, y: 30).red, 0.1)
+        send(renderer, [["op": "style", "id": 4, "name": "transform-origin", "value": "left top"]])
+        let changed = try XCTUnwrap(renderer.snapshot())
+        XCTAssertGreaterThan(pixel(changed, x: 30, y: 30).red, 0.9)
+        XCTAssertLessThan(pixel(changed, x: 105, y: 30).red, 0.1)
+    }
+
     func testPromotedTransformReceivesClicksAtItsVisiblePosition() throws {
         let renderer = self.renderer(css: "")
         defer { renderer.destroy() }

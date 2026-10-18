@@ -373,6 +373,19 @@ public final class LiteHTMLWidgetRenderer {
         post(["type": "ready"])
     }
 
+    deinit {
+        forgetCanvasImages()
+    }
+
+    private func forgetCanvasImages() {
+        for id in canvases.keys {
+            WidgetCanvasImages.unregister(uid + "-" + String(id))
+        }
+        for url in Array(canvasURLs.values) + retiredURLs {
+            LHImages.forgetImage(withURL: url)
+        }
+    }
+
     public func setTheme(_ theme: String) {
         guard theme != self.theme else {
             return
@@ -410,6 +423,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public func destroy() {
+        guard !destroyed else {
+            return
+        }
         destroyed = true
         smoothScrolls.removeAll()
         pendingScrollRequests.removeAll()
@@ -418,15 +434,22 @@ public final class LiteHTMLWidgetRenderer {
         form.rangeId = 0
         endEditing()
         magic.cancel()
-        for (id, url) in canvasURLs {
-            WidgetCanvasImages.unregister(uid + "-" + String(id))
-            LHImages.forgetImage(withURL: url)
-        }
+        compositor.reset()
+        svgLayers.reset()
+        shimmers.reset()
+        scrolling.reset()
+        animator.reset()
+        forgetCanvasImages()
         canvasURLs.removeAll()
+        retiredURLs.removeAll()
         for presenter in presenters.values {
             presenter.remove()
         }
         presenters.removeAll()
+        canvases.removeAll()
+        canvasAttributeSizes.removeAll()
+        canvasDraws.removeAll()
+        presentationChecked = nil
         for token in placedSurfaces.keys {
             surfaceLayout?(token, .zero, 1, false)
         }
@@ -455,6 +478,24 @@ public final class LiteHTMLWidgetRenderer {
         }
         document = nil
         displayList = nil
+        dom.reset()
+        held.removeAll()
+        buffered.removeAll()
+        pendingMoves.removeAll()
+        bounds.removeAll()
+        boundsValid = false
+        scannedDeclarations = (0, [:])
+        overrides.removeAll()
+        webUnderlying.removeAll()
+        lastLayoutOverrides = nil
+        lastSerialized = nil
+        styleSheetKey = ""
+        form = WidgetFormState()
+        onMessage = nil
+        onDiag = nil
+        onSerialized = nil
+        surfaceLayer = nil
+        surfaceLayout = nil
         WidgetTeardown.release(retired)
     }
 
@@ -623,7 +664,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     public var tileDebug: String {
-        return "detached=\(documentView.detached) preparing=\(documentView.preparing) tiles=\(documentView.tileCount) trimmed=\(documentView.tilesTrimmed) \(documentView.flushDebug) doc=\(document != nil) h=\(document.map { Int($0.size.height) } ?? -1) inWindow=\(documentView.windowState.inWindow) onScreen=\(isOnScreen) hostVisible=\(hostVisible) frozen=\(frozen) destroyed=\(destroyed)"
+        return "detached=\(documentView.detached) preparing=\(documentView.preparing) held=\(held.count) throttle-ms=\(Int(throttleRemaining(CACurrentMediaTime()) * 1000)) tiles=\(documentView.tileCount) trimmed=\(documentView.tilesTrimmed) \(documentView.flushDebug) doc=\(document != nil) h=\(document.map { Int($0.size.height) } ?? -1) inWindow=\(documentView.windowState.inWindow) onScreen=\(isOnScreen) hostVisible=\(hostVisible) frozen=\(frozen) destroyed=\(destroyed)"
     }
 
     public var isPrepared: Bool {
@@ -1050,6 +1091,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func deliver(_ json: String) {
+        guard !destroyed else {
+            return
+        }
         if let onMessage = onMessage {
             onMessage(json)
         } else {
@@ -1193,6 +1237,9 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func render() {
+        guard !destroyed else {
+            return
+        }
         if frameHoldStart != nil && !destroyed && !frozen {
             frameHoldRender = true
             needsRender = false
@@ -1305,9 +1352,10 @@ public final class LiteHTMLWidgetRenderer {
         var scrollersChanged = svgAdded
         if let document = document {
             compositor.attach(documentView.contentLayer)
-            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? WidgetDocumentView.lastWindowSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded)
+            let scrollers = document.scrollers(byAttribute: WidgetDOM.idAttribute)
+            compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? WidgetDocumentView.lastWindowSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded, blockedIDs: scrolling.compositorBlockedIDs(dom: dom, scrollers: scrollers))
             scrolling.attach(documentView.contentLayer)
-            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale) || svgAdded
+            scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale, scrollers: scrollers) || svgAdded
             documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
             statsLock.lock()
             publishedComposited = compositor.ids.count
@@ -1322,6 +1370,9 @@ public final class LiteHTMLWidgetRenderer {
             layout(overrides)
         }
         applyPendingScrollRequests()
+        if WidgetScrollLayer.skipsObsoleteRaster, let document = document {
+            scrolling.refresh(document: document, scale: documentView.scale)
+        }
         scheduleDrivenEnds(now: now)
         updateCanvasPresentation()
         if needsFrames && !frozen {
@@ -2794,7 +2845,7 @@ public final class LiteHTMLWidgetRenderer {
         if frameRequested {
             worked = true
             let now = CACurrentMediaTime()
-            if pacer.due(now) {
+            if (held.isEmpty || answersInput) && pacer.due(now) {
                 frameRequested = false
                 lastFramePost = now
                 if frameHoldStart != nil && frameHoldPosted == nil {
@@ -2975,8 +3026,22 @@ public final class LiteHTMLWidgetRenderer {
         guard !pendingScrollRequests.isEmpty, document != nil else { return }
         let requests = pendingScrollRequests
         pendingScrollRequests.removeAll()
+        scrolling.beginScrollUpdates()
+        defer {
+            if scrolling.endScrollUpdates(dom: dom, document: document) {
+                documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+            }
+        }
         for request in requests {
-            applyScrollRequest(request)
+            if case .reveal = request {
+                if scrolling.endScrollUpdates(dom: dom, document: document) {
+                    documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+                }
+                applyScrollRequest(request)
+                scrolling.beginScrollUpdates()
+            } else {
+                applyScrollRequest(request)
+            }
         }
     }
 
@@ -3040,7 +3105,12 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func applyScrollOffset(_ id: Int, _ offset: CGPoint) {
-        if scrolling.setOffset(id, offset, document: document) {
+        let needsLayer = scrolling.needsLayerForFirstScroll(id)
+        let changed = scrolling.setOffset(id, offset, document: document)
+        if needsLayer {
+            setNeedsRender()
+        }
+        if changed {
             if let layer = scrolling.layers[id], let document = document {
                 layer.ensureTiles(document: document, scale: documentView.scale, attribute: WidgetDOM.idAttribute)
             }
@@ -3941,6 +4011,12 @@ class WidgetDocumentView: NSView {
         var spareEpoch = 0
         var partialStreak = 0
         var lastPartial: CFTimeInterval = 0
+
+        deinit {
+            if let spare = spare {
+                WidgetTileSpares.release(spare)
+            }
+        }
     }
 
     private func dropSpare(_ tile: Tile) {
@@ -4097,6 +4173,7 @@ class WidgetDocumentView: NSView {
         let scale = self.scale
         let drawnHeight = ceil(document.size.height)
         var jobs: [(index: Int, rect: CGRect, dirty: CGRect, base: IOSurfaceRef?, spare: IOSurfaceRef?, spareStale: CGRect)] = []
+        var reservations: [Int: WidgetTileSpares.Reservation] = [:]
         let epoch = WidgetTileSpares.epoch
         for (index, dirty) in asyncDirty where index < tiles.count {
             let tile = tiles[index]
@@ -4115,7 +4192,8 @@ class WidgetDocumentView: NSView {
             }
             tile.note("job dirty=\(dirty) base=\(base != nil)")
             let spare = base == nil ? nil : tile.spare
-            if spare != nil {
+            if let spare = spare {
+                reservations[index] = WidgetTileSpares.Reservation(spare)
                 tile.spare = nil
             }
             jobs.append((index, tile.rect, base == nil ? tile.rect : dirty, base, spare, tile.spareStale))
@@ -4217,16 +4295,6 @@ class WidgetDocumentView: NSView {
             }
             WidgetTileStats.add(stats)
             let finish = {
-                let lent = jobs.compactMap { job in job.spare.map { (job.index, $0) } }
-                var settled = Set<Int>()
-                defer {
-                    for (index, spare) in lent where !settled.contains(index) {
-                        WidgetTileSpares.release(spare)
-                        if WidgetDocumentView.recycleSurfaces {
-                            WidgetSurfacePool.shared.recycle(spare)
-                        }
-                    }
-                }
                 guard let self = self else {
                     return
                 }
@@ -4252,8 +4320,8 @@ class WidgetDocumentView: NSView {
                         tile.layer.contents = item.surface
                         tile.layer.delegate = self.preparedDisplay
                         tile.note("async-install partial=\(item.partial) dirty=\(item.dirty)")
-                        if item.usedSpare {
-                            settled.insert(item.index)
+                        if item.usedSpare, previous != nil {
+                            reservations[item.index]?.transfer()
                         }
                         self.settleSpare(tile, previous: previous, item: (item.partial, item.dirty, item.usedSpare))
                         tile.prepared = true
@@ -4489,9 +4557,12 @@ class WidgetDocumentView: NSView {
         document = nil
         for tile in tiles {
             retired.append(contentsOf: tile.surfaces as [AnyObject])
+            retired.append(tile.layer)
             tile.surfaces.removeAll()
             tile.shown = nil
         }
+        removeTiles()
+        asyncDirty.removeAll()
         return retired
     }
 

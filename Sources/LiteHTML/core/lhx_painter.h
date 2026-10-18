@@ -1,6 +1,7 @@
 #pragma once
 
 #include "litehtml.h"
+#include <cstdint>
 
 namespace lhx
 {
@@ -8,6 +9,7 @@ namespace lhx
 struct TextStyle
 {
     const void*           nativeFont = nullptr;
+    uint64_t              paintIdentity = 0;
     float                 ascent = 0;
     float                 descent = 0;
     bool                  underline = false;
@@ -20,6 +22,7 @@ struct TextStyle
     float                 shadowX = 0;
     float                 shadowY = 0;
     float                 shadowBlur = 0;
+    bool                  hasShadows = false;
     int                   smoothing = 0;
 };
 

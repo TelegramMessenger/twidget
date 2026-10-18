@@ -1193,6 +1193,16 @@ final class WidgetAnimator {
         return !transitions.isEmpty || web.needsFrames(excluding: []) || running.values.contains { list in list.contains { !$0.ended && !$0.spec.paused && keyframes[$0.spec.name] != nil } }
     }
 
+    func reset() {
+        keyframes.removeAll()
+        running.removeAll()
+        transitions.removeAll()
+        cssOverrides.removeAll()
+        bases.removeAll()
+        lastOverrides.removeAll()
+        web.removeAll()
+    }
+
     func setStyleSheets(_ texts: [String]) {
         var rules: [String: [CSSKeyframe]] = [:]
         for text in texts {
