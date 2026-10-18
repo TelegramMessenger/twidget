@@ -117,7 +117,7 @@ copies the Kotlin backend and painter under `platform/android`. Not yet built: s
 `tools/conformance` runs widget-sandbox's conformance set (`packages/conformance/CLIENTS.md` there) on
 TwidgetCore, Windows only: each widget of the automatic set through the desktop host, drawn off screen
 by the Direct2D backend at DPR 2, its scripted input sent through the renderer. It writes the run file
-that the set's `tools/report.mjs` turns into the per-feature report.
+that the set's `tools/report.mjs` turns into the per-feature report. `docs/CONFORMANCE.md` tracks the results.
 
 ```sh
 cmake -S tools/conformance -B build-conformance -G Ninja && cmake --build build-conformance
