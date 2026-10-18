@@ -1249,7 +1249,7 @@ int main() {
             {"op":"ins","parent":3,"id":20,"before":null},
             {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
             {"op":"el","id":11,"tag":"b"},{"op":"ins","parent":10,"id":11,"before":null},
-            {"op":"text","id":12,"text":"bold"},{"op":"ins","parent":11,"id":12,"before":null}]})"));
+            {"op":"text","id":12,"data":"bold"},{"op":"ins","parent":11,"id":12,"before":null}]})"));
         auto cs = [&](int id, const char* pseudo = nullptr) {
             Json q = Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id));
             if (pseudo) q.set("query", Json::object().set("q", "cs").set("id", id).set("pseudo", pseudo));
@@ -1277,6 +1277,30 @@ int main() {
         }
         s.touch(3, 20, 20, 0, true, false, 0);
         check(claim_x && !claim_y, "a stylesheet's touch-action: pan-y claims horizontal drags");
+    }
+
+    // ── the boxes of inline elements: their line boxes ──
+    {
+        StubBackend ib;
+        Renderer in(300, 1, false, ib);
+        in.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:100px;text-align:center"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"text","id":12,"data":"ab"},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":20,"tag":"div","attrs":[["style","width:50px"]]},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"span"},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"text","id":22,"data":"aaaa bbbb cccc"},{"op":"ins","parent":21,"id":22,"before":null}]})"));
+        auto ask = [&](const char* kind, int id) {
+            for (const Json& m : in.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", kind).set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        Json centred = ask("rect", 11);
+        check(std::fabs(centred["x"].asNumber() - 42) < 0.5 && std::fabs(centred["width"].asNumber() - 16) < 0.5,
+              "a centred span's rect is where its text is (x " + std::to_string(centred["x"].asNumber()) + ")");
+        Json lines = ask("rects", 21);
+        check(lines.arr().size() == 3, "a wrapped span has a rect per line (" + std::to_string(lines.arr().size()) + ")");
     }
 
     std::printf("%d failure(s)\n", failures);

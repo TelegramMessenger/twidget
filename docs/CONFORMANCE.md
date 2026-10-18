@@ -15,6 +15,7 @@ each platform's painter needs its own run.
 |---|---|---|---|
 | 2026-10-18 | f649455 (contract) | 90 / 49 / 24 / 10 | 69 / 3 / 8 |
 | 2026-10-18 | 3420fc5 (computed style) | 111 / 38 / 14 / 10 | 73 / 2 / 5 |
+| 2026-10-18 | inline boxes (Q1) | 120 / 32 / 11 / 10 | 73 / 2 / 5 |
 
 For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
 66 / 41 / 52 in widget-sandbox's own results.
@@ -30,6 +31,7 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | `gesture` claims with `x` and `y` | `Renderer::gesture_claim` |
 | The shared height bounds, 50 to 600 CSS px | `MIN_HEIGHT`, `max_height_` |
 | `getComputedStyle` answered for every property the fork computes, as Chromium writes it | `computed_style.cpp` |
+| An inline element's rect is its line boxes, with a rect per line | `inline_boxes_of` |
 
 ## To do
 
@@ -40,7 +42,6 @@ not a diagnosis.
 
 | # | Item | Fails | First suspect |
 |---|---|---|---|
-| Q1 | **Boxes of inline elements.** Alignment, indents and spacing measure inline spans, which come back empty. | `css.text.align` (center, right, end in RTL, text-indent); `css.text.transform` (letter-, word-spacing); `html.el.sub-sup`; `css.text.list-style` (inside); `css.text.rtl`; `js.layout.rect` (one rect per line); `js.layout.measure-text`; `sel.before-after` (box takes space) | `rect`/`rects` read `get_placement()`, which an inline element does not have; its line boxes do (`get_inline_boxes`) |
 | Q2 | **scrollHeight** of overflowing content | `js.layout.box` | `box` reports the client height |
 | Q3 | **SVG queries:** `getComputedTextLength`, and viewBox scaling seen through `getCTM`/rects | `svg.text`, `svg.structure` | the `svg` query |
 
@@ -73,11 +74,12 @@ not a diagnosis.
 | L5 | CSS-wide keywords: `initial`, `unset`, `revert` | `css.value.keywords` |
 | L6 | Generated content: `::before` boxes, `attr()`, counters, `quotes`, `<q>` marks | `css.value.content`, `html.el.inline-text`, `behaviour.policy-strict` (attr of data-*) |
 | L7 | `<details>` closed is as tall as its summary; `<summary>` is a list item | `html.el.details` |
-| L8 | `dir=rtl` lays inline boxes right to left | `html.attr.dir`, `css.text.rtl` |
+| L8 | `dir=rtl` lays inline boxes right to left; `text-align: end` in RTL | `html.attr.dir`, `css.text.rtl`, `css.text.align` |
 | L9 | Selectors: `:lang()`, `:empty` with whitespace | `html.attr.global`, `sel.structural` |
 | L10 | Named colours (`rebeccapurple`) | `css.color.basic` |
 | L11 | The `translate` property | `css.transform.2d` |
 | L12 | `<p>` block margins (1em) | `html.el.structure` |
+| L13 | `letter-spacing` and `word-spacing` widen the text | `css.text.transform` |
 
 ### Painting (Direct2D; each painter to check on its platform)
 

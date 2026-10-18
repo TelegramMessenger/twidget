@@ -125,7 +125,31 @@ Rect rect_of(const litehtml::position& p) {
 
 /// The border box of an element in document coordinates (`get_placement()` is the content box;
 /// getBoundingClientRect / offsetWidth are border boxes).
+/// The line boxes of an inline element, in document coordinates; none for any other element.
+std::vector<Rect> inline_boxes_of(const litehtml::element::ptr& el) {
+    std::vector<Rect> boxes;
+    auto ri = el->get_render_item();
+    if (!ri) return boxes;
+    // They are kept in the frame the item's own position is in: its placement, less that position.
+    litehtml::position placed = ri->get_placement();
+    float ox = float(placed.x - ri->pos().x), oy = float(placed.y - ri->pos().y);
+    ri->for_inline_boxes([&](const litehtml::position& b, bool, bool) {
+        if (float(b.width) > 0 || float(b.height) > 0) boxes.push_back(Rect{ox + float(b.x), oy + float(b.y), float(b.width), float(b.height)});
+        return true;
+    });
+    return boxes;
+}
+
 Rect border_box_of(const litehtml::element::ptr& el) {
+    // An inline element shows as its line boxes; its own placement is its containing block's origin.
+    std::vector<Rect> lines = inline_boxes_of(el);
+    if (!lines.empty()) {
+        float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+        for (const Rect& l : lines) {
+            x0 = std::min(x0, l.x); y0 = std::min(y0, l.y); x1 = std::max(x1, l.x + l.w); y1 = std::max(y1, l.y + l.h);
+        }
+        return Rect{x0, y0, x1 - x0, y1 - y0};
+    }
     litehtml::position pos = el->get_placement();
     Rect r = rect_of(pos);
     if (auto ri = el->get_render_item()) {
@@ -140,8 +164,8 @@ Rect border_box_of(const litehtml::element::ptr& el) {
 }
 
 /// Where an element's border box shows: its transform and its ancestors', as a bounding box.
-Rect visual_box_of(const litehtml::element::ptr& el) {
-    Rect r = border_box_of(el);
+/// Where `r`, in `el`'s layout coordinates, shows: its transform and its ancestors', as a bounding box.
+Rect transformed_box(const litehtml::element::ptr& el, Rect r) {
 #ifdef TW_LITEHTML_TWIDGET
     litehtml::transform_matrix m;
     for (auto ri = el->get_render_item(); ri; ri = ri->parent()) m = m.then(ri->get_visual_transform());
@@ -156,6 +180,10 @@ Rect visual_box_of(const litehtml::element::ptr& el) {
 #else
     return r;
 #endif
+}
+
+Rect visual_box_of(const litehtml::element::ptr& el) {
+    return transformed_box(el, border_box_of(el));
 }
 
 #ifdef TW_LITEHTML_TWIDGET
@@ -3557,7 +3585,13 @@ Json Renderer::answer(const Json& q) {
     // getBoundingClientRect is where the element shows, transforms included; the offset and client
     // sizes below are layout sizes, which transforms leave alone.
     if (kind == "rect") return rect_json(el ? visual_box_of(el) : Rect{});
-    if (kind == "rects") return el ? Json::array().push(rect_json(visual_box_of(el))) : Json::array();
+    if (kind == "rects") {
+        if (!el) return Json::array();
+        // A wrapped inline element has a rect per line.
+        Json rects = Json::array();
+        for (const Rect& line : inline_boxes_of(el)) rects.push(rect_json(transformed_box(el, line)));
+        return rects.arr().empty() ? Json::array().push(rect_json(visual_box_of(el))) : rects;
+    }
     if (kind == "box") {
         Rect r = placement();
         float bl = 0, bt = 0, br = 0, bb = 0;
