@@ -1303,6 +1303,33 @@ int main() {
         check(lines.arr().size() == 3, "a wrapped span has a rect per line (" + std::to_string(lines.arr().size()) + ")");
     }
 
+    // ── <img> load and error ──
+    {
+        struct Decoding : StubBackend {
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                w = 2;
+                h = 3;
+                return true;
+            }
+        };
+        const char* page = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"img","attrs":[["src","data:image/png;base64,iVBORw0KGgo="]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"img","attrs":[["src","data:image/png;base64,AAAA"]]}]})";
+        Decoding db;
+        Renderer d(300, 1, false, db);
+        std::string loads;
+        for (const Json& ev : events(d.receive(parse(page))))
+            if (ev["type"].asString() == "load") loads += std::to_string(int(ev["targetId"].asNumber())) + ":" + std::to_string(int(ev["naturalWidth"].asNumber())) + "x" +
+                                                          std::to_string(int(ev["naturalHeight"].asNumber())) + " ";
+        check(loads == "10:2x3 11:2x3 ", "an <img>, attached or not, loads with its natural size (got " + loads + ")");
+        auto again = events(d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"src","value":"data:image/png;base64,BBBB"}]})")));
+        check(again.size() == 1 && again[0]["type"].asString() == "load", "a new src loads again");
+        StubBackend fb2;
+        Renderer f2(300, 1, false, fb2);
+        check(types(f2.receive(parse(page))) == "error:10 error:11 ", "an image the backend cannot decode is an error");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

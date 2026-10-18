@@ -15,7 +15,8 @@ each platform's painter needs its own run.
 |---|---|---|---|
 | 2026-10-18 | f649455 (contract) | 90 / 49 / 24 / 10 | 69 / 3 / 8 |
 | 2026-10-18 | 3420fc5 (computed style) | 111 / 38 / 14 / 10 | 73 / 2 / 5 |
-| 2026-10-18 | inline boxes (Q1) | 120 / 32 / 11 / 10 | 73 / 2 / 5 |
+| 2026-10-18 | 099f3cb (inline boxes) | 120 / 32 / 11 / 10 | 73 / 2 / 5 |
+| 2026-10-18 | image load and error (E1) | 121 / 32 / 10 / 10 | 73 / 2 / 5 |
 
 For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
 66 / 41 / 52 in widget-sandbox's own results.
@@ -32,6 +33,7 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | The shared height bounds, 50 to 600 CSS px | `MIN_HEIGHT`, `max_height_` |
 | `getComputedStyle` answered for every property the fork computes, as Chromium writes it | `computed_style.cpp` |
 | An inline element's rect is its line boxes, with a rect per line | `inline_boxes_of` |
+| `<img>` sends `load` with its natural size, or `error` | `Renderer::load_images` |
 
 ## To do
 
@@ -49,7 +51,6 @@ not a diagnosis.
 
 | # | Item | Fails | First suspect |
 |---|---|---|---|
-| E1 | **`load` / `error` on `<img>`**, with naturalWidth/Height. Never sent. Also what `drawImage` of an `<img>` waits for | `html.el.img`, `canvas.draw-image` | nothing emits them |
 | E2 | **`animationstart`** | `anim.events` | the animation events reach the widget only with the next host message |
 | E3 | **ResizeObserver** (`resize` to the host) | `js.layout.resize-observer` | `observeResize` |
 | E4 | **Tapping `<summary>` toggles its `<details>`** (and `toggle`) | `html.el.details` | the click's default action |

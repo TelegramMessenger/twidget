@@ -242,6 +242,9 @@ private:
     twidget::Json event_json(const char* type, int64_t target, const Rect& target_rect, const Input& in) const;
     /// Sends `ev` if the sandbox listens for its type; move-type events wait for the next tick, the
     /// latest one per type and pointer.
+    /// `load` (with naturalWidth/Height) or `error` for each <img> whose src changed.
+    void load_images(std::vector<twidget::Json>& out);
+    void image_event(const char* type, int64_t id, float w, float h, std::vector<twidget::Json>& out);
     static twidget::Json event_message(twidget::Json ev);
     void dispatch(twidget::Json ev, std::vector<twidget::Json>& out);
     void flush_moves(std::vector<twidget::Json>& out);
@@ -398,6 +401,9 @@ private:
     std::unordered_map<int64_t, std::unique_ptr<Node>> nodes_;
     std::unordered_map<int64_t, Node*> aliases_;
     std::unique_ptr<Node> html_node_, head_node_, body_node_;
+    /// <img> elements whose src changed in this batch; and those whose image the backend is still decoding, by image id.
+    std::vector<int64_t> pending_images_;
+    std::unordered_map<int, std::vector<int64_t>> waiting_images_;
     std::unordered_set<std::string> interest_;
     /// From the host's `theme` message, set on the root after the widget's own style.
     std::vector<std::pair<std::string, std::string>> theme_vars_;

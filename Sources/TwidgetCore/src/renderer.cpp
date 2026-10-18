@@ -1793,6 +1793,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         bool coalesce = (wants_tick() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S;
         document_changed_ = false;
         for (const Json& op : ops) apply_op(op, out);
+        load_images(out);
         if (fast && apply_scripted(scripted)) {
             document_changed_ = false;
             scripted_pending_ = true;
@@ -1923,6 +1924,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             if (pair[0].asString() == "style") set_inline_style(n->styles, pair[1].asString());
             else n->attrs.emplace_back(pair[0].asString(), pair[1].asString());
         }
+        if (n->tag == "img" && !n->svg) pending_images_.push_back(id);
         nodes_[id] = std::move(n);
         return;
     }
@@ -1952,6 +1954,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         bool found = false;
         for (auto& a : n->attrs) if (a.first == name) { a.second = str("value"); found = true; }
         if (!found) n->attrs.emplace_back(name, str("value"));
+        if (n->tag == "img" && !n->svg && name == "src") pending_images_.push_back(n->id);
         // Setting a canvas's width or height clears its bitmap, as in a browser.
         if (n->tag == "canvas" && (name == "width" || name == "height")) {
             if (auto it = canvases_.find(n->id); it != canvases_.end()) {
@@ -4253,8 +4256,37 @@ std::vector<Json> Renderer::key(const std::string&, const std::string&, const st
     return {};
 }
 
+void Renderer::load_images(std::vector<Json>& out) {
+    for (int64_t id : pending_images_) {
+        const Node* n = node(id);
+        if (!n || n->tag != "img") continue;
+        const std::string* src = nullptr;
+        for (const auto& [name, value] : n->attrs)
+            if (name == "src") src = &value;
+        if (!src || src->empty()) continue;
+        // Loaded like the document will load it: a detached <img> (new Image()) loads too, as in a browser.
+        int image = 0;
+        float w = 0, h = 0;
+        if (!container_->image_of(*src, image, w, h)) image_event("error", id, 0, 0, out);
+        else if (w > 0 || h > 0) image_event("load", id, w, h, out);
+        else waiting_images_[image].push_back(id);
+    }
+    pending_images_.clear();
+}
+
+void Renderer::image_event(const char* type, int64_t id, float w, float h, std::vector<Json>& out) {
+    Json ev = Json::object();
+    ev.set("type", type).set("targetId", double(id));
+    if (std::strcmp(type, "load") == 0) ev.set("naturalWidth", w).set("naturalHeight", h);
+    dispatch(std::move(ev), out);
+}
+
 std::vector<Json> Renderer::image_ready(int id, float w, float h) {
     std::vector<Json> out;
+    if (auto it = waiting_images_.find(id); it != waiting_images_.end()) {
+        for (int64_t node_id : it->second) image_event(w > 0 || h > 0 ? "load" : "error", node_id, w, h, out);
+        waiting_images_.erase(it);
+    }
     if (!container_->image_ready(id, w, h)) return out;
     rebuild();
     report_size(out);
