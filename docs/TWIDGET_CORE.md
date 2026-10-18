@@ -114,6 +114,17 @@ Kotlin or AndroidX, views built in code, and one native library built by CMake, 
 `platform/android/jni.cpp` and widget-sandbox's C++ WidgetHost behind a small JNI bridge. Its Java
 copies the Kotlin backend and painter under `platform/android`. Not yet built: see its README.
 
+`tools/conformance` runs widget-sandbox's conformance set (`packages/conformance/CLIENTS.md` there) on
+TwidgetCore, Windows only: each widget of the automatic set through the desktop host, drawn off screen
+by the Direct2D backend at DPR 2, its scripted input sent through the renderer. It writes the run file
+that the set's `tools/report.mjs` turns into the per-feature report.
+
+```sh
+cmake -S tools/conformance -B build-conformance -G Ninja && cmake --build build-conformance
+build-conformance/twidget-conformance <out> [--filter auto/03] [--width 360]
+node ../widget-sandbox/packages/conformance/tools/report.mjs --out <out>/report <out>/run.json
+```
+
 ## Portability check, 2026-10-14
 
 Checked on Apple Silicon with Xcode's AppleClang and Emscripten 6.0.12:
