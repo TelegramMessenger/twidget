@@ -13,6 +13,9 @@ namespace litehtml
         std::string m_src;
         bool        m_loaded = false;
 
+        /// Where the picture goes in `box`, by object-fit and object-position; the box clips it.
+        position fitted(const position& box);
+
       public:
         el_image(const document::ptr& doc);
 
