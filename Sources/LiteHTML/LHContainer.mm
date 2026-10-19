@@ -1131,7 +1131,7 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
                                                                   NSFontDescriptorTraitItalic];
         NSFont* it = d ? [NSFont fontWithDescriptor:d size:size] : nil;
         if(it && (it.fontDescriptor.symbolicTraits & NSFontDescriptorTraitItalic))
-            font = it;
+            font = HasWeightAxis(font) ? WithCSSWeight(it, cssWeight) : it;
         else
         {
             NSAffineTransform*      skew = [NSAffineTransform transform];
