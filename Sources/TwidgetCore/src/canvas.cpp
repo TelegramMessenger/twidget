@@ -481,8 +481,12 @@ bool Canvas::paint_of(const Paint& paint, CanvasPaint& out) const {
     else if (g.kind == "radial" && args(6)) out.kind = CanvasPaint::Radial;
     else if (g.kind == "conic" && args(3)) out.kind = CanvasPaint::Conic;
     else return false;  // patterns are not drawn
-    // A gradient without stops paints nothing, as in browsers.
-    if (out.stops.empty()) out = CanvasPaint{CanvasPaint::Solid, Color{0, 0, 0, 0}};
+    // A gradient without stops paints nothing, as in browsers; so does one with no length (the canvas
+    // spec), which is what widget-sandbox's validator makes of a conic gradient or a pattern.
+    const float* a = out.args;
+    bool degenerate = (out.kind == CanvasPaint::Linear && a[0] == a[2] && a[1] == a[3]) ||
+                      (out.kind == CanvasPaint::Radial && a[0] == a[3] && a[1] == a[4] && a[2] == a[5]);
+    if (out.stops.empty() || degenerate) out = CanvasPaint{CanvasPaint::Solid, Color{0, 0, 0, 0}};
     return true;
 }
 
