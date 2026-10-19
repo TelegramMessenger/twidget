@@ -19,6 +19,7 @@ each platform's painter needs its own run.
 | 2026-10-18 | image load and error (E1) | 121 / 32 / 10 / 10 | 73 / 2 / 5 |
 | 2026-10-19 | the small fixes (Q2, E5, E6, L5, L10, L12, O1–O3, sans-serif) | 129 / 26 / 8 / 10 | 79 / 1 / 0 |
 | 2026-10-19 | events and animations (E2–E4, A1, A2, L7) | 135 / 21 / 7 / 10 | 79 / 1 / 0 |
+| 2026-10-19 | layout and style in the fork (L1–L13, O4) | 148 / 9 / 6 / 10 | 80 / 0 / 0 |
 
 The 10 untested features are the host's (limits, restart, storage, gesture claims, message edits, size
 hints): the automatic set does not reach them, and each client checks them in its own host.
@@ -51,6 +52,15 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | `animationstart`, `animationend` and `transitionend` go out before the widget's `listen` | `ALWAYS_FORWARD` |
 | ResizeObserver: `resize` on observe and on every change | `Renderer::report_resizes` |
 | Tapping a `<summary>` opens and closes its `<details>` and sends `toggle`; a closed one shows only its summary, with a disclosure marker | `Renderer::toggle_details`, `UA_EXTRA`, the fork's `list_style_type_disclosure_*` |
+| `calc()`, `min()`, `max()`, `clamp()` mixing percentages with lengths | the fork's `css_units_calc`, `calc_evaluate` |
+| `width: fit-content`, `min-content`, `max-content` on blocks | the fork's `render_block` |
+| Empty auto table cells share the spare width | the fork's `table_grid::calc_table_width` |
+| `word-break` (`break-all`, `break-word`) | the fork's `css_properties::get_wrapping` |
+| `open-quote` / `close-quote` from `quotes`, and `<q>` marks | the fork's `el_before_after_base::add_quote`, `UA_EXTRA` |
+| `direction` and `dir` (`auto` too): right to left lines, alignment, blocks, and a simplified bidi that keeps embedded runs in their order | the fork's `line_box::reorder_bidi`, `render_block_context` |
+| `:lang()` on the nearest `lang`, `:empty` | the fork's `html_tag::select_pseudoclass` |
+| The `translate`, `rotate` and `scale` properties | the fork's `css_properties::compute_transform` |
+| `letter-spacing` and `word-spacing` | `Container` (`spacing_units`), the fork's `font_description` |
 
 ## To do
 
@@ -63,20 +73,6 @@ not a diagnosis.
 |---|---|---|---|
 | Q3 | **SVG queries:** `getComputedTextLength`, and viewBox scaling seen through `getCTM`/rects | `svg.text`, `svg.structure` | the `svg` query |
 
-### Layout and style in the fork
-
-| # | Item | Fails |
-|---|---|---|
-| L1 | `calc()`, `min()`, `max()`, `clamp()` with percentages | `css.value.math` |
-| L2 | The `ch` unit; `width: fit-content` | `css.value.units`, `css.box.size` |
-| L3 | Floats push inline text aside; table cells share the row | `css.box.float`, `css.display.table` |
-| L4 | `word-break: break-all` | `css.text.wrap` |
-| L6 | Generated content: `::before` boxes, `attr()`, counters, `quotes`, `<q>` marks | `css.value.content`, `html.el.inline-text`, `behaviour.policy-strict` (attr of data-*) |
-| L8 | `dir=rtl` lays inline boxes right to left; `text-align: end` in RTL | `html.attr.dir`, `css.text.rtl`, `css.text.align` |
-| L9 | Selectors: `:lang()`, `:empty` with whitespace | `html.attr.global`, `sel.structural` |
-| L11 | The `translate` property | `css.transform.2d` |
-| L13 | `letter-spacing` and `word-spacing` widen the text | `css.text.transform` |
-
 ### Painting (Direct2D; each painter to check on its platform)
 
 | # | Item | Stage |
@@ -86,16 +82,9 @@ not a diagnosis.
 | P3 | `object-fit` | `css.box.object-fit` |
 | P4 | Conic gradients | `css.gradient.conic` |
 | P5 | `filter` (blur, brightness, drop-shadow) and `backdrop-filter` | `css.filter.blur-brightness-drop-shadow`, `css.backdrop-filter` |
-| P6 | 2D transforms stage | `css.transform.2d` |
 | P7 | `text-overflow: ellipsis` | `css.text.overflow` |
 | P8 | Colour emoji | `css.text.emoji` |
 | P9 | Canvas `drawImage` | `canvas.draw-image` |
-
-### Out of the profile, not neutralised yet
-
-| # | Item | Fails |
-|---|---|---|
-| O4 | Partly: logical properties in RTL (goes with L8) | `css.box.logical` |
 
 ### Not TwidgetCore's
 
