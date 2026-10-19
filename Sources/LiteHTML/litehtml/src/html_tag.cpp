@@ -579,6 +579,27 @@ namespace litehtml
         return get_repr(value.get<css_token_vector>(), 0, -1, true);
     }
 
+    const property_value& html_tag::ua_property(string_id name) const
+    {
+        static const property_value& none = *new property_value();
+        auto doc = get_document();
+        if(!doc)
+            return none;
+        // The sheet is sorted by specificity and order, so the last match wins, unless an earlier one is important.
+        const property_value* found = &none;
+        for(const auto& sel : doc->master_css().selectors())
+        {
+            const property_value& value = sel->m_style->get_property(name);
+            if(value.is<invalid>() || (found->m_important && !value.m_important) || !sel->is_media_valid())
+                continue;
+            int match = const_cast<html_tag*>(this)->select(*sel, true);
+            if(!(match & select_match) || (match & (select_match_with_before | select_match_with_after)))
+                continue;
+            found = &value;
+        }
+        return *found;
+    }
+
     bool html_tag::get_custom_property(string_id name, css_token_vector& result) const
     {
         const property_value& value = m_style.get_property(name);

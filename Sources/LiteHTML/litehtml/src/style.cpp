@@ -287,16 +287,21 @@ namespace litehtml
 
     void style::inherit_property(string_id name, bool important)
     {
+        keyword_property(name, property_value(inherit(), important));
+    }
+
+    void style::keyword_property(string_id name, const property_value& value)
+    {
         auto atomic_properties = at(shorthands, name);
         if(!atomic_properties.empty())
         {
             for(auto atomic : atomic_properties)
             {
-                add_parsed_property(atomic, property_value(inherit(), important));
+                add_parsed_property(atomic, value);
             }
         } else
         {
-            add_parsed_property(name, property_value(inherit(), important));
+            add_parsed_property(name, value);
         }
     }
 
@@ -397,6 +402,14 @@ namespace litehtml
         if(ident == "inherit")
         {
             return inherit_property(name, important);
+        }
+        if(_s(name).substr(0, 2) != "--" && is_one_of(ident, "initial", "unset", "revert"))
+        {
+            css_wide_keyword keyword;
+            keyword.kind = ident == "initial" ? css_wide_keyword::initial
+                         : ident == "unset"   ? css_wide_keyword::unset
+                                              : css_wide_keyword::revert;
+            return keyword_property(name, property_value(keyword, important));
         }
 
         int         idx[4];

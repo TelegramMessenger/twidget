@@ -17,8 +17,20 @@ namespace litehtml
     {
     }; // "inherit" was specified as the value of this property
 
+    // "initial", "unset" or "revert": what they stand for depends on the element and the property, so
+    // html_tag::get_property resolves them when it is read.
+    struct css_wide_keyword
+    {
+        enum kind_t
+        {
+            initial,
+            unset,
+            revert
+        } kind = initial;
+    };
+
     struct property_value
-        : variant<invalid, inherit, int, int_vector, css_length, length_vector, float, web_color, std::vector<image>,
+        : variant<invalid, inherit, css_wide_keyword, int, int_vector, css_length, length_vector, float, web_color, std::vector<image>,
                   std::string, std::vector<std::string>, size_vector, css_token_vector>
     {
         bool m_important = false;
@@ -107,6 +119,7 @@ namespace litehtml
 
       private:
         void inherit_property(string_id name, bool important);
+        void keyword_property(string_id name, const property_value& value);
 
         void parse_background(const css_token_vector& tokens, const std::string& baseurl, bool important,
                               document_container* container);

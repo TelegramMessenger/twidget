@@ -139,6 +139,8 @@ namespace litehtml
         const Type& get_property(string_id name, bool inherited, const Type& default_value,
                                  uint_ptr css_properties_member_offset) const;
         std::string raw_declaration(const std::string& name) const;
+        /// What the UA stylesheet alone gives this element for `name` (`revert`); invalid when nothing.
+        const property_value& ua_property(string_id name) const;
         bool        get_custom_property(string_id name, css_token_vector& result) const;
         bool has_own_property(string_id name) const
         {
@@ -216,13 +218,23 @@ namespace litehtml
     const Type& html_tag::get_property(string_id name, bool inherited, const Type& default_value,
                                        uint_ptr css_properties_member_offset) const
     {
-        const property_value& value = m_style.get_property(name);
+        const property_value& declared = m_style.get_property(name);
+        const property_value& value =
+            declared.is<css_wide_keyword>() && declared.get<css_wide_keyword>().kind == css_wide_keyword::revert
+                ? ua_property(name)
+                : declared;
 
         if(value.is<Type>())
         {
             return value.get<Type>();
         }
-        if(inherited || value.is<inherit>())
+        // initial, and unset on a property that does not inherit (a revert the UA sheet has no value for is unset)
+        if(declared.is<css_wide_keyword>() && !value.is<inherit>() &&
+           (!inherited || declared.get<css_wide_keyword>().kind == css_wide_keyword::initial))
+        {
+            return default_value;
+        }
+        if(inherited || value.is<inherit>() || declared.is<css_wide_keyword>())
         {
             if(auto _parent = parent())
             {
