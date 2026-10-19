@@ -3858,6 +3858,7 @@ Json Renderer::event_json(const char* type, int64_t target, const Rect& target_r
     ev.set("type", type).set("targetId", double(target));
     ev.set("clientX", in.x).set("clientY", in.y).set("pageX", in.x).set("pageY", in.y);
     ev.set("offsetX", in.x - target_rect.x).set("offsetY", in.y - target_rect.y);
+    ev.set("movementX", in.movement_x).set("movementY", in.movement_y);
     ev.set("button", 0).set("buttons", in.buttons).set("detail", in.detail).set("modifiers", in.modifiers);
     if (in.related) ev.set("relatedId", double(in.related));
     std::string name = type;
@@ -3900,6 +3901,9 @@ void Renderer::dispatch(Json ev, std::vector<Json>& out) {
             if (type == "wheel") {
                 ev.set("deltaX", ev["deltaX"].asNumber() + pending["deltaX"].asNumber());
                 ev.set("deltaY", ev["deltaY"].asNumber() + pending["deltaY"].asNumber());
+            } else {
+                ev.set("movementX", ev["movementX"].asNumber() + pending["movementX"].asNumber());
+                ev.set("movementY", ev["movementY"].asNumber() + pending["movementY"].asNumber());
             }
             pending = std::move(ev);
             return;
@@ -4093,6 +4097,10 @@ void Renderer::emit_event(const char* type, int64_t target, const Rect& target_r
     in.modifiers = t.modifiers;
     in.buttons = action == 0 || action == 1 ? 1 : 0;
     in.detail = std::strcmp(type, "click") == 0 || std::strcmp(type, "dblclick") == 0 ? click_count_ : 0;
+    if (action == 1) {
+        in.movement_x = t.x - t.sent_x;
+        in.movement_y = t.y - t.sent_y;
+    }
     dispatch(event_json(type, target, target_rect, in), out);
 }
 
@@ -4169,6 +4177,8 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             if (under) emit_event("mousemove", under, rect, t, 1, out);
             emit_event("touchmove", t.target, t.target_rect, t, 1, out);
         }
+        t.sent_x = x;
+        t.sent_y = y;
         return out;
     }
     Touch done = t;
@@ -4233,6 +4243,8 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
     int64_t previous = hover_;
     int64_t target = 0;
     if (action == 0) {
+        in.movement_x = x - hover_x_;
+        in.movement_y = y - hover_y_;
         in.x = hover_x_ = x;
         in.y = hover_y_ = y;
         if (container_->mouse(1, x, y)) dirty_ = touched_all_ = true;

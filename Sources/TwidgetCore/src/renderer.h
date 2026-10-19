@@ -184,6 +184,7 @@ private:
         bool mouse;
         int modifiers;
         int64_t capture = 0;  // setPointerCapture: pointer events go here instead
+        double sent_x = x0, sent_y = y0;  // where the widget last heard the pointer was, for movementX/Y
     };
     /// What an input event carries besides its type and target.
     struct Input {
@@ -195,6 +196,7 @@ private:
         int modifiers = 0;
         int detail = 0;
         int64_t related = 0;
+        double movement_x = 0, movement_y = 0;
     };
 
     // ops → shadow tree
