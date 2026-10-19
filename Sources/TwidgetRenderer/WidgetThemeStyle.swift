@@ -26,7 +26,9 @@ enum WidgetThemeStyle {
 
     static let profileUAStylesheet = "@layer tw-ua{:where(button){appearance:none;-webkit-appearance:none;margin:0;border:0;border-radius:var(--tg-button-radius,8px);padding:var(--tg-button-padding,8px 14px);min-height:var(--tg-button-height,auto);font:var(--tg-button-font,500 14px/1.2 system-ui,sans-serif);background:var(--tg-button-bg,rgba(51,144,236,.12));color:var(--tg-button-text,inherit);cursor:pointer;-webkit-tap-highlight-color:transparent}:where(button:not([disabled])):active{opacity:var(--tg-button-pressed-opacity,.7)}:where(button[disabled]){opacity:var(--tg-button-disabled-opacity,.5);cursor:default}}*{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important}"
 
-    static let uaStylesheet = unwrappingWhere(profileUAStylesheet)
+    static let linkStylesheet = "a:link{color:#0000ee;text-decoration:underline}"
+
+    static let uaStylesheet = linkStylesheet + unwrappingWhere(profileUAStylesheet)
 
     private static let color = regex("#[0-9a-fA-F]{6}")
     private static let length = regex("(0|[0-9]{1,4}(\\.[0-9]{1,3})?(px|em|rem))")

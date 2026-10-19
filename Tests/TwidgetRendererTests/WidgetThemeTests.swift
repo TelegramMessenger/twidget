@@ -188,10 +188,10 @@ document.body.appendChild(done);
     }
 
     func testUAStylesheetKeepsTheProfileText() {
-        XCTAssertTrue(WidgetThemeStyle.uaStylesheet.hasPrefix("@layer tw-ua{button{appearance:none;"))
+        XCTAssertTrue(WidgetThemeStyle.uaStylesheet.hasPrefix(WidgetThemeStyle.linkStylesheet + "@layer tw-ua{button{appearance:none;"))
         XCTAssertTrue(WidgetThemeStyle.uaStylesheet.contains("}button:not([disabled]):active{opacity:var(--tg-button-pressed-opacity,.7)}button[disabled]{opacity:"))
         XCTAssertFalse(WidgetThemeStyle.uaStylesheet.contains(":where("))
-        XCTAssertEqual(WidgetThemeStyle.uaStylesheet.count, WidgetThemeStyle.profileUAStylesheet.count - 3 * ":where()".count)
+        XCTAssertEqual(WidgetThemeStyle.uaStylesheet.count, WidgetThemeStyle.linkStylesheet.count + WidgetThemeStyle.profileUAStylesheet.count - 3 * ":where()".count)
     }
 
     func testRootVariablesWinOverWidgetRules() throws {
@@ -300,6 +300,40 @@ document.body.appendChild(done);
         let root = h.rootStyle
         XCTAssertTrue(root.contains("--tg-color-scheme:dark !important;"), root)
         XCTAssertFalse(root.contains("--tg-button-"), root)
+    }
+
+    func testLinksTakeTheUserAgentLinkStyle() throws {
+        let html = ##"<!doctype html><html><head><style>body{margin:0;color:#111}.own{color:#00aa00;text-decoration:none}</style></head><body><a id="frag" href="#t">fragment</a> <a id="ext" href="https://example.org/">external</a> <a id="own" class="own" href="#x">own</a> <a id="none">none</a><i id="done"></i></body></html>"##
+        let h = try Harness(self, html: html, theme: WidgetThemeTests.theme)
+        defer { h.close() }
+        XCTAssertEqual(h.style("frag")["color"], "rgb(0, 0, 238)")
+        XCTAssertEqual(h.style("frag")["text-decoration-line"], "underline")
+        XCTAssertEqual(h.element("ext")?.attribute("href"), "#")
+        XCTAssertEqual(h.style("ext")["color"], "rgb(0, 0, 238)")
+        XCTAssertEqual(h.style("ext")["text-decoration-line"], "underline")
+        XCTAssertEqual(h.style("own")["color"], "rgb(0, 170, 0)")
+        XCTAssertEqual(h.style("own")["text-decoration-line"], "none")
+        XCTAssertEqual(h.style("none")["color"], "rgb(17, 17, 17)")
+        XCTAssertEqual(h.style("none")["text-decoration-line"], "none")
+    }
+
+    func testCustomPropertyQueryFollowsTheThemeInTheSameTask() throws {
+        let h = try Harness(self, html: WidgetThemeTests.html, theme: WidgetThemeTests.theme)
+        defer { h.close() }
+        let root = h.renderer.dom.publicId(h.renderer.dom.html)
+        var answers: [String] = []
+        let previous = h.renderer.onMessage
+        h.renderer.onMessage = { json in
+            if json.contains("\"qid\":\"probe\"") { answers.append(json) }
+            previous?(json)
+        }
+        h.renderer.send(##"{"type":"query","qid":"probe","query":{"q":"cs","id":\##(root),"prop":"--tg-theme-bg-color"}}"##)
+        h.renderer.send(##"{"type":"theme","theme":{"colorScheme":"dark","params":{"bg_color":"#212121"}}}"##)
+        h.renderer.send(##"{"type":"query","qid":"probe","query":{"q":"cs","id":\##(root),"prop":"--tg-theme-bg-color"}}"##)
+        pump(1, until: { answers.count == 2 })
+        XCTAssertEqual(answers.count, 2)
+        XCTAssertTrue(answers.first?.contains("#123456") == true, answers.first ?? "")
+        XCTAssertTrue(answers.last?.contains("#212121") == true, answers.last ?? "")
     }
 
     func testSetThemeInTheSameSchemeUpdates() throws {
