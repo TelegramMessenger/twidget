@@ -2505,6 +2505,9 @@ public final class LiteHTMLWidgetRenderer {
             return geometry.mapValues { $0.doubleValue }
         case "cs":
             let id = (q["id"] as? NSNumber)?.intValue ?? 0
+            if let prop = q["prop"] as? String, prop.hasPrefix("--") {
+                return document?.customProperty(prop, attribute: WidgetDOM.idAttribute, value: String(id)) ?? ""
+            }
             let style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id)) ?? [:]
             if let prop = q["prop"] as? String {
                 return style[prop] ?? LiteHTMLWidgetRenderer.computedDefault(prop)

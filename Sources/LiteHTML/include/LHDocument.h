@@ -158,6 +158,7 @@ typedef struct LHKeyedRect {
 @property (readonly, copy) NSString *layoutSignature;
 - (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name NS_SWIFT_NAME(parents(byAttribute:));
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(computedStyle(attribute:value:));
+- (nullable NSString *)customProperty:(NSString *)property attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(customProperty(_:attribute:value:));
 - (nullable NSFont *)fontWithAttribute:(NSString *)attribute value:(NSString *)value lineHeight:(CGFloat *)lineHeight baseline:(CGFloat *)baseline NS_SWIFT_NAME(font(attribute:value:lineHeight:baseline:));
 - (nullable NSDictionary<NSString *, NSNumber *> *)svgGeometry:(NSString *)method at:(double)distance attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(svgGeometry(_:at:attribute:value:));
 /// Skips elements that are not rendered (display: none on them or an ancestor): CSS animations and transitions do not

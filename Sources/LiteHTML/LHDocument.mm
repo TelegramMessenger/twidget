@@ -52,6 +52,9 @@ static const std::string &MasterCSS()
         s += R"CSS(
 [hidden], template, datalist { display: none; }
 details, summary { display: block; }
+details > summary:first-of-type { display: list-item; list-style-type: none; }
+[dir=ltr] { direction: ltr; }
+[dir=rtl] { direction: rtl; }
 summary::before { content: "▶︎"; display: inline-block; width: 1.25em; font-size: 0.9em; }
 details[open] > summary::before { content: "▼︎"; }
 details:not([open]) > :not(summary) { display: none; }
@@ -3010,19 +3013,49 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     if(!el)
         return @{};
     const lh::css_properties &css = el->css();
+    auto tag = std::dynamic_pointer_cast<lh::html_tag>(el);
     NSMutableDictionary<NSString *, NSString *> *out = [NSMutableDictionary dictionary];
     auto px = [](double v) { return [NSString stringWithFormat:@"%gpx", v]; };
-    auto length = [&](const lh::css_length &l) -> NSString * {
+    const double fontSize = css.get_font_size().value();
+    auto length = [&](const lh::css_length &l, NSString *predefined = @"none") -> NSString * {
         if(l.is_predefined())
-            return @"none";
+            return predefined;
         switch(l.units())
         {
         case lh::css_units_percentage:
             return [NSString stringWithFormat:@"%g%%", l.val()];
-        default:
+        case lh::css_units_em:
+            return px(l.val() * fontSize);
+        case lh::css_units_rem:
+            return px(l.val() * 16);
+        case lh::css_units_pt:
+            return px(l.val() * 4 / 3);
+        case lh::css_units_none:
+        case lh::css_units_px:
+        case lh::css_units_calc:
             return px(l.val());
+        default:
+            return [NSString stringWithFormat:@"%g%s", l.val(), std::string(lh::css_units_strings[l.units()]).c_str()];
         }
     };
+    auto raw = [&](const char *name, NSString *fallback) -> NSString * {
+        std::string v = tag ? tag->raw_declaration(name) : std::string();
+        const size_t first = v.find_first_not_of(" \t\n\r\f");
+        if(first == std::string::npos)
+            return fallback;
+        v = v.substr(first, v.find_last_not_of(" \t\n\r\f") - first + 1);
+        return @(v.c_str());
+    };
+    auto shorthand = [](NSString *top, NSString *right, NSString *bottom, NSString *left) -> NSString * {
+        if([left isEqualToString:right])
+        {
+            if([top isEqualToString:bottom])
+                return [top isEqualToString:right] ? top : [NSString stringWithFormat:@"%@ %@", top, right];
+            return [NSString stringWithFormat:@"%@ %@ %@", top, right, bottom];
+        }
+        return [NSString stringWithFormat:@"%@ %@ %@ %@", top, right, bottom, left];
+    };
+    auto name = [](std::string_view s) { return @(std::string(s).c_str()); };
     if(found)
     {
         out[@"padding-top"]         = px(found->padding_top().value());
@@ -3065,7 +3098,120 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"opacity"]     = [NSString stringWithFormat:@"%g", css.get_opacity()];
     out[@"text-align"]  = @(std::string(lh::text_align_strings[css.get_text_align()]).c_str());
     out[@"visibility"]  = css.get_visibility() == lh::visibility_visible ? @"visible" : @"hidden";
+    out[@"direction"]   = name(lh::direction_strings[css.get_direction()]);
+    out[@"white-space"] = name(lh::white_space_strings[css.get_white_space()]);
+    NSString *overflowX = name(lh::overflow_strings[css.get_overflow_x()]), *overflowY = name(lh::overflow_strings[css.get_overflow_y()]);
+    out[@"overflow-x"]  = overflowX;
+    out[@"overflow-y"]  = overflowY;
+    out[@"overflow"]    = [overflowX isEqualToString:overflowY] ? overflowX : [NSString stringWithFormat:@"%@ %@", overflowX, overflowY];
+    NSArray<NSString *> *edges = @[@"top", @"right", @"bottom", @"left"];
+    for(NSArray<NSString *> *box in @[@[@"margin", @""], @[@"padding", @""], @[@"border", @"-width"]])
+    {
+        NSMutableArray<NSString *> *values = [NSMutableArray array];
+        for(NSString *edge in edges)
+            [values addObject:out[[NSString stringWithFormat:@"%@-%@%@", box[0], edge, box[1]]]];
+        out[[box componentsJoinedByString:@""]] = shorthand(values[0], values[1], values[2], values[3]);
+    }
+    const lh::css_borders &borders = css.get_borders();
+    const lh::css_border  *sides[4] = {&borders.top, &borders.right, &borders.bottom, &borders.left};
+    NSMutableArray<NSString *> *styles = [NSMutableArray array], *colors = [NSMutableArray array];
+    for(int i = 0; i < 4; i++)
+    {
+        [styles addObject:name(lh::border_style_strings[sides[i]->style])];
+        [colors addObject:rgb(sides[i]->color)];
+        out[[NSString stringWithFormat:@"border-%@-style", edges[i]]] = styles[i];
+        out[[NSString stringWithFormat:@"border-%@-color", edges[i]]] = colors[i];
+    }
+    out[@"border-style"] = shorthand(styles[0], styles[1], styles[2], styles[3]);
+    out[@"border-color"] = shorthand(colors[0], colors[1], colors[2], colors[3]);
+    const lh::css_border &outline  = css.get_outline();
+    const bool            outlined = outline.style != lh::border_style_none && outline.style != lh::border_style_hidden;
+    out[@"outline-style"]  = name(lh::border_style_strings[outline.style]);
+    out[@"outline-width"]  = outlined ? length(outline.width, @"3px") : @"0px";
+    out[@"outline-color"]  = rgb(outline.color.alpha ? outline.color : css.get_color());
+    out[@"outline-offset"] = px(css.get_outline_offset().value());
+    const int decoration = css.get_text_decoration_line();
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    if(decoration & lh::text_decoration_line_underline)
+        [lines addObject:@"underline"];
+    if(decoration & lh::text_decoration_line_overline)
+        [lines addObject:@"overline"];
+    if(decoration & lh::text_decoration_line_line_through)
+        [lines addObject:@"line-through"];
+    NSString *decorationLine  = lines.count ? [lines componentsJoinedByString:@" "] : @"none";
+    NSString *decorationStyle = name(lh::style_text_decoration_style_strings[css.get_text_decoration_style()]);
+    NSString *decorationColor = rgb(css.get_text_decoration_color().alpha ? css.get_text_decoration_color() : css.get_color());
+    out[@"text-decoration-line"]  = decorationLine;
+    out[@"text-decoration-style"] = decorationStyle;
+    out[@"text-decoration-color"] = decorationColor;
+    out[@"text-decoration"]       = [NSString stringWithFormat:@"%@ %@ %@", decorationLine, decorationStyle, decorationColor];
+    out[@"text-indent"]           = length(css.get_text_indent(), @"0px");
+    out[@"user-select"]           = @"none";
+    out[@"-webkit-user-select"]   = @"none";
+    out[@"list-style-type"]       = name(lh::list_style_type_strings[css.get_list_style_type()]);
+    out[@"list-style-position"]   = name(lh::list_style_position_strings[css.get_list_style_position()]);
+    out[@"list-style-image"]      = css.get_list_style_image().empty() ? @"none" : [NSString stringWithFormat:@"url(\"%s\")", css.get_list_style_image().c_str()];
+    const lh::background &bg = css.get_bg();
+    NSMutableArray<NSString *> *images = [NSMutableArray array], *sizes = [NSMutableArray array], *positions = [NSMutableArray array],
+                               *repeats = [NSMutableArray array];
+    for(size_t i = 0; i < bg.m_image.size(); i++)
+    {
+        const lh::image &image = bg.m_image[i];
+        if(image.type == lh::image::type_url)
+            [images addObject:[NSString stringWithFormat:@"url(\"%s\")", image.url.c_str()]];
+        else if(image.type == lh::image::type_gradient)
+            [images addObject:[NSString stringWithFormat:@"%s(...)", lh::_s(image.m_gradient.m_type).c_str()]];
+        else
+            [images addObject:@"none"];
+        if(i < bg.m_size.size())
+        {
+            const auto &size = bg.m_size[i];
+            NSString   *w = length(size.width, @"auto"), *h = length(size.height, @"auto");
+            if(size.width.is_predefined() && size.width.predef() != lh::background_size_auto)
+                [sizes addObject:name(lh::background_size_strings[size.width.predef()])];
+            else
+                [sizes addObject:[w isEqualToString:@"auto"] && [h isEqualToString:@"auto"] ? w : [NSString stringWithFormat:@"%@ %@", w, h]];
+        }
+        if(i < bg.m_position_x.size() && i < bg.m_position_y.size())
+            [positions addObject:[NSString stringWithFormat:@"%@ %@", length(bg.m_position_x[i], @"0%"), length(bg.m_position_y[i], @"0%")]];
+        if(i < bg.m_repeat.size())
+            [repeats addObject:name(lh::background_repeat_strings[bg.m_repeat[i]])];
+    }
+    out[@"background-image"]    = images.count ? [images componentsJoinedByString:@", "] : @"none";
+    out[@"background-size"]     = sizes.count ? [sizes componentsJoinedByString:@", "] : @"auto";
+    out[@"background-position"] = positions.count ? [positions componentsJoinedByString:@", "] : @"0% 0%";
+    out[@"background-repeat"]   = repeats.count ? [repeats componentsJoinedByString:@", "] : @"repeat";
+    out[@"cursor"]              = css.get_cursor().empty() ? @"auto" : @(css.get_cursor().c_str());
+    out[@"touch-action"]        = raw("touch-action", @"auto");
+    out[@"filter"]              = raw("filter", @"none");
+    out[@"backdrop-filter"]     = raw("backdrop-filter", @"none");
     return out;
+}
+
+- (nullable NSString *)customProperty:(NSString *)property attribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || !_doc->root())
+        return nil;
+    const char       *key    = attribute.UTF8String;
+    const std::string wanted = value.UTF8String;
+    std::function<lh::element::ptr(const lh::element::ptr &)> search = [&](const lh::element::ptr &e) -> lh::element::ptr {
+        const char *v = e->get_attr(key);
+        if(v && wanted == v)
+            return e;
+        for(const auto &child : e->children())
+            if(auto hit = search(child))
+                return hit;
+        return nullptr;
+    };
+    auto                   tag = std::dynamic_pointer_cast<lh::html_tag>(search(_doc->root()));
+    lh::css_token_vector tokens;
+    if(!tag || !tag->get_custom_property(lh::_id(property.UTF8String ?: ""), tokens))
+        return nil;
+    std::string repr  = lh::get_repr(tokens, 0, -1, false);
+    const size_t first = repr.find_first_not_of(" \t\n\r\f");
+    return first == std::string::npos ? @"" : @(repr.substr(first, repr.find_last_not_of(" \t\n\r\f") - first + 1).c_str());
 }
 
 - (void)visitBoundsLocked:(NSString *)name transformed:(BOOL)transformed visitor:(const std::function<void(const char *, CGRect)> &)visitor
