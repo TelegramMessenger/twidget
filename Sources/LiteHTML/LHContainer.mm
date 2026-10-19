@@ -150,6 +150,92 @@ static bool HasRadius(const lh::border_radiuses& r)
     return F(r.top_left_x) > 0 || F(r.top_right_x) > 0 || F(r.bottom_left_x) > 0 || F(r.bottom_right_x) > 0;
 }
 
+static CGFloat RoundedRectLength(CGRect r, const lh::border_radiuses& rad)
+{
+    if(r.size.width <= 0 || r.size.height <= 0)
+        return 0;
+    const CGFloat hw = r.size.width / 2, hh = r.size.height / 2;
+    auto clampx = [&](lh::pixel_t v) { return std::min<CGFloat>(std::max<CGFloat>(F(v), 0), hw); };
+    auto clampy = [&](lh::pixel_t v) { return std::min<CGFloat>(std::max<CGFloat>(F(v), 0), hh); };
+    auto corner = [](CGFloat a, CGFloat b) {
+        if(a <= 0 || b <= 0)
+            return std::hypot(a, b);
+        return M_PI / 4 * (3 * (a + b) - std::sqrt((3 * a + b) * (a + 3 * b)));
+    };
+    CGFloat xs[4] = {clampx(rad.top_left_x), clampx(rad.top_right_x), clampx(rad.bottom_right_x), clampx(rad.bottom_left_x)};
+    CGFloat ys[4] = {clampy(rad.top_left_y), clampy(rad.top_right_y), clampy(rad.bottom_right_y), clampy(rad.bottom_left_y)};
+    CGFloat length = 2 * (r.size.width + r.size.height);
+    for(int i = 0; i < 4; i++)
+        length += corner(xs[i], ys[i]) - xs[i] - ys[i];
+    return length;
+}
+
+struct BorderDash
+{
+    bool    solid = true;
+    bool    round = false;
+    CGFloat intervals[2] = {0, 0};
+};
+
+static CGFloat BestDashGap(CGFloat length, CGFloat dash, CGFloat gap, bool closed)
+{
+    CGFloat available = closed ? length : length + gap;
+    CGFloat fewer     = std::floor(available / (dash + gap));
+    CGFloat more      = fewer + 1;
+    CGFloat fewerGap  = (length - fewer * dash) / (closed ? fewer : fewer - 1);
+    CGFloat moreGap   = (length - more * dash) / (closed ? more : more - 1);
+    return moreGap <= 0 || std::fabs(fewerGap - gap) < std::fabs(moreGap - gap) ? fewerGap : moreGap;
+}
+
+static BorderDash BorderDashFor(CGFloat length, CGFloat width, bool dotted, bool closed)
+{
+    BorderDash out;
+    if(width <= 0 || length <= 0)
+        return out;
+    if(!dotted || width <= 3)
+    {
+        CGFloat dash = width, gap = width;
+        if(!dotted)
+        {
+            dash *= width >= 3 ? 2 : 3;
+            gap *= width >= 3 ? 1 : 2;
+        }
+        if(length <= dash * 2)
+            return out;
+        CGFloat pair = closed ? dash + gap : 2 * dash + gap;
+        out.solid    = false;
+        if(length <= pair)
+        {
+            out.intervals[0] = dash * length / pair;
+            out.intervals[1] = gap * length / pair;
+            return out;
+        }
+        out.intervals[0] = dash;
+        out.intervals[1] = dotted ? gap : BestDashGap(length, dash, gap, closed);
+        return out;
+    }
+    out.solid = false;
+    out.round = true;
+    if(length < 2 * width)
+    {
+        out.intervals[1] = 2 * width;
+        return out;
+    }
+    out.intervals[1] = BestDashGap(length, width, width, closed) + width - 0.01;
+    if(!std::isfinite(out.intervals[1]))
+        out.intervals[1] = length + 2 * width;
+    return out;
+}
+
+static void ApplyBorderDash(CGContextRef ctx, const BorderDash& dash)
+{
+    CGContextSetLineCap(ctx, dash.round ? kCGLineCapRound : kCGLineCapButt);
+    if(dash.solid)
+        CGContextSetLineDash(ctx, 0, nullptr, 0);
+    else
+        CGContextSetLineDash(ctx, 0, dash.intervals, 2);
+}
+
 static bool InsideRoundedRect(CGRect r, const lh::border_radiuses& rad, CGRect b)
 {
     if(!CGRectContainsRect(r, b))
@@ -3467,21 +3553,20 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
                   sides[i]->style == sides[0]->style && visible(*sides[i]) == visible(*sides[0]);
     lh::border_style style = borders.top.style;
 
-    if(uniform && (style == lh::border_style_dotted || style == lh::border_style_dashed))
+    if(uniform && (style == lh::border_style_dotted || style == lh::border_style_dashed) && HasRadius(orad))
     {
         CGFloat w = T;
         CGContextAddPath(ctx, ring);
         TWClipPath(ctx, true);
         lh::border_radiuses mrad = orad;
         mrad -= Uniform(w / 2);
-        CGMutablePathRef mid = CGPathCreateMutable();
-        AddRoundedRect(mid, CGRectInset(outer, w / 2, w / 2), mrad);
-        CGFloat dots[]   = {0, w * 2};
-        CGFloat dashes[] = {w * 2.5f, w * 1.5f};
+        CGRect           midRect = CGRectInset(outer, w / 2, w / 2);
+        CGMutablePathRef mid     = CGPathCreateMutable();
+        AddRoundedRect(mid, midRect, mrad);
+        BorderDash dash = BorderDashFor(std::floor(RoundedRectLength(midRect, mrad)), w, style == lh::border_style_dotted, true);
         SetStroke(ctx, borders.top.color);
-        CGContextSetLineWidth(ctx, w);
-        CGContextSetLineCap(ctx, style == lh::border_style_dotted ? kCGLineCapRound : kCGLineCapButt);
-        CGContextSetLineDash(ctx, 0, style == lh::border_style_dotted ? dots : dashes, 2);
+        CGContextSetLineWidth(ctx, dash.round ? w : w * 2.2);
+        ApplyBorderDash(ctx, dash);
         CGContextAddPath(ctx, mid);
         CGContextStrokePath(ctx);
         CGPathRelease(mid);
@@ -3572,15 +3657,46 @@ void LHContainer::draw_borders(lh::uint_ptr hdc, const lh::borders& borders, con
                 if(s.b->style == lh::border_style_dotted || s.b->style == lh::border_style_dashed)
                 {
                     TWClipPath(ctx, false);
-                    CGFloat dots[]   = {0, s.w * 2};
-                    CGFloat dashes[] = {s.w * 2.5, s.w * 1.5};
-                    bool    dotted   = s.b->style == lh::border_style_dotted;
+                    bool dotted = s.b->style == lh::border_style_dotted;
                     SetStroke(ctx, c);
-                    CGContextSetLineWidth(ctx, s.w);
-                    CGContextSetLineCap(ctx, dotted ? kCGLineCapRound : kCGLineCapButt);
-                    CGContextSetLineDash(ctx, 0, dotted ? dots : dashes, 2);
-                    CGContextMoveToPoint(ctx, s.a.x, s.a.y);
-                    CGContextAddLineToPoint(ctx, s.z.x, s.z.y);
+                    if(HasRadius(orad))
+                    {
+                        CGRect              midRect = CGRectMake(ox0 + L / 2, oy0 + T / 2, ox1 - ox0 - (L + Rr) / 2, oy1 - oy0 - (T + B) / 2);
+                        lh::border_radiuses mrad    = orad;
+                        mrad.top_left_x     = std::max(0.0f, orad.top_left_x.value() - (float)L / 2);
+                        mrad.top_left_y     = std::max(0.0f, orad.top_left_y.value() - (float)T / 2);
+                        mrad.top_right_x    = std::max(0.0f, orad.top_right_x.value() - (float)Rr / 2);
+                        mrad.top_right_y    = std::max(0.0f, orad.top_right_y.value() - (float)T / 2);
+                        mrad.bottom_right_x = std::max(0.0f, orad.bottom_right_x.value() - (float)Rr / 2);
+                        mrad.bottom_right_y = std::max(0.0f, orad.bottom_right_y.value() - (float)B / 2);
+                        mrad.bottom_left_x  = std::max(0.0f, orad.bottom_left_x.value() - (float)L / 2);
+                        mrad.bottom_left_y  = std::max(0.0f, orad.bottom_left_y.value() - (float)B / 2);
+                        BorderDash dash = BorderDashFor(std::floor(RoundedRectLength(midRect, mrad)), s.w, dotted, true);
+                        CGFloat    widest = s.b == &borders.top || s.b == &borders.bottom ? std::max({s.w, L, Rr}) : std::max({s.w, T, B});
+                        CGContextSetLineWidth(ctx, dash.round ? s.w : widest * 2.2);
+                        ApplyBorderDash(ctx, dash);
+                        CGMutablePathRef mid = CGPathCreateMutable();
+                        AddRoundedRect(mid, midRect, mrad);
+                        CGContextAddPath(ctx, mid);
+                        CGPathRelease(mid);
+                    }
+                    else
+                    {
+                        CGFloat    length = std::round(std::hypot(s.z.x - s.a.x, s.z.y - s.a.y));
+                        BorderDash dash   = BorderDashFor(length, s.w, dotted, false);
+                        CGPoint    a = s.a, z = s.z;
+                        if(dash.round && length > 0)
+                        {
+                            CGFloat inset = s.w / 2 / length;
+                            CGFloat dx = (s.z.x - s.a.x) * inset, dy = (s.z.y - s.a.y) * inset;
+                            a = CGPointMake(s.a.x + dx, s.a.y + dy);
+                            z = CGPointMake(s.z.x - dx, s.z.y - dy);
+                        }
+                        CGContextSetLineWidth(ctx, s.w);
+                        ApplyBorderDash(ctx, dash);
+                        CGContextMoveToPoint(ctx, a.x, a.y);
+                        CGContextAddLineToPoint(ctx, z.x, z.y);
+                    }
                     CGContextStrokePath(ctx);
                 }
                 else
