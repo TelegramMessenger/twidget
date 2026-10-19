@@ -38,7 +38,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::measure(pixel_t x
             for(const auto& child : m_children)
             {
                 auto text = std::dynamic_pointer_cast<el_text>(child->src_el());
-                if(!text || text->css().get_overflow_wrap() != overflow_wrap_anywhere ||
+                if(!text || text->css().get_wrapping() != overflow_wrap_anywhere ||
                    is_one_of(text->css().get_white_space(), white_space_pre, white_space_nowrap))
                 {
                     supported = false;
@@ -189,7 +189,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     for(const auto& text : m_fragmented_texts)
     {
         text->update_fragment_bounds();
-        if(text->css().get_overflow_wrap() != overflow_wrap_anywhere || static_cast<pixel_t>(self_size.render_width) > 0_px)
+        if(text->css().get_wrapping() != overflow_wrap_anywhere || static_cast<pixel_t>(self_size.render_width) > 0_px)
         {
             size unbroken;
             text->src_el()->get_content_size(unbroken, self_size.render_width);
@@ -399,7 +399,7 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                 item->get_el()->pos() = sz;
                 item->set_rendered_min_width(sz.width);
                 auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
-                const auto wrapping = text_item->css().get_overflow_wrap();
+                const auto wrapping = text_item->css().get_wrapping();
                 const auto whitespace = text_item->css().get_white_space();
                 if(text && !text->is_space() && !text->is_break() && wrapping != overflow_wrap_normal &&
                    whitespace != white_space_nowrap && whitespace != white_space_pre)

@@ -82,7 +82,7 @@ namespace litehtml
         _text_decoration_thickness_, _text_emphasis_, _text_emphasis_style_, _text_emphasis_color_,
         _text_emphasis_position_,
 
-        _white_space_, _overflow_wrap_, _word_wrap_, _text_align_, _vertical_align_, _color_, _width_, _height_, _min_width_, _min_height_,
+        _white_space_, _overflow_wrap_, _word_wrap_, _word_break_, _text_align_, _vertical_align_, _color_, _width_, _height_, _min_width_, _min_height_,
         _max_width_, _max_height_, _position_, _overflow_, _overflow_x_, _overflow_y_, _display_, _visibility_, _appearance_, _resize_, _box_sizing_,
         _z_index_, _float_, _clear_, _text_indent_, _top_, _right_, _bottom_, _left_, _cursor_, _content_,
         _border_collapse_, _text_transform_,

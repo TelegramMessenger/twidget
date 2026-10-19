@@ -51,6 +51,7 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         css_w().set_font_metrics(el_parent->css().get_font_metrics());
         css_w().set_white_space(el_parent->css().get_white_space());
         css_w().set_overflow_wrap(el_parent->css().get_overflow_wrap());
+        css_w().set_word_break(el_parent->css().get_word_break());
         css_w().set_text_transform(el_parent->css().get_text_transform());
     }
     css_w().set_display(display_inline_text);

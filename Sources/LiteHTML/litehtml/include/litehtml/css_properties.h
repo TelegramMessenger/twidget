@@ -40,6 +40,7 @@ namespace litehtml
         overflow              m_overflow_y     = overflow_visible;
         white_space           m_white_space    = white_space_normal;
         overflow_wrap         m_overflow_wrap  = overflow_wrap_normal;
+        word_break            m_word_break     = word_break_normal;
         style_display         m_display        = display_inline;
         visibility            m_visibility     = visibility_visible;
         appearance            m_appearance     = appearance_none;
@@ -169,6 +170,13 @@ namespace litehtml
         void        set_white_space(white_space mWhiteSpace);
         overflow_wrap get_overflow_wrap() const { return m_overflow_wrap; }
         void set_overflow_wrap(overflow_wrap value) { m_overflow_wrap = value; }
+        word_break get_word_break() const { return m_word_break; }
+        void set_word_break(word_break value) { m_word_break = value; }
+        /// How text may break inside words: word-break's break-all and break-word break anywhere too.
+        overflow_wrap get_wrapping() const
+        {
+            return m_word_break == word_break_break_all || m_word_break == word_break_break_word ? overflow_wrap_anywhere : m_overflow_wrap;
+        }
 
         style_display get_display() const;
         void          set_display(style_display mDisplay);

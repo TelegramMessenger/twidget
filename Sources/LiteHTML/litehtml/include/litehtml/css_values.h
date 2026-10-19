@@ -526,6 +526,16 @@ namespace litehtml
         overflow_wrap_anywhere
     };
 
+    inline constexpr auto word_break_strings = split_css_values<4>("normal;break-all;keep-all;break-word");
+
+    enum word_break
+    {
+        word_break_normal,
+        word_break_break_all,
+        word_break_keep_all,
+        word_break_break_word
+    };
+
     inline constexpr auto resize_strings = split_css_values<6>("none;both;horizontal;vertical;block;inline");
 
     enum resize

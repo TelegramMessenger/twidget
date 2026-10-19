@@ -47,6 +47,7 @@ namespace litehtml
         {__webkit_font_smoothing_, font_smoothing_strings              },
         {_white_space_,            white_space_strings                 },
         {_overflow_wrap_,          overflow_wrap_strings               },
+        {_word_break_,             word_break_strings                  },
 
         {_font_style_,             font_style_strings                  },
         {_font_variant_,           font_variant_strings                },
@@ -453,6 +454,7 @@ namespace litehtml
         case __webkit_font_smoothing_:
         case _white_space_:
         case _overflow_wrap_:
+        case _word_break_:
 
         case _font_style_:
         case _font_variant_:

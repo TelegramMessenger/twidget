@@ -222,6 +222,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("white-space", name_of(litehtml::white_space_strings[css.get_white_space()]));
     std::string wrap = name_of(litehtml::overflow_wrap_strings[css.get_overflow_wrap()]);
     o.set("overflow-wrap", wrap).set("word-wrap", wrap);
+    o.set("word-break", name_of(litehtml::word_break_strings[css.get_word_break()]));
 
     // Text and fonts.
     o.set("color", color(css.get_color()));
