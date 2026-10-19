@@ -36,7 +36,10 @@ constexpr double HEIGHT_CEILING = 16384.0;
 constexpr int MAX_PASSES = 4;
 /// A finger jitters a few px during a tap (see renderer.rs TAP_SLOP): moves inside this radius are not forwarded.
 constexpr double TAP_SLOP = 8.0;
-const char* const ALWAYS_FORWARD[] = {"click", "load", "error", "toggle"};
+/// Sent whether or not the widget listens. The one-off animation events are among them because a page's
+/// first build starts its animations before its script says what it listens for; animationiteration
+/// repeats, and stays opt-in.
+const char* const ALWAYS_FORWARD[] = {"click", "load", "error", "toggle", "animationstart", "animationend", "transitionend"};
 /// Every event the widget may get (profile 1, `tables.events` in widget-sandbox's profile.json): no keys,
 /// focus, input, dblclick, contextmenu, touch, wheel or scroll.
 const char* const PROFILE_EVENTS[] = {
