@@ -1533,6 +1533,61 @@ int main() {
         check(length > 10, "getComputedTextLength measures an SVG text (got " + std::to_string(length) + ")");
     }
 
+    // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──
+    {
+        struct Images : StubBackend {
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                w = 20;
+                h = 10;
+                return true;
+            }
+        };
+        Images ib;
+        Renderer p(300, 1, false, ib);
+        p.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:60px;height:40px;border:4px dashed #333"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","width:60px;height:40px;background:url(data:image/png;base64,AAAA) 0 0/20px 10px repeat"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"img","attrs":[["src","data:image/png;base64,BBBB"],["style","display:block;width:40px;height:40px;object-fit:contain"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["style","width:40px;height:40px;background:conic-gradient(red 0 50%, blue 0)"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"div","attrs":[["style","width:40px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"]]},{"op":"ins","parent":4,"id":14,"before":null},
+            {"op":"text","id":15,"data":"abcdefghij"},{"op":"ins","parent":14,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"div","attrs":[["style","width:20px;height:20px;background:red;filter:blur(2px) brightness(1.5)"]]},{"op":"ins","parent":4,"id":16,"before":null},
+            {"op":"el","id":17,"tag":"div","attrs":[["style","width:20px;height:20px;backdrop-filter:blur(4px)"]]},{"op":"ins","parent":4,"id":17,"before":null}]})J"));
+        DisplayList list = p.paint();
+        auto count = [&](Cmd kind) { return std::count_if(list.begin(), list.end(), [&](const Command& c) { return c.kind == kind; }); };
+        bool dashes = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Path && c.path && c.path->stroke && !c.path->dashes.empty(); });
+        check(dashes, "a dashed border is stroked with dashes");
+        check(count(Cmd::Image) >= 13, "a repeated background is drawn once per tile, and the image once (got " + std::to_string(count(Cmd::Image)) + ")");
+        bool contained = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Image && c.rect.w == 40 && c.rect.h == 20; });
+        check(contained, "object-fit: contain fits the image inside its box");
+        bool stops = std::any_of(list.begin(), list.end(), [](const Command& c) {
+            return c.kind == Cmd::Conic && c.stops.size() >= 4 && c.stops[1].offset == 0.5f && c.stops[2].offset == 0.5f;
+        });
+        check(stops, "a stop at 0 after one at 50% moves up to 50%");
+        bool mark = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && c.text == "\xE2\x80\xA6"; });
+        bool cut = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && !c.text.empty() && c.text.size() < 10 && c.text[0] == 'a'; });
+        check(mark && cut, "text-overflow: ellipsis cuts the line and draws the mark");
+        auto push = std::find_if(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::FilterPush; });
+        check(push != list.end() && push->filter && push->filter->size() == 2 && (*push->filter)[0].kind == Filter::Blur && (*push->filter)[0].amount == 2 &&
+                  count(Cmd::FilterPop) == 1,
+              "filter wraps the element in a FilterPush with its functions");
+        check(count(Cmd::Backdrop) == 1, "backdrop-filter draws a Backdrop");
+
+        // A canvas drawn from a canvas made in the same batch, whose drawing comes after.
+        Renderer c(300, 1, false, ib);
+        c.receive(parse(PAGE));
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","40"],["height","40"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"canvas","id":40,"cmds":[["c","drawImage",{"n":41},0,0]]},
+            {"op":"el","id":41,"tag":"canvas","attrs":[["width","10"],["height","10"]]},
+            {"op":"canvas","id":41,"cmds":[["s","fillStyle","#ff0000"],["c","fillRect",0,0,10,10]]}]})"));
+        bool sourced = false;
+        for (const auto& run : ib.runs)
+            for (const CanvasOp& op : run)
+                if (op.kind == CanvasOp::Image && op.canvas == 41) sourced = true;
+        check(sourced, "drawImage of a canvas drawn later in the batch draws it");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
