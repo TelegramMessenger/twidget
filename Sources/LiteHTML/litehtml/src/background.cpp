@@ -856,8 +856,9 @@ namespace litehtml
         {
             repeating = true;
         }
-        int  none_units      = 0;
-        bool has_transparent = false;
+        // Which positions the stylesheet gave: an explicit 0 is a position, not a missing one.
+        std::vector<bool> given;
+        bool              has_transparent = false;
         for(const auto& item : colors)
         {
             if(item.is_color_hint)
@@ -881,71 +882,57 @@ namespace litehtml
                 color_points.emplace_back(*item.angle / 360, item.color);
             } else
             {
-                if(!color_points.empty())
-                {
-                    none_units++;
-                }
                 color_points.emplace_back(0.0f, item.color);
             }
+            given.push_back(item.length || item.angle);
         }
         if(color_points.empty())
         {
             return false;
         }
 
-        if(!repeating)
+        // https://drafts.csswg.org/css-images-4/#color-stop-fixup: the first stop defaults to 0 and the last to
+        // 100%, a position before a larger one moves up to it, and the stops between two positions share the gap.
+        if(!given.front())
         {
-            // Add color point with offset 0 if not exists
-            if(pixel_t(color_points[0].offset) != 0_px)
-            {
-                color_points.emplace(color_points.begin(), 0.0f, color_points[0].color);
-            }
-            // Add color point with offset 1.0 if not exists
-            if(pixel_t(color_points.back().offset) < 1_px)
-            {
-                if(pixel_t(color_points.back().offset) == 0_px)
-                {
-                    color_points.back().offset = 1;
-                    none_units--;
-                } else
-                {
-                    color_points.emplace_back(1.0f, color_points.back().color);
-                }
-            }
-        } else
+            color_points.front().offset = 0;
+            given.front()               = true;
+        }
+        if(!given.back())
         {
-            // Add color point with offset 1.0 if not exists
-            if(pixel_t(color_points.back().offset) == 0_px)
+            color_points.back().offset = 1;
+            given.back()               = true;
+        }
+        float largest = color_points.front().offset;
+        for(size_t i = 0; i < color_points.size(); i++)
+        {
+            if(given[i])
             {
-                color_points.back().offset = 1;
-                none_units--;
+                color_points[i].offset = std::max(color_points[i].offset, largest);
+                largest                = color_points[i].offset;
             }
         }
-
-        if(none_units > 0)
+        for(size_t i = 1; i < color_points.size(); i++)
         {
-            size_t i = 1;
-            while(i < color_points.size())
+            if(given[i])
+                continue;
+            size_t j = i;
+            while(!given[j])
+                j++;
+            const float from = color_points[i - 1].offset, to = color_points[j].offset;
+            for(size_t k = i; k < j; k++)
+                color_points[k].offset = from + (to - from) * static_cast<float>(k - i + 1) / static_cast<float>(j - i + 1);
+            i = j;
+        }
+        if(!repeating)
+        {
+            if(color_points.front().offset > 0)
             {
-                if(pixel_t(color_points[i].offset) != 0_px)
-                {
-                    i++;
-                    continue;
-                }
-                // Find next defined offset
-                size_t j = i + 1;
-                while(pixel_t(color_points[j].offset) == 0_px)
-                {
-                    j++;
-                }
-                size_t num    = j - i;
-                float  sum    = color_points[i - 1].offset + color_points[j].offset;
-                float  offset = sum / static_cast<float>(num + 1);
-                while(i < j)
-                {
-                    color_points[i].offset = color_points[i - 1].offset + offset;
-                    i++;
-                }
+                color_points.emplace(color_points.begin(), 0.0f, color_points.front().color);
+            }
+            if(color_points.back().offset < 1)
+            {
+                color_points.emplace_back(1.0f, color_points.back().color);
             }
         }
 
