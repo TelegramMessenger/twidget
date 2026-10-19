@@ -426,14 +426,18 @@ litehtml::pixel_t litehtml::table_grid::calc_table_width(pixel_t block_width, bo
     if(available > 0 && num_auto)
     {
         available += alloc_auto;
+        int autos_left = num_auto;
         for(int col = 0; col < n; col++)
         {
-            if(kinds[col] == kind_auto && total_auto > 0)
+            if(kinds[col] == kind_auto)
             {
-                const float w = std::max(widths[col], available * maxs[col] / total_auto);
-                available    -= w;
-                total_auto   -= maxs[col];
-                widths[col]   = w;
+                // Auto columns with no content to weigh them by share evenly.
+                const float share = total_auto > 0 ? available * maxs[col] / total_auto : available / float(autos_left);
+                const float w     = std::max(widths[col], share);
+                available        -= w;
+                total_auto       -= maxs[col];
+                autos_left--;
+                widths[col]       = w;
             }
         }
     }
