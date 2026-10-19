@@ -1420,6 +1420,26 @@ public:
         // the border box bounds the drawing too
         Rect b = rect_of(layer.border_box);
         clip_intersect(c.clip, b);
+        // background-repeat: the tile is placed once by litehtml and repeated here over the clip, as one
+        // command per tile, up to a bound past which a painter would only be slowed down.
+        const bool across = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_x;
+        const bool down = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_y;
+        const Rect tile = c.rect;
+        if ((across || down) && tile.w >= 1 && tile.h >= 1 && !c.clip.empty()) {
+            float x0 = across ? tile.x - std::ceil((tile.x - c.clip.x) / tile.w) * tile.w : tile.x;
+            float y0 = down ? tile.y - std::ceil((tile.y - c.clip.y) / tile.h) * tile.h : tile.y;
+            float x1 = across ? c.clip.x + c.clip.w : tile.x + tile.w, y1 = down ? c.clip.y + c.clip.h : tile.y + tile.h;
+            if (std::ceil((x1 - x0) / tile.w) * std::ceil((y1 - y0) / tile.h) <= 4096) {
+                for (float y = y0; y < y1; y += tile.h) {
+                    for (float x = x0; x < x1; x += tile.w) {
+                        Command t = c;
+                        t.rect = Rect{x, y, tile.w, tile.h};
+                        list_.push_back(std::move(t));
+                    }
+                }
+                return;
+            }
+        }
         list_.push_back(std::move(c));
     }
 
