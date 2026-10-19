@@ -73,7 +73,9 @@ textarea{display:block;min-height:3em;white-space:pre-wrap;overflow-wrap:break-w
 progress,meter{display:inline-block;width:10em;height:1em;background:#e6e6e6;border-radius:2px}
 canvas{display:inline-block;background:transparent}
 svg{display:inline-block}
-details>summary{display:block;cursor:pointer}
+details{display:block}
+details>summary:first-of-type{display:list-item;list-style:disclosure-closed inside;cursor:pointer}
+details[open]>summary:first-of-type{list-style-type:disclosure-open}
 details:not([open])>*:not(summary){display:none}
 dialog:not([open]){display:none}
 [hidden]{display:none}
@@ -1234,6 +1236,28 @@ public:
         case litehtml::list_style_type_disc: c.kind = Cmd::FillEllipse; break;
         case litehtml::list_style_type_circle: c.kind = Cmd::StrokeEllipse; c.width = 1; break;
         case litehtml::list_style_type_square: c.kind = Cmd::FillRect; break;
+        case litehtml::list_style_type_disclosure_open:
+        case litehtml::list_style_type_disclosure_closed: {
+            // The marker box is a third of the font size; the triangle takes half of it, in the 1em
+            // an inside marker is given.
+            float em = c.rect.w * 3, cx = c.rect.x + em * 0.3f, cy = c.rect.y + c.rect.h / 2;
+            bool open = marker.marker_type == litehtml::list_style_type_disclosure_open;
+            const float closed_points[] = {-0.2f, -0.25f, 0.25f, 0, -0.2f, 0.25f};
+            const float open_points[] = {-0.25f, -0.2f, 0.25f, -0.2f, 0, 0.25f};
+            const float* points = open ? open_points : closed_points;
+            auto triangle = std::make_shared<Path>();
+            for (int i = 0; i < 6; i += 2) {
+                triangle->ops.push_back(i ? Path::Line : Path::Move);
+                triangle->points.push_back(cx + points[i] * em);
+                triangle->points.push_back(cy + points[i + 1] * em);
+            }
+            triangle->ops.push_back(Path::Close);
+            triangle->fill = true;
+            triangle->fill_color = c.color;
+            c.kind = Cmd::Path;
+            c.path = std::move(triangle);
+            break;
+        }
         default: {
             auto it = fonts_.find(marker.font);
             if (it == fonts_.end()) return;
@@ -1937,6 +1961,32 @@ void Renderer::flush_pending(std::vector<Json>& out) {
     pending_events_.clear();
     for (auto& v : pending_violations_) out.push_back(Json::object().set("type", "violation").set("detail", v));
     pending_violations_.clear();
+}
+
+void Renderer::toggle_details(int64_t clicked, std::vector<Json>& out) {
+    const Node* summary = node(clicked);
+    for (; summary && summary->tag != "summary"; summary = summary->parent)
+        if (prevent_.count(std::to_string(summary->id) + ":click")) return;
+    if (!summary || prevent_.count(std::to_string(summary->id) + ":click")) return;
+    Node* details = summary->parent;
+    if (!details || details->tag != "details") return;
+    // Only its first summary opens it.
+    for (const Node* c : details->children) {
+        if (c->kind == Node::Element && c->tag == "summary") {
+            if (c != summary) return;
+            break;
+        }
+    }
+    auto open = std::find_if(details->attrs.begin(), details->attrs.end(), [](const auto& a) { return a.first == "open"; });
+    bool opening = open == details->attrs.end();
+    if (opening) details->attrs.emplace_back("open", "");
+    else details->attrs.erase(open);
+    if (attached(details)) patch_log_.valid = false;
+    stale_ = true;
+    // The sandbox mirrors `open` from the event (widget-sandbox forms.ts).
+    Json ev = event_json("toggle", details->id, box_of(details->id), Input{});
+    ev.set("open", opening);
+    dispatch(std::move(ev), out);
 }
 
 void Renderer::report_resizes(std::vector<Json>& out) {
@@ -4292,6 +4342,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             Rect rect = click == done.target ? done.target_rect : up_rect;
             emit_event("click", click, rect, done, 2, out);
             if (click_count_ == 2) emit_event("dblclick", click, rect, done, 2, out);
+            toggle_details(click, out);
             // A tap on a text control edits it; one anywhere else ends the editing.
             if (int64_t control = text_control(click)) focus(control, out);
             else if (editing_.id) blur(out);

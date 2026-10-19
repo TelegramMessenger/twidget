@@ -253,6 +253,8 @@ private:
     void flush_pending(std::vector<twidget::Json>& out);
     /// `resize` for the ResizeObserver targets whose content box changed since the last one.
     void report_resizes(std::vector<twidget::Json>& out);
+    /// A click's default action on a <details>' summary: open or close it, and send `toggle`.
+    void toggle_details(int64_t clicked, std::vector<twidget::Json>& out);
     /// The sandbox wants events of `type` (it listens, or every widget gets them).
     bool listened(const char* type) const;
     void send_event(const char* type, int64_t target, const Input& in, std::vector<twidget::Json>& out);

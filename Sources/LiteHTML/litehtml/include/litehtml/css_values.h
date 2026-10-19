@@ -171,8 +171,8 @@ namespace litehtml
     // ==========================================================
     // CSS Property: list-style-type
     // ==========================================================
-    inline constexpr auto list_style_type_strings = split_css_values<22>(
-        "none;circle;disc;square;armenian;cjk-ideographic;decimal;decimal-leading-zero;georgian;hebrew;hiragana;"
+    inline constexpr auto list_style_type_strings = split_css_values<24>(
+        "none;circle;disc;square;disclosure-open;disclosure-closed;armenian;cjk-ideographic;decimal;decimal-leading-zero;georgian;hebrew;hiragana;"
         "hiragana-iroha;katakana;katakana-iroha;lower-alpha;lower-greek;lower-latin;lower-roman;upper-alpha;"
         "upper-latin;upper-roman");
 
@@ -182,6 +182,9 @@ namespace litehtml
         list_style_type_circle,
         list_style_type_disc,
         list_style_type_square,
+        // Shapes like the three above (anything from armenian on is text): <summary>'s triangles.
+        list_style_type_disclosure_open,
+        list_style_type_disclosure_closed,
         list_style_type_armenian,
         list_style_type_cjk_ideographic,
         list_style_type_decimal,
