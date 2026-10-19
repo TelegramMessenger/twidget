@@ -17,6 +17,10 @@ each platform's painter needs its own run.
 | 2026-10-18 | 3420fc5 (computed style) | 111 / 38 / 14 / 10 | 73 / 2 / 5 |
 | 2026-10-18 | 099f3cb (inline boxes) | 120 / 32 / 11 / 10 | 73 / 2 / 5 |
 | 2026-10-18 | image load and error (E1) | 121 / 32 / 10 / 10 | 73 / 2 / 5 |
+| 2026-10-19 | the small fixes (Q2, E5, E6, L5, L10, L12, O1–O3, sans-serif) | 129 / 26 / 8 / 10 | 79 / 1 / 0 |
+
+The 10 untested features are the host's (limits, restart, storage, gesture claims, message edits, size
+hints): the automatic set does not reach them, and each client checks them in its own host.
 
 For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
 66 / 41 / 52 in widget-sandbox's own results.
@@ -34,6 +38,14 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | `getComputedStyle` answered for every property the fork computes, as Chromium writes it | `computed_style.cpp` |
 | An inline element's rect is its line boxes, with a rect per line | `inline_boxes_of` |
 | `<img>` sends `load` with its natural size, or `error` | `Renderer::load_images` |
+| `scrollWidth` and `scrollHeight` reach the overflowing content | `content_extent` |
+| `pointer-events: none` passes a hit to what is below | `Container::hittable` |
+| Pointer and mouse events carry `movementX` and `movementY` | `Renderer::emit_event`, `dispatch` |
+| `initial`, `unset` and `revert` | the fork's `css_wide_keyword`, `html_tag::ua_property` |
+| Every CSS colour name, `rebeccapurple` included | the fork's `web_color.cpp` |
+| A refused image is widget-sandbox's 48 px placeholder | `Container::draw_placeholder` |
+| A canvas gradient with no length (the validator's conic gradient or pattern) paints nothing | `Canvas::paint_of` |
+| On Windows, `sans-serif` and Helvetica are Arial, as in browsers | `D2DBackend::resolve_family` |
 
 ## To do
 
@@ -44,7 +56,6 @@ not a diagnosis.
 
 | # | Item | Fails | First suspect |
 |---|---|---|---|
-| Q2 | **scrollHeight** of overflowing content | `js.layout.box` | `box` reports the client height |
 | Q3 | **SVG queries:** `getComputedTextLength`, and viewBox scaling seen through `getCTM`/rects | `svg.text`, `svg.structure` | the `svg` query |
 
 ### Events
@@ -54,8 +65,6 @@ not a diagnosis.
 | E2 | **`animationstart`** | `anim.events` | the animation events reach the widget only with the next host message |
 | E3 | **ResizeObserver** (`resize` to the host) | `js.layout.resize-observer` | `observeResize` |
 | E4 | **Tapping `<summary>` toggles its `<details>`** (and `toggle`) | `html.el.details` | the click's default action |
-| E5 | **movementX/Y** on pointer moves | `input.drag` | `event_json` |
-| E6 | **`pointer-events: none`** lets taps through | `css.pointer-events` | `widget_id_at` |
 
 ### Animations
 
@@ -72,14 +81,11 @@ not a diagnosis.
 | L2 | The `ch` unit; `width: fit-content` | `css.value.units`, `css.box.size` |
 | L3 | Floats push inline text aside; table cells share the row | `css.box.float`, `css.display.table` |
 | L4 | `word-break: break-all` | `css.text.wrap` |
-| L5 | CSS-wide keywords: `initial`, `unset`, `revert` | `css.value.keywords` |
 | L6 | Generated content: `::before` boxes, `attr()`, counters, `quotes`, `<q>` marks | `css.value.content`, `html.el.inline-text`, `behaviour.policy-strict` (attr of data-*) |
 | L7 | `<details>` closed is as tall as its summary; `<summary>` is a list item | `html.el.details` |
 | L8 | `dir=rtl` lays inline boxes right to left; `text-align: end` in RTL | `html.attr.dir`, `css.text.rtl`, `css.text.align` |
 | L9 | Selectors: `:lang()`, `:empty` with whitespace | `html.attr.global`, `sel.structural` |
-| L10 | Named colours (`rebeccapurple`) | `css.color.basic` |
 | L11 | The `translate` property | `css.transform.2d` |
-| L12 | `<p>` block margins (1em) | `html.el.structure` |
 | L13 | `letter-spacing` and `word-spacing` widen the text | `css.text.transform` |
 
 ### Painting (Direct2D; each painter to check on its platform)
@@ -94,17 +100,13 @@ not a diagnosis.
 | P6 | 2D transforms stage | `css.transform.2d` |
 | P7 | `text-overflow: ellipsis` | `css.text.overflow` |
 | P8 | Colour emoji | `css.text.emoji` |
-| P9 | Canvas text | `canvas.text` |
-| P10 | The no-selection stage | `behaviour.no-selection` |
+| P9 | Canvas `drawImage` | `canvas.draw-image` |
 
 ### Out of the profile, not neutralised yet
 
 | # | Item | Fails |
 |---|---|---|
-| O1 | A refused image (SVG, BMP, ICO, remote) shows the 48 px placeholder | `html.el.img-svg`, `html.el.img-other-formats`, `html.el.img-remote` |
-| O2 | `createConicGradient` draws nothing | `canvas.conic-gradient` |
-| O3 | `text-shadow` stage | `css.text.shadow` |
-| O4 | Partly: legacy elements, logical properties | `html.el.legacy`, `css.box.logical` |
+| O4 | Partly: logical properties in RTL (goes with L8) | `css.box.logical` |
 
 ### Not TwidgetCore's
 
