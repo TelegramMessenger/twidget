@@ -202,13 +202,18 @@ final class ConformanceRunnerTests: XCTestCase {
         let host: WidgetHost
         let probe: ConformanceProbe
         let features: Set<String>
+        let width: CGFloat
+        let maximumHeight: CGFloat
+        private let themeFor: (String) -> WidgetTheme
         private var pointer: CGPoint?
 
-        init(html: String, theme: String, features: Set<String>) throws {
+        init(html: String, theme: String, features: Set<String>, width: CGFloat = ConformanceRunnerTests.width, maximumHeight: CGFloat = ConformanceRunnerTests.maximumHeight, themeFor: @escaping (String) -> WidgetTheme = ConformanceRunnerTests.theme, configure: (inout WidgetHost.Options) -> Void = { _ in }) throws {
             _ = NSApplication.shared
             self.features = features
-            let width = ConformanceRunnerTests.width
-            let height = ConformanceRunnerTests.maximumHeight + ConformanceRunnerTests.inputHeight + 16
+            self.width = width
+            self.maximumHeight = maximumHeight
+            self.themeFor = themeFor
+            let height = maximumHeight + ConformanceRunnerTests.inputHeight + 16
             window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             let content = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: height))
@@ -222,15 +227,16 @@ final class ConformanceRunnerTests: XCTestCase {
             var options = WidgetHost.Options()
             options.policy = .strict
             options.features = features
-            options.maximumHeight = ConformanceRunnerTests.maximumHeight
+            options.maximumHeight = maximumHeight
+            configure(&options)
             var made: ConformanceProbe?
-            host = try WidgetHost(html: html, theme: ConformanceRunnerTests.theme(theme), width: width, options: options, rendererFactory: { _, scheme, width in
+            host = try WidgetHost(html: html, theme: themeFor(theme), width: width, options: options, rendererFactory: { _, scheme, width in
                 let probe = ConformanceProbe(LiteHTMLWidgetRenderer(theme: scheme, width: width))
                 made = probe
                 return probe
             })
             probe = try XCTUnwrap(made)
-            host.view.frame = NSRect(x: 0, y: 0, width: width, height: ConformanceRunnerTests.maximumHeight)
+            host.view.frame = NSRect(x: 0, y: 0, width: width, height: maximumHeight)
             content.addSubview(host.view)
             host.onChange = { [weak self] state in
                 self?.fit(state.height)
@@ -238,9 +244,9 @@ final class ConformanceRunnerTests: XCTestCase {
         }
 
         private func fit(_ height: CGFloat) {
-            let clamped = min(max(height, 50), ConformanceRunnerTests.maximumHeight)
+            let clamped = min(max(height, 50), maximumHeight)
             if abs(host.view.frame.height - clamped) > 0.5 {
-                host.view.frame = NSRect(x: 0, y: 0, width: ConformanceRunnerTests.width, height: clamped)
+                host.view.frame = NSRect(x: 0, y: 0, width: width, height: clamped)
             }
         }
 
@@ -400,7 +406,30 @@ final class ConformanceRunnerTests: XCTestCase {
         }
 
         func setTheme(_ name: String) {
-            host.setTheme(ConformanceRunnerTests.theme(name))
+            host.setTheme(themeFor(name))
+        }
+
+        var snapshotScale: Double? {
+            guard let image = probe.inner.snapshot(), let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil), image.size.width > 0 else {
+                return nil
+            }
+            return Double(cg.width) / Double(image.size.width)
+        }
+
+        func saveSnapshot(into url: URL) -> [Double]? {
+            guard let image = probe.inner.snapshot(), let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                return nil
+            }
+            let w = Int((image.size.width * 2).rounded()), h = Int((image.size.height * 2).rounded())
+            guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                return nil
+            }
+            ctx.interpolationQuality = .high
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let out = ctx.makeImage(), let png = NSBitmapImageRep(cgImage: out).representation(using: .png, properties: [:]), (try? png.write(to: url)) != nil else {
+                return nil
+            }
+            return [Double(image.size.width), Double(image.size.height)]
         }
 
         func crop(_ rect: [Double], into url: URL) -> Bool {
@@ -447,6 +476,55 @@ final class ConformanceRunnerTests: XCTestCase {
         return String(cString: model)
     }
 
+    private func perform(_ actions: [[String: Any]], session: Session) -> [Int] {
+        let idle: (TimeInterval) -> Void = { [unowned self] seconds in self.pump(seconds) }
+        let host = session.host
+        var skipped: [Int] = []
+        for (index, action) in actions.enumerated() {
+            if host.diagnostics.dead != nil {
+                break
+            }
+            if let value = action["tap"], let point = session.target(value) {
+                session.tap(point, pump: idle)
+            } else if let value = action["dblclick"], let point = session.target(value) {
+                session.doubleTap(point, pump: idle)
+            } else if let value = action["rightclick"], let point = session.target(value) {
+                session.rightClick(point, pump: idle)
+            } else if let value = action["hover"], let point = session.target(value) {
+                session.move(to: point, steps: 4, pump: idle)
+            } else if let value = action["press"], let point = session.target(value) {
+                session.press(point, ms: (action["ms"] as? NSNumber)?.doubleValue ?? 400, pump: idle)
+            } else if let value = action["drag"], let from = session.target(value) {
+                let steps = (action["steps"] as? NSNumber)?.intValue ?? 10
+                var to: CGPoint?
+                if (action["by"] as? Bool) == true, let delta = session.target(action["to"]) {
+                    to = CGPoint(x: from.x + delta.x, y: from.y + delta.y)
+                } else {
+                    to = session.target(action["to"])
+                }
+                if let to = to {
+                    session.drag(from, to: to, steps: steps, pump: idle)
+                } else {
+                    skipped.append(index)
+                }
+            } else if let key = action["key"] as? String {
+                session.key(key, pump: idle)
+            } else if let value = action["wheel"], let point = session.target(value) {
+                session.wheel(point, dy: (action["dy"] as? NSNumber)?.doubleValue ?? 60, pump: idle)
+            } else if let name = action["theme"] as? String {
+                session.setTheme(name)
+            } else if let visible = action["visible"] as? Bool {
+                session.setVisible(visible)
+            } else if let ms = action["wait"] as? NSNumber {
+                idle(ms.doubleValue / 1000)
+            } else {
+                skipped.append(index)
+            }
+            idle(ConformanceRunnerTests.actionGap)
+        }
+        return skipped
+    }
+
     private func run(_ test: [String: Any], theme: String, root: URL, out: URL, features: Set<String>) throws -> [String: Any] {
         let id = test["id"] as? String ?? ""
         let file = test["file"] as? String ?? ""
@@ -463,48 +541,7 @@ final class ConformanceRunnerTests: XCTestCase {
         let focusHolder = session.focusHolder
         var skipped: [Int] = []
         if !actions.isEmpty, session.probe.published != nil {
-            for (index, action) in actions.enumerated() {
-                if host.diagnostics.dead != nil {
-                    break
-                }
-                if let value = action["tap"], let point = session.target(value) {
-                    session.tap(point, pump: idle)
-                } else if let value = action["dblclick"], let point = session.target(value) {
-                    session.doubleTap(point, pump: idle)
-                } else if let value = action["rightclick"], let point = session.target(value) {
-                    session.rightClick(point, pump: idle)
-                } else if let value = action["hover"], let point = session.target(value) {
-                    session.move(to: point, steps: 4, pump: idle)
-                } else if let value = action["press"], let point = session.target(value) {
-                    session.press(point, ms: (action["ms"] as? NSNumber)?.doubleValue ?? 400, pump: idle)
-                } else if let value = action["drag"], let from = session.target(value) {
-                    let steps = (action["steps"] as? NSNumber)?.intValue ?? 10
-                    var to: CGPoint?
-                    if (action["by"] as? Bool) == true, let delta = session.target(action["to"]) {
-                        to = CGPoint(x: from.x + delta.x, y: from.y + delta.y)
-                    } else {
-                        to = session.target(action["to"])
-                    }
-                    if let to = to {
-                        session.drag(from, to: to, steps: steps, pump: idle)
-                    } else {
-                        skipped.append(index)
-                    }
-                } else if let key = action["key"] as? String {
-                    session.key(key, pump: idle)
-                } else if let value = action["wheel"], let point = session.target(value) {
-                    session.wheel(point, dy: (action["dy"] as? NSNumber)?.doubleValue ?? 60, pump: idle)
-                } else if let name = action["theme"] as? String {
-                    session.setTheme(name)
-                } else if let visible = action["visible"] as? Bool {
-                    session.setVisible(visible)
-                } else if let ms = action["wait"] as? NSNumber {
-                    idle(ms.doubleValue / 1000)
-                } else {
-                    skipped.append(index)
-                }
-                idle(ConformanceRunnerTests.actionGap)
-            }
+            skipped = perform(actions, session: session)
             pump(10, until: { session.status == "done" || host.diagnostics.dead != nil })
         }
         pump(0.25)
@@ -558,7 +595,7 @@ final class ConformanceRunnerTests: XCTestCase {
         let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("manifest.json"))) as? [String: Any])
         let tests = ((manifest["tests"] as? [[String: Any]]) ?? []).filter { test in
             guard test["set"] as? String == "auto", let id = test["id"] as? String else { return false }
-            return only.map { $0.contains(id) || $0.contains(String(id.dropFirst("auto/".count))) } ?? true
+            return only.map { ConformanceRunnerTests.selected(id, by: $0) } ?? true
         }
         XCTAssertFalse(tests.isEmpty)
         var runs: [[String: Any]] = []
@@ -582,6 +619,313 @@ final class ConformanceRunnerTests: XCTestCase {
         ]
         let data = try JSONSerialization.data(withJSONObject: file, options: [.prettyPrinted, .sortedKeys])
         let path = out.appendingPathComponent("macos-twidget-litehtml.run.json")
+        try data.write(to: path)
+        print("CONFORMANCE run file \(path.path)")
+    }
+
+    static func selected(_ id: String, by only: Set<String>) -> Bool {
+        let stem = (id as NSString).lastPathComponent
+        let tail = id.split(separator: "/").dropFirst().joined(separator: "/")
+        return only.contains(id) || only.contains(stem) || only.contains(tail)
+    }
+
+    private struct ChatPalette {
+        let dark: Bool
+        let background: UInt32
+        let bubble: UInt32
+        let text: UInt32
+        let grayText: UInt32
+        let link: UInt32
+        let accent: UInt32
+        let underSelected: UInt32
+        let red: UInt32
+        let border: UInt32
+    }
+
+    private static let dayClassic = ChatPalette(dark: false, background: 0xffffff, bubble: 0xffffff, text: 0x000000, grayText: 0x999999, link: 0x2481cc, accent: 0x2481cc, underSelected: 0xffffff, red: 0xff3b30, border: 0xeaeaea)
+    private static let nightAccent = ChatPalette(dark: true, background: 0x18222d, bubble: 0x1e2c3b, text: 0xffffff, grayText: 0xb1c3d5, link: 0x62bcf9, accent: 0x2ea6ff, underSelected: 0xffffff, red: 0xef5b5b, border: 0x213040)
+    private static let chatFontSize = 13
+
+    private static func hex(_ color: UInt32, alpha: Double = 1, over base: UInt32) -> String {
+        let channel: (UInt32, UInt32) -> Double = { value, shift in Double((value >> shift) & 0xff) / 255 }
+        let mix: (Double, Double) -> Int = { value, under in Int((max(0, min(1, value * alpha + under * (1 - alpha))) * 255).rounded()) }
+        return String(format: "#%02x%02x%02x", mix(channel(color, 16), channel(base, 16)), mix(channel(color, 8), channel(base, 8)), mix(channel(color, 0), channel(base, 0)))
+    }
+
+    static func productionTheme(_ name: String) -> WidgetTheme {
+        let palette = name == "dark" ? nightAccent : dayClassic
+        let bg = hex(palette.bubble, over: palette.background)
+        let text = hex(palette.text, over: palette.bubble)
+        let hint = hex(palette.grayText, over: palette.bubble)
+        let link = hex(palette.link, over: palette.bubble)
+        let button = hex(palette.accent, over: palette.bubble)
+        let buttonText = hex(palette.underSelected, over: palette.accent)
+        let params: [String: String] = [
+            "bg_color": bg,
+            "text_color": text,
+            "hint_color": hint,
+            "link_color": link,
+            "button_color": button,
+            "button_text_color": buttonText,
+            "secondary_bg_color": hex(palette.link, alpha: 0.1, over: palette.bubble),
+            "accent_text_color": link,
+            "subtitle_text_color": hint,
+            "destructive_text_color": hex(palette.red, over: palette.bubble),
+            "section_bg_color": bg,
+            "section_header_text_color": hint,
+            "section_separator_color": hex(palette.border, over: palette.bubble),
+            "header_bg_color": bg,
+            "bottom_bar_bg_color": bg,
+        ]
+        let tokens = WidgetButtonTokens(bg: button, text: buttonText, radius: "10px", font: "500 \(chatFontSize)px system-ui")
+        return WidgetTheme(colorScheme: palette.dark ? .dark : .light, params: params, button: tokens)
+    }
+
+    private static let referencePalettes: [String: [String: String]] = [
+        "light": ["bg_color": "#ffffff", "text_color": "#000000", "hint_color": "#707579", "link_color": "#3390ec", "button_color": "#3390ec", "button_text_color": "#ffffff", "secondary_bg_color": "#f4f4f5", "accent_text_color": "#3390ec", "subtitle_text_color": "#707579", "destructive_text_color": "#e53935", "section_bg_color": "#ffffff", "section_header_text_color": "#3390ec", "section_separator_color": "#e7e7e7", "header_bg_color": "#ffffff", "bottom_bar_bg_color": "#ffffff"],
+        "dark": ["bg_color": "#212121", "text_color": "#ffffff", "hint_color": "#aaaaaa", "link_color": "#8774e1", "button_color": "#8774e1", "button_text_color": "#ffffff", "secondary_bg_color": "#181818", "accent_text_color": "#8774e1", "subtitle_text_color": "#aaaaaa", "destructive_text_color": "#ff595a", "section_bg_color": "#212121", "section_header_text_color": "#8774e1", "section_separator_color": "#3d3d3d", "header_bg_color": "#212121", "bottom_bar_bg_color": "#212121"],
+    ]
+
+    static func referenceTheme(_ name: String) -> WidgetTheme {
+        let params = referencePalettes[name] ?? [:]
+        let tokens = WidgetButtonTokens(bg: params["button_color"], text: params["button_text_color"], radius: "10px", font: "500 \(chatFontSize)px system-ui")
+        return WidgetTheme(colorScheme: name == "dark" ? .dark : .light, params: params, button: tokens)
+    }
+
+    private final class MemoryStorage {
+        var areas: [String: WidgetStorage] = [:]
+
+        func json(_ id: String) -> [String: Any] {
+            let storage = areas[id] ?? WidgetStorage()
+            let bytes: ([String: String]) -> Int = { $0.reduce(0) { $0 + $1.key.utf16.count + $1.value.utf16.count } }
+            return ["local": ["keys": storage.local.count, "units": bytes(storage.local), "values": storage.local.mapValues { String($0.prefix(40)) }],
+                    "session": ["keys": storage.session.count, "units": bytes(storage.session), "values": storage.session.mapValues { String($0.prefix(40)) }]]
+        }
+    }
+
+    private final class Recorder {
+        var actions: [[String: Any]] = []
+        var claims: [[String: Any]] = []
+        var commits: [[String: Any]] = []
+
+        func attach(_ host: WidgetHost, id: String, storage: MemoryStorage) {
+            host.onAction = { [weak self] action in
+                self?.actions.append(Recorder.describe(action))
+            }
+            host.onGestureClaim = { [weak self] claim in
+                self?.claims.append(["x": claim.x, "y": claim.y])
+            }
+            host.onStorageCommit = { [weak self, weak storage] area, values in
+                var current = storage?.areas[id] ?? WidgetStorage()
+                switch area {
+                case .local: current.local = values
+                case .session: current.session = values
+                }
+                storage?.areas[id] = current
+                self?.commits.append(["area": area.rawValue, "keys": values.count])
+            }
+        }
+
+        static func describe(_ action: WidgetAction) -> [String: Any] {
+            switch action {
+            case .ready: return ["action": "ready"]
+            case .openLink(let url): return ["action": "openLink", "url": url.absoluteString]
+            case .openTelegramLink(let url): return ["action": "openTelegramLink", "url": url.absoluteString]
+            case .haptic(.impact(let style)): return ["action": "haptic", "kind": "impact", "value": style]
+            case .haptic(.notification(let type)): return ["action": "haptic", "kind": "notification", "value": type]
+            case .haptic(.selection): return ["action": "haptic", "kind": "selection"]
+            }
+        }
+    }
+
+    private func orderedTargets(_ published: [String: Any]?) -> [(name: String, box: [Double])] {
+        let targets = (published?["targets"] as? [String: Any]) ?? [:]
+        return targets.compactMap { name, value -> (name: String, box: [Double])? in
+            guard let box = (value as? [NSNumber])?.map({ $0.doubleValue }), box.count == 4, box[2] > 0, box[3] > 0 else { return nil }
+            return (name, box)
+        }.sorted { a, b in abs(a.box[1] - b.box[1]) > 4 ? a.box[1] < b.box[1] : a.box[0] < b.box[0] }
+    }
+
+    private func checksSummary(_ published: [String: Any]?) -> [String: Any] {
+        let checks = (published?["checks"] as? [[Any]]) ?? []
+        let counts = Dictionary(grouping: checks.compactMap { $0.count > 2 ? $0[2] as? String : nil }, by: { $0 }).mapValues { $0.count }
+        return ["status": published?["status"] as? String ?? "none", "counts": counts, "checks": checks]
+    }
+
+    private func runVisual(_ test: [String: Any], theme: String, width: CGFloat, root: URL, out: URL, features: Set<String>, themeFor: @escaping (String) -> WidgetTheme, storage: MemoryStorage, explore: Bool) throws -> [String: Any] {
+        let id = test["id"] as? String ?? ""
+        let file = test["file"] as? String ?? ""
+        let actions = (test["actions"] as? [[String: Any]]) ?? []
+        let isSdk = id.hasPrefix("visual/sdk/")
+        let html = try String(contentsOf: root.appendingPathComponent(file), encoding: .utf8)
+        let cap: CGFloat = isSdk ? ConformanceRunnerTests.maximumHeight : ConformanceRunnerTests.visualHeight
+        let configure: (inout WidgetHost.Options) -> Void = { options in
+            options.locale = "en-US"
+            options.storage = storage.areas[id] ?? WidgetStorage()
+        }
+        let recorder = Recorder()
+        var session: Session? = try Session(html: html, theme: theme, features: features, width: width, maximumHeight: cap, themeFor: themeFor, configure: configure)
+        defer { session?.close() }
+        guard let live = session else { return [:] }
+        recorder.attach(live.host, id: id, storage: storage)
+        let host = live.host
+        let started = Date()
+        pump(30, until: { host.diagnostics.loaded || host.diagnostics.dead != nil })
+        pump(8, until: { ["done", "awaiting"].contains(live.status ?? "") || host.diagnostics.dead != nil })
+        let readyMs = Date().timeIntervalSince(started) * 1000
+        let before = checksSummary(live.probe.published)
+        let chatFocused = live.chatFocused
+        var skipped: [Int] = []
+        if !actions.isEmpty, live.probe.published != nil {
+            skipped = perform(actions, session: live)
+            pump(3, until: { live.status == "done" || host.diagnostics.dead != nil })
+        }
+        pump(0.3)
+        let published = live.probe.published
+        let state = host.diagnostics
+        let viewHeight = Double(host.view.frame.height)
+        let stem = id.replacingOccurrences(of: "visual/", with: "").replacingOccurrences(of: "/", with: "_")
+        let suffix = "\(stem).\(theme).\(Int(width))"
+        let crops = out.appendingPathComponent("crops")
+        let full = out.appendingPathComponent("full")
+        try FileManager.default.createDirectory(at: crops, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: full, withIntermediateDirectories: true)
+        let rects = (published?["stages"] as? [String: Any]) ?? [:]
+        var stages: [[String: Any]] = []
+        for stage in (test["stages"] as? [[String: Any]]) ?? [] {
+            guard let name = stage["name"] as? String, ((stage["themes"] as? [String]) ?? []).contains(theme) else {
+                continue
+            }
+            guard let rect = (rects[name] as? [NSNumber])?.map({ $0.doubleValue }), rect.count == 4 else {
+                stages.append(["name": name, "status": "skip", "diff": NSNull(), "detail": "the widget published no rect"])
+                continue
+            }
+            let relative = "crops/\(stem).\(theme).\(Int(width)).\(name).png"
+            if live.crop(rect, into: out.appendingPathComponent(relative)) {
+                stages.append(["name": name, "crop": relative, "rect": rect, "beyondCap": rect[1] + rect[3] > Double(ConformanceRunnerTests.maximumHeight)])
+            } else {
+                stages.append(["name": name, "status": "skip", "diff": NSNull(), "detail": "no snapshot", "rect": rect])
+            }
+        }
+        let snapshotSize = live.saveSnapshot(into: full.appendingPathComponent("\(suffix).png"))
+        var sdk: [String: Any] = [:]
+        if isSdk {
+            var probe: [[String: Any]] = []
+            if explore && actions.isEmpty && host.diagnostics.dead == nil {
+                let idle: (TimeInterval) -> Void = { [unowned self] seconds in self.pump(seconds) }
+                for target in orderedTargets(live.probe.published) {
+                    if host.diagnostics.dead != nil {
+                        probe.append(["target": target.name, "skipped": "widget dead"])
+                        continue
+                    }
+                    let mark = recorder.actions.count
+                    live.tap(CGPoint(x: target.box[0] + target.box[2] / 2, y: target.box[1] + target.box[3] / 2), pump: idle)
+                    idle(0.6)
+                    probe.append(["target": target.name, "actions": Array(recorder.actions[mark...]), "dead": host.diagnostics.dead ?? NSNull()])
+                }
+                if !probe.isEmpty {
+                    let mark = recorder.actions.count
+                    pump(2.5)
+                    probe.append(["target": "(2.5 s after the last tap)", "actions": Array(recorder.actions[mark...])])
+                    _ = live.saveSnapshot(into: full.appendingPathComponent("\(suffix).probed.png"))
+                }
+            }
+            sdk["probeTaps"] = probe
+            sdk["afterProbe"] = checksSummary(live.probe.published)
+            sdk["deadAfterProbe"] = host.diagnostics.dead ?? NSNull()
+            sdk["actions"] = recorder.actions
+            sdk["gestureClaims"] = recorder.claims.count
+            sdk["gestureClaimsWithX"] = recorder.claims.filter { ($0["x"] as? Bool) == true }.count
+            sdk["storageCommits"] = recorder.commits
+            sdk["bridge"] = host.diagnostics.bridge.map { ["method": $0.method, "args": String($0.argsJson.prefix(300))] }
+            sdk["diags"] = host.diagnostics.diags.mapValues { ["count": $0.count, "details": Array($0.details.prefix(4))] }
+            if explore {
+                live.close()
+                session = nil
+                let again = try Session(html: html, theme: theme, features: features, width: width, maximumHeight: cap, themeFor: themeFor, configure: configure)
+                let second = Recorder()
+                second.attach(again.host, id: id, storage: storage)
+                pump(30, until: { again.host.diagnostics.loaded || again.host.diagnostics.dead != nil })
+                pump(5, until: { ["done", "awaiting"].contains(again.status ?? "") || again.host.diagnostics.dead != nil })
+                pump(0.5)
+                _ = again.saveSnapshot(into: full.appendingPathComponent("\(suffix).recreated.png"))
+                sdk["recreated"] = ["published": checksSummary(again.probe.published), "dead": again.host.diagnostics.dead ?? NSNull(), "actions": second.actions, "height": Double(again.host.diagnostics.height)] as [String: Any]
+                again.close()
+            }
+            sdk["storage"] = storage.json(id)
+        }
+        let errors = state.logs.filter { $0.level == "error" }.map { String(($0.text.components(separatedBy: "\n").first ?? "").prefix(200)) }
+        let checks = (published?["checks"] as? [[Any]]) ?? []
+        print("CONFORMANCE \(id) \(theme) w\(Int(width)) \(published?["status"] as? String ?? "none") checks=\(checks.count) stages=\(stages.count) height=\(state.height) view=\(viewHeight) actions=\(recorder.actions.count)\(state.dead.map { " DEAD \($0)" } ?? "")")
+        var run: [String: Any] = [
+            "id": id, "theme": theme, "width": Double(width),
+            "loaded": state.loaded, "dead": state.dead ?? NSNull(), "status": published?["status"] as? String ?? "none",
+            "checks": checks, "stages": stages,
+            "observed": ["bridge": state.bridge.map { ["method": $0.method, "args": String($0.argsJson.prefix(300))] }, "height": Double(state.height), "viewHeight": viewHeight, "cap": Double(cap), "chatFocused": chatFocused, "syntheticInput": false, "snapshotScale": live.snapshotScale ?? NSNull(), "snapshotSize": snapshotSize ?? NSNull(), "readyMs": readyMs] as [String: Any],
+            "full": "full/\(suffix).png",
+            "before": before,
+            "skippedActions": skipped, "errors": errors,
+        ]
+        if isSdk {
+            run["sdk"] = sdk
+        }
+        return run
+    }
+
+    private static let visualHeight: CGFloat = 2400
+
+    func testVisualSet() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["TW_CONFORMANCE_SET"] == "visual" else {
+            throw XCTSkip("set TW_CONFORMANCE_SET=visual to run the widget-sandbox visual set")
+        }
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let sandbox = environment["TWIDGET_WIDGET_SANDBOX"].map { URL(fileURLWithPath: $0) } ?? repository.deletingLastPathComponent().appendingPathComponent("widget-sandbox")
+        let root = sandbox.appendingPathComponent("packages/conformance")
+        let out = URL(fileURLWithPath: environment["TW_CONFORMANCE_OUT"] ?? NSTemporaryDirectory() + "twidget-conformance-visual")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let features = Set((environment["TW_CONFORMANCE_FEATURES"] ?? "webAnimations").split(separator: ",").map(String.init))
+        let only = environment["TW_CONFORMANCE_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
+        let paletteName = environment["TW_CONFORMANCE_PALETTE"] ?? "production"
+        let themeFor: (String) -> WidgetTheme = paletteName == "reference" ? ConformanceRunnerTests.referenceTheme : ConformanceRunnerTests.productionTheme
+        let widthFilter = environment["TW_CONFORMANCE_WIDTHS"].map { Set($0.split(separator: ",").compactMap { Double($0) }) }
+        let exploreWidth = Double(environment["TW_CONFORMANCE_PROBE_WIDTH"] ?? "390") ?? 390
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("manifest.json"))) as? [String: Any])
+        let tests = ((manifest["tests"] as? [[String: Any]]) ?? []).filter { test in
+            guard test["set"] as? String == "visual", let id = test["id"] as? String else { return false }
+            return only.map { ConformanceRunnerTests.selected(id, by: $0) } ?? true
+        }
+        XCTAssertFalse(tests.isEmpty)
+        let storage = MemoryStorage()
+        var runs: [[String: Any]] = []
+        for test in tests {
+            let widths = ((test["widths"] as? [NSNumber]) ?? [390]).map { $0.doubleValue }.filter { widthFilter?.contains($0) ?? true }
+            for width in widths {
+                for theme in (test["themes"] as? [String]) ?? ["light"] {
+                    storage.areas[test["id"] as? String ?? ""] = nil
+                    let explore = width == exploreWidth
+                    runs.append(try autoreleasepool { try runVisual(test, theme: theme, width: CGFloat(width), root: root, out: out, features: features, themeFor: themeFor, storage: storage, explore: explore) })
+                }
+            }
+        }
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let tag = ConformanceRunnerTests.git(sandbox.path, ["describe", "--tags", "--always"])
+        let file: [String: Any] = [
+            "platform": "macos",
+            "renderer": "twidget-litehtml",
+            "engine": "macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion), \(ConformanceRunnerTests.machine), DPR \(NSScreen.main?.backingScaleFactor ?? 1)",
+            "framework": "\(tag) (\(ConformanceRunnerTests.git(sandbox.path, ["rev-parse", "--short", "HEAD"])))",
+            "commit": ConformanceRunnerTests.git(repository.path, ["rev-parse", "--short", "HEAD"]),
+            "policy": "strict",
+            "features": features.sorted(),
+            "palette": paletteName,
+            "themeParams": ["light": themeFor("light").params, "dark": themeFor("dark").params],
+            "locale": "en-US",
+            "date": ISO8601DateFormatter().string(from: Date()),
+            "runs": runs,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: file, options: [.prettyPrinted, .sortedKeys])
+        let path = out.appendingPathComponent("macos-twidget-litehtml.visual.run.json")
         try data.write(to: path)
         print("CONFORMANCE run file \(path.path)")
     }
