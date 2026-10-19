@@ -1049,12 +1049,66 @@ namespace litehtml
 
             void draw_children(const element::ptr& el, int inherited = -1, int depth = 0)
             {
-                float diag = std::sqrt((m_view[2] * m_view[2] + m_view[3] * m_view[3]) / 2);
                 for(const auto& child : el->children())
+                {
+                    draw_child(child, inherited, depth);
+                }
+            }
+
+            // <use>: the element it names, moved to x, y; a <symbol> has its view box fitted into width × height.
+            void draw_use(const element::ptr& use, int visibility, int depth)
+            {
+                const char* href = use->get_attr("href");
+                if(!href)
+                    href = use->get_attr("xlink:href");
+                if(!href || href[0] != '#' || !href[1] || depth > 8)
+                    return;
+                element::ptr target;
+                if(auto root = use->get_document()->root())
+                    target = root->select_one(std::string("#") + (href + 1));
+                if(!target)
+                    return;
+                for(element::ptr p = use; p; p = p->parent())
+                {
+                    if(p == target)
+                        return;
+                }
+                transform_matrix m{1, 0, 0, 1, attr_length(use, "x", m_view[2], 0), attr_length(use, "y", m_view[3], 0)};
+                const bool symbol = lowcase(target->get_tagName() ? target->get_tagName() : "") == "symbol";
+                std::vector<float> box = numbers(target->get_attr("viewbox"));
+                if(symbol && box.size() == 4 && box[2] > 0 && box[3] > 0)
+                {
+                    const float w = attr_length(use, "width", m_view[2], m_view[2]), h = attr_length(use, "height", m_view[3], m_view[3]);
+                    const float s = std::min(w / box[2], h / box[3]);
+                    m = transform_matrix{s, 0, 0, s, -box[0] * s + (w - box[2] * s) / 2, -box[1] * s + (h - box[3] * s) / 2}.then(m);
+                }
+                const transform_matrix saved = m_matrix;
+                if(m_hit_mode)
+                {
+                    m_matrix = m.then(m_matrix);
+                } else
+                {
+                    paint_group group;
+                    group.matrix = m;
+                    group.bounds = position(-100000, -100000, 200000, 200000);
+                    m_container->begin_group(m_hdc, group);
+                }
+                if(symbol)
+                    draw_children(target, visibility, depth + 1);
+                else
+                    draw_child(target, visibility, depth + 1);
+                if(!m_hit_mode)
+                    m_container->end_group(m_hdc);
+                m_matrix = saved;
+            }
+
+            void draw_child(const element::ptr& child, int inherited, int depth)
+            {
+                const float diag = std::sqrt((m_view[2] * m_view[2] + m_view[3] * m_view[3]) / 2);
                 {
                     if(child->is_text() || child->css().get_display() == display_none || attribute_hides(child))
                     {
-                        continue;
+                        return;
                     }
                     int visibility = attribute_visibility(child);
                     if(visibility < 0)
@@ -1066,7 +1120,7 @@ namespace litehtml
                     if(is_one_of(name, "defs", "style", "title", "desc", "lineargradient", "radialgradient",
                                  "clippath", "mask", "pattern", "symbol", "marker", "filter", "script", "metadata"))
                     {
-                        continue;
+                        return;
                     }
                     float opacity = child->css().get_opacity();
                     if(const char* attr = child->get_attr("opacity"))
@@ -1177,6 +1231,9 @@ namespace litehtml
                     } else if(name == "text")
                     {
                         draw_text(child);
+                    } else if(name == "use")
+                    {
+                        draw_use(child, visibility, depth);
                     }
                     if(grouped)
                     {
