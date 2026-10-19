@@ -2,6 +2,7 @@
 #include "css_properties.h"
 #include <cmath>
 #include "document.h"
+#include "css_parser.h"
 #include "html_tag.h"
 #include "document_container.h"
 #include "types.h"
@@ -611,16 +612,30 @@ void litehtml::css_properties::compute_opacity(const html_tag* el)
 void litehtml::css_properties::compute_transform(const html_tag* el, const std::shared_ptr<document>& doc)
 {
     m_transform.clear();
+    // translate, rotate and scale apply first, in that order, then transform: each is the function of
+    // its name with the property's values as arguments.
+    for(string_id name : {_translate_, _rotate_, _scale_})
+    {
+        const auto* tokens = el->get_token_property(name);
+        if(!tokens || tokens->empty() || (tokens->size() == 1 && tokens->front().ident() == "none"))
+            continue;
+        std::string args;
+        for(const auto& tok : *tokens)
+            args += (args.empty() ? "" : ",") + tok.get_repr();
+        transform_vector functions;
+        if(parse_transform(normalize(_s(name) + "(" + args + ")", f_componentize | f_remove_whitespace), functions))
+            m_transform.insert(m_transform.end(), functions.begin(), functions.end());
+    }
     if(const auto* tokens = el->get_token_property(_transform_))
     {
-        if(parse_transform(*tokens, m_transform))
-        {
-            for(auto& fn : m_transform)
-            {
-                doc->cvt_units(fn.x, m_font_metrics, 0_px);
-                doc->cvt_units(fn.y, m_font_metrics, 0_px);
-            }
-        }
+        transform_vector functions;
+        if(parse_transform(*tokens, functions))
+            m_transform.insert(m_transform.end(), functions.begin(), functions.end());
+    }
+    for(auto& fn : m_transform)
+    {
+        doc->cvt_units(fn.x, m_font_metrics, 0_px);
+        doc->cvt_units(fn.y, m_font_metrics, 0_px);
     }
 }
 

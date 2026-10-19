@@ -1004,6 +1004,9 @@ namespace litehtml
         case _filter_:
         case _backdrop_filter_:
         case _transform_:
+        case _translate_:
+        case _rotate_:
+        case _scale_:
         case _transform_origin_:
         case _clip_path_:
         case _grid_template_columns_:
