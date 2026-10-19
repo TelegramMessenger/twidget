@@ -1433,6 +1433,48 @@ int main() {
         check(ask(Json::object().set("q", "rect").set("id", 23))["height"].asNumber() == 20, "and its content shows");
     }
 
+    // ── the fork: :lang, :empty, spacing, the translate property, word-break, fit-content ──
+    {
+        StubBackend fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":":lang(ru) .lg{color:rgb(0,100,0)} .m:empty{color:rgb(28,0,0)} .m:not(:empty){color:rgb(29,0,0)} span{white-space:nowrap}"},
+            {"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["lang","ru-RU"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["class","lg"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"span","attrs":[["class","m"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"span","attrs":[["class","m"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"text","id":14,"data":" "},{"op":"ins","parent":13,"id":14,"before":null},
+            {"op":"el","id":20,"tag":"div"},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"span","attrs":[["style","letter-spacing:5px"]]},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"text","id":22,"data":"abcd"},{"op":"ins","parent":21,"id":22,"before":null},
+            {"op":"el","id":23,"tag":"div"},{"op":"ins","parent":4,"id":23,"before":null},
+            {"op":"el","id":24,"tag":"span","attrs":[["style","word-spacing:10px"]]},{"op":"ins","parent":23,"id":24,"before":null},
+            {"op":"text","id":25,"data":"a b c"},{"op":"ins","parent":24,"id":25,"before":null},
+            {"op":"el","id":30,"tag":"div","attrs":[["style","width:20px;height:20px;translate:10px 5px"]]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":31,"tag":"div","attrs":[["style","width:40px;word-break:break-all;line-height:16px"]]},{"op":"ins","parent":4,"id":31,"before":null},
+            {"op":"text","id":32,"data":"aaaaaaaaaaaa"},{"op":"ins","parent":31,"id":32,"before":null},
+            {"op":"el","id":33,"tag":"div","attrs":[["style","width:fit-content"]]},{"op":"ins","parent":4,"id":33,"before":null},
+            {"op":"text","id":34,"data":"fit"},{"op":"ins","parent":33,"id":34,"before":null}]})"));
+        auto ask = [&](const char* q, int id) {
+            for (const Json& m : f.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", q).set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        check(ask("cs", 11)["color"].asString() == "rgb(0, 100, 0)", ":lang(ru) matches under lang=ru-RU");
+        check(ask("cs", 12)["color"].asString() == "rgb(28, 0, 0)" && ask("cs", 13)["color"].asString() == "rgb(29, 0, 0)",
+              ":empty matches no children, and whitespace is content");
+        check(ask("rect", 21)["width"].asNumber() == 4 * 8 + 4 * 5, "letter-spacing goes after each letter (got " + std::to_string(ask("rect", 21)["width"].asNumber()) + ")");
+        double spaced = ask("rect", 24)["width"].asNumber();
+        check(spaced == 5 * 8 + 2 * 10, "word-spacing widens each space (got " + std::to_string(spaced) + ")");
+        Json moved = ask("rect", 30);
+        // offsetTop is a whole number, as in browsers.
+        check(moved["x"].asNumber() == 10 && std::fabs(moved["y"].asNumber() - ask("box", 30)["offsetTop"].asNumber() - 5) < 1, "the translate property moves the box");
+        check(ask("rect", 31)["height"].asNumber() >= 32, "word-break: break-all breaks a long word");
+        check(ask("rect", 33)["width"].asNumber() == 24, "width: fit-content shrinks to the text (got " + std::to_string(ask("rect", 33)["width"].asNumber()) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
