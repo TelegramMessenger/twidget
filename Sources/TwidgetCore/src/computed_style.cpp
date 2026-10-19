@@ -102,6 +102,15 @@ std::string computed_touch_action(const litehtml::element::ptr& el) {
     return raw(tag.get(), "touch-action", "auto");
 }
 
+std::string computed_pointer_events(const litehtml::element::ptr& el) {
+    for (auto e = el; e; e = e->parent()) {
+        auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(e);
+        std::string v = raw(tag.get(), "pointer-events", "");
+        if (!v.empty() && v != "inherit" && v != "unset") return v == "initial" ? "auto" : v;
+    }
+    return "auto";
+}
+
 Json computed_style(const litehtml::element::ptr& element, std::string_view pseudo, const ComputedExtras& extras) {
     Json o = Json::object();
     litehtml::element::ptr el = pseudo.empty() ? element : pseudo_of(element, pseudo);
@@ -273,7 +282,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     // Effects.
     o.set("opacity", css::format_number(css.get_opacity(), 3));
     o.set("cursor", css.get_cursor().empty() ? std::string("auto") : css.get_cursor());
-    o.set("pointer-events", raw(tag.get(), "pointer-events", "auto"));
+    o.set("pointer-events", computed_pointer_events(el));
     o.set("touch-action", raw(tag.get(), "touch-action", "auto"));
     o.set("filter", raw(tag.get(), "filter", "none")).set("backdrop-filter", raw(tag.get(), "backdrop-filter", "none"));
     o.set("box-shadow", raw(tag.get(), "box-shadow", "none"));

@@ -1861,7 +1861,10 @@ std::shared_ptr<litehtml::element> litehtml::render_item::get_child_by_point(
 
                     if(!ret && el->is_point_inside(hit_pos.x, hit_pos.y))
                     {
-                        ret = el->src_el();
+                        if(!check || check(el))
+                        {
+                            ret = el->src_el();
+                        }
                     }
                     process = false;
                 }

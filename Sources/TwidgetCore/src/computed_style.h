@@ -26,4 +26,7 @@ std::string computed_custom_property(const litehtml::element::ptr& el, const std
 /// The `touch-action` an element declares, from any stylesheet; "auto" when it declares none.
 std::string computed_touch_action(const litehtml::element::ptr& el);
 
+/// The `pointer-events` an element has, inherited from its ancestors; "auto" when none declares one.
+std::string computed_pointer_events(const litehtml::element::ptr& el);
+
 } // namespace twlite

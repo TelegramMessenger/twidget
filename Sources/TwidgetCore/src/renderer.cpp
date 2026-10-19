@@ -1034,10 +1034,14 @@ public:
         }
         return 0;
     }
+    /// Whether a hit may land on the item: `pointer-events: none` passes it on to what is below.
+    static bool hittable(const std::shared_ptr<litehtml::render_item>& ri) {
+        return computed_pointer_events(ri->src_el()) != "none";
+    }
     litehtml::element::ptr element_at(double x, double y) const {
         if (!doc_ || !doc_->root_render()) return nullptr;
         auto px = litehtml::pixel_t(float(x)), py = litehtml::pixel_t(float(y));
-        return doc_->root_render()->get_element_by_point(px, py, px, py, nullptr);
+        return doc_->root_render()->get_element_by_point(px, py, px, py, hittable);
     }
     /// What is at (x, y) in document coordinates, looking only inside `el`.
     litehtml::element::ptr element_at_within(const litehtml::element::ptr& el, double x, double y) const {
@@ -1048,7 +1052,7 @@ public:
         auto sticky = ri->sticky_offset();
         auto px = litehtml::pixel_t(float(x)) - (placement.x - ri->pos().x - sticky.x);
         auto py = litehtml::pixel_t(float(y)) - (placement.y - ri->pos().y - sticky.y);
-        return ri->get_element_by_point(px, py, litehtml::pixel_t(float(x)), litehtml::pixel_t(float(y)), nullptr);
+        return ri->get_element_by_point(px, py, litehtml::pixel_t(float(x)), litehtml::pixel_t(float(y)), hittable);
     }
     /// Pointer state for :hover / :active; true when something must repaint. A lifted finger leaves
     /// :hover; a mouse released over the view keeps it.
