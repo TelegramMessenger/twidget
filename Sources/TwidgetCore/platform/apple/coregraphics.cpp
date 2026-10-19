@@ -621,6 +621,11 @@ void CGBackend::draw(CGContextRef ctx, std::span<const Command> list) {
             stack.push_back(layer);
             break;
         }
+        // No filters here yet: what they wrap is drawn as it is (the Direct2D painter has them).
+        case Cmd::FilterPush:
+        case Cmd::FilterPop:
+        case Cmd::Backdrop:
+            break;
         case Cmd::Path:
             if (c.path) draw_path(ctx, *c.path);
             break;
