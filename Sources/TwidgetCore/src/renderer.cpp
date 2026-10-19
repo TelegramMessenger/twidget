@@ -123,8 +123,6 @@ Rect rect_of(const litehtml::position& p) {
     return Rect{float(p.x), float(p.y), float(p.width), float(p.height)};
 }
 
-/// The border box of an element in document coordinates (`get_placement()` is the content box;
-/// getBoundingClientRect / offsetWidth are border boxes).
 /// The line boxes of an inline element, in document coordinates; none for any other element.
 std::vector<Rect> inline_boxes_of(const litehtml::element::ptr& el) {
     std::vector<Rect> boxes;
@@ -140,6 +138,8 @@ std::vector<Rect> inline_boxes_of(const litehtml::element::ptr& el) {
     return boxes;
 }
 
+/// The border box of an element in document coordinates (`get_placement()` is the content box;
+/// getBoundingClientRect / offsetWidth are border boxes).
 Rect border_box_of(const litehtml::element::ptr& el) {
     // An inline element shows as its line boxes; its own placement is its containing block's origin.
     std::vector<Rect> lines = inline_boxes_of(el);
@@ -161,6 +161,25 @@ Rect border_box_of(const litehtml::element::ptr& el) {
         r.h += float(pad.top) + float(pad.bottom) + float(bd.top) + float(bd.bottom);
     }
     return r;
+}
+
+/// How far the content under `ri` reaches, for scrollWidth and scrollHeight: in-flow children by their
+/// margin boxes, everything else by its border box, and nothing past a descendant that clips.
+void content_extent(const std::shared_ptr<litehtml::render_item>& ri, float& right, float& bottom, bool children) {
+    for (const auto& c : ri->children()) {
+        const auto& el = c->src_el();
+        if (!el || el->css().get_display() == litehtml::display_none) continue;
+        Rect b = border_box_of(el);
+        float r = b.x + b.w, bt = b.y + b.h;
+        auto position = el->css().get_position();
+        if (children && (position == litehtml::element_position_static || position == litehtml::element_position_relative)) {
+            r += float(c->get_margins().right);
+            bt += float(c->get_margins().bottom);
+        }
+        right = std::max(right, r);
+        bottom = std::max(bottom, bt);
+        if (el->css().get_overflow() == litehtml::overflow_visible) content_extent(c, right, bottom, false);
+    }
 }
 
 /// Where an element's border box shows: its transform and its ancestors', as a bounding box.
@@ -3611,6 +3630,15 @@ Json Renderer::answer(const Json& q) {
 #endif
         o.set("offsetWidth", r.w).set("offsetHeight", r.h).set("offsetTop", top).set("offsetLeft", left).set("offsetParent", double(parent));
         float cw = std::max(0.0f, r.w - bl - br), ch = std::max(0.0f, r.h - bt - bb), sw = cw, sh = ch;
+        if (ri) {
+            // Only a scroll container counts its children's end margins and its own end padding.
+            bool scroller = ri->css().get_overflow() != litehtml::overflow_visible;
+            const auto& pad = ri->get_paddings();
+            float right = -INFINITY, bottom = -INFINITY;
+            content_extent(ri, right, bottom, scroller);
+            if (right > -INFINITY) sw = std::max(sw, right + (scroller ? float(pad.right) : 0) - (r.x + bl));
+            if (bottom > -INFINITY) sh = std::max(sh, bottom + (scroller ? float(pad.bottom) : 0) - (r.y + bt));
+        }
 #ifdef TW_LITEHTML_TWIDGET
         // A textarea's text can outgrow its rows: scrollHeight is the text's, clientHeight the box's.
         if (auto text = std::dynamic_pointer_cast<litehtml::render_item_inline_context>(ri); text && shadow && shadow->tag == "textarea") {
