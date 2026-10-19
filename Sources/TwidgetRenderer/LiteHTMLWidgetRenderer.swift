@@ -5299,41 +5299,7 @@ enum CSSFont {
         if familyStart < tokens.count {
             families = tokens[familyStart...].joined(separator: " ").split(separator: ",").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"'")) }
         }
-        var font: CTFont = CTFontCreateUIFontForLanguage(.system, size, nil) ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
-        for family in families {
-            let lower = family.lowercased()
-            if ["sans-serif", "system-ui", "-apple-system", "blinkmacsystemfont"].contains(lower) {
-                break
-            }
-            if lower == "monospace" {
-                font = CTFontCreateWithName("Menlo" as CFString, size, nil)
-                break
-            }
-            if lower == "serif" {
-                font = CTFontCreateWithName("Times" as CFString, size, nil)
-                break
-            }
-            let candidate = CTFontCreateWithName(family as CFString, size, nil)
-            if (CTFontCopyFamilyName(candidate) as String).lowercased() == lower {
-                font = candidate
-                break
-            }
-        }
-        let axis = 0x77676874
-        if let axes = CTFontCopyVariationAxes(font) as? [[String: Any]], axes.contains(where: { ($0[kCTFontVariationAxisIdentifierKey as String] as? Int) == axis }) {
-            let varied = CTFontDescriptorCreateCopyWithVariation(CTFontCopyFontDescriptor(font), axis as CFNumber, weight)
-            font = CTFontCreateWithFontDescriptor(varied, size, nil)
-        } else if weight >= 600, let bolded = CTFontCreateCopyWithSymbolicTraits(font, size, nil, .traitBold, .traitBold) {
-            font = bolded
-        }
-        var traits: CTFontSymbolicTraits = []
-        if italic {
-            traits.insert(.traitItalic)
-        }
-        if !traits.isEmpty, let styled = CTFontCreateCopyWithSymbolicTraits(font, size, nil, traits, traits) {
-            font = styled
-        }
-        return font
+        return LHDocument.font(families: families.joined(separator: ","), size: size, weight: Int(weight), italic: italic) as CTFont
     }
 }
 

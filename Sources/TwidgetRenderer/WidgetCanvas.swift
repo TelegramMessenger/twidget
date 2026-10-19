@@ -59,6 +59,7 @@ final class WidgetCanvas {
     private var paths: [Int: CGMutablePath] = [:]
     private var cachedImage: CGImage?
     private var textLines: [TextKey: CTLine] = [:]
+    private var fontBaselines: [String: Baselines] = [:]
     private var textKeys: [TextKey] = []
     private var textCursor = 0
     private let space = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -616,8 +617,20 @@ final class WidgetCanvas {
         }
     }
 
+    private func paintsNothing(_ gradient: Gradient) -> Bool {
+        let g = gradient.args
+        switch gradient.kind {
+        case "linear":
+            return g.count < 4 || (g[0] == g[2] && g[1] == g[3])
+        case "radial":
+            return g.count < 6 || (g[0] == g[3] && g[1] == g[4] && g[2] == g[5])
+        default:
+            return true
+        }
+    }
+
     private func drawGradient(_ ctx: CGContext, _ id: Int) {
-        guard var gradient = gradients[id], !gradient.stops.isEmpty else {
+        guard var gradient = gradients[id], !gradient.stops.isEmpty, !paintsNothing(gradient) else {
             return
         }
         if gradient.compiled == nil {
@@ -637,8 +650,7 @@ final class WidgetCanvas {
         case "radial" where g.count >= 6:
             ctx.drawRadialGradient(cg, startCenter: CGPoint(x: g[0], y: g[1]), startRadius: g[2], endCenter: CGPoint(x: g[3], y: g[4]), endRadius: g[5], options: options)
         default:
-            ctx.setFillColor(gradient.lastColor!)
-            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height).applying(currentTransform.inverted()))
+            break
         }
     }
 
@@ -673,6 +685,40 @@ final class WidgetCanvas {
         return line
     }
 
+    private struct Baselines {
+        let ascent: CGFloat
+        let descent: CGFloat
+        let em: (ascent: CGFloat, descent: CGFloat)
+    }
+
+    private func baselines(_ font: CTFont) -> Baselines {
+        if let known = fontBaselines[state.font] {
+            return known
+        }
+        var ascent = CTFontGetAscent(font)
+        let descent = CTFontGetDescent(font)
+        if ["times", "helvetica", "courier"].contains((CTFontCopyFamilyName(font) as String).lowercased()) {
+            ascent += floor((ascent + descent) * 0.15 + 0.5)
+        }
+        let size = CTFontGetSize(font)
+        var em = (ascent: ascent, descent: descent)
+        if let table = CTFontCopyTable(font, CTFontTableTag(kCTFontTableOS2), []) as Data?, table.count >= 72 {
+            let typoAscent = CGFloat(Int16(bitPattern: UInt16(table[68]) << 8 | UInt16(table[69])))
+            let typoDescent = -CGFloat(Int16(bitPattern: UInt16(table[70]) << 8 | UInt16(table[71])))
+            if typoAscent >= 0, typoAscent + typoDescent > 0, typoAscent <= typoAscent + typoDescent {
+                em = (typoAscent, typoDescent)
+            }
+        }
+        let height = em.ascent + em.descent
+        let normalized = height > 0 ? (em.ascent * size / height * 64).rounded() / 64 : 0
+        let result = Baselines(ascent: ascent, descent: descent, em: (normalized, height > 0 ? size - normalized : 0))
+        if fontBaselines.count >= 256 {
+            fontBaselines.removeAll(keepingCapacity: true)
+        }
+        fontBaselines[state.font] = result
+        return result
+    }
+
     func measure(_ text: String) -> CGFloat {
         return CGFloat(CTLineGetTypographicBounds(line(text), nil, nil, nil))
     }
@@ -684,7 +730,10 @@ final class WidgetCanvas {
         case let .color(color):
             paintColor = color
         case let .gradient(id):
-            paintColor = gradients[id]?.stops.first?.1 ?? CGColor(red: 0, green: 0, blue: 0, alpha: 1)
+            guard let gradient = gradients[id], !paintsNothing(gradient), let first = gradient.stops.first else {
+                return
+            }
+            paintColor = first.1
         }
         let ctLine = line(text)
         var ascent: CGFloat = 0, descent: CGFloat = 0
@@ -699,14 +748,18 @@ final class WidgetCanvas {
             break
         }
         var dy: CGFloat = 0
-        let fontAscent = CTFontGetAscent(font), fontDescent = CTFontGetDescent(font)
         switch state.baseline {
-        case "top", "hanging":
-            dy = fontAscent
+        case "top":
+            dy = baselines(font).em.ascent
+        case "hanging":
+            dy = baselines(font).ascent * 0.8
         case "middle":
-            dy = (fontAscent - fontDescent) / 2
-        case "bottom", "ideographic":
-            dy = -fontDescent
+            let em = baselines(font).em
+            dy = (em.ascent - em.descent) / 2
+        case "bottom":
+            dy = -baselines(font).em.descent
+        case "ideographic":
+            dy = -baselines(font).descent
         default:
             break
         }
@@ -718,6 +771,9 @@ final class WidgetCanvas {
         ctx.scaleBy(x: 1, y: -1)
         ctx.textMatrix = .identity
         ctx.textPosition = CGPoint(x: dx, y: -dy)
+        ctx.setAllowsFontSubpixelPositioning(true)
+        ctx.setShouldSubpixelPositionFonts(true)
+        ctx.setShouldSubpixelQuantizeFonts(false)
         if stroke {
             ctx.setStrokeColor(paintColor)
             ctx.setTextDrawingMode(.stroke)

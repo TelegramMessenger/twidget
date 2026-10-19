@@ -30,6 +30,8 @@ CGImageRef LHCopyImageForURL(NSString* url) CF_RETURNS_RETAINED;
 CGSize LHImageSizeForURL(NSString* url);
 void LHSetPortableSymbols(bool portable);
 bool LHPortableSymbols(void);
+@class NSFont;
+NSFont* LHResolveFont(NSString* families, CGFloat size, int weight, bool italic);
 #endif
 
 struct LHTextRun

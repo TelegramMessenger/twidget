@@ -1267,6 +1267,11 @@ static std::string MasterWithCSS(NSString *css)
     return LHContainer::cached_font_count();
 }
 
++ (NSFont *)fontForFamilies:(NSString *)families size:(CGFloat)size weight:(NSInteger)weight italic:(BOOL)italic
+{
+    return LHResolveFont(families, size, (int)weight, italic);
+}
+
 + (NSUInteger)rasterCacheBytes
 {
     return LHContainer::raster_cache_bytes();

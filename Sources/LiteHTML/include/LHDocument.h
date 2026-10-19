@@ -80,6 +80,7 @@ typedef struct LHKeyedRect {
 /// Whether this document was made by patching the previous one.
 /// Fonts resolved and cached for every document in the process; fonts no document uses are dropped past a bound.
 + (NSUInteger)cachedFontCount;
++ (NSFont *)fontForFamilies:(NSString *)families size:(CGFloat)size weight:(NSInteger)weight italic:(BOOL)italic NS_SWIFT_NAME(font(families:size:weight:italic:));
 + (NSUInteger)rasterCacheBytes;
 + (void)purgeCaches;
 @property (class, nonatomic) BOOL simpleTextEnabled;

@@ -1143,6 +1143,11 @@ static NSFont* ResolveFont(const std::string& families, CGFloat size, int cssWei
     return font;
 }
 
+NSFont* LHResolveFont(NSString* families, CGFloat size, int weight, bool italic)
+{
+    return ResolveFont(families.UTF8String ?: "", size, weight, italic);
+}
+
 size_t LHContainer::cached_font_count()
 {
     std::lock_guard<std::mutex> lock(gFontCacheMutex);
