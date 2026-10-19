@@ -229,8 +229,16 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
             if(font)
             {
                 web_color color = el_parent->css().get_color();
-                doc->container()->draw_text(hdc, text_item && text_item->is_fragment ? text_item->fragment_text.c_str() : display_text().c_str(), font,
-                                            color, pos);
+                const std::string& shown = text_item && text_item->is_fragment ? text_item->fragment_text : display_text();
+                if(text_item && text_item->cut >= 0)
+                {
+                    // text-overflow: ellipsis cut it (render_item_inline_context::apply_ellipsis).
+                    if(text_item->cut > 0)
+                        doc->container()->draw_text(hdc, shown.substr(0, text_item->cut).c_str(), font, color, pos);
+                } else
+                {
+                    doc->container()->draw_text(hdc, shown.c_str(), font, color, pos);
+                }
             }
         }
     }

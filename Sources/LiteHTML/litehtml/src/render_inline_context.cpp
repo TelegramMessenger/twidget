@@ -3,6 +3,7 @@
 #include "iterators.h"
 #include "types.h"
 #include "el_text.h"
+#include "html_tag.h"
 #include "document_container.h"
 #include <string_view>
 
@@ -197,6 +198,8 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
         }
     }
 
+    apply_ellipsis(self_size.render_width);
+
     if(!m_line_boxes.empty())
     {
         if(collapse_top_margin())
@@ -219,6 +222,92 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     }
 
     return m_rendered_width;
+}
+
+void litehtml::render_item_inline_context::apply_ellipsis(pixel_t room)
+{
+    const auto tag     = std::dynamic_pointer_cast<html_tag>(src_el());
+    std::string mode   = tag ? tag->raw_declaration("text-overflow") : std::string();
+    const bool  active = !mode.empty() && lowcase(trim(mode)) == "ellipsis" && css().clips_contents() &&
+                        css().get_direction() != direction_rtl;
+    // Most boxes have no ellipsis and never had one: their lines are left alone.
+    if(!active && !m_cut)
+        return;
+    m_cut = active;
+    m_ellipses.clear();
+    auto* container = src_el()->get_document()->container();
+    const pixel_t mark = active ? container->text_width("\xE2\x80\xA6", css().get_font()) : 0_px;
+    for(const auto& line : m_line_boxes)
+    {
+        pixel_t right = 0_px;
+        for(const auto& item : line->items())
+        {
+            if(auto text = std::dynamic_pointer_cast<render_text>(item->get_el()))
+                text->cut = -1;
+            right = std::max(right, item->right());
+        }
+        if(!active || right <= room)
+            continue;
+        // Whole characters up to the room the mark leaves, as browsers cut; what follows is not drawn.
+        const pixel_t limit = room - mark;
+        bool          done  = false;
+        position      at(line->left(), line->top(), 0_px, line->height());
+        for(const auto& item : line->items())
+        {
+            auto text = std::dynamic_pointer_cast<render_text>(item->get_el());
+            if(done)
+            {
+                if(text)
+                    text->cut = 0;
+                continue;
+            }
+            if(item->right() <= limit)
+            {
+                at.x = std::max(at.x, item->right());
+                continue;
+            }
+            done = true;
+            if(!text || !text->src_el()->parent())
+                continue;
+            const std::string& shown = text->is_fragment ? text->fragment_text
+                                                         : static_cast<const el_text*>(text->src_el().get())->display_text();
+            uint_ptr font = text->src_el()->parent()->css().get_font();
+            size_t   fit  = 0;
+            pixel_t  used = 0_px;
+            for(size_t i = 0; i < shown.size();)
+            {
+                size_t next = i + 1;
+                while(next < shown.size() && (static_cast<unsigned char>(shown[next]) & 0xC0) == 0x80)
+                    next++;
+                pixel_t width = container->text_width(shown.substr(0, next).c_str(), font);
+                if(item->left() + width > limit)
+                    break;
+                fit  = next;
+                used = width;
+                i    = next;
+            }
+            text->cut = static_cast<int>(fit);
+            at.x      = item->left() + used;
+            at.y      = text->pos().y;
+            at.height = text->pos().height;
+        }
+        at.width = mark;
+        m_ellipses.push_back(at);
+    }
+}
+
+void litehtml::render_item_inline_context::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
+                                                         draw_flag flag, int zindex)
+{
+    render_item_block::draw_children(hdc, x, y, clip, flag, zindex);
+    if(flag != draw_inlines || m_ellipses.empty() || !css().get_font())
+        return;
+    for(position at : m_ellipses)
+    {
+        at.x += m_pos.x + x;
+        at.y += m_pos.y + y;
+        src_el()->get_document()->container()->draw_text(hdc, "\xE2\x80\xA6", css().get_font(), css().get_color(), at);
+    }
 }
 
 void litehtml::render_item_inline_context::fix_line_width(element_float flt, const containing_block_context& self_size,

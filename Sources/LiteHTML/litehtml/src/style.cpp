@@ -324,7 +324,7 @@ namespace litehtml
         "transform", "opacity", "color", "background-color", "background", "width", "height", "top", "left", "right",
         "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
         "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow",
-        "transform-origin", "backdrop-filter", "pointer-events", "touch-action", "quotes", "object-fit", "object-position",
+        "transform-origin", "backdrop-filter", "pointer-events", "touch-action", "quotes", "object-fit", "object-position", "text-overflow",
     };
 
     static const std::map<string_id, string_id>& raw_declaration_ids()

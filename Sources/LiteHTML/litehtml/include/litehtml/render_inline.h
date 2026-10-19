@@ -85,6 +85,8 @@ namespace litehtml
         std::vector<std::shared_ptr<render_text>> fragments;
         std::string fragment_text;
         bool is_fragment = false;
+        // text-overflow: ellipsis: how many bytes of the text are drawn; -1 all of them.
+        int cut = -1;
 
         explicit render_text(std::shared_ptr<element> src_el) :
             render_item_inline(std::move(src_el))
