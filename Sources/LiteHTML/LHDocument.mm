@@ -3056,9 +3056,12 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"font-weight"] = [NSString stringWithFormat:@"%d", (int)css.font_weight().val()];
     out[@"font-family"] = @(css.font_family().c_str());
     out[@"font-style"]  = css.font_style_value() == lh::font_style_italic ? @"italic" : @"normal";
-    const lh::web_color c = css.get_color();
-    out[@"color"]       = c.alpha == 255 ? [NSString stringWithFormat:@"rgb(%d, %d, %d)", c.red, c.green, c.blue]
-                                         : [NSString stringWithFormat:@"rgba(%d, %d, %d, %g)", c.red, c.green, c.blue, c.alpha / 255.0];
+    auto rgb = [](const lh::web_color &c) {
+        return c.alpha == 255 ? [NSString stringWithFormat:@"rgb(%d, %d, %d)", c.red, c.green, c.blue]
+                              : [NSString stringWithFormat:@"rgba(%d, %d, %d, %g)", c.red, c.green, c.blue, c.alpha / 255.0];
+    };
+    out[@"color"]            = rgb(css.get_color());
+    out[@"background-color"] = rgb(css.get_bg().m_color);
     out[@"opacity"]     = [NSString stringWithFormat:@"%g", css.get_opacity()];
     out[@"text-align"]  = @(std::string(lh::text_align_strings[css.get_text_align()]).c_str());
     out[@"visibility"]  = css.get_visibility() == lh::visibility_visible ? @"visible" : @"hidden";

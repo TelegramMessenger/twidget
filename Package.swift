@@ -99,7 +99,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(
             name: "TwidgetRendererTests",
-            dependencies: ["TwidgetRenderer", widgetProtocol, "HTMLScript", "HTMLSandbox", "LiteHTML", cQuickJS],
+            dependencies: ["TwidgetRenderer", widgetProtocol, .product(name: "WidgetSandbox", package: "WidgetSandbox"), "HTMLScript", "HTMLSandbox", "LiteHTML", cQuickJS],
             path: "Tests/TwidgetRendererTests"),
         .testTarget(
             name: "Twidget3DSandboxTests",

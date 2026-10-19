@@ -3189,12 +3189,32 @@ public final class LiteHTMLWidgetRenderer {
         if id == pressId || isAncestor(pressId, of: id) || isAncestor(id, of: pressId) {
             let clickTarget = isAncestor(id, of: pressId) ? id : (isAncestor(pressId, of: id) ? pressId : id)
             dispatch("click", target: clickTarget, point: point, event: event, buttons: 0)
+            toggleDetails(from: clickTarget)
         }
         finishRange(at: point)
         finishEditorSelection()
         setPointerCapture(0)
         pressId = 0
         lastPointer = point
+    }
+
+    private func toggleDetails(from id: Int) {
+        var walk = dom.node(id)
+        while let node = walk, node.tag.lowercased() != "summary" {
+            if prevented.contains("\(dom.publicId(node)):click") {
+                return
+            }
+            walk = node.parent
+        }
+        guard let summary = walk, !prevented.contains("\(dom.publicId(summary)):click"),
+              let details = summary.parent, details.tag.lowercased() == "details",
+              details.children.first(where: { !$0.isText && $0.tag.lowercased() == "summary" }) === summary else {
+            return
+        }
+        let detailsId = dom.publicId(details)
+        let opening = details.attribute("open") == nil
+        send(ops: [opening ? WidgetOp(attribute: detailsId, name: "open", value: "") : WidgetOp(removeAttribute: detailsId, name: "open")])
+        post(["type": "event", "ev": ["type": "toggle", "targetId": detailsId, "open": opening]])
     }
 
     func handleMouseMoved(_ point: CGPoint, event: NSEvent) {
