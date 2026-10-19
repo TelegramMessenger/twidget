@@ -243,6 +243,19 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
         } else
         {
             m_pos.width = self_size.render_width;
+            // width: min-content, max-content or fit-content
+            const css_length& width = css().get_width();
+            if(width.is_predefined() && width.predef() != 0 && !is_root())
+            {
+                pixel_t content = width.predef() == 1 ? ret_min_width
+                                : width.predef() == 2 ? ret_width
+                                                      : std::min<pixel_t>(ret_width, self_size.render_width);
+                if(content != m_pos.width)
+                {
+                    m_pos.width       = content;
+                    requires_rerender = true;
+                }
+            }
         }
     } else
     {

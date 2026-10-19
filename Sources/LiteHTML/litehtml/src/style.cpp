@@ -521,6 +521,11 @@ namespace litehtml
         // auto | min-content | max-content | fit-content | <length-percentage [0,∞]>
         // https://developer.mozilla.org/en-US/docs/Web/CSS/width#formal_syntax
         case _width_:
+            {
+                // Predefined 1 to 3 size a block to its content (render_block); anything else takes them as auto.
+                constexpr auto keywords = split_css_values<4>("auto;min-content;max-content;fit-content");
+                return add_length_property(name, val, keywords, f_length_percentage | f_positive, important);
+            }
         case _height_:
         case _min_width_:
         case _min_height_:
