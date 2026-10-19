@@ -549,9 +549,29 @@ namespace litehtml
             return m;
         }
 
+        thread_local std::vector<std::pair<const element*, element::ptr>> use_hosts;
+
+        struct use_host_scope
+        {
+            use_host_scope(const element::ptr& target, const element::ptr& use) { use_hosts.emplace_back(target.get(), use); }
+            ~use_host_scope() { use_hosts.pop_back(); }
+        };
+
+        element::ptr svg_parent(const element::ptr& el)
+        {
+            for(auto it = use_hosts.rbegin(); it != use_hosts.rend(); ++it)
+            {
+                if(it->first == el.get())
+                {
+                    return it->second;
+                }
+            }
+            return el->parent();
+        }
+
         css_token_vector svg_property(const element::ptr& el, string_id name, bool inherited)
         {
-            for(element::ptr cur = el; cur; cur = cur->parent())
+            for(element::ptr cur = el; cur; cur = svg_parent(cur))
             {
                 if(const auto* tag = dynamic_cast<const html_tag*>(cur.get()))
                 {
@@ -1054,10 +1074,13 @@ namespace litehtml
                     group.bounds = position(-100000, -100000, 200000, 200000);
                     m_container->begin_group(m_hdc, group);
                 }
-                if(symbol)
-                    draw_children(target, visibility, depth + 1);
-                else
-                    draw_child(target, visibility, depth + 1);
+                {
+                    use_host_scope host(target, use);
+                    if(symbol)
+                        draw_children(target, visibility, depth + 1);
+                    else
+                        draw_child(target, visibility, depth + 1);
+                }
                 if(!m_hit_mode)
                     m_container->end_group(m_hdc);
                 m_matrix = saved;
