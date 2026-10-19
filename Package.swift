@@ -69,6 +69,7 @@ let package = Package(
                 .linkedFramework("Metal"),
                 .linkedFramework("IOSurface"),
                 .linkedFramework("CoreImage"),
+                .linkedLibrary("z"),
             ]),
         .target(
             name: "HTMLSandbox",

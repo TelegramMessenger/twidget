@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <ImageIO/ImageIO.h>
+#include <zlib.h>
 
 #include "LHContainer.h"
 #include "render_item.h"
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -437,6 +439,102 @@ std::string SVGRootAspect(const std::string& markup)
     return lower.empty() ? "xmidymid meet" : lower;
 }
 
+size_t PNGIntactRows(NSData* data)
+{
+    static const uint8_t signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    const auto* bytes = static_cast<const uint8_t*>(data.bytes);
+    const size_t length = data.length;
+    if(length < 33 || std::memcmp(bytes, signature, 8) != 0)
+        return SIZE_MAX;
+    auto be32 = [&](size_t at) { return (uint32_t(bytes[at]) << 24) | (uint32_t(bytes[at + 1]) << 16) | (uint32_t(bytes[at + 2]) << 8) | bytes[at + 3]; };
+    if(std::memcmp(bytes + 12, "IHDR", 4) != 0 || be32(8) < 13)
+        return SIZE_MAX;
+    const uint32_t width = be32(16), height = be32(20);
+    const uint8_t  depth = bytes[24], type = bytes[25], interlace = bytes[28];
+    const int      channels = type == 0 ? 1 : type == 2 ? 3 : type == 3 ? 1 : type == 4 ? 2 : type == 6 ? 4 : 0;
+    if(!channels || interlace != 0 || width == 0 || height == 0)
+        return SIZE_MAX;
+    bool   suspect = true;
+    size_t at      = 8;
+    while(at + 12 <= length)
+    {
+        const size_t size = be32(at);
+        if(size > length - at - 12)
+            break;
+        if(std::memcmp(bytes + at + 4, "IEND", 4) == 0)
+        {
+            suspect = false;
+            break;
+        }
+        if(std::memcmp(bytes + at + 4, "IDAT", 4) == 0 && crc32(0, bytes + at + 4, static_cast<uInt>(size + 4)) != be32(at + 8 + size))
+            break;
+        at += size + 12;
+    }
+    if(!suspect)
+        return SIZE_MAX;
+    const uint64_t stride = (uint64_t(width) * channels * depth + 7) / 8 + 1;
+    z_stream       z      = {};
+    if(inflateInit(&z) != Z_OK)
+        return SIZE_MAX;
+    uint8_t  chunk[16384];
+    uint64_t produced = 0, intact = 0;
+    bool     broken = false;
+    int      status = Z_OK;
+    at = 8;
+    while(!broken && intact < height && status == Z_OK && at + 12 <= length)
+    {
+        const size_t size = be32(at);
+        if(size > length - at - 12 || std::memcmp(bytes + at + 4, "IEND", 4) == 0)
+            break;
+        if(std::memcmp(bytes + at + 4, "IDAT", 4) == 0)
+        {
+            z.next_in  = const_cast<Bytef*>(bytes + at + 8);
+            z.avail_in = static_cast<uInt>(size);
+            while(!broken && intact < height && status == Z_OK && z.avail_in > 0)
+            {
+                z.next_out  = chunk;
+                z.avail_out = sizeof(chunk);
+                status      = inflate(&z, Z_NO_FLUSH);
+                const uint64_t end = produced + (sizeof(chunk) - z.avail_out);
+                while(intact < height)
+                {
+                    const uint64_t row = intact * stride;
+                    if(row >= end)
+                        break;
+                    if(row >= produced && chunk[row - produced] > 4)
+                    {
+                        broken = true;
+                        break;
+                    }
+                    if(row + stride > end)
+                        break;
+                    intact++;
+                }
+                produced = end;
+            }
+        }
+        at += size + 12;
+    }
+    inflateEnd(&z);
+    return intact < height ? static_cast<size_t>(intact) : SIZE_MAX;
+}
+
+CGImageRef CreateImageKeepingRows(CGImageRef image, size_t keep)
+{
+    const size_t    w     = CGImageGetWidth(image), h = CGImageGetHeight(image);
+    CGColorSpaceRef space = CGImageGetColorSpace(image);
+    if(!space || CGColorSpaceGetModel(space) != kCGColorSpaceModelRGB)
+        space = SRGB();
+    CGContextRef ctx = CGBitmapContextCreate(nullptr, w, h, 8, 0, space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    if(!ctx)
+        return CGImageRetain(image);
+    CGContextClipToRect(ctx, CGRectMake(0, CGFloat(h - keep), CGFloat(w), CGFloat(keep)));
+    CGContextDrawImage(ctx, CGRectMake(0, 0, CGFloat(w), CGFloat(h)), image);
+    CGImageRef out = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return out ?: CGImageRetain(image);
+}
+
 ImageHandle LoadImageFromData(NSData* data, bool isSVG)
 {
     if(!data)
@@ -448,6 +546,13 @@ ImageHandle LoadImageFromData(NSData* data, bool isSVG)
         {
             CGImageRef image = CGImageSourceCreateImageAtIndex(src, 0, nullptr);
             CFRelease(src);
+            size_t intact = image ? PNGIntactRows(data) : SIZE_MAX;
+            if(intact < CGImageGetHeight(image))
+            {
+                CGImageRef kept = CreateImageKeepingRows(image, intact);
+                CGImageRelease(image);
+                image = kept;
+            }
             if(image)
                 return AdoptImage(image, CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image)));
         }
