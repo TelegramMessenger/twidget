@@ -213,6 +213,7 @@ final class WidgetDOM {
     var onCanvas: ((WidgetNode, [Any]) -> Void)?
     var onCall: ((WidgetNode, String, [Any]) -> Void)?
     var onProperty: ((WidgetNode, String, Any) -> Void)?
+    var onImageSource: ((WidgetNode) -> Void)?
 
     init() {
         html = WidgetNode(id: -1, tag: "html", svg: false)
@@ -318,6 +319,9 @@ final class WidgetDOM {
             usesTransitions = true
         }
         node.setAttribute(name, value)
+        if key == "src", !node.svg, node.tag == "img" {
+            onImageSource?(node)
+        }
     }
 
     struct PatchLog {

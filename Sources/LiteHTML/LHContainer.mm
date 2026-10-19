@@ -522,6 +522,14 @@ CGImageRef LHCopyImageForURL(NSString* url)
     return img.image ? CGImageRetain(img.image) : nullptr;
 }
 
+CGSize LHImageSizeForURL(NSString* url)
+{
+    if(url.length == 0 || (![url hasPrefix:@"data:"] && ![url.lowercaseString hasPrefix:@"icon:"]))
+        return CGSizeZero;
+    ImageHandle img = LookupImage(url.UTF8String ?: "");
+    return img ? img.size : CGSizeZero;
+}
+
 NSImage* (^LHImageProvider(void))(NSString* url)
 {
     std::lock_guard<std::mutex> guard(g_providerLock);

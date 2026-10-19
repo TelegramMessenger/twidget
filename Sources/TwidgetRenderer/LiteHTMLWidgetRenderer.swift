@@ -333,7 +333,7 @@ public final class LiteHTMLWidgetRenderer {
     private var surfaceTokens: [String] = []
     private var surfaceRevision: UInt64 = .max
 
-    private static let alwaysSent: Set<String> = ["click", "input", "change", "submit", "reset", "load", "error", "toggle"]
+    private static let alwaysSent: Set<String> = ["click", "input", "change", "submit", "reset", "load", "error", "toggle", "animationstart", "animationend", "transitionend"]
     private static let coalesced: Set<String> = ["pointermove", "mousemove", "touchmove", "wheel", "scroll"]
 
     public init(theme: String, width: CGFloat) {
@@ -356,9 +356,12 @@ public final class LiteHTMLWidgetRenderer {
         dom.onCanvas = { [weak self] node, commands in
             self?.canvas(for: node).run(commands)
         }
+        dom.onImageSource = { [weak self] node in
+            self?.imageSourceChanged(node)
+        }
         WidgetCanvasImages.install()
-        animator.onEvent = { [weak self] type, id, _, _ in
-            self?.dispatchAnimationEvent(type, id)
+        animator.onEvent = { [weak self] type, id, name, elapsed in
+            self?.dispatchAnimationEvent(type, id, name: name, elapsed: elapsed)
         }
         animator.underlying = { [weak self] id, property in
             self?.webUnderlying[id]?[property]
@@ -2203,12 +2206,44 @@ public final class LiteHTMLWidgetRenderer {
         return true
     }
 
-    private func dispatchAnimationEvent(_ type: String, _ id: Int) {
-        if frozen || !listened.contains(type) {
+    private func dispatchAnimationEvent(_ type: String, _ id: Int, name: String, elapsed: Double) {
+        if frozen || (!LiteHTMLWidgetRenderer.alwaysSent.contains(type) && !listened.contains(type)) {
             return
         }
+        let event: [String: Any] = ["type": type, "targetId": id, type == "transitionend" ? "propertyName" : "animationName": name, "elapsedTime": elapsed.isFinite ? elapsed : 0]
         schedule { [weak self] in
-            self?.post(["type": "event", "ev": ["type": type, "targetId": id]])
+            self?.post(["type": "event", "ev": event])
+        }
+    }
+
+    private var pendingImages: [Int] = []
+
+    private func imageSourceChanged(_ node: WidgetNode) {
+        pendingImages.append(dom.publicId(node))
+        if pendingImages.count == 1 {
+            schedule { [weak self] in
+                self?.reportImages()
+            }
+        }
+    }
+
+    private func reportImages() {
+        let ids = pendingImages
+        pendingImages = []
+        if frozen || destroyed {
+            return
+        }
+        var seen = Set<Int>()
+        for id in ids where seen.insert(id).inserted {
+            guard let node = dom.node(id), node.tag == "img", let src = node.attribute("src"), !src.isEmpty else {
+                continue
+            }
+            let size = LHImages.size(forURL: src)
+            if size.width > 0 || size.height > 0 {
+                post(["type": "event", "ev": ["type": "load", "targetId": id, "naturalWidth": Double(size.width), "naturalHeight": Double(size.height)]])
+            } else {
+                post(["type": "event", "ev": ["type": "error", "targetId": id]])
+            }
         }
     }
 
@@ -2508,7 +2543,10 @@ public final class LiteHTMLWidgetRenderer {
             if let prop = q["prop"] as? String, prop.hasPrefix("--") {
                 return document?.customProperty(prop, attribute: WidgetDOM.idAttribute, value: String(id)) ?? ""
             }
-            let style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id)) ?? [:]
+            var style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id)) ?? [:]
+            if let transform = animator.lastOverrides[id]?.last(where: { $0.0 == "transform" })?.1 {
+                style["transform"] = LiteHTMLWidgetRenderer.computedTransform(transform, box: rect?.size ?? .zero)
+            }
             if let prop = q["prop"] as? String {
                 return style[prop] ?? LiteHTMLWidgetRenderer.computedDefault(prop)
             }
@@ -2554,6 +2592,17 @@ public final class LiteHTMLWidgetRenderer {
         default:
             return ["error": "unsupported"]
         }
+    }
+
+    private static func computedTransform(_ value: String, box: CGSize) -> String {
+        let text = value.trimmingCharacters(in: .whitespaces)
+        if text.isEmpty || text.lowercased() == "none" {
+            return "none"
+        }
+        guard let m = CSSTransform.parse(text, box: box) else {
+            return text
+        }
+        return "matrix(" + [m.a, m.b, m.c, m.d, m.tx, m.ty].map { String(format: "%g", $0 == 0 ? 0 : Double($0)) }.joined(separator: ", ") + ")"
     }
 
     private static func computedDefault(_ property: String) -> String {

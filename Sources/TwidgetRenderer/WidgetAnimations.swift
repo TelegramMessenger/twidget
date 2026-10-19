@@ -1175,7 +1175,7 @@ final class WidgetAnimator {
     private(set) var transitions: [Int: [String: Transition]] = [:]
     var cssOverrides: [Int: [String: CSSOverride]] = [:]
     private var bases: [Int: [String: String]] = [:]
-    private var lastOverrides: [Int: [(String, String)]] = [:]
+    private(set) var lastOverrides: [Int: [(String, String)]] = [:]
     var onEvent: ((String, Int, String, Double) -> Void)?
 
     static let entryProperties = ["animation", "animation-name", "transition", "transition-property"]

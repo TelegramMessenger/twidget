@@ -183,6 +183,11 @@ static void RegisterDemoImages(void)
     return LHCopyImageForURL(url);
 }
 
++ (CGSize)sizeForURL:(NSString *)url
+{
+    return LHImageSizeForURL(url);
+}
+
 + (void)prefetchURLs:(NSArray<NSString *> *)urls completion:(nullable void (^)(void))completion
 {
     NSArray<NSString *> *copied = [urls copy];
