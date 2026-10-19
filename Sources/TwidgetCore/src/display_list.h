@@ -54,6 +54,15 @@ struct Stop {
     Color color;
 };
 
+/// A CSS filter function (filter, backdrop-filter), as Filter Effects 1 defines it.
+struct Filter {
+    enum Kind : uint8_t { Blur, Brightness, Contrast, Grayscale, HueRotate, Invert, Opacity, Saturate, Sepia, DropShadow } kind = Blur;
+    float amount = 0;   // Blur and DropShadow: the blur radius in CSS px; HueRotate: degrees; the others: the factor
+    float x = 0, y = 0; // DropShadow: the offset
+    Color color;        // DropShadow
+};
+using Filters = std::vector<Filter>;
+
 enum class Cmd {
     FillRect,       // rect, radii, color; clipped to `clip` when has_clip
     StrokeRect,     // rect (the stroke's centre line), radii, color, width
@@ -73,6 +82,10 @@ enum class Cmd {
                     // coordinates, after matrix), so a painter may raster it once
     GroupPop,
     Shadow,         // rect (border box, or padding box when inset), radii, color, offset (ax, ay), blur (bx), spread (by), inset
+    FilterPush,     // filter, rect (where the result may paint): what is drawn until the matching FilterPop goes through it.
+                    // A painter that has no filters draws it as it is.
+    FilterPop,
+    Backdrop,       // rect, radii, filter: what is painted under rect so far, filtered, inside rect (backdrop-filter)
 };
 
 struct Path {
@@ -112,6 +125,7 @@ struct Command {
     float ax = 0, ay = 0, bx = 0, by = 0;
     std::vector<Stop> stops;
     std::shared_ptr<const Path> path;
+    std::shared_ptr<const Filters> filter;  // FilterPush, Backdrop
     float opacity = 1;
     float matrix[6] = {1, 0, 0, 1, 0, 0};  // a, b, c, d, tx, ty
     bool hidden = false;
@@ -128,7 +142,8 @@ using DisplayList = std::vector<Command>;
 /// - ClipPush with a clip path, and Path: "p" {"o" op codes (0 move, 1 line, 2 quad, 3 cubic, 4 close),
 ///   "v" points, "e" evenodd}; a Path adds "f" fill, or "g" gradient (1 linear, 2 radial) with "ga"
 ///   (x1, y1, x2, y2, r, fx, fy) and "s", and "sc", "sw", "lc", "lj", "ml", "d", "do" for its stroke;
-/// - GroupPush: "m" matrix (a, b, c, d, tx, ty), "o" opacity, "h" hidden.
+/// - GroupPush: "m" matrix (a, b, c, d, tx, ty), "o" opacity, "h" hidden;
+/// - FilterPush and Backdrop: "fl" the filters, each [kind, amount, x, y, ARGB].
 /// Flags are present only when set.
 std::string to_json(const DisplayList& list);
 

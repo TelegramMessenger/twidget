@@ -141,7 +141,7 @@ std::string to_json(const DisplayList& list) {
         w.open();
         w.key("k");
         out += std::to_string(int(c.kind));
-        if (c.kind != Cmd::ClipPop && c.kind != Cmd::GroupPop && c.kind != Cmd::Text && c.kind != Cmd::Path) w.rect("r", c.rect);
+        if (c.kind != Cmd::ClipPop && c.kind != Cmd::GroupPop && c.kind != Cmd::FilterPop && c.kind != Cmd::Text && c.kind != Cmd::Path) w.rect("r", c.rect);
         if (c.radii.any()) {
             const float v[] = {c.radii.tlx, c.radii.tly, c.radii.trx, c.radii.try_, c.radii.brx, c.radii.bry, c.radii.blx, c.radii.bly};
             w.floats("q", v, 8, false);
@@ -193,7 +193,26 @@ std::string to_json(const DisplayList& list) {
             w.flag("n", c.inset);
             break;
         }
-        case Cmd::ClipPop: case Cmd::GroupPop: break;
+        case Cmd::FilterPush:
+        case Cmd::Backdrop:
+            if (c.filter) {
+                w.key("fl");
+                out.push_back('[');
+                for (size_t k = 0; k < c.filter->size(); k++) {
+                    const Filter& f = (*c.filter)[k];
+                    if (k) out.push_back(',');
+                    out.push_back('[');
+                    out += std::to_string(int(f.kind));
+                    out.push_back(','); w.exact(f.amount);
+                    out.push_back(','); w.num(f.x);
+                    out.push_back(','); w.num(f.y);
+                    out.push_back(','); w.argb(f.color);
+                    out.push_back(']');
+                }
+                out.push_back(']');
+            }
+            break;
+        case Cmd::ClipPop: case Cmd::GroupPop: case Cmd::FilterPop: break;
         }
         out.push_back('}');
     }

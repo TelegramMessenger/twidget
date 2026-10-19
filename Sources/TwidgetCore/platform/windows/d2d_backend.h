@@ -63,6 +63,13 @@ namespace twlite
         // Draws a keyed group (`inner`, between its GroupPush and GroupPop) from its raster, made first
         // when missing. False when it cannot be rastered: the transform turns it, or it is too large.
         bool draw_raster(ID2D1DeviceContext* ctx, const Command& push, std::span<const Command> inner);
+        // Draws `inner` (between a FilterPush and its FilterPop) through the push's filters. False when it
+        // could not be recorded: the caller then draws it as it is.
+        bool draw_filtered(ID2D1DeviceContext* ctx, const Command& push, std::span<const Command> inner);
+        // backdrop-filter: what the target holds under the command's rect, filtered, back inside it.
+        void backdrop(ID2D1DeviceContext* ctx, const Command& c);
+        // `input` through the CSS filter functions; lengths (blur, shadow offsets) times `scale`.
+        winrt::com_ptr<ID2D1Image> filtered(ID2D1DeviceContext* ctx, ID2D1Image* input, const Filters& steps, float scale);
         const Layout* layout(Face& face, const std::string& text);
         winrt::com_ptr<ID2D1Geometry> rounded(const Rect& r, const Radii& q);
         winrt::com_ptr<ID2D1GradientStopCollection> stops(const std::vector<Stop>& stops);

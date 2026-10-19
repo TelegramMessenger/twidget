@@ -93,6 +93,7 @@ struct PaintSummary {
         uint64_t key = 0;
         Rect ink;
         int canvas = 0;
+        bool backdrop = false;  // paints from what is under it: damage there repaints all of it
     };
     std::vector<Entry> entries;
 };

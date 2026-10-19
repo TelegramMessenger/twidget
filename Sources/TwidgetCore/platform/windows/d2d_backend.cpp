@@ -1107,6 +1107,191 @@ namespace twlite
         return true;
     }
 
+    winrt::com_ptr<ID2D1Image> D2DBackend::filtered(ID2D1DeviceContext* ctx, ID2D1Image* input, const Filters& steps, float scale)
+    {
+        // https://drafts.fxtf.org/filter-effects-1/#ShorthandEquivalents: the colour functions are colour
+        // matrices on straight alpha; blur is a Gaussian whose standard deviation is the radius.
+        auto matrix = [](const float rgb[9], float offset, float alpha) {
+            D2D1_MATRIX_5X4_F m{};
+            for (int out = 0; out < 3; out++)
+                for (int in = 0; in < 3; in++) m.m[in][out] = rgb[out * 3 + in];
+            m.m[3][3] = alpha;
+            m.m[4][0] = m.m[4][1] = m.m[4][2] = offset;
+            return m;
+        };
+        winrt::com_ptr<ID2D1Image> current;
+        current.copy_from(input);
+        for (const Filter& f : steps)
+        {
+            winrt::com_ptr<ID2D1Effect> effect;
+            if (f.kind == Filter::Blur)
+            {
+                if (f.amount <= 0 || FAILED(ctx->CreateEffect(CLSID_D2D1GaussianBlur, effect.put()))) continue;
+                effect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, f.amount * scale);
+                effect->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_SOFT);
+            }
+            else if (f.kind == Filter::DropShadow)
+            {
+                winrt::com_ptr<ID2D1Effect> shadow, moved, over;
+                if (FAILED(ctx->CreateEffect(CLSID_D2D1Shadow, shadow.put())) || FAILED(ctx->CreateEffect(CLSID_D2D12DAffineTransform, moved.put())) ||
+                    FAILED(ctx->CreateEffect(CLSID_D2D1Composite, over.put())))
+                    continue;
+                shadow->SetInput(0, current.get());
+                shadow->SetValue(D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, f.amount * scale / 2);
+                shadow->SetValue(D2D1_SHADOW_PROP_COLOR, D2D1::Vector4F(f.color.r / 255.0f, f.color.g / 255.0f, f.color.b / 255.0f, f.color.a / 255.0f));
+                moved->SetInputEffect(0, shadow.get());
+                moved->SetValue(D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX, D2D1::Matrix3x2F::Translation(f.x * scale, f.y * scale));
+                // The shadow under, the image over it.
+                over->SetInputEffect(0, moved.get());
+                over->SetInput(1, current.get());
+                current = nullptr;
+                over->GetOutput(current.put());
+                continue;
+            }
+            else
+            {
+                const float a = f.amount;
+                float rgb[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+                float offset = 0, alpha = 1;
+                switch (f.kind)
+                {
+                case Filter::Brightness:
+                    rgb[0] = rgb[4] = rgb[8] = a;
+                    break;
+                case Filter::Contrast:
+                    rgb[0] = rgb[4] = rgb[8] = a;
+                    offset = (1 - a) / 2;
+                    break;
+                case Filter::Invert:
+                {
+                    const float k = std::min(a, 1.0f);
+                    rgb[0] = rgb[4] = rgb[8] = 1 - 2 * k;
+                    offset = k;
+                    break;
+                }
+                case Filter::Opacity:
+                    alpha = std::clamp(a, 0.0f, 1.0f);
+                    break;
+                case Filter::Grayscale:
+                case Filter::Sepia:
+                {
+                    const float s = 1 - std::min(a, 1.0f);
+                    const float grey[9] = {0.2126f + 0.7874f * s, 0.7152f - 0.7152f * s, 0.0722f - 0.0722f * s,
+                                           0.2126f - 0.2126f * s, 0.7152f + 0.2848f * s, 0.0722f - 0.0722f * s,
+                                           0.2126f - 0.2126f * s, 0.7152f - 0.7152f * s, 0.0722f + 0.9278f * s};
+                    const float sepia[9] = {0.393f + 0.607f * s, 0.769f - 0.769f * s, 0.189f - 0.189f * s,
+                                            0.349f - 0.349f * s, 0.686f + 0.314f * s, 0.168f - 0.168f * s,
+                                            0.272f - 0.272f * s, 0.534f - 0.534f * s, 0.131f + 0.869f * s};
+                    std::copy_n(f.kind == Filter::Grayscale ? grey : sepia, 9, rgb);
+                    break;
+                }
+                case Filter::Saturate:
+                {
+                    const float s = a;
+                    const float m[9] = {0.213f + 0.787f * s, 0.715f - 0.715f * s, 0.072f - 0.072f * s,
+                                        0.213f - 0.213f * s, 0.715f + 0.285f * s, 0.072f - 0.072f * s,
+                                        0.213f - 0.213f * s, 0.715f - 0.715f * s, 0.072f + 0.928f * s};
+                    std::copy_n(m, 9, rgb);
+                    break;
+                }
+                case Filter::HueRotate:
+                {
+                    const float r = a * 3.14159265f / 180, c = std::cos(r), s = std::sin(r);
+                    const float m[9] = {0.213f + c * 0.787f - s * 0.213f, 0.715f - c * 0.715f - s * 0.715f, 0.072f - c * 0.072f + s * 0.928f,
+                                        0.213f - c * 0.213f + s * 0.143f, 0.715f + c * 0.285f + s * 0.140f, 0.072f - c * 0.072f - s * 0.283f,
+                                        0.213f - c * 0.213f - s * 0.787f, 0.715f - c * 0.715f + s * 0.715f, 0.072f + c * 0.928f + s * 0.072f};
+                    std::copy_n(m, 9, rgb);
+                    break;
+                }
+                default:
+                    break;
+                }
+                if (FAILED(ctx->CreateEffect(CLSID_D2D1ColorMatrix, effect.put()))) continue;
+                effect->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, matrix(rgb, offset, alpha));
+                effect->SetValue(D2D1_COLORMATRIX_PROP_ALPHA_MODE, D2D1_COLORMATRIX_ALPHA_MODE_STRAIGHT);
+                effect->SetValue(D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT, TRUE);
+            }
+            effect->SetInput(0, current.get());
+            current = nullptr;
+            effect->GetOutput(current.put());
+        }
+        return current;
+    }
+
+    bool D2DBackend::draw_filtered(ID2D1DeviceContext* ctx, const Command& push, std::span<const Command> inner)
+    {
+        if (!push.filter || push.filter->empty()) return false;
+        // Recorded on a context of its own, in the space the commands are in: the one drawing is mid-draw,
+        // and a filter inside this one records on another.
+        winrt::com_ptr<ID2D1Device> device;
+        ctx->GetDevice(device.put());
+        winrt::com_ptr<ID2D1DeviceContext> recorder;
+        winrt::com_ptr<ID2D1CommandList> recorded;
+        if (FAILED(device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, recorder.put())) || FAILED(recorder->CreateCommandList(recorded.put())))
+            return false;
+        recorder->SetTarget(recorded.get());
+        recorder->BeginDraw();
+        ID2D1DeviceContext* saved = m_ctx;
+        auto blur = m_blur;
+        const bool rastering = m_rastering;
+        m_rastering = true;
+        paint_span(inner, recorder.get());
+        m_rastering = rastering;
+        m_ctx = saved;
+        m_blur = blur;
+        HRESULT hr = recorder->EndDraw();
+        recorder->SetTarget(nullptr);
+        if (FAILED(hr) || FAILED(recorded->Close())) return false;
+        auto image = filtered(ctx, recorded.get(), *push.filter, 1);
+        if (!image) return false;
+        ctx->DrawImage(image.get());
+        return true;
+    }
+
+    void D2DBackend::backdrop(ID2D1DeviceContext* ctx, const Command& c)
+    {
+        if (!c.filter || c.filter->empty() || c.rect.empty()) return;
+        // Only a bitmap has pixels to read; a recording (a filter, a shadow) has none yet.
+        winrt::com_ptr<ID2D1Image> target;
+        ctx->GetTarget(target.put());
+        auto bitmap = target.try_as<ID2D1Bitmap1>();
+        if (!bitmap) return;
+        D2D1_MATRIX_3X2_F outer;
+        ctx->GetTransform(&outer);
+        float dpiX, dpiY;
+        ctx->GetDpi(&dpiX, &dpiY);
+        auto device = D2D1::Matrix3x2F::ReinterpretBaseType(&outer)[0] * D2D1::Matrix3x2F::Scale(dpiX / 96, dpiY / 96);
+        if (device._12 != 0 || device._21 != 0 || !(device._11 > 0) || !(device._22 > 0)) return;
+        // Wide enough that a blur near the edge reads what is around the box, as browsers do.
+        float reach = 0;
+        for (const Filter& f : *c.filter)
+            if (f.kind == Filter::Blur) reach += 3 * f.amount;
+        const D2D1_SIZE_U size = bitmap->GetPixelSize();
+        float x0 = std::max(0.0f, std::floor((c.rect.x - reach) * device._11 + device._31));
+        float y0 = std::max(0.0f, std::floor((c.rect.y - reach) * device._22 + device._32));
+        float x1 = std::min(float(size.width), std::ceil((c.rect.x + c.rect.w + reach) * device._11 + device._31));
+        float y1 = std::min(float(size.height), std::ceil((c.rect.y + c.rect.h + reach) * device._22 + device._32));
+        if (!(x1 > x0) || !(y1 > y0) || int64_t(x1 - x0) * int64_t(y1 - y0) > MAX_RASTER_PIXELS / 4) return;
+        winrt::com_ptr<ID2D1Bitmap1> copy;
+        auto properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE, bitmap->GetPixelFormat());
+        if (FAILED(ctx->CreateBitmap(D2D1::SizeU(UINT32(x1 - x0), UINT32(y1 - y0)), nullptr, 0, properties, copy.put()))) return;
+        ctx->Flush();
+        D2D1_POINT_2U at{0, 0};
+        D2D1_RECT_U from{UINT32(x0), UINT32(y0), UINT32(x1), UINT32(y1)};
+        if (FAILED(copy->CopyFromBitmap(&at, bitmap.get(), &from))) return;
+        auto image = filtered(ctx, copy.get(), *c.filter, device._11);
+        if (!image) return;
+        // Back inside the box, its corners too; the copy is in device pixels.
+        winrt::com_ptr<ID2D1Geometry> shape = c.radii.any() ? rounded(c.rect, c.radii) : nullptr;
+        if (shape) ctx->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), shape.get()), nullptr);
+        else ctx->PushAxisAlignedClip(rect(c.rect), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        ctx->SetTransform(D2D1::Matrix3x2F::Scale(96 / dpiX, 96 / dpiY));
+        ctx->DrawImage(image.get(), D2D1::Point2F(x0, y0));
+        ctx->SetTransform(outer);
+        if (shape) ctx->PopLayer();
+        else ctx->PopAxisAlignedClip();
+    }
+
     void D2DBackend::paint(const DisplayList& list, ID2D1DeviceContext* ctx)
     {
         paint_span(list, ctx);
@@ -1224,6 +1409,22 @@ namespace twlite
                 break;
             case Cmd::Shadow:
                 shadow(c);
+                break;
+            case Cmd::FilterPush:
+            {
+                size_t end = i + 1;
+                for (int depth = 1; end < list.size(); end++)
+                {
+                    if (list[end].kind == Cmd::FilterPush) depth++;
+                    else if (list[end].kind == Cmd::FilterPop && --depth == 0) break;
+                }
+                if (end < list.size() && draw_filtered(ctx, c, list.subspan(i + 1, end - i - 1))) i = end;
+                break;
+            }
+            case Cmd::FilterPop:
+                break;
+            case Cmd::Backdrop:
+                backdrop(ctx, c);
                 break;
             case Cmd::FillRect:
                 if (c.has_clip) ctx->PushAxisAlignedClip(rect(c.clip), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);

@@ -120,6 +120,15 @@ void digest(Digest& d, const Command& c) {
     d.value(c.matrix);
     d.value(c.hidden);
     d.value(c.inset);
+    if (const Filters* f = c.filter.get()) {
+        for (const Filter& step : *f) {
+            d.value(step.kind);
+            d.value(step.amount);
+            d.value(step.x);
+            d.value(step.y);
+            d.value(step.color);
+        }
+    }
     if (const Path* p = c.path.get()) {
         d.bytes(p->ops.data(), p->ops.size() * sizeof(Path::Op));
         d.bytes(p->points.data(), p->points.size() * sizeof(float));
@@ -163,6 +172,9 @@ Rect ink_of(const Command& c) {
     }
     case Cmd::Shadow:
         return grow(c.rect, c.bx * 1.5f + std::fabs(c.by) + std::max(std::fabs(c.ax), std::fabs(c.ay)) + 2);
+    case Cmd::FilterPush:
+    case Cmd::Backdrop:
+        return grow(c.rect, 1);
     case Cmd::Path: {
         const Path* p = c.path.get();
         if (!p || p->points.size() < 2) return {};
@@ -284,23 +296,28 @@ PaintSummary summarize(const DisplayList& list) {
         uint64_t context;
         Affine matrix;
         bool hidden;
+        Rect filtered;  // inside a filter: where its result paints, which a change inside may all change
     };
-    std::vector<Frame> stack{{1469598103934665603ull, Affine{}, false}};
+    std::vector<Frame> stack{{1469598103934665603ull, Affine{}, false, {}}};
     for (const Command& c : list) {
         Digest d;
         d.value(stack.back().context);
         digest(d, c);
         switch (c.kind) {
         case Cmd::ClipPush:
-            stack.push_back({d.h, stack.back().matrix, stack.back().hidden});
+            stack.push_back({d.h, stack.back().matrix, stack.back().hidden, stack.back().filtered});
             continue;
         case Cmd::GroupPush: {
             Affine own{c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]};
-            stack.push_back({d.h, stack.back().matrix * own, stack.back().hidden || c.hidden || c.opacity <= 0});
+            stack.push_back({d.h, stack.back().matrix * own, stack.back().hidden || c.hidden || c.opacity <= 0, stack.back().filtered});
             continue;
         }
+        case Cmd::FilterPush:
+            stack.push_back({d.h, stack.back().matrix, stack.back().hidden, transformed(ink_of(c), stack.back().matrix)});
+            continue;
         case Cmd::ClipPop:
         case Cmd::GroupPop:
+        case Cmd::FilterPop:
             if (stack.size() > 1) stack.pop_back();
             continue;
         default:
@@ -309,7 +326,8 @@ PaintSummary summarize(const DisplayList& list) {
         PaintSummary::Entry e;
         e.key = d.h;
         e.canvas = c.canvas;
-        if (!stack.back().hidden) e.ink = transformed(ink_of(c), stack.back().matrix);
+        e.backdrop = c.kind == Cmd::Backdrop;
+        if (!stack.back().hidden) e.ink = stack.back().filtered.empty() ? transformed(ink_of(c), stack.back().matrix) : stack.back().filtered;
         out.entries.push_back(e);
     }
     return out;
@@ -365,6 +383,17 @@ bool damage_between(const PaintSummary& before, const PaintSummary& after, const
         if (!kept[p]) add(b[pairs[p].first].ink);
     for (const auto& e : b)
         if (e.canvas && canvas_changed && canvas_changed(e.canvas)) add(e.ink);
+    // A backdrop filters what is under it: a change there changes all of it.
+    auto touches = [](const Rect& a, const Rect& r) { return a.x < r.x + r.w && r.x < a.x + a.w && a.y < r.y + r.h && r.y < a.y + a.h; };
+    for (const auto& e : b) {
+        if (!e.backdrop) continue;
+        for (size_t k = 0, n = out.size(); k < n; k++) {
+            if (touches(e.ink, out[k])) {
+                add(e.ink);
+                break;
+            }
+        }
+    }
     if (out.size() > MAX_DAMAGE_RECTS) {
         Rect u = out[0];
         for (const Rect& r : out) {

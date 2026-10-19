@@ -1749,6 +1749,51 @@ public:
     }
 #endif
 #ifdef TW_LITEHTML_TWIDGET
+    /// The fork's filter functions for the display list; drop-shadow's currentColor is the element's colour.
+    static std::shared_ptr<const Filters> filters_of(const litehtml::filter_paint& f) {
+        if (!f.steps || f.steps->empty()) return nullptr;
+        auto out = std::make_shared<Filters>();
+        const auto* owner = static_cast<const litehtml::element*>(f.owner);
+        for (const litehtml::filter_function& step : *f.steps) {
+            Filter filter;
+            filter.kind = Filter::Kind(int(step.kind));
+            filter.amount = step.kind == litehtml::filter_function::blur || step.kind == litehtml::filter_function::drop_shadow ? step.radius.val() : step.amount;
+            if (step.kind == litehtml::filter_function::drop_shadow) {
+                filter.x = step.x.val();
+                filter.y = step.y.val();
+                filter.color = color_of(step.color.is_current_color && owner ? owner->css().get_color() : step.color);
+            }
+            out->push_back(filter);
+        }
+        return out;
+    }
+    void draw_filtered(litehtml::uint_ptr hdc, const litehtml::filter_paint& f, const std::function<void(litehtml::uint_ptr)>& paint) override {
+        auto filters = litehtml::g_paint_trace ? nullptr : filters_of(f);
+        if (!filters) {
+            paint(hdc);
+            return;
+        }
+        Command push;
+        push.kind = Cmd::FilterPush;
+        push.rect = rect_of(f.bounds);
+        push.filter = std::move(filters);
+        list_.push_back(std::move(push));
+        paint(hdc);
+        Command pop;
+        pop.kind = Cmd::FilterPop;
+        list_.push_back(std::move(pop));
+    }
+    void draw_backdrop(litehtml::uint_ptr, const litehtml::filter_paint& f) override {
+        if (litehtml::g_paint_trace) return;
+        auto filters = filters_of(f);
+        if (!filters) return;
+        Command c;
+        c.kind = Cmd::Backdrop;
+        c.rect = rect_of(f.box);
+        c.radii = radii_of(f.radius);
+        c.filter = std::move(filters);
+        list_.push_back(std::move(c));
+    }
     void draw_box_shadow(litehtml::uint_ptr, const litehtml::position& box, const litehtml::border_radiuses& radius, const litehtml::shadow_paint& shadow) override {
         if (litehtml::g_paint_trace) return;
         if (shadow.color.alpha == 0) return;
