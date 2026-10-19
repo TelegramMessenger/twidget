@@ -1330,6 +1330,64 @@ int main() {
         check(types(f2.receive(parse(page))) == "error:10 error:11 ", "an image the backend cannot decode is an error");
     }
 
+    // ── scroll sizes, pointer-events, CSS-wide keywords, the placeholder image, movementX, empty gradients ──
+    {
+        StubBackend pb;
+        Renderer p(300, 1, false, pb);
+        auto loaded = p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":"#kw1{display:initial} #kwp{color:rgb(0,0,140)} #kw2{color:rgb(200,0,0);color:unset} #kw3{display:inline;display:revert} p{margin-top:0} #kw4{margin:revert}"},
+            {"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","overflow:hidden;height:30px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","height:70px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":21,"tag":"div","attrs":[["style","position:absolute;left:0;top:100px;width:50px;height:50px"]]},{"op":"ins","parent":4,"id":21,"before":null},
+            {"op":"el","id":20,"tag":"div","attrs":[["style","position:absolute;left:0;top:100px;width:50px;height:50px;pointer-events:none"]]},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":30,"tag":"div","attrs":[["id","kw1"]]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":31,"tag":"div","attrs":[["id","kwp"]]},{"op":"ins","parent":4,"id":31,"before":null},
+            {"op":"el","id":32,"tag":"span","attrs":[["id","kw2"]]},{"op":"ins","parent":31,"id":32,"before":null},
+            {"op":"el","id":33,"tag":"div","attrs":[["id","kw3"]]},{"op":"ins","parent":4,"id":33,"before":null},
+            {"op":"el","id":34,"tag":"p","attrs":[["id","kw4"]]},{"op":"ins","parent":4,"id":34,"before":null},
+            {"op":"el","id":35,"tag":"div","attrs":[["style","color:rebeccapurple"]]},{"op":"ins","parent":4,"id":35,"before":null},
+            {"op":"el","id":40,"tag":"img","attrs":[["src","data:image/svg+xml,%3Csvg%3E%3C/svg%3E"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        auto ask = [&](Json query) {
+            for (const Json& m : p.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) { return ask(Json::object().set("q", "cs").set("id", id))[prop].asString(); };
+        Json box = ask(Json::object().set("q", "box").set("id", 10));
+        check(box["scrollHeight"].asNumber() == 70 && box["clientHeight"].asNumber() == 30,
+              "scrollHeight is the overflowing content's (got " + std::to_string(box["scrollHeight"].asNumber()) + ")");
+        double hit = ask(Json::object().set("q", "elementFromPoint").set("x", 25).set("y", 125)).asNumber();
+        check(hit == 21, "pointer-events: none passes the hit to what is below (got " + std::to_string(hit) + ")");
+        check(cs(30, "display") == "inline", "display: initial is inline (got " + cs(30, "display") + ")");
+        check(cs(32, "color") == "rgb(0, 0, 140)", "color: unset inherits (got " + cs(32, "color") + ")");
+        check(cs(33, "display") == "block", "display: revert is the UA's block (got " + cs(33, "display") + ")");
+        check(cs(34, "margin-top") == "16px", "margin: revert brings back the UA's 1em (got " + cs(34, "margin-top") + ")");
+        check(cs(35, "color") == "rgb(102, 51, 153)", "rebeccapurple is a colour (got " + cs(35, "color") + ")");
+        double natural = 0;
+        for (const Json& ev : events(loaded))
+            if (ev["type"].asString() == "load" && ev["targetId"].asNumber() == 40) natural = ev["naturalWidth"].asNumber();
+        check(natural == 48, "an SVG image is the profile's 48 px placeholder (got " + std::to_string(natural) + ")");
+
+        p.receive(parse(R"({"type":"listen","types":["pointermove"]})"));
+        p.touch(0, 100, 10, 0, true, true, 0);
+        p.touch(1, 120, 10, 0, true, true, 0);
+        p.touch(1, 150, 14, 0, true, true, 0);
+        auto moves = events(p.tick());
+        check(moves.size() == 1 && moves[0]["movementX"].asNumber() == 50 && moves[0]["movementY"].asNumber() == 4,
+              "coalesced moves add their movementX/Y up");
+        p.touch(1, 160, 14, 0, true, true, 0);
+        moves = events(p.tick());
+        check(moves.size() == 1 && moves[0]["movementX"].asNumber() == 10, "movementX counts from the last move the widget saw");
+        p.touch(2, 160, 14, 0, true, true, 0);
+
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":50,"tag":"canvas","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":50,"before":null},
+            {"op":"canvas","id":50,"cmds":[["g",1,"linear",5,5,5,5],["gs",1,0,"red"],["s","fillStyle",{"g":1}],["c","fillRect",0,0,10,10]]}]})"));
+        const auto& last = pb.runs.back();
+        check(!last.empty() && last.back().paint.kind == CanvasPaint::Solid && last.back().paint.color.a == 0, "a gradient with no length paints nothing");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
