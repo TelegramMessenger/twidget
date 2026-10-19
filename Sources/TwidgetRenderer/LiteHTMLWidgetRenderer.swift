@@ -2547,8 +2547,9 @@ public final class LiteHTMLWidgetRenderer {
             if let prop = q["prop"] as? String, prop.hasPrefix("--") {
                 return document?.customProperty(prop, attribute: WidgetDOM.idAttribute, value: String(id)) ?? ""
             }
-            var style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id)) ?? [:]
-            if let transform = animator.lastOverrides[id]?.last(where: { $0.0 == "transform" })?.1 {
+            let pseudo = q["pseudo"] as? String
+            var style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(id), pseudo: pseudo) ?? [:]
+            if (pseudo ?? "").isEmpty, let transform = animator.lastOverrides[id]?.last(where: { $0.0 == "transform" })?.1 {
                 style["transform"] = LiteHTMLWidgetRenderer.computedTransform(transform, box: rect?.size ?? .zero)
             }
             if let prop = q["prop"] as? String {

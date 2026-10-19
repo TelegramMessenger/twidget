@@ -16,6 +16,7 @@
 #include "el_space.h"
 #include "el_svg.h"
 #include "el_image.h"
+#include "el_before_after.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -55,6 +56,8 @@ details, summary { display: block; }
 details > summary:first-of-type { display: list-item; list-style-type: none; }
 [dir=ltr] { direction: ltr; }
 [dir=rtl] { direction: rtl; }
+q::before { content: open-quote; }
+q::after { content: close-quote; }
 summary::before { content: "▶︎"; display: inline-block; width: 1.25em; font-size: 0.9em; }
 details[open] > summary::before { content: "▼︎"; }
 details:not([open]) > :not(summary) { display: none; }
@@ -3030,6 +3033,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value
 {
+    return [self computedStyleForAttribute:attribute value:value pseudo:nil];
+}
+
+- (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value pseudo:(nullable NSString *)pseudo
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     if(!_doc || !_doc->root_render())
@@ -3066,6 +3074,19 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     }
     if(!el)
         return @{};
+    const bool before = [pseudo isEqualToString:@"::before"] || [pseudo isEqualToString:@":before"];
+    const bool after  = [pseudo isEqualToString:@"::after"] || [pseudo isEqualToString:@":after"];
+    if(before || after)
+    {
+        for(const auto &child : el->children())
+        {
+            if(before ? std::dynamic_pointer_cast<lh::el_before>(child) != nullptr : std::dynamic_pointer_cast<lh::el_after>(child) != nullptr)
+            {
+                el = child;
+                break;
+            }
+        }
+    }
     const lh::css_properties &css = el->css();
     auto tag = std::dynamic_pointer_cast<lh::html_tag>(el);
     NSMutableDictionary<NSString *, NSString *> *out = [NSMutableDictionary dictionary];
@@ -3239,6 +3260,17 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"touch-action"]        = raw("touch-action", @"auto");
     out[@"filter"]              = raw("filter", @"none");
     out[@"backdrop-filter"]     = raw("backdrop-filter", @"none");
+    out[@"quotes"]              = @"auto";
+    for(lh::element::ptr e = el; e; e = e->parent())
+    {
+        auto quoted = std::dynamic_pointer_cast<lh::html_tag>(e);
+        std::string v = quoted ? quoted->raw_declaration("quotes") : std::string();
+        lh::trim(v);
+        if(v.empty() || v == "inherit" || v == "unset")
+            continue;
+        out[@"quotes"] = @(v.c_str());
+        break;
+    }
     return out;
 }
 
