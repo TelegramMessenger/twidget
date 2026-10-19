@@ -1388,6 +1388,51 @@ int main() {
         check(!last.empty() && last.back().paint.kind == CanvasPaint::Solid && last.back().paint.color.a == 0, "a gradient with no length paints nothing");
     }
 
+    // ── animated computed style, ResizeObserver, <details>, animationstart before any listen ──
+    {
+        StubBackend db;
+        Renderer d(300, 1, false, db);
+        auto loaded = d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":"@keyframes slide{from{transform:translateX(0)}to{transform:translateX(40px)}} #pk{width:20px;height:20px;animation:slide 10s linear -2.5s paused}"},
+            {"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","pk"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","width:100px;height:20px"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":20,"tag":"details"},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"summary"},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"text","id":22,"data":"s"},{"op":"ins","parent":21,"id":22,"before":null},
+            {"op":"el","id":23,"tag":"div","attrs":[["style","height:20px"]]},{"op":"ins","parent":20,"id":23,"before":null}]})"));
+        check(types(loaded).find("animationstart:10") != std::string::npos, "animationstart goes out before the widget says it listens (got " + types(loaded) + ")");
+        auto ask = [&](Json query) {
+            for (const Json& m : d.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        std::string transform = ask(Json::object().set("q", "cs").set("id", 10))["transform"].asString();
+        check(transform == "matrix(1, 0, 0, 1, 10, 0)", "a paused animation's frame is the computed transform (got " + transform + ")");
+
+        auto resized = [](const std::vector<Json>& out) {
+            for (const Json& m : out)
+                if (m["type"].asString() == "resize" && !m["entries"].arr().empty()) return m["entries"][size_t(0)]["width"].asNumber();
+            return -1.0;
+        };
+        double first = resized(d.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":11,"method":"observeResize","args":[]}]})")));
+        check(first == 100, "observeResize reports the content box at once (got " + std::to_string(first) + ")");
+        double next = resized(d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":11,"name":"style","value":"width:90px;height:20px"}]})")));
+        check(next == 90, "and again when it changes (got " + std::to_string(next) + ")");
+
+        Json details = ask(Json::object().set("q", "rect").set("id", 20)), summary = ask(Json::object().set("q", "rect").set("id", 21));
+        check(details["height"].asNumber() > 0 && details["height"].asNumber() == summary["height"].asNumber(), "a closed <details> is as tall as its summary");
+        check(ask(Json::object().set("q", "cs").set("id", 21))["display"].asString() == "list-item", "a summary is a list item");
+        double x = summary["x"].asNumber() + 4, y = summary["y"].asNumber() + summary["height"].asNumber() / 2;
+        d.touch(0, x, y, 0, true, false, 0);
+        bool opened = false;
+        for (const Json& ev : events(d.touch(2, x, y, 0, true, false, 0)))
+            if (ev["type"].asString() == "toggle") opened = ev["targetId"].asNumber() == 20 && ev["open"].asBool();
+        check(opened, "tapping the summary opens the <details> and sends toggle");
+        check(ask(Json::object().set("q", "rect").set("id", 23))["height"].asNumber() == 20, "and its content shows");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
