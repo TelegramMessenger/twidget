@@ -1520,6 +1520,17 @@ public:
         bool l = visible(b.left), t = visible(b.top), rr = visible(b.right), bt = visible(b.bottom);
         if (!l && !t && !rr && !bt) return;
         auto same = [](const litehtml::border& a, const litehtml::border& c) { return a.width == c.width && a.color == c.color; };
+        auto broken = [](const litehtml::border& s) { return s.style == litehtml::border_style_dashed || s.style == litehtml::border_style_dotted; };
+        Radii corners = radii_of(b.radius);
+        bool square = corners.tlx == 0 && corners.tly == 0 && corners.trx == 0 && corners.try_ == 0 && corners.brx == 0 && corners.bry == 0 &&
+                      corners.blx == 0 && corners.bly == 0;
+#ifdef TW_LITEHTML_TWIDGET
+        if (square && ((l && broken(b.left)) || (t && broken(b.top)) || (rr && broken(b.right)) || (bt && broken(b.bottom)) ||
+                       !(same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom)))) {
+            draw_sides(b, rect_of(draw_pos), {l, t, rr, bt});
+            return;
+        }
+#endif
         if (l && t && rr && bt && same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom)) {
             float w = float(b.left.width);
             Command c;
@@ -1547,6 +1558,87 @@ public:
         if (l) strip(b.left, Rect{p.x, p.y, float(b.left.width), p.h});
         if (rr) strip(b.right, Rect{p.x + p.w - float(b.right.width), p.y, float(b.right.width), p.h});
     }
+
+#ifdef TW_LITEHTML_TWIDGET
+    /// Square borders side by side: each side is the trapezoid its corners mitre, filled when solid, and
+    /// stroked along its middle under a clip to it when dashed or dotted, so that the dashes meet in the
+    /// corners as browsers draw them.
+    void draw_sides(const litehtml::borders& b, const Rect& p, std::array<bool, 4> visible) {
+        const litehtml::border* sides[4] = {&b.left, &b.top, &b.right, &b.bottom};
+        const float wl = float(b.left.width), wt = float(b.top.width), wr = float(b.right.width), wb = float(b.bottom.width);
+        const float x0 = p.x, y0 = p.y, x1 = p.x + p.w, y1 = p.y + p.h;
+        // Outer corners, then inner ones, clockwise from the top left.
+        const float quads[4][8] = {
+            {x0, y1, x0, y0, x0 + wl, y0 + wt, x0 + wl, y1 - wb},  // left
+            {x0, y0, x1, y0, x1 - wr, y0 + wt, x0 + wl, y0 + wt},  // top
+            {x1, y0, x1, y1, x1 - wr, y1 - wb, x1 - wr, y0 + wt},  // right
+            {x1, y1, x0, y1, x0 + wl, y1 - wb, x1 - wr, y1 - wb},  // bottom
+        };
+        for (int i = 0; i < 4; i++) {
+            if (!visible[i]) continue;
+            const litehtml::border& s = *sides[i];
+            auto quad = std::make_shared<Path>();
+            for (int k = 0; k < 8; k += 2) {
+                quad->ops.push_back(k ? Path::Line : Path::Move);
+                quad->points.push_back(quads[i][k]);
+                quad->points.push_back(quads[i][k + 1]);
+            }
+            quad->ops.push_back(Path::Close);
+            const bool dashed = s.style == litehtml::border_style_dashed, dotted = s.style == litehtml::border_style_dotted;
+            if (!dashed && !dotted) {
+                quad->fill = true;
+                quad->fill_color = color_of(s.color);
+                Command c;
+                c.kind = Cmd::Path;
+                c.path = std::move(quad);
+                list_.push_back(std::move(c));
+                continue;
+            }
+            float w = float(s.width);
+            bool horizontal = i == 1 || i == 3;
+            // The middle of the side, corner to corner, where the dashes are fitted whole.
+            float ax = horizontal ? x0 : (i == 0 ? x0 + w / 2 : x1 - w / 2), ay = horizontal ? (i == 1 ? y0 + w / 2 : y1 - w / 2) : y0;
+            float bx = horizontal ? x1 : ax, by = horizontal ? ay : y1;
+            float length = horizontal ? p.w : p.h;
+            auto line = std::make_shared<Path>();
+            line->stroke = true;
+            line->stroke_color = color_of(s.color);
+            line->stroke_width = w;
+            if (dotted) {
+                // Round dots a width across, a width apart, a dot in each corner.
+                int gaps = std::max(1, int(std::lround((length - w) / (2 * w))));
+                line->line_cap = 1;
+                line->dashes = {0, (length - w) / float(gaps)};
+                ax += horizontal ? w / 2 : 0; ay += horizontal ? 0 : w / 2;
+                bx -= horizontal ? w / 2 : 0; by -= horizontal ? 0 : w / 2;
+            } else {
+                // Dashes twice the width, gaps near one width, stretched to end in a dash at each corner.
+                float dash = 2 * w;
+                int count = std::max(1, int(std::lround((length + w) / (dash + w))));
+                float gap = count > 1 ? std::max(0.0f, (length - count * dash) / float(count - 1)) : 0;
+                line->dashes = {dash, gap};
+            }
+            line->ops = {Path::Move, Path::Line};
+            line->points = {ax, ay, bx, by};
+            Command clip;
+            clip.kind = Cmd::ClipPush;
+            clip.rect = Rect{std::min({quads[i][0], quads[i][2], quads[i][4], quads[i][6]}), std::min({quads[i][1], quads[i][3], quads[i][5], quads[i][7]}), 0, 0};
+            clip.rect.w = std::max({quads[i][0], quads[i][2], quads[i][4], quads[i][6]}) - clip.rect.x;
+            clip.rect.h = std::max({quads[i][1], quads[i][3], quads[i][5], quads[i][7]}) - clip.rect.y;
+            clip.path = std::move(quad);
+            clips_.push_back(clip);
+            list_.push_back(std::move(clip));
+            Command c;
+            c.kind = Cmd::Path;
+            c.path = std::move(line);
+            list_.push_back(std::move(c));
+            clips_.pop_back();
+            Command pop;
+            pop.kind = Cmd::ClipPop;
+            list_.push_back(std::move(pop));
+        }
+    }
+#endif
 
     // ── chrome the renderer has none of ──
     void set_caption(const char*) override {}
