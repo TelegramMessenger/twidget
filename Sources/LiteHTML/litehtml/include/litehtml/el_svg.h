@@ -8,6 +8,18 @@ namespace litehtml
 {
     bool  svg_geometry(const element::ptr& el, vector_path& path);
     float svg_path_length(const vector_path& path, float at, float* x, float* y);
+    /// A piece of an SVG <text>: its own characters, or a <tspan>'s, styled by `style`.
+    struct svg_text_run
+    {
+        element::ptr style;
+        std::string  text;
+        position     box;  // user space
+    };
+    /// What an SVG <text> draws, run by run, and where all of it goes, in its user space.
+    bool  svg_text_runs(const element::ptr& el, document_container* container, std::vector<svg_text_run>& runs, position& box);
+    bool  svg_text_box(const element::ptr& el, document_container* container, position& box);
+    /// An SVG element's user space to document coordinates: its transforms, its parents', and the view box.
+    bool  svg_ctm(const element::ptr& el, transform_matrix& ctm);
     void svg_set_group_cache_enabled(bool enabled);
 
     class el_svg : public html_tag

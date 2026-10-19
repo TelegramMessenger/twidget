@@ -182,9 +182,50 @@ std::vector<Rect> inline_boxes_of(const litehtml::element::ptr& el) {
     return boxes;
 }
 
+#ifdef TW_LITEHTML_TWIDGET
+/// A path's bounds, sampled along its outline so that curves bound by their ink, not their control points.
+bool path_bounds(const litehtml::vector_path& path, float& x0, float& y0, float& x1, float& y1) {
+    const int steps = 512;
+    float total = litehtml::svg_path_length(path, -1, nullptr, nullptr);
+    x0 = y0 = INFINITY;
+    x1 = y1 = -INFINITY;
+    for (int i = 0; i <= steps; i++) {
+        float x = 0, y = 0;
+        litehtml::svg_path_length(path, total * float(i) / steps, &x, &y);
+        x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y);
+    }
+    return std::isfinite(x0);
+}
+
+/// An SVG shape or text has no box of its own: its geometry, or its text, through its transforms and the view box.
+std::optional<Rect> svg_box_of(const litehtml::element::ptr& el) {
+    litehtml::transform_matrix ctm;
+    if (el->get_render_item() || !litehtml::svg_ctm(el, ctm)) return std::nullopt;
+    float x0, y0, x1, y1;
+    litehtml::vector_path path;
+    litehtml::position text;
+    if (litehtml::svg_geometry(el, path)) {
+        if (!path_bounds(path, x0, y0, x1, y1)) return std::nullopt;
+    } else if (litehtml::svg_text_box(el, el->get_document()->container(), text)) {
+        x0 = float(text.x); y0 = float(text.y); x1 = x0 + float(text.width); y1 = y0 + float(text.height);
+    } else {
+        return std::nullopt;
+    }
+    float bx0 = INFINITY, by0 = INFINITY, bx1 = -INFINITY, by1 = -INFINITY;
+    for (auto [x, y] : {std::pair{x0, y0}, std::pair{x1, y0}, std::pair{x0, y1}, std::pair{x1, y1}}) {
+        float tx = ctm.a * x + ctm.c * y + ctm.tx, ty = ctm.b * x + ctm.d * y + ctm.ty;
+        bx0 = std::min(bx0, tx); by0 = std::min(by0, ty); bx1 = std::max(bx1, tx); by1 = std::max(by1, ty);
+    }
+    return Rect{bx0, by0, bx1 - bx0, by1 - by0};
+}
+#endif
+
 /// The border box of an element in document coordinates (`get_placement()` is the content box;
 /// getBoundingClientRect / offsetWidth are border boxes).
 Rect border_box_of(const litehtml::element::ptr& el) {
+#ifdef TW_LITEHTML_TWIDGET
+    if (auto svg = svg_box_of(el)) return *svg;
+#endif
     // An inline element shows as its line boxes; its own placement is its containing block's origin.
     std::vector<Rect> lines = inline_boxes_of(el);
     if (!lines.empty()) {
@@ -3896,6 +3937,11 @@ Json Renderer::answer(const Json& q) {
 #ifdef TW_LITEHTML_TWIDGET
     if (kind == "svg") {
         const std::string& method = q["method"].asString();
+        litehtml::position text;
+        if (el && litehtml::svg_text_box(el, container_.get(), text)) {
+            if (method == "getComputedTextLength") return double(text.width);
+            if (method == "getBBox") return Json::object().set("x", double(text.x)).set("y", double(text.y)).set("width", double(text.width)).set("height", double(text.height));
+        }
         litehtml::vector_path path;
         if (!el || !litehtml::svg_geometry(el, path)) return Json::object().set("error", "unsupported");
         if (method == "getTotalLength") return double(litehtml::svg_path_length(path, -1, nullptr, nullptr));
@@ -3906,16 +3952,8 @@ Json Renderer::answer(const Json& q) {
             return Json::object().set("x", x).set("y", y);
         }
         if (method == "getBBox") {
-            // Sampled along the outline, as the Apple renderer does, so curves bound by their ink rather than their control points.
-            const int steps = 512;
-            float total = litehtml::svg_path_length(path, -1, nullptr, nullptr);
-            float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
-            for (int i = 0; i <= steps; i++) {
-                float x = 0, y = 0;
-                litehtml::svg_path_length(path, total * float(i) / steps, &x, &y);
-                x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y);
-            }
-            if (!std::isfinite(x0)) return Json::object().set("error", "unsupported");
+            float x0, y0, x1, y1;
+            if (!path_bounds(path, x0, y0, x1, y1)) return Json::object().set("error", "unsupported");
             return Json::object().set("x", x0).set("y", y0).set("width", x1 - x0).set("height", y1 - y0);
         }
         return Json::object().set("error", "unsupported");

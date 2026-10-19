@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cmath>
 #include <cctype>
+#include <functional>
 #include "html.h"
 #include "el_svg.h"
 #include "render_item.h"
@@ -927,71 +928,31 @@ namespace litehtml
 
             void draw_text(const element::ptr& el)
             {
-                std::string text;
-                el->get_text(text);
-                std::string collapsed;
-                bool        space = false;
-                for(char ch : text)
+                position                  box;
+                std::vector<svg_text_run> runs;
+                if(!svg_text_runs(el, m_container, runs, box))
                 {
-                    if(std::isspace(static_cast<unsigned char>(ch)))
+                    return;
+                }
+                for(const auto& run : runs)
+                {
+                    const position& pos = run.box;
+                    if(m_hit_mode)
                     {
-                        space = !collapsed.empty();
+                        if(hits(pos.left().value(), pos.top().value(), pos.right().value(), pos.bottom().value(), 0))
+                        {
+                            m_hit = el;
+                        }
                         continue;
                     }
-                    if(space)
+                    web_color color;
+                    if(!svg_paint(run.style, _fill_, web_color::black, true, color, m_container))
                     {
-                        collapsed += ' ';
-                        space = false;
+                        continue;
                     }
-                    collapsed += ch;
+                    color = with_opacity(color, svg_number(run.style, _fill_opacity_, 1));
+                    m_container->draw_text(m_hdc, run.text.c_str(), run.style->css().get_font(), color, pos);
                 }
-                uint_ptr font = el->css().get_font();
-                if(collapsed.empty() || !font)
-                {
-                    return;
-                }
-                web_color color;
-                if(!svg_paint(el, _fill_, web_color::black, true, color, m_container))
-                {
-                    return;
-                }
-                color = with_opacity(color, svg_number(el, _fill_opacity_, 1));
-                std::vector<float> xs     = numbers(el->get_attr("x", "0"));
-                std::vector<float> ys     = numbers(el->get_attr("y", "0"));
-                float              x      = xs.empty() ? 0 : xs[0];
-                float              y      = ys.empty() ? 0 : ys[0];
-                const float        em     = el->css().get_font_size().value();
-                auto               shift  = [em](const char* value) -> float {
-                    if(!value || !*value)
-                        return 0;
-                    const char* p = value;
-                    float       v = 0;
-                    if(!next_number(p, v))
-                        return 0;
-                    return (p[0] == 'e' && p[1] == 'm') ? v * em : v;
-                };
-                x += shift(el->get_attr("dx"));
-                y += shift(el->get_attr("dy"));
-                pixel_t            width  = m_container->text_width(collapsed.c_str(), font);
-                std::string        anchor = svg_ident(el, _text_anchor_);
-                if(anchor == "middle")
-                {
-                    x -= width.value() / 2;
-                } else if(anchor == "end")
-                {
-                    x -= width.value();
-                }
-                const auto& fm = el->css().get_font_metrics();
-                position    pos(pixel_t(x), pixel_t(y) - fm.ascent, width, fm.height);
-                if(m_hit_mode)
-                {
-                    if(hits(pos.left().value(), pos.top().value(), pos.right().value(), pos.bottom().value(), 0))
-                    {
-                        m_hit = el;
-                    }
-                    return;
-                }
-                m_container->draw_text(m_hdc, collapsed.c_str(), font, color, pos);
             }
 
           public:
@@ -1316,6 +1277,140 @@ namespace litehtml
             return false;
         }
         return !path.ops.empty();
+    }
+
+    bool svg_text_runs(const element::ptr& el, document_container* container, std::vector<svg_text_run>& runs, position& box)
+    {
+        struct pending
+        {
+            element::ptr style;
+            std::string  text;
+            const char*  x  = nullptr;
+            const char*  y  = nullptr;
+            const char*  dx = nullptr;
+            const char*  dy = nullptr;
+        };
+        std::vector<pending> parts;
+        bool                 space = false, any = false;
+        // The text's own characters and each <tspan>'s, whitespace collapsed across them as one text.
+        std::function<void(const element::ptr&, const element::ptr&)> collect = [&](const element::ptr& node, const element::ptr& style) {
+            for(const auto& child : node->children())
+            {
+                if(child->is_text())
+                {
+                    std::string text;
+                    child->get_text(text);
+                    if(parts.empty() || parts.back().style != style)
+                        parts.push_back({style, {}});
+                    for(char ch : text)
+                    {
+                        if(std::isspace(static_cast<unsigned char>(ch)))
+                        {
+                            space = any;
+                            continue;
+                        }
+                        if(space)
+                            parts.back().text += ' ';
+                        space = false;
+                        any   = true;
+                        parts.back().text += ch;
+                    }
+                } else if(lowcase(child->get_tagName() ? child->get_tagName() : "") == "tspan" && child->css().get_display() != display_none)
+                {
+                    parts.push_back({child, {}, child->get_attr("x"), child->get_attr("y"), child->get_attr("dx"), child->get_attr("dy")});
+                    collect(child, child);
+                }
+            }
+        };
+        parts.push_back({el, {}, el->get_attr("x"), el->get_attr("y"), el->get_attr("dx"), el->get_attr("dy")});
+        collect(el, el);
+        auto first = [](const char* value) {
+            std::vector<float> v = numbers(value);
+            return v.empty() ? 0.f : v[0];
+        };
+        auto shift = [](const char* value, float em) -> float {
+            if(!value || !*value)
+                return 0;
+            const char* p = value;
+            float       v = 0;
+            if(!next_number(p, v))
+                return 0;
+            return (p[0] == 'e' && p[1] == 'm') ? v * em : v;
+        };
+        runs.clear();
+        float x = 0, y = 0, start = 0;
+        for(const auto& part : parts)
+        {
+            const float em = part.style->css().get_font_size().value();
+            if(part.x)
+                x = first(part.x);
+            if(part.y)
+                y = first(part.y);
+            x += shift(part.dx, em);
+            y += shift(part.dy, em);
+            if(&part == &parts.front())
+                start = x;
+            uint_ptr font = part.style->css().get_font();
+            if(part.text.empty() || !font)
+                continue;
+            const auto& fm    = part.style->css().get_font_metrics();
+            pixel_t     width = container->text_width(part.text.c_str(), font);
+            runs.push_back({part.style, part.text, position(pixel_t(x), pixel_t(y) - fm.ascent, width, fm.height)});
+            x += width.value();
+        }
+        if(runs.empty())
+        {
+            return false;
+        }
+        std::string anchor = svg_ident(el, _text_anchor_);
+        const float total  = x - start;
+        const float offset = anchor == "middle" ? -total / 2 : anchor == "end" ? -total : 0;
+        float       x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+        for(auto& run : runs)
+        {
+            run.box.x += pixel_t(offset);
+            x0 = std::min(x0, run.box.x.value());
+            y0 = std::min(y0, run.box.y.value());
+            x1 = std::max(x1, run.box.right().value());
+            y1 = std::max(y1, run.box.bottom().value());
+        }
+        box = position(pixel_t(x0), pixel_t(y0), pixel_t(x1 - x0), pixel_t(y1 - y0));
+        return true;
+    }
+
+    bool svg_text_box(const element::ptr& el, document_container* container, position& box)
+    {
+        std::vector<svg_text_run> runs;
+        return svg_text_runs(el, container, runs, box);
+    }
+
+    bool svg_ctm(const element::ptr& el, transform_matrix& ctm)
+    {
+        std::vector<element::ptr> chain;
+        const el_svg*             svg = nullptr;
+        for(element::ptr p = el; p && !svg; p = p->parent())
+        {
+            svg = dynamic_cast<const el_svg*>(p.get());
+            if(!svg)
+                chain.push_back(p);
+        }
+        if(!svg || chain.empty())
+        {
+            return false;
+        }
+        paint_group group;
+        float       view[4];
+        svg->view_group(svg->get_placement(), view, group);
+        // As the painter composes them: an element's own transform first, then each parent's, then the view's.
+        const position   view_box = position(pixel_t(view[0]), pixel_t(view[1]), pixel_t(view[2]), pixel_t(view[3]));
+        transform_matrix m;
+        for(const auto& p : chain)
+        {
+            const auto tag = std::dynamic_pointer_cast<html_tag>(p);
+            m = m.then(tag && tag->has_own_property(_transform_) ? svg_css_transform(p, view_box) : parse_svg_transform(p->get_attr("transform")));
+        }
+        ctm = m.then(group.matrix);
+        return true;
     }
 
     float svg_path_length(const vector_path& path, float at, float* outx, float* outy)
