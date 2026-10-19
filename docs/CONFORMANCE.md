@@ -20,6 +20,9 @@ each platform's painter needs its own run.
 | 2026-10-19 | the small fixes (Q2, E5, E6, L5, L10, L12, O1–O3, sans-serif) | 129 / 26 / 8 / 10 | 79 / 1 / 0 |
 | 2026-10-19 | events and animations (E2–E4, A1, A2, L7) | 135 / 21 / 7 / 10 | 79 / 1 / 0 |
 | 2026-10-19 | layout and style in the fork (L1–L13, O4) | 148 / 9 / 6 / 10 | 80 / 0 / 0 |
+| 2026-10-19 | SVG queries and painting (Q3, P1–P9) | 158 / 5 / 0 / 10 | 80 / 0 / 0 |
+
+What is left partly passing is not TwidgetCore's to fix: see the last section.
 
 The 10 untested features are the host's (limits, restart, storage, gesture claims, message edits, size
 hints): the automatic set does not reach them, and each client checks them in its own host.
@@ -27,7 +30,7 @@ hints): the automatic set does not reach them, and each client checks them in it
 For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
 66 / 41 / 52 in widget-sandbox's own results.
 
-## The renderer contract (done)
+## Done
 
 | What v0.1.0 asks | Where |
 |---|---|
@@ -61,36 +64,33 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | `:lang()` on the nearest `lang`, `:empty` | the fork's `html_tag::select_pseudoclass` |
 | The `translate`, `rotate` and `scale` properties | the fork's `css_properties::compute_transform` |
 | `letter-spacing` and `word-spacing` | `Container` (`spacing_units`), the fork's `font_description` |
+| SVG: `getComputedTextLength`, text `getBBox`, a shape's or text's rect through the view box, `<use>` of a `<symbol>`, `<tspan>` with its own fill and shifts | the fork's `svg_ctm`, `svg_text_runs`, `el_svg` painter; `svg_box_of` |
+| Dashed and dotted borders and outlines, mitred corners between sides that differ | `Container::draw_sides` |
+| `background-repeat` | `Container::draw_image` |
+| `object-fit`, `object-position` | the fork's `el_image::fitted` |
+| Gradient stop positions fixed up as CSS does (an explicit `0` is a position) | the fork's `prepare_color_points` |
+| `text-overflow: ellipsis` | the fork's `render_item_inline_context::apply_ellipsis` |
+| `filter` and `backdrop-filter`: blur, brightness, contrast, grayscale, hue-rotate, invert, opacity, saturate, sepia, drop-shadow | `FilterPush`, `Backdrop` in the display list; `D2DBackend::filtered` |
+| A canvas drawn from another canvas that the same batch draws later | `Renderer::apply_ops` |
 
-## To do
+## Each platform's painter
 
-Each item names the set's checks it fails (catalogue id: check). "First suspect" is where to look,
-not a diagnosis.
+The pixel stages above judge the Direct2D painter. These display list commands are new to the other
+painters, which still draw what they wrap as it is:
 
-### Queries the renderer answers
+| Command | CoreGraphics | Android | Web | Qt |
+|---|---|---|---|---|
+| `FilterPush` / `FilterPop` (filter), `Backdrop` (backdrop-filter) | to do (passed through) | to do (ignored) | to do (ignored) | to do (ignored) |
 
-| # | Item | Fails | First suspect |
-|---|---|---|---|
-| Q3 | **SVG queries:** `getComputedTextLength`, and viewBox scaling seen through `getCTM`/rects | `svg.text`, `svg.structure` | the `svg` query |
+Dashed and dotted borders are `Path` strokes with dashes, which every painter draws for SVG already.
 
-### Painting (Direct2D; each painter to check on its platform)
-
-| # | Item | Stage |
-|---|---|---|
-| P1 | Background images tile (repeat, size, position) | `css.background.basic` |
-| P2 | Borders, outline | `css.box.border`, `css.box.outline` |
-| P3 | `object-fit` | `css.box.object-fit` |
-| P4 | Conic gradients | `css.gradient.conic` |
-| P5 | `filter` (blur, brightness, drop-shadow) and `backdrop-filter` | `css.filter.blur-brightness-drop-shadow`, `css.backdrop-filter` |
-| P7 | `text-overflow: ellipsis` | `css.text.overflow` |
-| P8 | Colour emoji | `css.text.emoji` |
-| P9 | Canvas `drawImage` | `canvas.draw-image` |
-
-### Not TwidgetCore's
+## Not TwidgetCore's
 
 | Item | Where |
 |---|---|
 | `Intl`: number grouping, dates, plural rules, relative time, collation | the C++ desktop host's `IntlProvider` (`BasicIntl`); a Windows client needs ICU or Windows.Globalization behind it |
 | `innerHTML` replacing children, live `getElementsByClassName` | widget-sandbox's shim (its `docs/changes.md` lists the second as known) |
+| The `background` stage (`css.background.basic`) | its 20 px PNG is corrupt: a bad IDAT CRC and zlib checksum, and row 5 has filter byte 51. Chromium stops there and leaves the rows below transparent, WIC decodes them as colours. The tiling is right |
+| The `emoji` stage (`css.text.emoji`) | the reference is Apple Color Emoji; Windows draws Segoe UI Emoji |
 | A Web Animations seek seen by a layout query in the same task (`anim.waapi`) | widget-sandbox's `query()` flushes the DOM ops but not the animation records, which go out at the end of the task; its own renderers fail this check too |
 | Right click / long press | the runner has no secondary button; profile 1 forwards no `contextmenu` anyway |
