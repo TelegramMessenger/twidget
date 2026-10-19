@@ -1511,6 +1511,28 @@ int main() {
         check(rect(44)["x"].asNumber() + 20 == 200, "right to left, a narrow block sits on the right");
     }
 
+    // ── SVG: boxes through the view box, text length ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","120"],["height","40"],["viewBox","0 0 60 20"],["style","display:block"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"rect","svg":true,"attrs":[["x","5"],["y","2"],["width","10"],["height","8"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"text","svg":true,"attrs":[["x","20"],["y","10"],["font-size","8"]]},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"text","id":13,"data":"Hello"},{"op":"ins","parent":12,"id":13,"before":null}]})"));
+        auto ask = [&](Json query) {
+            for (const Json& m : s.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        Json rect = ask(Json::object().set("q", "rect").set("id", 11));
+        check(std::fabs(rect["x"].asNumber() - 10) < 0.5 && std::fabs(rect["width"].asNumber() - 20) < 0.5,
+              "an SVG shape's rect goes through the view box (got x " + std::to_string(rect["x"].asNumber()) + " w " + std::to_string(rect["width"].asNumber()) + ")");
+        double length = ask(Json::object().set("q", "svg").set("id", 12).set("method", "getComputedTextLength")).asNumber();
+        check(length > 10, "getComputedTextLength measures an SVG text (got " + std::to_string(length) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
