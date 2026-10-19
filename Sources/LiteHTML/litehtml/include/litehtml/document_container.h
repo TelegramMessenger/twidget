@@ -55,6 +55,7 @@ namespace litehtml
         virtual void               draw_list_marker(litehtml::uint_ptr hdc, const litehtml::list_marker& marker)    = 0;
         virtual void               load_image(const char* src, const char* baseurl, bool redraw_on_ready)           = 0;
         virtual void               get_image_size(const char* src, const char* baseurl, litehtml::size& sz)         = 0;
+        virtual std::string        get_image_aspect(const char* /*src*/) { return {}; }
         virtual void draw_image(litehtml::uint_ptr hdc, const background_layer& layer, const std::string& url,
                                 const std::string& base_url)                                                        = 0;
         virtual void draw_solid_fill(litehtml::uint_ptr hdc, const background_layer& layer, const web_color& color) = 0;

@@ -79,8 +79,14 @@ litehtml::position litehtml::el_image::fitted(const position& box)
     std::string fit = raw_declaration("object-fit");
     trim(fit);
     lcase(fit);
+    std::string aspect;
     if(fit.empty() || fit == "fill")
-        return box;
+    {
+        aspect = get_document()->container()->get_image_aspect(m_src.c_str());
+        if(aspect.empty())
+            return box;
+        fit = aspect.find("slice") != std::string::npos ? "cover" : "contain";
+    }
     size natural;
     get_document()->container()->get_image_size(m_src.c_str(), nullptr, natural);
     if(natural.width <= 0_px || natural.height <= 0_px)
@@ -96,6 +102,13 @@ litehtml::position litehtml::el_image::fitted(const position& box)
     const float w = natural.width.value() * scale, h = natural.height.value() * scale;
     // object-position: keywords, percentages of the room left, or lengths from the box's corner.
     std::string where = raw_declaration("object-position");
+    if(!aspect.empty())
+        where = std::string(aspect.find("xmin") != std::string::npos   ? "left"
+                            : aspect.find("xmax") != std::string::npos ? "right"
+                                                                       : "center") +
+                (aspect.find("ymin") != std::string::npos   ? " top"
+                 : aspect.find("ymax") != std::string::npos ? " bottom"
+                                                            : " center");
     lcase(where);
     string_vector parts;
     split_string(where, parts, " ");

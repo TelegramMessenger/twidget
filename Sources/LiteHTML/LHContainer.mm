@@ -188,12 +188,13 @@ namespace
 {
 struct ImageHandle
 {
-    CGImageRef image = nullptr;
-    CGSize     size  = CGSizeZero;
+    CGImageRef  image = nullptr;
+    CGSize      size  = CGSizeZero;
+    std::string aspect;
 
     ImageHandle() = default;
     ImageHandle(CGImageRef i, CGSize s) : image(i ? CGImageRetain(i) : nullptr), size(s) {}
-    ImageHandle(const ImageHandle& o) : ImageHandle(o.image, o.size) {}
+    ImageHandle(const ImageHandle& o) : ImageHandle(o.image, o.size) { aspect = o.aspect; }
     ImageHandle& operator=(const ImageHandle& o)
     {
         if(this != &o)
@@ -201,6 +202,7 @@ struct ImageHandle
             CGImageRef old = image;
             image          = o.image ? CGImageRetain(o.image) : nullptr;
             size           = o.size;
+            aspect         = o.aspect;
             if(old)
                 CGImageRelease(old);
         }
@@ -291,6 +293,64 @@ ImageHandle AdoptImage(CGImageRef image, CGSize size)
     return out;
 }
 
+std::string SVGRootAttribute(const std::string& tag, const std::string& name)
+{
+    std::string lower = tag;
+    for(char& ch : lower)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    for(size_t at = lower.find(name); at != std::string::npos; at = lower.find(name, at + 1))
+    {
+        if(at == 0 || !std::isspace(static_cast<unsigned char>(lower[at - 1])))
+            continue;
+        size_t i = at + name.size();
+        while(i < lower.size() && std::isspace(static_cast<unsigned char>(lower[i])))
+            i++;
+        if(i >= lower.size() || lower[i] != '=')
+            continue;
+        i++;
+        while(i < lower.size() && std::isspace(static_cast<unsigned char>(lower[i])))
+            i++;
+        if(i >= lower.size() || (lower[i] != '"' && lower[i] != '\''))
+            continue;
+        size_t end = lower.find(lower[i], i + 1);
+        if(end == std::string::npos)
+            return {};
+        return tag.substr(i + 1, end - i - 1);
+    }
+    return {};
+}
+
+std::string SVGRootAspect(const std::string& markup)
+{
+    size_t open = std::string::npos;
+    for(size_t at = markup.find('<'); at != std::string::npos; at = markup.find('<', at + 1))
+    {
+        if(at + 4 < markup.size() && std::tolower(static_cast<unsigned char>(markup[at + 1])) == 's' &&
+           std::tolower(static_cast<unsigned char>(markup[at + 2])) == 'v' &&
+           std::tolower(static_cast<unsigned char>(markup[at + 3])) == 'g' &&
+           (std::isspace(static_cast<unsigned char>(markup[at + 4])) || markup[at + 4] == '>'))
+        {
+            open = at;
+            break;
+        }
+    }
+    if(open == std::string::npos)
+        return {};
+    size_t close = markup.find('>', open);
+    if(close == std::string::npos)
+        return {};
+    const std::string tag = markup.substr(open + 4, close - open - 4);
+    if(SVGRootAttribute(tag, "viewbox").empty())
+        return {};
+    std::string aspect = SVGRootAttribute(tag, "preserveaspectratio");
+    std::string lower  = aspect;
+    for(char& ch : lower)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if(lower.find("none") != std::string::npos)
+        return {};
+    return lower.empty() ? "xmidymid meet" : lower;
+}
+
 ImageHandle LoadImageFromData(NSData* data, bool isSVG)
 {
     if(!data)
@@ -307,9 +367,13 @@ ImageHandle LoadImageFromData(NSData* data, bool isSVG)
         }
         return {};
     }
-    CGSize     size  = CGSizeZero;
-    CGImageRef image = LHCreateSVGImage(std::string(static_cast<const char*>(data.bytes), data.length), &size);
-    return image ? AdoptImage(image, size) : ImageHandle();
+    CGSize      size   = CGSizeZero;
+    std::string markup(static_cast<const char*>(data.bytes), data.length);
+    CGImageRef  image  = LHCreateSVGImage(markup, &size);
+    ImageHandle handle = image ? AdoptImage(image, size) : ImageHandle();
+    if(handle)
+        handle.aspect = SVGRootAspect(markup);
+    return handle;
 }
 
 ImageHandle LoadDataURI(const std::string& url)
@@ -3179,6 +3243,11 @@ void LHContainer::get_image_size(const char* src, const char* baseurl, lh::size&
     ImageHandle img = src ? LookupImage(src) : ImageHandle();
     sz.width        = img ? static_cast<float>(img.size.width) : 0.0f;
     sz.height       = img ? static_cast<float>(img.size.height) : 0.0f;
+}
+
+std::string LHContainer::get_image_aspect(const char* src)
+{
+    return src ? LookupImage(src).aspect : std::string();
 }
 
 void LHContainer::draw_image(lh::uint_ptr hdc, const lh::background_layer& layer, const std::string& url,

@@ -139,6 +139,7 @@ class LHContainer : public litehtml::document_container
     void              draw_list_marker(litehtml::uint_ptr hdc, const litehtml::list_marker& marker) override;
     void              load_image(const char* src, const char* baseurl, bool redraw_on_ready) override;
     void              get_image_size(const char* src, const char* baseurl, litehtml::size& sz) override;
+    std::string       get_image_aspect(const char* src) override;
     void draw_image(litehtml::uint_ptr hdc, const litehtml::background_layer& layer, const std::string& url,
                     const std::string& base_url) override;
     void draw_solid_fill(litehtml::uint_ptr hdc, const litehtml::background_layer& layer,
