@@ -1000,7 +1000,7 @@ public:
     bool image_of(const std::string& url, int& id, float& w, float& h) {
         load_image(url.c_str(), nullptr, false);
         auto it = images_.find(url);
-        if (it == images_.end() || !it->second.id) return false;
+        if (it == images_.end() || (!it->second.id && !it->second.placeholder)) return false;
         id = it->second.id;
         w = it->second.w;
         h = it->second.h;
@@ -1258,6 +1258,11 @@ public:
                 img.w = float(w);
                 img.h = float(h);
             }
+        } else if (url.rfind("data:image/svg+xml", 0) == 0) {
+            // Profile 1 has no SVG images: the validator puts its 48 px placeholder, an SVG, in place of
+            // every image it refuses, so that is the only one to reach a renderer.
+            img.placeholder = true;
+            img.w = img.h = 48;
         } else if (url.rfind("data:", 0) == 0) {
             // The backend may answer the size later (`image_ready`): the id stays, the size is 0 until then.
             img.id = ++next_image_;
@@ -1276,7 +1281,11 @@ public:
     void draw_image(litehtml::uint_ptr, const litehtml::background_layer& layer, const std::string& url, const std::string&) override {
         if (litehtml::g_paint_trace) return;
         auto it = images_.find(url);
-        if (it == images_.end() || (!it->second.id && !it->second.canvas)) return;
+        if (it == images_.end() || (!it->second.id && !it->second.canvas && !it->second.placeholder)) return;
+        if (it->second.placeholder) {
+            draw_placeholder(layer);
+            return;
+        }
         Command c;
         c.kind = Cmd::Image;
         c.image = it->second.id;
@@ -1289,6 +1298,46 @@ public:
         Rect b = rect_of(layer.border_box);
         clip_intersect(c.clip, b);
         list_.push_back(std::move(c));
+    }
+
+    /// widget-sandbox's placeholder (url-policy.ts, PLACEHOLDER_IMAGE), its 48 × 48 drawing stretched over the image.
+    void draw_placeholder(const litehtml::background_layer& layer) {
+        Rect to = rect_of(layer.origin_box);
+        Rect clip = rect_of(layer.clip_box);
+        clip_intersect(clip, rect_of(layer.border_box));
+        float sx = to.w / 48, sy = to.h / 48;
+        const Color faint{136, 136, 136, 34}, mark{136, 136, 136, 102};
+        Command c;
+        c.kind = Cmd::ClipPush;
+        c.rect = clip;
+        list_.push_back(c);
+        c = Command{};
+        c.kind = Cmd::FillRect;
+        c.rect = to;
+        c.color = faint;
+        list_.push_back(c);
+        auto hills = std::make_shared<Path>();
+        const float points[] = {8, 36, 18, 24, 26, 33, 32, 26, 40, 36};
+        for (size_t i = 0; i < std::size(points); i += 2) {
+            hills->ops.push_back(i ? Path::Line : Path::Move);
+            hills->points.push_back(to.x + points[i] * sx);
+            hills->points.push_back(to.y + points[i + 1] * sy);
+        }
+        hills->ops.push_back(Path::Close);
+        hills->fill = true;
+        hills->fill_color = mark;
+        c = Command{};
+        c.kind = Cmd::Path;
+        c.path = std::move(hills);
+        list_.push_back(c);
+        c = Command{};
+        c.kind = Cmd::FillEllipse;
+        c.rect = Rect{to.x + 29 * sx, to.y + 11 * sy, 8 * sx, 8 * sy};
+        c.color = mark;
+        list_.push_back(c);
+        c = Command{};
+        c.kind = Cmd::ClipPop;
+        list_.push_back(c);
     }
 
     // ── backgrounds ──
@@ -1662,6 +1711,7 @@ private:
     struct Image {
         int id = 0;
         int canvas = 0;
+        bool placeholder = false;
         float w = 0, h = 0;
     };
 
