@@ -2152,7 +2152,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         // frame: a script sending several a frame builds once. Input wants its answer now.
         bool coalesce = (wants_tick() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S;
         document_changed_ = false;
-        for (const Json& op : ops) apply_op(op, out);
+        apply_ops(ops, out);
         load_images(out);
         if (fast && apply_scripted(scripted)) {
             document_changed_ = false;
@@ -2293,6 +2293,41 @@ Renderer::Node* Renderer::node(int64_t id) const {
     if (it != nodes_.end()) return it->second.get();
     auto a = aliases_.find(id);
     return a == aliases_.end() ? nullptr : a->second;
+}
+
+void Renderer::apply_ops(const std::vector<Json>& ops, std::vector<Json>& out) {
+    // The sandbox sends a canvas's commands as one op per canvas, the first canvas used first.
+    std::unordered_map<int64_t, size_t> drawn;  // canvas node → its canvas op
+    for (size_t i = 0; i < ops.size(); i++)
+        if (ops[i]["op"].asString() == "canvas") drawn.emplace(int64_t(ops[i]["id"].asNumber()), i);
+    if (drawn.size() < 2) {
+        for (const Json& op : ops) apply_op(op, out);
+        return;
+    }
+    std::vector<char> done(ops.size(), 0);
+    std::function<void(size_t)> run = [&](size_t i) {
+        if (done[i]) return;
+        done[i] = 1;
+        if (ops[i]["op"].asString() == "canvas") {
+            for (const Json& cmd : ops[i]["cmds"].arr()) {
+                if (cmd[size_t(1)].asString() != "drawImage") continue;
+                const Json* source = cmd[size_t(2)].find("n");
+                if (!source) continue;
+                int64_t ref = int64_t(source->asNumber());
+                auto it = drawn.find(ref);
+                if (it == drawn.end() || it->second <= i || done[it->second]) continue;
+                // The source's node and its size (a canvas made by script arrives just before its drawing);
+                // where it is inserted stays in its place.
+                for (size_t k = i + 1; k < it->second; k++) {
+                    const std::string& kind = ops[k]["op"].asString();
+                    if (!done[k] && int64_t(ops[k]["id"].asNumber()) == ref && (kind == "el" || kind == "attr")) run(k);
+                }
+                run(it->second);
+            }
+        }
+        apply_op(ops[i], out);
+    };
+    for (size_t i = 0; i < ops.size(); i++) run(i);
 }
 
 void Renderer::apply_op(const Json& op, std::vector<Json>& out) {

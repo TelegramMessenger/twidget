@@ -201,6 +201,9 @@ private:
 
     // ops → shadow tree
     void apply_op(const twidget::Json& op, std::vector<twidget::Json>& out);
+    /// A batch's ops in order, but for a canvas drawn from another one later in the batch: that one's
+    /// node and drawing come first, as the script's calls ran.
+    void apply_ops(const std::vector<twidget::Json>& ops, std::vector<twidget::Json>& out);
     Node* node(int64_t id) const;
     void adopt(int64_t id, Node* n, const twidget::Json& attrs);
     void detach(Node* n);
