@@ -78,6 +78,8 @@ details>summary:first-of-type{display:list-item;list-style:disclosure-closed ins
 details[open]>summary:first-of-type{list-style-type:disclosure-open}
 details:not([open])>*:not(summary){display:none}
 dialog:not([open]){display:none}
+q::before{content:open-quote}
+q::after{content:close-quote}
 [hidden]{display:none}
 )css";
 

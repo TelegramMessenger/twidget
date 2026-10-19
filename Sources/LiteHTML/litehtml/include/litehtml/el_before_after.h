@@ -15,6 +15,8 @@ namespace litehtml
       private:
         void               add_text(const std::string& txt);
         void               add_function(const std::string& fnc, const std::string& params);
+        /// open-quote / close-quote: a mark from the inherited `quotes`, the pair chosen by how many <q> enclose this one.
+        void               add_quote(bool open);
         static std::string convert_escape(const char* txt);
     };
 

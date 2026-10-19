@@ -255,6 +255,17 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
 
     // Lists.
     o.set("list-style-type", name_of(litehtml::list_style_type_strings[css.get_list_style_type()]));
+    {
+        std::string quotes = "auto";
+        for (auto e = el; e; e = e->parent()) {
+            std::string v = raw(std::dynamic_pointer_cast<litehtml::html_tag>(e).get(), "quotes", "");
+            if (!v.empty() && v != "inherit" && v != "unset") {
+                quotes = v == "initial" ? "auto" : v;
+                break;
+            }
+        }
+        o.set("quotes", quotes);
+    }
     o.set("list-style-position", name_of(litehtml::list_style_position_strings[css.get_list_style_position()]));
     o.set("list-style-image", css.get_list_style_image().empty() ? std::string("none") : "url(\"" + css.get_list_style_image() + "\")");
 
@@ -345,11 +356,13 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("row-gap", row_gap).set("column-gap", column_gap).set("gap", row_gap == column_gap ? row_gap : row_gap + " " + column_gap);
     o.set("aspect-ratio", css.get_aspect_ratio() > 0 ? css::format_number(css.get_aspect_ratio(), 4) + " / 1" : std::string("auto"));
 
-    // Generated content: a pseudo-element's own text, quoted as Chromium writes it.
+    // Generated content: a pseudo-element's own text, quoted as Chromium writes it; keywords and
+    // functions as written.
     if (!pseudo.empty()) {
         std::string content = css::trim(css.get_content());
-        if (content.size() >= 2 && (content.front() == '\'' || content.front() == '"') && content.back() == content.front()) content = content.substr(1, content.size() - 2);
-        o.set("content", content.empty() ? std::string("none") : "\"" + content + "\"");
+        if (content.size() >= 2 && (content.front() == '\'' || content.front() == '"') && content.back() == content.front())
+            content = "\"" + content.substr(1, content.size() - 2) + "\"";
+        o.set("content", content.empty() ? std::string("none") : content);
     } else {
         o.set("content", "normal");
     }

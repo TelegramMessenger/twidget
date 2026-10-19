@@ -23,7 +23,10 @@ void litehtml::el_before_after_base::add_style(const style& style)
     {
         const auto& str = content_property.get<std::string>();
         auto        idx = css_values(content_property_strings).value_index(str);
-        if(!idx.has_value())
+        if(idx == content_property_open_quote || idx == content_property_close_quote)
+        {
+            add_quote(idx == content_property_open_quote);
+        } else if(!idx.has_value())
         {
             std::string            fnc;
             std::string::size_type i = 0;
@@ -64,12 +67,19 @@ void litehtml::el_before_after_base::add_style(const style& style)
                     }
                     add_function(fnc, params);
                     fnc.clear();
+                } else if(isspace(static_cast<unsigned char>(str.at(i))) && is_one_of(trim(fnc), "open-quote", "close-quote"))
+                {
+                    add_quote(trim(fnc) == "open-quote");
+                    fnc.clear();
+                    i++;
                 } else
                 {
                     fnc += str.at(i);
                     i++;
                 }
             }
+            if(is_one_of(trim(fnc), "open-quote", "close-quote"))
+                add_quote(trim(fnc) == "open-quote");
         }
     }
 
@@ -131,6 +141,41 @@ void litehtml::el_before_after_base::add_text(const std::string& txt)
         appendChild(el);
         word.clear();
     }
+}
+
+void litehtml::el_before_after_base::add_quote(bool open)
+{
+    std::vector<std::string> marks;
+    for(element::ptr el = parent(); el && marks.empty(); el = el->parent())
+    {
+        auto tag = std::dynamic_pointer_cast<html_tag>(el);
+        std::string value = tag ? tag->raw_declaration("quotes") : std::string();
+        trim(value);
+        if(value.empty() || value == "inherit" || value == "unset")
+            continue;
+        if(value == "none")
+            return;
+        for(size_t i = 0; i < value.size(); i++)
+        {
+            if(value[i] != '"' && value[i] != '\'')
+                continue;
+            size_t end = value.find(value[i], i + 1);
+            if(end == std::string::npos)
+                break;
+            marks.push_back(value.substr(i + 1, end - i - 1));
+            i = end;
+        }
+        break;
+    }
+    // auto, or nothing usable: English marks, as browsers use for lang=en.
+    if(marks.size() < 2)
+        marks = {"\xE2\x80\x9C", "\xE2\x80\x9D", "\xE2\x80\x98", "\xE2\x80\x99"};
+    size_t depth = 0;
+    if(auto q = parent())
+        for(element::ptr el = q->parent(); el; el = el->parent())
+            depth += el->tag() == _q_;
+    size_t pair = std::min(depth, marks.size() / 2 - 1);
+    add_text(marks[pair * 2 + (open ? 0 : 1)]);
 }
 
 void litehtml::el_before_after_base::add_function(const std::string& fnc, const std::string& params)
