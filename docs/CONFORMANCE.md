@@ -18,6 +18,7 @@ each platform's painter needs its own run.
 | 2026-10-18 | 099f3cb (inline boxes) | 120 / 32 / 11 / 10 | 73 / 2 / 5 |
 | 2026-10-18 | image load and error (E1) | 121 / 32 / 10 / 10 | 73 / 2 / 5 |
 | 2026-10-19 | the small fixes (Q2, E5, E6, L5, L10, L12, O1–O3, sans-serif) | 129 / 26 / 8 / 10 | 79 / 1 / 0 |
+| 2026-10-19 | events and animations (E2–E4, A1, A2, L7) | 135 / 21 / 7 / 10 | 79 / 1 / 0 |
 
 The 10 untested features are the host's (limits, restart, storage, gesture claims, message edits, size
 hints): the automatic set does not reach them, and each client checks them in its own host.
@@ -46,6 +47,10 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | A refused image is widget-sandbox's 48 px placeholder | `Container::draw_placeholder` |
 | A canvas gradient with no length (the validator's conic gradient or pattern) paints nothing | `Canvas::paint_of` |
 | On Windows, `sans-serif` and Helvetica are Arial, as in browsers | `D2DBackend::resolve_family` |
+| `getComputedStyle` reads running, paused and seeked animations | `Animator::peek` in the `cs` query |
+| `animationstart`, `animationend` and `transitionend` go out before the widget's `listen` | `ALWAYS_FORWARD` |
+| ResizeObserver: `resize` on observe and on every change | `Renderer::report_resizes` |
+| Tapping a `<summary>` opens and closes its `<details>` and sends `toggle`; a closed one shows only its summary, with a disclosure marker | `Renderer::toggle_details`, `UA_EXTRA`, the fork's `list_style_type_disclosure_*` |
 
 ## To do
 
@@ -58,21 +63,6 @@ not a diagnosis.
 |---|---|---|---|
 | Q3 | **SVG queries:** `getComputedTextLength`, and viewBox scaling seen through `getCTM`/rects | `svg.text`, `svg.structure` | the `svg` query |
 
-### Events
-
-| # | Item | Fails | First suspect |
-|---|---|---|---|
-| E2 | **`animationstart`** | `anim.events` | the animation events reach the widget only with the next host message |
-| E3 | **ResizeObserver** (`resize` to the host) | `js.layout.resize-observer` | `observeResize` |
-| E4 | **Tapping `<summary>` toggles its `<details>`** (and `toggle`) | `html.el.details` | the click's default action |
-
-### Animations
-
-| # | Item | Fails | First suspect |
-|---|---|---|---|
-| A1 | A paused CSS animation, or one with a negative delay, shows its frame | `anim.keyframes`, `anim.play-state` | sampling paused animations |
-| A2 | A Web Animations seek shows in the computed transform and in a layout query in the same task | `anim.waapi`, `anim.waapi-css-control` | `anim` records applied after the query |
-
 ### Layout and style in the fork
 
 | # | Item | Fails |
@@ -82,7 +72,6 @@ not a diagnosis.
 | L3 | Floats push inline text aside; table cells share the row | `css.box.float`, `css.display.table` |
 | L4 | `word-break: break-all` | `css.text.wrap` |
 | L6 | Generated content: `::before` boxes, `attr()`, counters, `quotes`, `<q>` marks | `css.value.content`, `html.el.inline-text`, `behaviour.policy-strict` (attr of data-*) |
-| L7 | `<details>` closed is as tall as its summary; `<summary>` is a list item | `html.el.details` |
 | L8 | `dir=rtl` lays inline boxes right to left; `text-align: end` in RTL | `html.attr.dir`, `css.text.rtl`, `css.text.align` |
 | L9 | Selectors: `:lang()`, `:empty` with whitespace | `html.attr.global`, `sel.structural` |
 | L11 | The `translate` property | `css.transform.2d` |
@@ -114,4 +103,5 @@ not a diagnosis.
 |---|---|
 | `Intl`: number grouping, dates, plural rules, relative time, collation | the C++ desktop host's `IntlProvider` (`BasicIntl`); a Windows client needs ICU or Windows.Globalization behind it |
 | `innerHTML` replacing children, live `getElementsByClassName` | widget-sandbox's shim (its `docs/changes.md` lists the second as known) |
+| A Web Animations seek seen by a layout query in the same task (`anim.waapi`) | widget-sandbox's `query()` flushes the DOM ops but not the animation records, which go out at the end of the task; its own renderers fail this check too |
 | Right click / long press | the runner has no secondary button; profile 1 forwards no `contextmenu` anyway |
