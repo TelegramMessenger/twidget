@@ -3712,6 +3712,12 @@ Json Renderer::answer(const Json& q) {
         if (q.find("prop")) return computed_custom_property(el, q["prop"].asString());
         ComputedExtras extras;
         extras.direction = direction_of(shadow);
+        // From the animator rather than overrides_: a compositor layer's values never reach those.
+        StyleValues animated;
+#ifdef TW_LITEHTML_TWIDGET
+        if (shadow && !frozen_) animated = animator_.peek(shadow->id, now_s());
+#endif
+        extras.animated = &animated;
         return computed_style(el, q["pseudo"].asString(), extras);
     }
     if (kind == "elementFromPoint") return double(widget_id_at(q["x"].asNumber(), q["y"].asNumber(), nullptr));

@@ -8,12 +8,17 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace twlite {
 
 /// What the fork does not compute and the renderer knows from its own tree.
 struct ComputedExtras {
     std::string direction = "ltr";
+    /// The element's animated values (property, value), a later one winning: the fork keeps the
+    /// declarations the widget wrote, which is what properties it does not compute are read from.
+    const std::vector<std::pair<std::string, std::string>>* animated = nullptr;
 };
 
 /// Every property a widget may read, by its CSS name. `pseudo` is "::before" or "::after" (or the

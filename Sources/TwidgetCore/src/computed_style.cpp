@@ -283,10 +283,16 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("opacity", css::format_number(css.get_opacity(), 3));
     o.set("cursor", css.get_cursor().empty() ? std::string("auto") : css.get_cursor());
     o.set("pointer-events", computed_pointer_events(el));
+    auto declared = [&](const char* name, const char* fallback) {
+        if (extras.animated && pseudo.empty())
+            for (auto it = extras.animated->rbegin(); it != extras.animated->rend(); ++it)
+                if (it->first == name) return css::trim(it->second);
+        return raw(tag.get(), name, fallback);
+    };
     o.set("touch-action", raw(tag.get(), "touch-action", "auto"));
-    o.set("filter", raw(tag.get(), "filter", "none")).set("backdrop-filter", raw(tag.get(), "backdrop-filter", "none"));
-    o.set("box-shadow", raw(tag.get(), "box-shadow", "none"));
-    o.set("translate", raw(tag.get(), "translate", "none")).set("rotate", raw(tag.get(), "rotate", "none")).set("scale", raw(tag.get(), "scale", "none"));
+    o.set("filter", declared("filter", "none")).set("backdrop-filter", declared("backdrop-filter", "none"));
+    o.set("box-shadow", declared("box-shadow", "none"));
+    o.set("translate", declared("translate", "none")).set("rotate", declared("rotate", "none")).set("scale", declared("scale", "none"));
     {
         // Chromium resolves a transform to the matrix it draws with, about the border box.
         litehtml::position content = el->get_placement();
@@ -297,7 +303,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
             bw += double(p.left) + double(p.right) + double(b.left) + double(b.right);
             bh += double(p.top) + double(p.bottom) + double(b.top) + double(b.bottom);
         }
-        std::string transform = raw(tag.get(), "transform", "none");
+        std::string transform = declared("transform", "none");
         if (transform != "none") {
             if (auto m = css::parse_transform(transform, float(bw), float(bh))) {
                 auto f = [](float v) { return css::format_number(v, 6); };
@@ -316,7 +322,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("outline-width", outlined ? len(outline.width, "3px") : std::string("0px"));
     o.set("outline-color", color(outline.color.alpha ? outline.color : css.get_color()));
     o.set("outline-offset", px(double(css.get_outline_offset())));
-    o.set("fill", raw(tag.get(), "fill", "rgb(0, 0, 0)")).set("stroke", raw(tag.get(), "stroke", "none"));
+    o.set("fill", declared("fill", "rgb(0, 0, 0)")).set("stroke", declared("stroke", "none"));
     for (const char* paint : {"fill", "stroke"}) {
         Color c;
         if (css::parse_color(o[paint].asString(), c)) o.set(paint, color(litehtml::web_color(c.r, c.g, c.b, c.a)));
