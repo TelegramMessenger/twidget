@@ -300,7 +300,7 @@ namespace litehtml
     // CSS units
     // ==========================================================
     inline constexpr auto css_units_strings =
-        split_css_values<17>("none;%;in;cm;mm;em;ex;pt;pc;px;vw;vh;vmin;vmax;rem;ch");
+        split_css_values<17>("none;%;in;cm;mm;em;ex;pt;pc;px;vw;vh;vmin;vmax;rem;ch;-lh-calc");
 
     enum css_units : uint8_t // see css_length
     {
@@ -320,6 +320,8 @@ namespace litehtml
         css_units_vmax,
         css_units_rem,
         css_units_ch,
+        // calc(), min(), max() or clamp() mixing units: the value is the expression's index (calc_evaluate)
+        css_units_calc,
     };
 
     // ==========================================================

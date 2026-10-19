@@ -1,6 +1,7 @@
 #ifndef LITEHTML_CSS_LENGTH_H
 #define LITEHTML_CSS_LENGTH_H
 
+#include <functional>
 #include <string>
 #include "css_tokenizer.h"
 #include "css_values.h"
@@ -40,6 +41,8 @@ namespace litehtml
         int               predef() const;
         static css_length predef_value(int val = 0);
         void              set_value(float val, css_units units);
+        void              set_calc(int index);
+        int               calc_index() const { return static_cast<int>(m_value); }
         float             val() const;
         css_units         units() const;
         pixel_t           calc_percent(pixel_t width) const;
@@ -48,6 +51,13 @@ namespace litehtml
     };
 
     using length_vector = std::vector<css_length>;
+
+    // Math that only layout can finish, such as calc(50% - 10px), is kept as an expression shared by every
+    // length that has it. `convert` turns a leaf of another unit than % into px; null takes it as px.
+    using calc_convert_fn = std::function<float(float value, css_units unit)>;
+    pixel_t calc_evaluate(int index, pixel_t percent_base, const calc_convert_fn& convert = nullptr);
+    /// The expression with every leaf but % in px; -1 when it has no % left, and `px` is then its value.
+    int calc_resolve_units(int index, const calc_convert_fn& convert, float& px);
 
     inline css_length::css_length(float val, css_units units) :
         m_value(val),
@@ -90,11 +100,19 @@ namespace litehtml
         m_units         = units;
     }
 
+    inline void css_length::set_calc(int index)
+    {
+        m_value         = static_cast<float>(index);
+        m_is_predefined = false;
+        m_units         = css_units_calc;
+    }
+
     inline float css_length::val() const
     {
         if(!m_is_predefined)
         {
-            return m_value;
+            // A calc length means something only against a size: without one its % parts count as zero.
+            return m_units == css_units_calc ? calc_evaluate(static_cast<int>(m_value), 0_px).value() : m_value;
         }
         return 0;
     }
@@ -111,6 +129,10 @@ namespace litehtml
             if(units() == css_units_percentage)
             {
                 return width * m_value / 100.0_px;
+            }
+            if(units() == css_units_calc)
+            {
+                return calc_evaluate(static_cast<int>(m_value), width);
             }
             return static_cast<pixel_t>(val());
         }

@@ -2250,7 +2250,8 @@ void litehtml::render_item::calc_cb_length(const css_length& len, pixel_t percen
 {
     if(!len.is_predefined())
     {
-        if(len.units() == litehtml::css_units_percentage)
+        // A calc length still has a % part after unit conversion: it depends on the base as one does.
+        if(len.units() == litehtml::css_units_percentage || len.units() == litehtml::css_units_calc)
         {
             out_value.value = len.calc_percent(percent_base);
             out_value.type  = litehtml::containing_block_context::cbc_value_type_percentage;

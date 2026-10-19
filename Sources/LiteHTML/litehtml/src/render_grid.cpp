@@ -600,7 +600,7 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
     for(auto& cell : cells)
     {
         const auto& width = cell.el->src_el()->css().get_width();
-        if(!width.is_predefined() && width.units() != css_units_percentage)
+        if(!width.is_predefined() && width.units() != css_units_percentage && width.units() != css_units_calc)
         {
             cell.el->render(0_px, 0_px, self_size.new_width(available), fmt_ctx);
             cell.max_content = cell.min_content = cell.el->width();

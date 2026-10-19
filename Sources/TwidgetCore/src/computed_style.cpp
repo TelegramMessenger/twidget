@@ -38,7 +38,9 @@ std::string length(const litehtml::css_length& l, double font_size, const char* 
     case litehtml::css_units_rem: return px(v * 16);
     case litehtml::css_units_pt: return px(v * 4 / 3);
     case litehtml::css_units_none:
-    case litehtml::css_units_px: return px(v);
+    case litehtml::css_units_px:
+    // The fork keeps no text for math that waits for layout: what it makes of no size is the best answer.
+    case litehtml::css_units_calc: return px(v);
     default: return css::format_number(v, 3) + std::string(litehtml::css_units_strings[l.units()]);
     }
 }
