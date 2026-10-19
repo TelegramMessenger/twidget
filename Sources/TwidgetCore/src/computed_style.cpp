@@ -240,7 +240,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("text-indent", len(css.get_text_indent(), "0px"));
     o.set("text-transform", name_of(litehtml::text_transform_strings[css.get_text_transform()]));
     o.set("letter-spacing", double(css.get_letter_spacing()) == 0 ? std::string("normal") : px(double(css.get_letter_spacing())));
-    o.set("word-spacing", "0px");
+    o.set("word-spacing", px(double(css.get_word_spacing())));
     o.set("vertical-align", name_of(litehtml::vertical_align_strings[css.get_vertical_align()]));
     std::string decoration = text_decoration_line(css.get_text_decoration_line());
     std::string decoration_style = name_of(litehtml::style_text_decoration_style_strings[css.get_text_decoration_style()]);

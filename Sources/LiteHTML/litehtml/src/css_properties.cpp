@@ -529,17 +529,20 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
         }
     }
 
-    css_length letter_spacing = el->get_property<css_length>(_letter_spacing_, true, css_length::predef_value(0),
-                                                             offset(m_letter_spacing));
-    if(letter_spacing.is_predefined())
-    {
-        m_letter_spacing = 0;
-    } else
-    {
-        font_metrics fm;
-        fm.x_height = fm.font_size = font_size;
-        m_letter_spacing           = static_cast<float>(doc->to_pixels(letter_spacing, fm, 0_px));
-    }
+    auto spacing = [&](string_id name, css_length& out, uint_ptr member) {
+        css_length value = el->get_property<css_length>(name, true, css_length::predef_value(0), member);
+        if(value.is_predefined())
+        {
+            out = 0;
+        } else
+        {
+            font_metrics fm;
+            fm.x_height = fm.font_size = font_size;
+            out = static_cast<float>(doc->to_pixels(value, fm, 0_px));
+        }
+    };
+    spacing(_letter_spacing_, m_letter_spacing, offset(m_letter_spacing));
+    spacing(_word_spacing_, m_word_spacing, offset(m_word_spacing));
 
     m_text_shadows.clear();
     if(const auto* tokens = el->get_token_property(_text_shadow_))
@@ -563,6 +566,7 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
 
     font_description descr;
     descr.letter_spacing       = m_letter_spacing.val();
+    descr.word_spacing         = m_word_spacing.val();
     descr.smoothing            = m_font_smoothing;
     if(!m_text_shadows.empty() && !m_text_shadows.front().inset)
     {

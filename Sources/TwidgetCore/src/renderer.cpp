@@ -124,6 +124,41 @@ Color color_of(const litehtml::web_color& c) {
     return Color{c.red, c.green, c.blue, c.alpha};
 }
 
+/// Where letter-spacing goes: after each character, with combining marks, variation selectors, emoji
+/// modifiers and ZWJ sequences kept on the character before them.
+std::vector<std::string_view> spacing_units(std::string_view text) {
+    std::vector<std::string_view> units;
+    size_t start = 0;
+    bool joined = false;
+    for (size_t i = 0; i < text.size();) {
+        unsigned char c = text[i];
+        size_t n = std::min<size_t>(c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4, text.size() - i);
+        uint32_t cp = c < 0x80 ? c : n == 2 ? c & 0x1F : n == 3 ? c & 0x0F : c & 0x07;
+        for (size_t k = 1; k < n; k++) cp = (cp << 6) | (uint8_t(text[i + k]) & 0x3F);
+        bool extends = (cp >= 0x300 && cp <= 0x36F) || (cp >= 0x1AB0 && cp <= 0x1AFF) || (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+                       (cp >= 0x20D0 && cp <= 0x20FF) || (cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0xFE20 && cp <= 0xFE2F) ||
+                       (cp >= 0x1F3FB && cp <= 0x1F3FF) || (cp >= 0xE0020 && cp <= 0xE007F) || cp == 0x200D;
+        if (i > 0 && !extends && !joined) {
+            units.push_back(text.substr(start, i - start));
+            start = i;
+        }
+        joined = cp == 0x200D;
+        i += n;
+    }
+    if (start < text.size()) units.push_back(text.substr(start));
+    return units;
+}
+
+/// The spaces word-spacing widens: U+0020 and U+00A0.
+size_t spacing_spaces(std::string_view text) {
+    size_t n = 0;
+    for (size_t i = 0; i < text.size(); i++) {
+        if (text[i] == ' ') n++;
+        else if (uint8_t(text[i]) == 0xC2 && i + 1 < text.size() && uint8_t(text[i + 1]) == 0xA0) n++;
+    }
+    return n;
+}
+
 Rect rect_of(const litehtml::position& p) {
     return Rect{float(p.x), float(p.y), float(p.width), float(p.height)};
 }
@@ -1157,6 +1192,8 @@ public:
         f.size = float(descr.size);
         f.decoration = descr.decoration_line;
         f.decoration_color = descr.decoration_color;
+        f.letter_spacing = descr.letter_spacing;
+        f.word_spacing = descr.word_spacing;
         if (fm) {
             fm->font_size = descr.size;
             fm->ascent = litehtml::pixel_t(m.ascent);
@@ -1187,7 +1224,7 @@ public:
     litehtml::pixel_t text_width(const char* text, litehtml::uint_ptr h) override {
         auto it = fonts_.find(h);
         if (it == fonts_.end() || !text) return 0;
-        return litehtml::pixel_t(it->second.face->width(backend_, text));
+        return litehtml::pixel_t(it->second.width(backend_, text));
     }
     void draw_text(litehtml::uint_ptr, const char* text, litehtml::uint_ptr h, litehtml::web_color color, const litehtml::position& pos) override {
         if (litehtml::g_paint_trace) return;
@@ -1203,8 +1240,22 @@ public:
         // litehtml hands the line box; the baseline sits `descent` above its bottom (as the cairo container does).
         c.y = float(pos.y) + float(pos.height) - f.metrics.descent;
         // The line box, for damage: where the run can paint.
-        c.rect = Rect{float(pos.x), float(pos.y), float(pos.width) > 0 ? float(pos.width) : f.face->width(backend_, text), float(pos.height)};
-        list_.push_back(std::move(c));
+        c.rect = Rect{float(pos.x), float(pos.y), float(pos.width) > 0 ? float(pos.width) : f.width(backend_, text), float(pos.height)};
+        if (f.letter_spacing != 0) {
+            // A painter draws a run as the font spaces it: each character goes on its own.
+            float x = c.x;
+            for (std::string_view unit : spacing_units(text)) {
+                Command u = c;
+                u.text = std::string(unit);
+                u.x = x;
+                u.rect.x = x;
+                u.rect.w = f.width(backend_, unit);
+                x += u.rect.w;
+                if (!u.text.empty() && u.text != " ") list_.push_back(std::move(u));
+            }
+        } else {
+            list_.push_back(std::move(c));
+        }
         if (f.decoration != litehtml::text_decoration_line_none) {
             float w = float(pos.width);
             if (w <= 0) w = backend_.text_width(f.handle, text);
@@ -1734,6 +1785,13 @@ private:
         float size = 16;
         int decoration = 0;
         litehtml::web_color decoration_color;
+        float letter_spacing = 0, word_spacing = 0;
+        float width(Backend& backend, std::string_view text) const {
+            float w = face->width(backend, text);
+            if (letter_spacing != 0) w += letter_spacing * float(spacing_units(text).size());
+            if (word_spacing != 0) w += word_spacing * float(spacing_spaces(text));
+            return w;
+        }
     };
     struct Image {
         int id = 0;

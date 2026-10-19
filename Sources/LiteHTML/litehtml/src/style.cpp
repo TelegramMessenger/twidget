@@ -897,6 +897,7 @@ namespace litehtml
             break;
 
         case _letter_spacing_:
+        case _word_spacing_:
             {
                 constexpr auto normal_val = split_css_values<1>("normal");
                 return add_length_property(name, val, normal_val, f_length, important);

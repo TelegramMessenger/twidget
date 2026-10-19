@@ -119,6 +119,7 @@ namespace litehtml
         float             m_aspect_ratio = 0;
         bool              m_center_content = false;
         css_length        m_letter_spacing;
+        css_length        m_word_spacing;
         box_shadow_vector m_text_shadows;
         box_shadow_vector m_box_shadows;
         filter_vector     m_filter;
@@ -322,6 +323,7 @@ namespace litehtml
             m_flex_align_items     = align;
         }
         pixel_t                  get_letter_spacing() const { return pixel_t(m_letter_spacing.val()); }
+        pixel_t                  get_word_spacing() const { return pixel_t(m_word_spacing.val()); }
         const box_shadow_vector& get_box_shadows() const { return m_box_shadows; }
         const filter_vector&     get_filter() const { return m_filter; }
         const filter_vector&     get_backdrop_filter() const { return m_backdrop_filter; }
