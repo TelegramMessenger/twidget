@@ -2617,7 +2617,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             }
         }
         // A first report follows observe(), as in browsers.
-        else if (method == "observeResize") resize_watch_.emplace(n->id, std::pair<float, float>{-1, -1});
+        else if (method == "observeResize") resize_watch_.emplace(n->id, std::pair<float, float>{-1.0f, -1.0f});
         else if (method == "unobserveResize") resize_watch_.erase(n->id);
         else if (method == "focus") {
             if (now_s() - last_input_ < SCRIPT_FOCUS_S && text_control(n->id) == n->id) focus(n->id, out);
