@@ -1475,6 +1475,42 @@ int main() {
         check(ask("rect", 33)["width"].asNumber() == 24, "width: fit-content shrinks to the text (got " + std::to_string(ask("rect", 33)["width"].asNumber()) + ")");
     }
 
+    // ── the fork: math with percentages, empty table cells, quotes, right to left ──
+    {
+        StubBackend lb;
+        Renderer l(300, 1, false, lb);
+        l.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:200px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","width:calc(50% - 10px);height:2px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["style","width:min(50px, 30%);height:2px"]]},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["style","width:clamp(20px, 50%, 60px);height:2px"]]},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"el","id":20,"tag":"div","attrs":[["style","display:table;width:200px"]]},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"div","attrs":[["style","display:table-cell;width:50px;height:10px"]]},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"el","id":22,"tag":"div","attrs":[["style","display:table-cell;height:10px"]]},{"op":"ins","parent":20,"id":22,"before":null},
+            {"op":"el","id":30,"tag":"div"},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":31,"tag":"span"},{"op":"ins","parent":30,"id":31,"before":null},
+            {"op":"text","id":32,"data":"qq"},{"op":"ins","parent":31,"id":32,"before":null},
+            {"op":"el","id":33,"tag":"q"},{"op":"ins","parent":30,"id":33,"before":null},
+            {"op":"text","id":34,"data":"qq"},{"op":"ins","parent":33,"id":34,"before":null},
+            {"op":"el","id":40,"tag":"div","attrs":[["dir","rtl"],["style","width:200px"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"el","id":41,"tag":"span","attrs":[["style","display:inline-block;width:10px;height:8px"]]},{"op":"ins","parent":40,"id":41,"before":null},
+            {"op":"el","id":42,"tag":"span","attrs":[["style","display:inline-block;width:10px;height:8px"]]},{"op":"ins","parent":40,"id":42,"before":null},
+            {"op":"el","id":43,"tag":"div","attrs":[["dir","rtl"],["style","width:200px"]]},{"op":"ins","parent":4,"id":43,"before":null},
+            {"op":"el","id":44,"tag":"div","attrs":[["style","width:20px;height:4px;margin-left:10px"]]},{"op":"ins","parent":43,"id":44,"before":null}]})"));
+        auto rect = [&](int id) {
+            for (const Json& m : l.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        check(rect(11)["width"].asNumber() == 90 && rect(12)["width"].asNumber() == 50 && rect(13)["width"].asNumber() == 60,
+              "calc(), min() and clamp() resolve their percentages against the containing block");
+        check(rect(21)["width"].asNumber() == 50 && rect(22)["width"].asNumber() == 150, "an empty auto cell takes the table's spare width");
+        check(rect(33)["width"].asNumber() > rect(31)["width"].asNumber() + 2, "a <q> has quotation marks");
+        check(rect(41)["x"].asNumber() > rect(42)["x"].asNumber() && rect(41)["x"].asNumber() + 10 == 200, "dir=rtl lays out inline boxes from the right");
+        check(rect(44)["x"].asNumber() + 20 == 200, "right to left, a narrow block sits on the right");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
