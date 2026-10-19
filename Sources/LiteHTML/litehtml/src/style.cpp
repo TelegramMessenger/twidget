@@ -85,7 +85,7 @@ namespace litehtml
     };
 
     std::map<string_id, std::vector<string_id>>& shorthands = *new std::map<string_id, std::vector<string_id>>{
-        {_font_,            {_font_style_, _font_variant_, _font_weight_, _font_size_, _line_height_, _font_family_}  },
+        {_font_,            {_font_style_, _font_variant_, _font_variant_numeric_, _font_weight_, _font_size_, _line_height_, _font_family_}},
 
         {_background_,
          {_background_color_, _background_position_x_, _background_position_y_, _background_repeat_,
@@ -354,6 +354,70 @@ namespace litehtml
             return set;
         }());
         return raws.count(name) != 0;
+    }
+
+    static std::string join_font_features(const std::map<std::string, int>& features)
+    {
+        std::string out;
+        for(const auto& [tag, value] : features)
+        {
+            if(!out.empty())
+                out += ',';
+            out += tag + "=" + std::to_string(value);
+        }
+        return out;
+    }
+
+    static bool parse_font_variant_numeric(const css_token_vector& tokens, std::string& out)
+    {
+        static const std::map<std::string, std::string>& tags = *new std::map<std::string, std::string>{
+            {"lining-nums", "lnum"},       {"oldstyle-nums", "onum"},     {"proportional-nums", "pnum"},
+            {"tabular-nums", "tnum"},      {"diagonal-fractions", "frac"}, {"stacked-fractions", "afrc"},
+            {"ordinal", "ordn"},           {"slashed-zero", "zero"},
+        };
+        if(tokens.size() == 1 && tokens[0].ident() == "normal")
+        {
+            out.clear();
+            return true;
+        }
+        std::map<std::string, int> features;
+        for(const auto& token : tokens)
+        {
+            auto it = tags.find(token.ident());
+            if(it == tags.end() || !features.emplace(it->second, 1).second)
+                return false;
+        }
+        out = join_font_features(features);
+        return !out.empty();
+    }
+
+    static bool parse_font_feature_settings(const css_token_vector& tokens, std::string& out)
+    {
+        if(tokens.size() == 1 && tokens[0].ident() == "normal")
+        {
+            out.clear();
+            return true;
+        }
+        std::map<std::string, int> features;
+        for(const auto& item : parse_comma_separated_list(tokens))
+        {
+            if(item.empty() || item.size() > 2 || item[0].type != STRING || item[0].str().size() != 4 ||
+               !std::all_of(item[0].str().begin(), item[0].str().end(), [](char c) { return c >= 0x20 && c <= 0x7e; }))
+                return false;
+            int value = 1;
+            if(item.size() == 2)
+            {
+                if(item[1].type == NUMBER && item[1].n.number_type == css_number_integer && item[1].n.number >= 0)
+                    value = std::min(int(item[1].n.number), 0xffff);
+                else if(item[1].ident() == "on" || item[1].ident() == "off")
+                    value = item[1].ident() == "on" ? 1 : 0;
+                else
+                    return false;
+            }
+            features[item[0].str()] = value;
+        }
+        out = join_font_features(features);
+        return !out.empty();
     }
 
     // `value` is a list of component values with all whitespace tokens removed, including those inside component values
@@ -770,6 +834,16 @@ namespace litehtml
         case _text_emphasis_style_:
             str = get_repr(value, 0, -1, true);
             add_parsed_property(name, property_value(str, important));
+            break;
+
+        case _font_variant_numeric_:
+            if(parse_font_variant_numeric(value, str))
+                add_parsed_property(name, property_value(str, important));
+            break;
+
+        case _font_feature_settings_:
+            if(parse_font_feature_settings(value, str))
+                add_parsed_property(name, property_value(str, important));
             break;
 
         case _text_emphasis_color_:
@@ -1942,6 +2016,7 @@ namespace litehtml
         }
         add_parsed_property(_font_style_, property_value(style, important));
         add_parsed_property(_font_variant_, property_value(variant, important));
+        add_parsed_property(_font_variant_numeric_, property_value(std::string(), important));
         add_parsed_property(_font_weight_, property_value(weight, important));
         add_parsed_property(_font_size_, property_value(size, important));
         add_parsed_property(_line_height_, property_value(line_height, important));

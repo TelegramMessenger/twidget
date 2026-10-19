@@ -934,6 +934,7 @@ struct SharedFont
     CGFloat         ascent = 0, descent = 0, x_height = 0;
     CGFloat         underline_pos = 0, underline_thickness = 1;
     CGFloat         kern = 0;
+    CFNumberRef     spaceKern = nullptr;
     bool            colorGlyphs = false;
     std::mutex                                widthsMutex;
     std::unordered_map<std::string, CGFloat> widths;
@@ -952,6 +953,8 @@ struct SharedFont
             CFRelease(entry.second);
         if(drawAttrs)
             CFRelease(drawAttrs);
+        if(spaceKern)
+            CFRelease(spaceKern);
         if(attrs)
             CFRelease(attrs);
         if(font)
@@ -1225,6 +1228,28 @@ LHContainer::~LHContainer()
     }
 }
 
+static CTFontRef CreateFeatureFont(NSFont* base, const std::string& features)
+{
+    NSMutableArray* settings = [NSMutableArray array];
+    for(size_t start = 0; start < features.size();)
+    {
+        size_t end = features.find(',', start);
+        if(end == std::string::npos)
+            end = features.size();
+        const std::string entry = features.substr(start, end - start);
+        const size_t      eq    = entry.find('=');
+        if(eq == 4)
+            [settings addObject:@{(__bridge NSString*)kCTFontOpenTypeFeatureTag: [[NSString alloc] initWithBytes:entry.data() length:4 encoding:NSASCIIStringEncoding],
+                                  (__bridge NSString*)kCTFontOpenTypeFeatureValue: @(atoi(entry.c_str() + 5))}];
+        start = end + 1;
+    }
+    CTFontDescriptorRef descriptor = CTFontDescriptorCreateWithAttributes(
+        (__bridge CFDictionaryRef) @{(__bridge NSString*)kCTFontFeatureSettingsAttribute: settings});
+    CTFontRef font = CTFontCreateCopyWithAttributes((__bridge CTFontRef)base, 0, nullptr, descriptor);
+    CFRelease(descriptor);
+    return font ? font : (CTFontRef)CFBridgingRetain(base);
+}
+
 static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description& descr, CGFloat size)
 {
     bool        italic = descr.style == lh::font_style_italic;
@@ -1232,6 +1257,10 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
                       (italic ? "1" : "0");
     if(descr.letter_spacing != 0)
         key += "|" + std::to_string(descr.letter_spacing);
+    if(descr.word_spacing != 0)
+        key += "|w" + std::to_string(descr.word_spacing);
+    if(!descr.features.empty())
+        key += "|f" + descr.features;
 
     {
         std::lock_guard<std::mutex> lock(gFontCacheMutex);
@@ -1243,7 +1272,7 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
     NSFont* nsfont = ResolveFont(descr.family, size, descr.weight, italic);
 
     auto sf            = std::make_shared<SharedFont>();
-    sf->font           = (CTFontRef)CFBridgingRetain(nsfont);
+    sf->font           = descr.features.empty() ? (CTFontRef)CFBridgingRetain(nsfont) : CreateFeatureFont(nsfont, descr.features);
     sf->kern           = descr.letter_spacing;
     CFNumberRef kern   = CFNumberCreate(nullptr, kCFNumberCGFloatType, &sf->kern);
     const void* keys[] = {kCTFontAttributeName, kCTKernAttributeName};
@@ -1255,7 +1284,12 @@ static std::shared_ptr<SharedFont> AcquireSharedFont(const lh::font_description&
     sf->drawAttrs = CFDictionaryCreate(nullptr, drawKeys, drawVals, sf->kern != 0 ? 3 : 2, &kCFTypeDictionaryKeyCallBacks,
                                        &kCFTypeDictionaryValueCallBacks);
     CFRelease(kern);
-    sf->simple = std::make_unique<LHSimpleShaper>(sf->font, sf->drawAttrs);
+    if(descr.word_spacing != 0)
+    {
+        CGFloat spaceKern = sf->kern + descr.word_spacing;
+        sf->spaceKern     = CFNumberCreate(nullptr, kCFNumberCGFloatType, &spaceKern);
+    }
+    sf->simple = std::make_unique<LHSimpleShaper>(sf->font, sf->drawAttrs, descr.word_spacing);
     sf->colorGlyphs = (CTFontGetSymbolicTraits(sf->font) & kCTFontTraitColorGlyphs) != 0;
 
     CGFloat ascent          = CTFontGetAscent(sf->font);
@@ -1352,12 +1386,33 @@ CTFontRef LHContainer::native_font(lh::uint_ptr hFont)
     return font ? font->shared->font : nullptr;
 }
 
-static CTLineRef CreateLine(const char* text, CFDictionaryRef attrs)
+static CFAttributedStringRef CreateAttributed(const SharedFont& sf, CFStringRef str)
+{
+    if(!sf.spaceKern)
+        return CFAttributedStringCreate(nullptr, str, sf.drawAttrs);
+    const CFIndex                length = CFStringGetLength(str);
+    CFMutableAttributedStringRef as     = CFAttributedStringCreateMutable(nullptr, 0);
+    CFAttributedStringBeginEditing(as);
+    CFAttributedStringReplaceString(as, CFRangeMake(0, 0), str);
+    CFAttributedStringSetAttributes(as, CFRangeMake(0, length), sf.drawAttrs, false);
+    CFStringInlineBuffer buffer;
+    CFStringInitInlineBuffer(str, &buffer, CFRangeMake(0, length));
+    for(CFIndex i = 0; i < length; i++)
+    {
+        const UniChar c = CFStringGetCharacterFromInlineBuffer(&buffer, i);
+        if(c == ' ' || c == 0x00A0)
+            CFAttributedStringSetAttribute(as, CFRangeMake(i, 1), kCTKernAttributeName, sf.spaceKern);
+    }
+    CFAttributedStringEndEditing(as);
+    return as;
+}
+
+static CTLineRef CreateLine(const char* text, const SharedFont& sf)
 {
     CFStringRef str = CFStringCreateWithCString(nullptr, text, kCFStringEncodingUTF8);
     if(!str)
         return nullptr;
-    CFAttributedStringRef as   = CFAttributedStringCreate(nullptr, str, attrs);
+    CFAttributedStringRef as   = CreateAttributed(sf, str);
     CTLineRef             line = CTLineCreateWithAttributedString(as);
     CFRelease(as);
     CFRelease(str);
@@ -1401,7 +1456,7 @@ static CTLineRef CopyLine(SharedFont& sf, const char* text)
 {
     if(CTLineRef line = CopyCachedLine(sf, text))
         return line;
-    CTLineRef line = CreateLine(text, sf.drawAttrs);
+    CTLineRef line = CreateLine(text, sf);
     if(line)
         CacheLine(sf, text, line);
     return line;
@@ -1455,7 +1510,7 @@ namespace
             CFStringRef string = CFStringCreateWithBytes(nullptr, reinterpret_cast<const UInt8*>(text.data()), text.size(), kCFStringEncodingUTF8, false);
             if(!string)
                 return;
-            CFAttributedStringRef attributed = CFAttributedStringCreate(nullptr, string, sharedFont->drawAttrs);
+            CFAttributedStringRef attributed = CreateAttributed(*sharedFont, string);
             typesetter = CTTypesetterCreateWithAttributedString(attributed);
             CFRelease(attributed);
             CFRelease(string);
@@ -1563,7 +1618,7 @@ lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
     {
         if(CheckSimpleText())
         {
-            CTLineRef line = CreateLine(text, sf.drawAttrs);
+            CTLineRef line = CreateLine(text, sf);
             CGFloat   w    = line ? CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr) : 0;
             if(line)
                 CFRelease(line);
@@ -1574,7 +1629,7 @@ lh::pixel_t LHContainer::text_width(const char* text, lh::uint_ptr hFont)
     }
 
     CGFloat   w    = 0;
-    CTLineRef line = CreateLine(text, sf.drawAttrs);
+    CTLineRef line = CreateLine(text, sf);
     if(line)
     {
         w = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);

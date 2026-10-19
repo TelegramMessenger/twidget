@@ -21,7 +21,7 @@ class LHSimpleShaper
         size_t hits = 0, misses = 0, learned = 0, rejected = 0;
     };
 
-    explicit LHSimpleShaper(CTFontRef font, CFDictionaryRef attrs) : m_font(font), m_attrs(attrs) {}
+    explicit LHSimpleShaper(CTFontRef font, CFDictionaryRef attrs, CGFloat wordSpacing = 0) : m_font(font), m_attrs(attrs), m_word_spacing(wordSpacing) {}
 
     bool shape(const char* text, size_t length, CGGlyph* glyphs, CGFloat* xs, CGFloat* width);
     void learn(const char* text, size_t length, CTLineRef line);
@@ -49,6 +49,7 @@ class LHSimpleShaper
 
     CTFontRef       m_font;
     CFDictionaryRef m_attrs;
+    CGFloat         m_word_spacing;
     std::mutex      m_mutex;
     uint8_t         m_single[128] = {};
     CGGlyph         m_glyph[128]  = {};

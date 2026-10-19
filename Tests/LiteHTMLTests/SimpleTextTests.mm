@@ -27,6 +27,7 @@ static NSArray<NSString *> *Styles()
         @"font:12px -apple-system;letter-spacing:.08em",
         @"font:16px Avenir Next",
         @"font:300 19px -apple-system;font-variant-numeric:tabular-nums",
+        @"font:14px -apple-system;word-spacing:7px;letter-spacing:.5px",
     ];
 }
 

@@ -124,7 +124,7 @@ bool LHSimpleShaper::learn_single(unsigned char c)
             if(glyph == mapped && point.x == 0 && point.y == 0)
             {
                 m_glyph[c]   = glyph;
-                m_advance[c] = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
+                m_advance[c] = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr) + (c == ' ' ? m_word_spacing : 0);
                 m_single[c]  = Simple;
             }
         }

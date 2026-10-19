@@ -26,6 +26,7 @@ namespace litehtml
         int         emphasis_position = text_emphasis_position_over; // Text emphasis position
         float       letter_spacing    = 0;
         float       word_spacing      = 0;
+        std::string features;
         int         smoothing         = 0;
         float       shadow_x          = 0;
         float       shadow_y          = 0;
@@ -59,6 +60,10 @@ namespace litehtml
             if(word_spacing != 0)
             {
                 out += ":wsp=" + std::to_string(word_spacing);
+            }
+            if(!features.empty())
+            {
+                out += ":ff=" + features;
             }
             if(smoothing != 0)
             {

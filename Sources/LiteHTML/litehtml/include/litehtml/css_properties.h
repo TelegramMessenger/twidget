@@ -122,6 +122,8 @@ namespace litehtml
         bool              m_center_content = false;
         css_length        m_letter_spacing;
         css_length        m_word_spacing;
+        std::string       m_font_variant_numeric;
+        std::string       m_font_feature_settings;
         box_shadow_vector m_text_shadows;
         box_shadow_vector m_box_shadows;
         filter_vector     m_filter;

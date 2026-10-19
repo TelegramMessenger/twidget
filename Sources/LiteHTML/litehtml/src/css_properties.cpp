@@ -13,6 +13,35 @@
 #define offset(member) offsetof(litehtml::css_properties, member)
 // #define offset(func)	[](const css_properties& css) { return css.func; }
 
+static std::string merge_font_features(const std::string& variant, const std::string& settings)
+{
+    if(settings.empty() || variant.empty())
+        return variant.empty() ? settings : variant;
+    std::map<std::string, std::string> features;
+    for(const auto* list : {&variant, &settings})
+    {
+        for(size_t start = 0; start < list->size();)
+        {
+            size_t end = list->find(',', start);
+            if(end == std::string::npos)
+                end = list->size();
+            const std::string entry = list->substr(start, end - start);
+            const size_t      eq    = entry.find('=');
+            if(eq != std::string::npos)
+                features[entry.substr(0, eq)] = entry.substr(eq + 1);
+            start = end + 1;
+        }
+    }
+    std::string out;
+    for(const auto& [tag, value] : features)
+    {
+        if(!out.empty())
+            out += ',';
+        out += tag + "=" + value;
+    }
+    return out;
+}
+
 void litehtml::css_properties::compute(const html_tag* el, const document::ptr& doc)
 {
     m_color = el->get_property<web_color>(_color_, true, web_color::black, offset(m_color));
@@ -563,6 +592,10 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
     };
     spacing(_letter_spacing_, m_letter_spacing, offset(m_letter_spacing));
     spacing(_word_spacing_, m_word_spacing, offset(m_word_spacing));
+    m_font_variant_numeric =
+        el->get_property<std::string>(_font_variant_numeric_, true, "", offset(m_font_variant_numeric));
+    m_font_feature_settings =
+        el->get_property<std::string>(_font_feature_settings_, true, "", offset(m_font_feature_settings));
 
     m_text_shadows.clear();
     if(const auto* tokens = el->get_token_property(_text_shadow_))
@@ -587,6 +620,7 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
     font_description descr;
     descr.letter_spacing       = m_letter_spacing.val();
     descr.word_spacing         = m_word_spacing.val();
+    descr.features             = merge_font_features(m_font_variant_numeric, m_font_feature_settings);
     descr.smoothing            = m_font_smoothing;
     if(!m_text_shadows.empty() && !m_text_shadows.front().inset)
     {
