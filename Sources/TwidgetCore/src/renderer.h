@@ -251,6 +251,8 @@ private:
     void dispatch(twidget::Json ev, std::vector<twidget::Json>& out);
     void flush_moves(std::vector<twidget::Json>& out);
     void flush_pending(std::vector<twidget::Json>& out);
+    /// `resize` for the ResizeObserver targets whose content box changed since the last one.
+    void report_resizes(std::vector<twidget::Json>& out);
     /// The sandbox wants events of `type` (it listens, or every widget gets them).
     bool listened(const char* type) const;
     void send_event(const char* type, int64_t target, const Input& in, std::vector<twidget::Json>& out);
@@ -422,6 +424,7 @@ private:
     double last_click_ms_ = -1e9, last_click_x_ = 0, last_click_y_ = 0;
     std::vector<std::pair<std::string, twidget::Json>> pending_moves_;  // key "type:pointer", latest event
     std::vector<twidget::Json> pending_events_;
+    std::map<int64_t, std::pair<float, float>> resize_watch_;  // observeResize: id → content box last reported
 
     Animator animator_;
     StyleOverrides overrides_;

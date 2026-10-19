@@ -1932,10 +1932,26 @@ std::vector<Json> Renderer::receive(const Json& msg) {
 }
 
 void Renderer::flush_pending(std::vector<Json>& out) {
+    report_resizes(out);
     for (auto& ev : pending_events_) out.push_back(std::move(ev));
     pending_events_.clear();
     for (auto& v : pending_violations_) out.push_back(Json::object().set("type", "violation").set("detail", v));
     pending_violations_.clear();
+}
+
+void Renderer::report_resizes(std::vector<Json>& out) {
+    // A layout still to come reports on the frame that builds it.
+    if (resize_watch_.empty() || frozen_ || stale_) return;
+    Json entries = Json::array();
+    for (auto& [id, last] : resize_watch_) {
+        auto el = container_->element(id);
+        litehtml::position content = el ? el->get_placement() : litehtml::position();
+        std::pair<float, float> size{float(content.width), float(content.height)};
+        if (size == last) continue;
+        last = size;
+        entries.push(Json::object().set("id", double(id)).set("width", size.first).set("height", size.second));
+    }
+    if (!entries.arr().empty()) out.push_back(Json::object().set("type", "resize").set("entries", std::move(entries)));
 }
 
 void Renderer::set_width(double width, std::vector<Json>& out) {
@@ -2157,6 +2173,9 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
                 else if (t.capture == n->id) set_capture(t, 0, out);
             }
         }
+        // A first report follows observe(), as in browsers.
+        else if (method == "observeResize") resize_watch_.emplace(n->id, std::pair<float, float>{-1, -1});
+        else if (method == "unobserveResize") resize_watch_.erase(n->id);
         else if (method == "focus") {
             if (now_s() - last_input_ < SCRIPT_FOCUS_S && text_control(n->id) == n->id) focus(n->id, out);
         } else if (method == "blur") {
@@ -2216,6 +2235,7 @@ void Renderer::detach(Node* n) {
 
 void Renderer::forget(Node* n) {
     forget_canvas(n->id);
+    resize_watch_.erase(n->id);
     for (Node* c : n->children) {
         c->parent = nullptr;
         forget(c);
