@@ -2462,7 +2462,7 @@ public final class LiteHTMLWidgetRenderer {
                 if visualBounds == nil {
                     visualBounds = document?.idBounds(transformed: true, lineBoxes: true) ?? [:]
                 }
-                rect = visualBounds?[id] ?? .zero
+                rect = visualBounds?[id] ?? svgBox(node, id: id) ?? .zero
             } else {
                 rect = elementBounds()[id] ?? .zero
             }
@@ -2538,7 +2538,7 @@ public final class LiteHTMLWidgetRenderer {
                   let geometry = document?.svgGeometry(method, at: ((q["args"] as? [Any])?.first as? NSNumber)?.doubleValue ?? 0, attribute: WidgetDOM.idAttribute, value: String(id)) else {
                 return ["error": "unsupported"]
             }
-            if method == "getTotalLength" {
+            if method == "getTotalLength" || method == "getComputedTextLength" {
                 return geometry["length"]?.doubleValue ?? 0
             }
             return geometry.mapValues { $0.doubleValue }
@@ -2559,6 +2559,13 @@ public final class LiteHTMLWidgetRenderer {
         default:
             return ["error": "unsupported"]
         }
+    }
+
+    private func svgBox(_ node: WidgetNode, id: Int) -> CGRect? {
+        guard node.svg, let box = document?.svgBox(attribute: WidgetDOM.idAttribute, value: String(id)), !box.isNull else {
+            return nil
+        }
+        return box
     }
 
     private func binaryQuery(_ q: [String: Any]) -> (result: [String: Any], data: Data)? {

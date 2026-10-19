@@ -1206,6 +1206,11 @@ namespace litehtml
         };
     } // namespace
 
+    bool svg_paint_color(const element::ptr& el, bool fill, web_color& out, document_container* container)
+    {
+        return svg_paint(el, fill ? _fill_ : _stroke_, web_color::black, fill, out, container);
+    }
+
     bool svg_geometry(const element::ptr& el, vector_path& path)
     {
         if(!el || !el->get_tagName())

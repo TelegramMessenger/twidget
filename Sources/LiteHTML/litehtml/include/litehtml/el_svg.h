@@ -20,6 +20,7 @@ namespace litehtml
     bool  svg_text_box(const element::ptr& el, document_container* container, position& box);
     /// An SVG element's user space to document coordinates: its transforms, its parents', and the view box.
     bool  svg_ctm(const element::ptr& el, transform_matrix& ctm);
+    bool  svg_paint_color(const element::ptr& el, bool fill, web_color& out, document_container* container);
     void svg_set_group_cache_enabled(bool enabled);
 
     class el_svg : public html_tag

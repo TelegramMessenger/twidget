@@ -2984,6 +2984,13 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         return nullptr;
     };
     lh::element::ptr el = search(_doc->root(), 0);
+    lh::position     text;
+    if(el && ([method isEqualToString:@"getComputedTextLength"] || [method isEqualToString:@"getBBox"]) && lh::svg_text_box(el, _container.get(), text))
+    {
+        if([method isEqualToString:@"getComputedTextLength"])
+            return @{@"length" : @(text.width.value())};
+        return @{@"x" : @(text.x.value()), @"y" : @(text.y.value()), @"width" : @(text.width.value()), @"height" : @(text.height.value())};
+    }
     lh::vector_path  path;
     if(!el || !lh::svg_geometry(el, path))
         return nil;
@@ -3014,6 +3021,57 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         return @{@"x" : @(minX), @"y" : @(minY), @"width" : @(maxX - minX), @"height" : @(maxY - minY)};
     }
     return nil;
+}
+
+- (CGRect)svgBoxWithAttribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || !_doc->root())
+        return CGRectNull;
+    const char       *key    = attribute.UTF8String;
+    const std::string wanted = value.UTF8String;
+    std::function<lh::element::ptr(const lh::element::ptr &, int)> search = [&](const lh::element::ptr &e, int depth) -> lh::element::ptr {
+        const char *v = e->get_attr(key);
+        if(v && wanted == v)
+            return e;
+        if(depth > 512)
+            return nullptr;
+        for(const auto &child : e->children())
+            if(auto hit = search(child, depth + 1))
+                return hit;
+        return nullptr;
+    };
+    lh::element::ptr     el = search(_doc->root(), 0);
+    lh::transform_matrix ctm;
+    if(!el || el->get_render_item() || !lh::svg_ctm(el, ctm))
+        return CGRectNull;
+    CGRect          box = CGRectNull;
+    lh::vector_path path;
+    lh::position    text;
+    if(lh::svg_geometry(el, path))
+    {
+        const int steps = 512;
+        const float total = lh::svg_path_length(path, -1, nullptr, nullptr);
+        for(int i = 0; i <= steps; i++)
+        {
+            float x = 0, y = 0;
+            lh::svg_path_length(path, total * i / steps, &x, &y);
+            box = CGRectUnion(box, CGRectMake(x, y, 0, 0));
+        }
+    } else if(lh::svg_text_box(el, _container.get(), text))
+    {
+        box = CGRectMake(text.x.value(), text.y.value(), text.width.value(), text.height.value());
+    }
+    if(CGRectIsNull(box) || !std::isfinite(box.origin.x))
+        return CGRectNull;
+    box = CGRectApplyAffineTransform(box, CGAffineTransformMake(ctm.a, ctm.b, ctm.c, ctm.d, ctm.tx, ctm.ty));
+    for(lh::element::ptr p = el->parent(); p; p = p->parent())
+    {
+        if(auto ri = p->get_render_item())
+            return CGRectApplyAffineTransform(box, VisualTransform(ri.get()));
+    }
+    return box;
 }
 
 - (nullable NSFont *)fontWithAttribute:(NSString *)attribute value:(NSString *)value lineHeight:(CGFloat *)lineHeight baseline:(CGFloat *)baseline
@@ -3260,6 +3318,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"touch-action"]        = raw("touch-action", @"auto");
     out[@"filter"]              = raw("filter", @"none");
     out[@"backdrop-filter"]     = raw("backdrop-filter", @"none");
+    lh::web_color paint;
+    out[@"fill"]                = lh::svg_paint_color(el, true, paint, _container.get()) ? rgb(paint) : @"none";
+    out[@"stroke"]              = lh::svg_paint_color(el, false, paint, _container.get()) ? rgb(paint) : @"none";
     out[@"quotes"]              = @"auto";
     for(lh::element::ptr e = el; e; e = e->parent())
     {

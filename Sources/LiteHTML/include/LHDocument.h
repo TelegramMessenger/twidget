@@ -164,6 +164,7 @@ typedef struct LHKeyedRect {
 - (nullable NSString *)customProperty:(NSString *)property attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(customProperty(_:attribute:value:));
 - (nullable NSFont *)fontWithAttribute:(NSString *)attribute value:(NSString *)value lineHeight:(CGFloat *)lineHeight baseline:(CGFloat *)baseline NS_SWIFT_NAME(font(attribute:value:lineHeight:baseline:));
 - (nullable NSDictionary<NSString *, NSNumber *> *)svgGeometry:(NSString *)method at:(double)distance attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(svgGeometry(_:at:attribute:value:));
+- (CGRect)svgBoxWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(svgBox(attribute:value:));
 /// Skips elements that are not rendered (display: none on them or an ancestor): CSS animations and transitions do not
 /// run there, and restart when the element is displayed again.
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute NS_SWIFT_NAME(declarations(_:byAttribute:));
