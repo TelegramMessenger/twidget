@@ -704,6 +704,39 @@ static bool DependsOnViewport(const std::string& text)
 static CGRect BorderBox(const lh::render_item *ri);
 static CGRect ClippedBorderBox(const lh::render_item *ri);
 
+template <typename F>
+static bool VisitLineBoxes(lh::render_item *ri, F &&line)
+{
+    if(ri->src_el()->css().get_display() != lh::display_inline)
+        return false;
+    const lh::position p   = ri->get_placement();
+    const CGFloat      dx  = p.x.value() - ri->pos().x.value();
+    const CGFloat      dy  = p.y.value() - ri->pos().y.value();
+    const CGFloat      top = ri->margin_top().value();
+    const CGFloat      height = top + ri->margin_bottom().value();
+    bool               any = false;
+    ri->for_inline_boxes([&](const lh::position &b, bool first, bool last) {
+        const CGFloat left  = first ? ri->margin_left().value() : 0;
+        const CGFloat right = last ? ri->margin_right().value() : 0;
+        const CGRect  box   = CGRectMake(dx + b.x.value() + left, dy + b.y.value() + top, std::max<CGFloat>(0, b.width.value() - left - right), std::max<CGFloat>(0, b.height.value() - height));
+        if(box.size.width > 0 || box.size.height > 0)
+        {
+            line(box);
+            any = true;
+        }
+        return true;
+    });
+    return any;
+}
+
+static CGAffineTransform VisualTransform(const lh::render_item *ri)
+{
+    lh::transform_matrix matrix;
+    for(; ri; ri = ri->parent().get())
+        matrix = matrix.then(ri->get_visual_transform());
+    return CGAffineTransformMake(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty);
+}
+
 struct LHCoverEntry
 {
     const lh::render_item *item;
@@ -1818,12 +1851,33 @@ static std::string MasterWithCSS(NSString *css)
         @"offsetTop": @(std::round(point.y)),
         @"offsetParent": @(parentId),
     } mutableCopy];
-    if(!ri->src_el()->is_inline() || ri->src_el()->is_inline_box() || ri->src_el()->is_replaced())
+    CGRect lines = CGRectNull;
+    if(VisitLineBoxes(ri.get(), [&](CGRect line) { lines = CGRectUnion(lines, line); }))
+    {
+        const lh::position placement = ri->get_placement();
+        metrics[@"offsetLeft"] = @(std::round(point.x + ri->padding_left().value() + ri->border_left().value() + lines.origin.x - placement.x.value()));
+        metrics[@"offsetTop"] = @(std::round(point.y + ri->padding_top().value() + ri->border_top().value() + lines.origin.y - placement.y.value()));
+        metrics[@"offsetWidth"] = @(std::round(lines.size.width));
+        metrics[@"offsetHeight"] = @(std::round(lines.size.height));
+    } else if(!ri->src_el()->is_inline() || ri->src_el()->is_inline_box() || ri->src_el()->is_replaced())
     {
         metrics[@"offsetWidth"] = @(std::round(ri->pos().width.value() + ri->get_paddings().width().value() + ri->get_borders().width().value()));
         metrics[@"offsetHeight"] = @(std::round(ri->pos().height.value() + ri->get_paddings().height().value() + ri->get_borders().height().value()));
     }
     return metrics;
+}
+
+- (NSArray<NSValue *> *)lineBoxesWithAttribute:(NSString *)attribute value:(NSString *)value
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableArray<NSValue *> *result = [NSMutableArray array];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    if(!ri)
+        return result;
+    const CGAffineTransform transform = VisualTransform(ri.get());
+    VisitLineBoxes(ri.get(), [&](CGRect line) { [result addObject:[NSValue valueWithRect:NSRectFromCGRect(CGRectApplyAffineTransform(line, transform))]]; });
+    return result;
 }
 
 - (nullable NSDictionary<NSString *, NSNumber *> *)textareaMetricsWithAttribute:(NSString *)attribute value:(NSString *)value
@@ -3214,7 +3268,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return first == std::string::npos ? @"" : @(repr.substr(first, repr.find_last_not_of(" \t\n\r\f") - first + 1).c_str());
 }
 
-- (void)visitBoundsLocked:(NSString *)name transformed:(BOOL)transformed visitor:(const std::function<void(const char *, CGRect)> &)visitor
+- (void)visitBoundsLocked:(NSString *)name transformed:(BOOL)transformed lineBoxes:(BOOL)lineBoxes visitor:(const std::function<void(const char *, CGRect)> &)visitor
 {
     if(!_doc || !_doc->root_render())
         return;
@@ -3223,15 +3277,20 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
         const auto matrix = transformed ? ri->get_visual_transform().then(ancestors) : lh::transform_matrix{};
         if(const char *value = ri->src_el()->get_attr(key))
         {
-            const lh::position p      = ri->get_placement();
-            const CGFloat      left   = ri->padding_left().value() + ri->border_left().value();
-            const CGFloat      top    = ri->padding_top().value() + ri->border_top().value();
-            const CGFloat      right  = ri->padding_right().value() + ri->border_right().value();
-            const CGFloat      bottom = ri->padding_bottom().value() + ri->border_bottom().value();
-            CGRect box = CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
-            if(transformed)
+            const CGAffineTransform affine = CGAffineTransformMake(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty);
+            CGRect box = CGRectNull;
+            if(!lineBoxes || !VisitLineBoxes(ri.get(), [&](CGRect line) { box = CGRectUnion(box, transformed ? CGRectApplyAffineTransform(line, affine) : line); }))
             {
-                box = CGRectApplyAffineTransform(box, CGAffineTransformMake(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty));
+                const lh::position p      = ri->get_placement();
+                const CGFloat      left   = ri->padding_left().value() + ri->border_left().value();
+                const CGFloat      top    = ri->padding_top().value() + ri->border_top().value();
+                const CGFloat      right  = ri->padding_right().value() + ri->border_right().value();
+                const CGFloat      bottom = ri->padding_bottom().value() + ri->border_bottom().value();
+                box = CGRectMake(p.x.value() - left, p.y.value() - top, p.width.value() + left + right, p.height.value() + top + bottom);
+                if(transformed)
+                {
+                    box = CGRectApplyAffineTransform(box, affine);
+                }
             }
             visitor(value, box);
         }
@@ -3247,7 +3306,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     [self restoreLocked];
     NSMutableDictionary<NSString *, NSValue *> *result = [NSMutableDictionary dictionary];
     std::unordered_map<std::string, CGRect> boxes;
-    [self visitBoundsLocked:name transformed:transformed visitor:[&](const char *value, CGRect box) {
+    [self visitBoundsLocked:name transformed:transformed lineBoxes:NO visitor:[&](const char *value, CGRect box) {
         auto it = boxes.find(value);
         if(it == boxes.end())
             boxes.emplace(value, box);
@@ -3261,11 +3320,16 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
 
 - (NSData *)keyedBoundsByAttribute:(NSString *)name transformed:(BOOL)transformed
 {
+    return [self keyedBoundsByAttribute:name transformed:transformed lineBoxes:NO];
+}
+
+- (NSData *)keyedBoundsByAttribute:(NSString *)name transformed:(BOOL)transformed lineBoxes:(BOOL)lineBoxes
+{
     std::lock_guard<std::mutex> guard(_lock);
     [self restoreLocked];
     std::vector<LHKeyedRect> boxes;
     std::unordered_map<int64_t, size_t> slots;
-    [self visitBoundsLocked:name transformed:transformed visitor:[&](const char *value, CGRect box) {
+    [self visitBoundsLocked:name transformed:transformed lineBoxes:lineBoxes visitor:[&](const char *value, CGRect box) {
         int64_t key = 0;
         if(!ParseKeyInteger(value, key))
             return;

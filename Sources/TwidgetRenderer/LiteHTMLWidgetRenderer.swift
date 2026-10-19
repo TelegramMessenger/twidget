@@ -2460,7 +2460,7 @@ public final class LiteHTMLWidgetRenderer {
             }
             if kind == "rect" || kind == "rects" {
                 if visualBounds == nil {
-                    visualBounds = document?.idBounds(transformed: true) ?? [:]
+                    visualBounds = document?.idBounds(transformed: true, lineBoxes: true) ?? [:]
                 }
                 rect = visualBounds?[id] ?? .zero
             } else {
@@ -2471,6 +2471,10 @@ public final class LiteHTMLWidgetRenderer {
         case "rect":
             return LiteHTMLWidgetRenderer.rectResult(rect ?? .zero)
         case "rects":
+            let lines = (q["id"] as? NSNumber).map { document?.lineBoxes(attribute: WidgetDOM.idAttribute, value: $0.stringValue) ?? [] } ?? []
+            if !lines.isEmpty {
+                return lines.map { LiteHTMLWidgetRenderer.rectResult($0.rectValue) }
+            }
             return [LiteHTMLWidgetRenderer.rectResult(rect ?? .zero)]
         case "box":
             let r = rect ?? .zero

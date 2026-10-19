@@ -132,6 +132,7 @@ typedef struct LHKeyedRect {
 - (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)scrollersByAttribute:(NSString *)attribute NS_SWIFT_NAME(scrollers(byAttribute:));
 - (nullable NSDictionary<NSString *, NSNumber *> *)textareaMetricsWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(textareaMetrics(attribute:value:));
 - (nullable NSDictionary<NSString *, NSNumber *> *)offsetMetricsWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(offsetMetrics(attribute:value:));
+- (NSArray<NSValue *> *)lineBoxesWithAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(lineBoxes(attribute:value:));
 - (CGPoint)setScrollOffset:(CGPoint)offset attribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(setScrollOffset(_:attribute:value:));
 - (nullable CGImageRef)copyScrollContentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale CF_RETURNS_RETAINED NS_SWIFT_NAME(copyScrollContent(attribute:value:rect:scale:));
 - (nullable CGImageRef)copyScrollContentIfCurrentWithAttribute:(NSString *)attribute value:(NSString *)value rect:(CGRect)rect scale:(CGFloat)scale shouldContinue:(BOOL (NS_NOESCAPE ^)(void))shouldContinue CF_RETURNS_RETAINED NS_SWIFT_NAME(copyScrollContentIfCurrent(attribute:value:rect:scale:shouldContinue:));
@@ -155,6 +156,7 @@ typedef struct LHKeyedRect {
 - (NSDictionary<NSString *, NSValue *> *)boundsByAttribute:(NSString *)name NS_SWIFT_NAME(bounds(byAttribute:));
 - (NSDictionary<NSString *, NSValue *> *)visualBoundsByAttribute:(NSString *)name NS_SWIFT_NAME(visualBounds(byAttribute:));
 - (NSData *)keyedBoundsByAttribute:(NSString *)name transformed:(BOOL)transformed NS_SWIFT_NAME(keyedBounds(byAttribute:transformed:));
+- (NSData *)keyedBoundsByAttribute:(NSString *)name transformed:(BOOL)transformed lineBoxes:(BOOL)lineBoxes NS_SWIFT_NAME(keyedBounds(byAttribute:transformed:lineBoxes:));
 @property (readonly, copy) NSString *layoutSignature;
 - (NSDictionary<NSString *, NSString *> *)parentsByAttribute:(NSString *)name NS_SWIFT_NAME(parents(byAttribute:));
 - (NSDictionary<NSString *, NSString *> *)computedStyleForAttribute:(NSString *)attribute value:(NSString *)value NS_SWIFT_NAME(computedStyle(attribute:value:));
