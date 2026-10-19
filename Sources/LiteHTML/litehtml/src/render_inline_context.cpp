@@ -391,7 +391,22 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::render_item_inline
             m_line_boxes.pop_back();
         } else
         {
-            m_rendered_width.merge(m_line_boxes.back()->get_rendered_width());
+            rendered_width line_width = m_line_boxes.back()->get_rendered_width();
+            // The first line starts after an inside list marker and the text indent, which its items
+            // do not count; without them a max-content width is short and the last word wraps.
+            if(m_line_boxes.size() == 1)
+            {
+                if(src_el()->css().get_list_style_type() != list_style_type_none &&
+                   src_el()->css().get_list_style_position() == list_style_position_inside)
+                {
+                    line_width.natural_width += src_el()->css().get_font_size();
+                }
+                if(pixel_t(src_el()->css().get_text_indent().val()) != 0_px)
+                {
+                    line_width.natural_width += src_el()->css().get_text_indent().calc_percent(self_size.width);
+                }
+            }
+            m_rendered_width.merge(line_width);
         }
     }
     return ret;
