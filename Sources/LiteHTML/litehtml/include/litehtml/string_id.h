@@ -35,7 +35,7 @@ namespace litehtml
         _before_, _after_,
 
         // CSS pseudo-classes
-        _root_, _only_child_, _only_of_type_, _first_child_, _first_of_type_, _last_child_, _last_of_type_, _nth_child_,
+        _root_, _empty_, _only_child_, _only_of_type_, _first_child_, _first_of_type_, _last_child_, _last_of_type_, _nth_child_,
         _nth_of_type_, _nth_last_child_, _nth_last_of_type_, _is_, _where_, _not_, _lang_, _checked_, _disabled_, _enabled_,
 
         _active_, _hover_,

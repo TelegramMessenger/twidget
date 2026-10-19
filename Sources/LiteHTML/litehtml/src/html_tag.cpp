@@ -1105,9 +1105,28 @@ namespace litehtml
             }
             break;
         case _lang_:
-            if(!get_document()->match_lang(sel.value))
             {
-                return select_no_match;
+                // The nearest lang attribute decides, as a language range: "ru" matches "ru" and "ru-RU".
+                const char* lang = nullptr;
+                for(element::ptr el = shared_from_this(); el && !lang; el = el->parent())
+                    lang = el->get_attr("lang");
+                if(!lang)
+                {
+                    if(!get_document()->match_lang(sel.value))
+                        return select_no_match;
+                    break;
+                }
+                const std::string tag = lowcase(lang), range = lowcase(sel.value);
+                if(range.empty() || (tag != range && tag.compare(0, range.size() + 1, range + "-") != 0))
+                    return select_no_match;
+            }
+            break;
+        case _empty_:
+            // Whitespace is content, as in browsers; comments and generated ::before/::after are not.
+            for(const auto& child : m_children)
+            {
+                if(!child->is_comment() && child->tag() != __tag_before_ && child->tag() != __tag_after_)
+                    return select_no_match;
             }
             break;
         case _checked_:
