@@ -129,10 +129,12 @@ namespace twlite
             }
 
             std::string l = lower(family);
-            if (l == "-apple-system" || l == "blinkmacsystemfont" || l == "system-ui" || l == "ui-sans-serif" || l == "sans-serif" || l == "roboto" || l == "inter" || l == "helvetica" || l == "helvetica neue")
+            if (l == "-apple-system" || l == "blinkmacsystemfont" || l == "system-ui" || l == "ui-sans-serif" || l == "roboto" || l == "inter")
             {
                 return L"Segoe UI";
             }
+            // As in every Windows browser: Arial keeps Helvetica's metrics, which widgets are measured with.
+            if (l == "sans-serif" || l == "helvetica" || l == "helvetica neue") return L"Arial";
             if (l == "serif" || l == "ui-serif") return L"Times New Roman";
             if (l == "monospace" || l == "ui-monospace" || l == "menlo" || l == "sf mono") return L"Consolas";
             if (l == "cursive") return L"Segoe Script";
