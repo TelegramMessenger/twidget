@@ -136,7 +136,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("box-sizing", name_of(litehtml::box_sizing_strings[css.get_box_sizing()]));
     o.set("visibility", name_of(litehtml::visibility_strings[css.get_visibility()]));
     o.set("z-index", css.get_position() == litehtml::element_position_static || css.get_z_index() == 0 ? std::string("auto") : std::to_string(css.get_z_index()));
-    o.set("direction", extras.direction).set("unicode-bidi", "normal");
+    o.set("direction", name_of(litehtml::direction_strings[css.get_direction()])).set("unicode-bidi", "normal");
 
     // The box: what layout used, as getComputedStyle resolves width, height, margins and padding.
     std::string margin[4], padding[4], border_width[4];

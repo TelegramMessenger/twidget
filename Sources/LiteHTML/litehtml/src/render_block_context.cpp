@@ -126,6 +126,11 @@ litehtml::rendered_width litehtml::render_item_block_context::_render_content(pi
                 if(auto_margin != 0_px)
                 {
                     el->pos().x += auto_margin;
+                } else if(css().get_direction() == direction_rtl && !el->css().get_margins().left.is_predefined() &&
+                          !el->css().get_margins().right.is_predefined())
+                {
+                    // Right to left, a block narrower than its container keeps its right margin and sits on the right.
+                    el->pos().x += pixel_t(self_size.render_width) - el->right();
                 }
                 ret_width.merge(rw);
                 m_margins.top   = top_margin;

@@ -345,7 +345,8 @@ litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::uniqu
 
     m_line_boxes.emplace_back(std::make_unique<line_box>(new_pos.top, new_pos.left + first_line_margin + text_indent,
                                                          new_pos.left + new_pos.width, css().line_height(),
-                                                         css().get_font_metrics(), css().get_text_align()));
+                                                         css().get_font_metrics(), css().get_text_align(),
+                                                         css().get_direction() == direction_rtl));
 
     // Add items returned by finish_last_box function into the new line
     for(auto& it : items)

@@ -26,9 +26,51 @@ void litehtml::el_text::get_text(std::string& text) const
     text += m_text;
 }
 
+int litehtml::el_text::strong_direction() const
+{
+    if(m_strong_direction != 2)
+        return m_strong_direction;
+    m_strong_direction = 0;
+    for(size_t i = 0; i < m_text.size();)
+    {
+        unsigned char c = m_text[i];
+        if(c < 0x80)
+        {
+            if((c | 0x20) >= 'a' && (c | 0x20) <= 'z')
+            {
+                m_strong_direction = -1;
+                break;
+            }
+            i++;
+            continue;
+        }
+        size_t   n  = std::min<size_t>((c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4, m_text.size() - i);
+        uint32_t cp = n == 2 ? c & 0x1F : n == 3 ? c & 0x0F : c & 0x07;
+        for(size_t k = 1; k < n; k++)
+            cp = (cp << 6) | (static_cast<unsigned char>(m_text[i + k]) & 0x3F);
+        i += n;
+        // Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan and their presentation forms
+        if((cp >= 0x0590 && cp <= 0x08FF) || (cp >= 0xFB1D && cp <= 0xFDFF) || (cp >= 0xFE70 && cp <= 0xFEFF) ||
+           (cp >= 0x10800 && cp <= 0x10FFF) || (cp >= 0x1E800 && cp <= 0x1EFFF))
+        {
+            m_strong_direction = 1;
+            break;
+        }
+        // Not punctuation, symbols, combining marks, variation selectors or emoji: a letter of a left to right script.
+        if(cp >= 0xC0 && cp != 0xD7 && cp != 0xF7 && !(cp >= 0x0300 && cp <= 0x036F) && !(cp >= 0x2000 && cp <= 0x2BFF) &&
+           !(cp >= 0x3000 && cp <= 0x303F) && !(cp >= 0xFE00 && cp <= 0xFE6F) && !(cp >= 0xFF00 && cp <= 0xFF20) && cp < 0x1F000)
+        {
+            m_strong_direction = -1;
+            break;
+        }
+    }
+    return m_strong_direction;
+}
+
 void litehtml::el_text::set_text(const std::string& text)
 {
     m_text = text;
+    m_strong_direction = 2;
     m_transformed_text.clear();
     m_use_transformed = false;
     m_draw_spaces     = true;

@@ -42,6 +42,7 @@ namespace litehtml
         {_box_sizing_,             box_sizing_strings                  },
 
         {_text_align_,             text_align_strings                  },
+        {_direction_,              direction_strings                   },
         {_vertical_align_,         vertical_align_strings              },
         {_text_transform_,         text_transform_strings              },
         {__webkit_font_smoothing_, font_smoothing_strings              },
@@ -449,6 +450,7 @@ namespace litehtml
         case _overflow_y_:
 
         case _text_align_:
+        case _direction_:
         case _vertical_align_:
         case _text_transform_:
         case __webkit_font_smoothing_:

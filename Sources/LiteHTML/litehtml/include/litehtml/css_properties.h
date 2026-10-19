@@ -35,6 +35,7 @@ namespace litehtml
       private:
         element_position      m_el_position    = element_position_static;
         text_align            m_text_align     = text_align_start;
+        direction             m_direction      = direction_ltr;
         overflow              m_overflow       = overflow_visible;
         overflow              m_overflow_x     = overflow_visible;
         overflow              m_overflow_y     = overflow_visible;
@@ -173,6 +174,7 @@ namespace litehtml
         word_break get_word_break() const { return m_word_break; }
         void set_word_break(word_break value) { m_word_break = value; }
         /// How text may break inside words: word-break's break-all and break-word break anywhere too.
+        direction get_direction() const { return m_direction; }
         overflow_wrap get_wrapping() const
         {
             return m_word_break == word_break_break_all || m_word_break == word_break_break_word ? overflow_wrap_anywhere : m_overflow_wrap;

@@ -393,6 +393,14 @@ namespace litehtml
     // ==========================================================
     // CSS Property: align
     // ==========================================================
+    inline constexpr auto direction_strings = split_css_values<2>("ltr;rtl");
+
+    enum direction
+    {
+        direction_ltr,
+        direction_rtl
+    };
+
     inline constexpr auto text_align_strings =
         split_css_values<7>("left;right;center;justify;start;end;-internal-th-center");
 

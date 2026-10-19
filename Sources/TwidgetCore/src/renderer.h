@@ -234,9 +234,6 @@ private:
     /// Whether the widget takes horizontal and vertical drags of a press on `target`: its `touch-action`
     /// and its preventDefault on pointerdown or touchstart.
     std::pair<bool, bool> gesture_claim(int64_t target) const;
-    /// `direction` for getComputedStyle, which the fork does not compute: the nearest `direction` style
-    /// or `dir` attribute, `dir=auto` taking the first strong character of the text.
-    std::string direction_of(const Node* n) const;
     void set_capture(Touch& t, int64_t id, std::vector<twidget::Json>& out);
     /// The border box of element `id`, empty when it is not laid out.
     Rect box_of(int64_t id) const;

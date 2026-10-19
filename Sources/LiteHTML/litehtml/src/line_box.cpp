@@ -3,6 +3,7 @@
 #include "element.h"
 #include "render_item.h"
 #include "document.h"
+#include "el_text.h"
 #include "types.h"
 #include <algorithm>
 #include <cmath>
@@ -310,7 +311,19 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     pixel_t spacing_x = 0_px; // Number of pixels to distribute between elements
     pixel_t shift_x   = 0_px; // Shift elements by X to apply the text-align
 
-    switch(m_text_align)
+    // The line is laid out left to right and mirrored afterwards when it is right to left (reorder_bidi), so
+    // its alignment is mirrored here: start is the left until then.
+    text_align align = m_text_align;
+    if(align == text_align_start)
+        align = text_align_left;
+    else if(align == text_align_end)
+        align = text_align_right;
+    else if(m_rtl && align == text_align_left)
+        align = text_align_right;
+    else if(m_rtl && align == text_align_right)
+        align = text_align_left;
+
+    switch(align)
     {
     case text_align_right:
     case text_align_end:
@@ -404,7 +417,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             lbi->pos().x += pixel_t(cixx);
         }
         counter++;
-        if((m_text_align == text_align_right || m_text_align == text_align_end || spacing_x != 0_px) && counter == static_cast<int>(m_items.size()))
+        if((align == text_align_right || spacing_x != 0_px) && counter == static_cast<int>(m_items.size()))
         {
             // Forcible justify the last element to the right side for text align right and justify;
             lbi->pos().x = m_right - lbi->pos().width;
@@ -682,6 +695,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
 
     std::list<inline_item_box> inlines;
 
+    reorder_bidi();
+
     contexts.clear();
 
     current_context.baseline  = 0;
@@ -740,7 +755,14 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
 
         lbi->get_el()->apply_relative_shift(containing_block_size);
 
-        // Calculate and push inline box into the render item element
+        // Calculate and push inline box into the render item element. An inline box spans whatever its items
+        // take, in whichever order a reordered line (reorder_bidi) shows them.
+        for(auto& open : inlines)
+        {
+            const pixel_t right = std::max(open.box.right(), lbi->right());
+            open.box.x          = std::min(open.box.x, lbi->left());
+            open.box.width      = right - open.box.x;
+        }
         if(lbi->get_type() == line_box_item::type_inline_start ||
            lbi->get_type() == line_box_item::type_inline_continue)
         {
@@ -750,22 +772,18 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             }
             inlines.emplace_back(lbi->get_el());
             inlines.back().box.x      = lbi->left();
+            inlines.back().box.width  = lbi->right() - lbi->left();
             inlines.back().box.y      = lbi->top() - lbi->get_el()->content_offset_top();
             inlines.back().box.height = lbi->bottom() - lbi->top() + lbi->get_el()->content_offset_height();
-        } else if(lbi->get_type() == line_box_item::type_inline_end)
+        } else if(lbi->get_type() == line_box_item::type_inline_end && !inlines.empty())
         {
-            if(!inlines.empty())
-            {
-                inlines.back().box.width = lbi->right() - inlines.back().box.x;
-                inlines.back().element->add_inline_box(inlines.back().box);
-                inlines.pop_back();
-            }
+            inlines.back().element->add_inline_box(inlines.back().box);
+            inlines.pop_back();
         }
     }
 
     for(auto iter = inlines.rbegin(); iter != inlines.rend(); ++iter)
     {
-        iter->box.width = m_items.back()->right() - iter->box.x;
         iter->element->add_inline_box(iter->box);
 
         ret_items.emplace_front(std::unique_ptr<line_box_item>(new lbi_continue(iter->element)));
@@ -968,4 +986,67 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::new_widt
         }
     }
     return ret_items;
+}
+
+void litehtml::line_box::reorder_bidi()
+{
+    // Each word is an item, and the shaper lays out the characters inside one: what is left is the order of
+    // the items. A simplified bidi: a word is right to left or left to right by its first strong character,
+    // digits, punctuation, spaces and boxes take the direction around them.
+    auto direction_of = [](const line_box_item& lbi) {
+        if(lbi.get_type() != line_box_item::type_text_part || !lbi.get_el()->src_el()->is_text())
+            return 0;
+        return static_cast<const el_text*>(lbi.get_el()->src_el().get())->strong_direction();
+    };
+    // Most lines are left to right through and through: they are left as they are, without allocating.
+    if(!m_rtl && std::none_of(m_items.begin(), m_items.end(), [&](const auto& lbi) { return direction_of(*lbi) > 0; }))
+        return;
+    std::vector<line_box_item*> items;
+    std::vector<int8_t>         dirs;
+    items.reserve(m_items.size());
+    dirs.reserve(m_items.size());
+    for(const auto& lbi : m_items)
+    {
+        items.push_back(lbi.get());
+        dirs.push_back(static_cast<int8_t>(direction_of(*lbi)));
+    }
+    auto mirror = [](line_box_item* item, pixel_t from, pixel_t to) {
+        item->pos().x += from + to - item->right() - item->left();
+    };
+    if(m_rtl)
+    {
+        for(auto* item : items)
+            mirror(item, m_left, m_right);
+    }
+    // Runs of the other direction read the other way: neutrals inside a run go with it, at its ends with the line.
+    const int other = m_rtl ? -1 : 1;
+    for(size_t i = 0; i < items.size();)
+    {
+        if(dirs[i] != other)
+        {
+            i++;
+            continue;
+        }
+        size_t last = i;
+        for(size_t j = i; j < items.size() && dirs[j] != -other; j++)
+        {
+            if(dirs[j] == other)
+                last = j;
+        }
+        // The run takes the edges of the inline boxes it opens and closes, which keep their words.
+        size_t first = i;
+        while(first > 0 && is_one_of(items[first - 1]->get_type(), line_box_item::type_inline_start, line_box_item::type_inline_continue))
+            first--;
+        while(last + 1 < items.size() && items[last + 1]->get_type() == line_box_item::type_inline_end)
+            last++;
+        pixel_t from = items[first]->left(), to = items[first]->right();
+        for(size_t k = first; k <= last; k++)
+        {
+            from = std::min(from, items[k]->left());
+            to   = std::max(to, items[k]->right());
+        }
+        for(size_t k = first; k <= last; k++)
+            mirror(items[k], from, to);
+        i = last + 1;
+    }
 }

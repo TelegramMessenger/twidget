@@ -18,6 +18,7 @@ namespace litehtml
         uint_ptr    m_measured_font = 0;
         int         m_measured_transform = -1;
         std::shared_ptr<text_breaker> m_breaker;
+        mutable int8_t m_strong_direction = 2;  // 2: not looked at yet
 
       public:
         el_text(const char* text, const document::ptr& doc);
@@ -27,6 +28,9 @@ namespace litehtml
         void compute_styles(bool recursive) override;
         const std::string& display_text() const { return m_use_transformed ? m_transformed_text : m_text; }
         std::shared_ptr<text_breaker> breaker();
+        /// The direction of the text's first strong character: 1 right to left, -1 left to right, 0 none
+        /// (digits, punctuation, spaces, symbols).
+        int strong_direction() const;
         bool is_text() const override
         {
             return true;

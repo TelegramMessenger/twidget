@@ -3,7 +3,9 @@
 #include <cmath>
 #include "document.h"
 #include "css_parser.h"
+#include "el_text.h"
 #include "html_tag.h"
+#include <functional>
 #include "document_container.h"
 #include "types.h"
 #include <cstddef>
@@ -32,6 +34,22 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     m_overflow   = m_overflow_y != overflow_visible ? m_overflow_y : m_overflow_x;
     m_text_align =
         static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_start, offset(m_text_align)));
+    m_direction = static_cast<direction>(el->get_property<int>(_direction_, true, direction_ltr, offset(m_direction)));
+    if(const char* dir = el->get_attr("dir"); dir && equal_i(dir, "auto"))
+    {
+        // dir=auto: the first strong character of the element's text decides.
+        std::function<int(const element*)> first_strong = [&](const element* parent) {
+            for(const auto& child : parent->children())
+            {
+                auto text   = dynamic_cast<const el_text*>(child.get());
+                int  strong = text ? text->strong_direction() : first_strong(child.get());
+                if(strong)
+                    return strong;
+            }
+            return 0;
+        };
+        m_direction = first_strong(el) > 0 ? direction_rtl : direction_ltr;
+    }
     if(m_text_align == text_align_th_center)
     {
         const text_align inherited = el->parent() ? el->parent()->css().get_text_align() : text_align_start;
