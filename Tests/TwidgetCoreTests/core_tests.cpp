@@ -1558,6 +1558,23 @@ int main() {
         auto count = [&](Cmd kind) { return std::count_if(list.begin(), list.end(), [&](const Command& c) { return c.kind == kind; }); };
         bool dashes = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Path && c.path && c.path->stroke && !c.path->dashes.empty(); });
         check(dashes, "a dashed border is stroked with dashes");
+
+        // The conformance spinner: a circle whose top side has its own colour.
+        Renderer ring(300, 1, false, ib);
+        ring.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:46px;height:46px;border-radius:50%;border:6px solid #ddd;border-top-color:#36c;box-sizing:border-box"]]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        DisplayList rl = ring.paint();
+        int rings = 0, clipped = 0;
+        for (size_t k = 0; k < rl.size(); k++) {
+            const Command& c = rl[k];
+            if (c.kind != Cmd::Path || !c.path || !c.path->fill || !c.path->evenodd) continue;
+            bool curved = std::count(c.path->ops.begin(), c.path->ops.end(), Path::Cubic) == 8;
+            if (curved) rings++;
+            if (curved && k > 0 && rl[k - 1].kind == Cmd::ClipPush && rl[k - 1].path) clipped++;
+        }
+        bool strips = std::any_of(rl.begin(), rl.end(), [](const Command& c) { return c.kind == Cmd::FillRect; });
+        check(rings == 4 && clipped == 4 && !strips, "rounded borders of different colours are rings clipped per side, not rectangles");
         check(count(Cmd::Image) >= 13, "a repeated background is drawn once per tile, and the image once (got " + std::to_string(count(Cmd::Image)) + ")");
         bool contained = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Image && c.rect.w == 40 && c.rect.h == 20; });
         check(contained, "object-fit: contain fits the image inside its box");

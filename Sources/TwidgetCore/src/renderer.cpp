@@ -1551,7 +1551,12 @@ public:
             return;
         }
 #endif
-        if (l && t && rr && bt && same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom)) {
+        bool uniform = l && t && rr && bt && same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom);
+        if (!square && !uniform) {
+            draw_rounded_sides(b, rect_of(draw_pos), corners, {l, t, rr, bt});
+            return;
+        }
+        if (uniform) {
             float w = float(b.left.width);
             Command c;
             c.kind = Cmd::StrokeRect;
@@ -1577,6 +1582,99 @@ public:
         if (bt) strip(b.bottom, Rect{p.x, p.y + p.h - float(b.bottom.width), p.w, float(b.bottom.width)});
         if (l) strip(b.left, Rect{p.x, p.y, float(b.left.width), p.h});
         if (rr) strip(b.right, Rect{p.x + p.w - float(b.right.width), p.y, float(b.right.width), p.h});
+    }
+
+    /// Appends `r` with corners `k` to `path` as one closed figure.
+    static void rounded_rect(Path& path, const Rect& r, const Radii& k) {
+        constexpr float K = 0.5523f;  // a quarter circle as one cubic
+        const float x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+        auto line = [&](float x, float y) {
+            path.ops.push_back(Path::Line);
+            path.points.insert(path.points.end(), {x, y});
+        };
+        auto curve = [&](float ax, float ay, float bx, float by, float x, float y) {
+            path.ops.push_back(Path::Cubic);
+            path.points.insert(path.points.end(), {ax, ay, bx, by, x, y});
+        };
+        path.ops.push_back(Path::Move);
+        path.points.insert(path.points.end(), {x0 + k.tlx, y0});
+        line(x1 - k.trx, y0);
+        curve(x1 - k.trx + k.trx * K, y0, x1, y0 + k.try_ - k.try_ * K, x1, y0 + k.try_);
+        line(x1, y1 - k.bry);
+        curve(x1, y1 - k.bry + k.bry * K, x1 - k.brx + k.brx * K, y1, x1 - k.brx, y1);
+        line(x0 + k.blx, y1);
+        curve(x0 + k.blx - k.blx * K, y1, x0, y1 - k.bly + k.bly * K, x0, y1 - k.bly);
+        line(x0, y0 + k.tly);
+        curve(x0, y0 + k.tly - k.tly * K, x0 + k.tlx - k.tlx * K, y0, x0 + k.tlx, y0);
+        path.ops.push_back(Path::Close);
+    }
+
+    /// Rounded borders whose sides differ: each side fills the ring between the outer and the inner
+    /// rounded box, clipped to the part of the box it owns. That part runs from its two outer corners
+    /// along the lines to their inner corners, where browsers split a corner between two colours, on to
+    /// the box's midline or to where the two lines meet. Dashed and dotted sides are drawn solid.
+    void draw_rounded_sides(const litehtml::borders& b, const Rect& p, const Radii& outer, std::array<bool, 4> visible) {
+        const litehtml::border* sides[4] = {&b.left, &b.top, &b.right, &b.bottom};
+        const float wl = float(b.left.width), wt = float(b.top.width), wr = float(b.right.width), wb = float(b.bottom.width);
+        const Rect in{p.x + wl, p.y + wt, std::max(0.0f, p.w - wl - wr), std::max(0.0f, p.h - wt - wb)};
+        const Radii inner{std::max(0.0f, outer.tlx - wl), std::max(0.0f, outer.tly - wt), std::max(0.0f, outer.trx - wr), std::max(0.0f, outer.try_ - wt),
+                          std::max(0.0f, outer.brx - wr), std::max(0.0f, outer.bry - wb), std::max(0.0f, outer.blx - wl), std::max(0.0f, outer.bly - wb)};
+        const float x0 = p.x, y0 = p.y, x1 = p.x + p.w, y1 = p.y + p.h, cx = p.x + p.w / 2, cy = p.y + p.h / 2;
+        // Corners clockwise from the top left: the point, then the way to its inner corner.
+        const float corner[4][4] = {{x0, y0, wl, wt}, {x1, y0, -wr, wt}, {x1, y1, -wr, -wb}, {x0, y1, wl, -wb}};
+        for (int i = 0; i < 4; i++) {
+            if (!visible[i]) continue;
+            // Left runs from the bottom left corner to the top left one, top from there to the top right, and so on.
+            const float* a = corner[(i + 3) % 4];
+            const float* c = corner[i];
+            const bool vertical = i == 0 || i == 2;
+            // How far along a corner's line the midline is. The side's own width is the component that
+            // moves towards the midline, and it is not 0 for a visible side.
+            auto reach = [&](const float* k) { return vertical ? (cx - k[0]) / k[2] : (cy - k[1]) / k[3]; };
+            const float ta = reach(a), tc = reach(c);
+            std::vector<float> points{a[0], a[1], c[0], c[1]};
+            // Where the two lines meet before the midline, as on a short side of a long box.
+            const float rx = c[0] - a[0], ry = c[1] - a[1];
+            const float det = c[2] * a[3] - a[2] * c[3];
+            const float s = det != 0 ? (c[2] * ry - c[3] * rx) / det : -1;
+            const float u = det != 0 ? (a[2] * ry - a[3] * rx) / det : -1;
+            if (s > 0 && s < ta && u > 0 && u < tc) {
+                points.insert(points.end(), {a[0] + s * a[2], a[1] + s * a[3]});
+            } else {
+                points.insert(points.end(), {c[0] + tc * c[2], c[1] + tc * c[3], a[0] + ta * a[2], a[1] + ta * a[3]});
+            }
+            auto share = std::make_shared<Path>();
+            float minx = points[0], miny = points[1], maxx = points[0], maxy = points[1];
+            for (size_t k = 0; k < points.size(); k += 2) {
+                share->ops.push_back(k ? Path::Line : Path::Move);
+                share->points.insert(share->points.end(), {points[k], points[k + 1]});
+                minx = std::min(minx, points[k]); maxx = std::max(maxx, points[k]);
+                miny = std::min(miny, points[k + 1]); maxy = std::max(maxy, points[k + 1]);
+            }
+            share->ops.push_back(Path::Close);
+
+            auto ring = std::make_shared<Path>();
+            rounded_rect(*ring, p, outer);
+            rounded_rect(*ring, in, inner);
+            ring->fill = true;
+            ring->evenodd = true;
+            ring->fill_color = color_of(sides[i]->color);
+
+            Command clip;
+            clip.kind = Cmd::ClipPush;
+            clip.rect = Rect{minx, miny, maxx - minx, maxy - miny};
+            clip.path = std::move(share);
+            clips_.push_back(clip);
+            list_.push_back(std::move(clip));
+            Command fill;
+            fill.kind = Cmd::Path;
+            fill.path = std::move(ring);
+            list_.push_back(std::move(fill));
+            clips_.pop_back();
+            Command pop;
+            pop.kind = Cmd::ClipPop;
+            list_.push_back(std::move(pop));
+        }
     }
 
 #ifdef TW_LITEHTML_TWIDGET
