@@ -333,6 +333,19 @@ final class WidgetDOM {
         patchLog = PatchLog()
     }
 
+    private(set) var rootVariables: [(name: String, value: String)] = []
+
+    func setRootVariables(_ variables: [(name: String, value: String)]) -> Bool {
+        if variables.elementsEqual(rootVariables, by: { $0.name == $1.name && $0.value == $1.value }) {
+            return false
+        }
+        rootVariables = variables
+        html.cache = nil
+        patchLog.valid = false
+        WidgetDOM.bumpRevision()
+        return true
+    }
+
     func isAttached(_ node: WidgetNode) -> Bool {
         var current: WidgetNode? = node
         while let next = current {
@@ -485,7 +498,7 @@ final class WidgetDOM {
             if WidgetDOM.sameOverrides(before, after) {
                 continue
             }
-            guard let node = nodes[id], let value = WidgetDOM.styleValue(node, animated: after, theme: theme), put(id, "style", value) else {
+            guard let node = nodes[id], let value = styleValue(node, animated: after, theme: theme), put(id, "style", value) else {
                 return nil
             }
             styled.insert(id)
@@ -493,7 +506,7 @@ final class WidgetDOM {
         for entry in patchLog.attributes.values {
             let id = publicId(entry.node)
             for name in entry.names where name != "style" || !styled.contains(id) {
-                let value = name == "style" ? WidgetDOM.styleValue(entry.node, animated: overrides[id], theme: theme) : WidgetDOM.patchedAttribute(of: entry.node, name)
+                let value = name == "style" ? styleValue(entry.node, animated: overrides[id], theme: theme) : WidgetDOM.patchedAttribute(of: entry.node, name)
                 guard let found = value, put(id, name, found) else {
                     return nil
                 }
@@ -735,7 +748,7 @@ final class WidgetDOM {
         case "rm":
             remove(node)
         case "style":
-            if let name = op["name"] as? String {
+            if let name = op["name"] as? String, node !== html || !WidgetThemeStyle.variableNames.contains(name) {
                 node.setProperty(name, (op["value"] as? String) ?? "", important: (op["important"] as? Bool) ?? false)
             }
         case "css":
@@ -1111,28 +1124,29 @@ final class WidgetDOM {
         if formOption, node.formChecked == true {
             put(" selected")
         }
-        if !node.declarations.isEmpty || animated != nil {
+        if !node.declarations.isEmpty || animated != nil || node === html && !rootVariables.isEmpty {
             put(" style=\"")
-            WidgetDOM.writeStyle(node, animated: animated, theme: theme, into: &out)
+            WidgetDOM.writeStyle(node, animated: animated, theme: theme, root: node === html ? rootVariables : nil, into: &out)
             put("\"")
         }
         put(">")
     }
 
-    static func styleValue(_ node: WidgetNode, animated: [(String, String)]?, theme: String) -> String? {
-        if node.isText || node.declarations.isEmpty && animated == nil {
+    func styleValue(_ node: WidgetNode, animated: [(String, String)]?, theme: String) -> String? {
+        let root = node === html ? rootVariables : nil
+        if node.isText || node.declarations.isEmpty && animated == nil && (root ?? []).isEmpty {
             return nil
         }
         var out: [UInt8] = []
-        writeStyle(node, animated: animated, theme: theme, into: &out)
+        WidgetDOM.writeStyle(node, animated: animated, theme: theme, root: root, into: &out)
         return String(decoding: out, as: UTF8.self)
     }
 
-    private static func writeStyle(_ node: WidgetNode, animated: [(String, String)]?, theme: String, into out: inout [UInt8]) {
+    private static func writeStyle(_ node: WidgetNode, animated: [(String, String)]?, theme: String, root: [(name: String, value: String)]?, into out: inout [UInt8]) {
         func put(_ text: String) {
             WidgetDOM.append(text, to: &out)
         }
-        for declaration in node.declarations where declaration.name != "-lh-anim" && WidgetNames.isProperty(declaration.name) {
+        for declaration in node.declarations where declaration.name != "-lh-anim" && WidgetNames.isProperty(declaration.name) && (root == nil || !WidgetThemeStyle.variableNames.contains(declaration.name)) {
             put(declaration.name)
             put(":")
             WidgetDOM.escape(CSSTheme.resolve(declaration.value, theme: theme), into: &out, attribute: true)
@@ -1140,6 +1154,12 @@ final class WidgetDOM {
                 put(" !important")
             }
             put(";")
+        }
+        for variable in root ?? [] {
+            put(variable.name)
+            put(":")
+            WidgetDOM.escape(variable.value, into: &out, attribute: true)
+            put(" !important;")
         }
         if let animated = animated {
             put("-lh-anim:1;")
