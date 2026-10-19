@@ -1087,7 +1087,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func postEvent(_ event: String) {
-        deliver("{\"type\":\"event\",\"ev\":" + event + "}")
+        deliver("{\"type\":\"event\",\"trusted\":true,\"ev\":" + event + "}")
     }
 
     private func deliver(_ json: String) {
@@ -3159,7 +3159,8 @@ public final class LiteHTMLWidgetRenderer {
         resizeClickY = point.y
         resizePressId = id
         if !frozen {
-            post(["type": "gesture", "wants": prevented.contains("\(id):pointerdown") || prevented.contains("\(id):touchstart")])
+            let claim = gestureClaim(id)
+            post(["type": "gesture", "wants": claim.y, "x": claim.x, "y": claim.y])
         }
         if document?.mouseDown(point) == true {
             setNeedsRender()
@@ -3188,9 +3189,6 @@ public final class LiteHTMLWidgetRenderer {
         if id == pressId || isAncestor(pressId, of: id) || isAncestor(id, of: pressId) {
             let clickTarget = isAncestor(id, of: pressId) ? id : (isAncestor(pressId, of: id) ? pressId : id)
             dispatch("click", target: clickTarget, point: point, event: event, buttons: 0)
-            if clickCount == 2 {
-                dispatch("dblclick", target: clickTarget, point: point, event: event, buttons: 0)
-            }
         }
         finishRange(at: point)
         finishEditorSelection()
@@ -3243,9 +3241,35 @@ public final class LiteHTMLWidgetRenderer {
         let id = keyTarget() ?? dom.publicId(dom.body)
         let key = event.key
         if LiteHTMLWidgetRenderer.alwaysSent.contains(type) || listened.contains(type) {
-            post(["type": "event", "ev": ["type": type, "targetId": id, "key": key, "code": event.code, "repeat": event.isARepeat, "modifiers": modifiers(event.modifierFlags)]])
+            post(["type": "event", "trusted": true, "ev": ["type": type, "targetId": id, "key": key, "code": event.code, "repeat": event.isARepeat, "modifiers": modifiers(event.modifierFlags)]])
         }
         selectKey(type, key: key, event: event)
+    }
+
+    private func gestureClaim(_ id: Int) -> (x: Bool, y: Bool) {
+        if prevented.contains("\(id):pointerdown") || prevented.contains("\(id):touchstart") {
+            return (true, true)
+        }
+        var x = false
+        var y = false
+        var node = dom.node(id)
+        while let current = node, current !== dom.html {
+            let style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(dom.publicId(current))) ?? [:]
+            let tokens = (style["touch-action"] ?? "auto").lowercased().split(separator: " ").map(String.init)
+            if tokens == ["none"] {
+                return (true, true)
+            }
+            if tokens != ["auto"] && tokens != ["manipulation"] {
+                if !tokens.contains(where: { ["pan-x", "pan-left", "pan-right"].contains($0) }) {
+                    x = true
+                }
+                if !tokens.contains(where: { ["pan-y", "pan-up", "pan-down"].contains($0) }) {
+                    y = true
+                }
+            }
+            node = current.parent
+        }
+        return (x, y)
     }
 
     private func isAncestor(_ ancestor: Int, of id: Int) -> Bool {
@@ -3274,7 +3298,7 @@ class WidgetDocumentView: NSView {
     }
 
     override var acceptsFirstResponder: Bool {
-        return true
+        return false
     }
 
     override init(frame: NSRect) {
@@ -5015,7 +5039,6 @@ class WidgetDocumentView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
         let at = point(event)
         toOwner { $0.handleMouseDown(at, event: event) }
     }

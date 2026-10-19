@@ -150,17 +150,7 @@ final class SurfaceRenderer: Renderer, SurfaceHostingRenderer {
 }
 
 final class Twidget3DLibraryTests: XCTestCase {
-    func testProvideThreeResolvesTheCDNCopiesToTheKitsThree() throws {
-        let resources = SandboxResources()
-        XCTAssertNil(resources.library(for: "app:three"))
-        XCTAssertTrue(Twidget3DLibrary.provideThree(to: resources))
-        for url in ["app:three", "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js", "https://unpkg.com/three@0.158.0/build/three.js", "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/three.min.js"] {
-            XCTAssertEqual(resources.library(for: url)?.name, "three", url)
-        }
-        for url in ["https://cdn.jsdelivr.net.evil.example/npm/three@0.160.0/build/three.min.js", "https://cdn.jsdelivr.net/npm/three@0.199.0/build/three.min.js", "app:three/../x"] {
-            XCTAssertNil(resources.library(for: url), url)
-        }
-        let lib = try XCTUnwrap(resources.library(for: "app:three"))
-        XCTAssertTrue(resources.librarySource(lib)?.contains("REVISION") == true)
+    func testProvideThreeDeclinesUnderProfileOne() {
+        XCTAssertFalse(Twidget3DLibrary.provideThree(to: SandboxResources()))
     }
 }

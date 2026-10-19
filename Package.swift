@@ -4,7 +4,7 @@ import Foundation
 import PackageDescription
 
 let widgetSandboxSource = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SANDBOX"] ?? "../widget-sandbox"
-let widgetSandboxBranch = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SANDBOX_BRANCH"] ?? "telegram-macos"
+let widgetSandboxBranch = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SANDBOX_BRANCH"] ?? "main"
 let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || widgetSandboxSource.hasPrefix("git@")
     ? .package(name: "WidgetSandbox", url: widgetSandboxSource, .branch(widgetSandboxBranch))
     : .package(name: "WidgetSandbox", path: widgetSandboxSource)

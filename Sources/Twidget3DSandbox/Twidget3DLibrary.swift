@@ -12,6 +12,6 @@ public enum Twidget3DLibrary {
 
     @discardableResult
     public static func provideThree(to resources: SandboxResources = .shared) -> Bool {
-        resources.provide(ProvidedLibrary(name: "three", file: "three.js", patterns: threePatterns, source: { Twidget3D.threeSource() }))
+        return false
     }
 }
