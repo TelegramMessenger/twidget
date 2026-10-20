@@ -873,6 +873,9 @@ public final class LiteHTMLWidgetRenderer {
                 setNeedsRender()
             }
         case "anim":
+            if silentPending {
+                opsSinceSilent = true
+            }
             animator.web.apply(message)
             for item in (message["anims"] as? [[String: Any]]) ?? [] where item["css"] != nil {
                 animator.applyCSSOverride(item, offset: hiddenTotal)
