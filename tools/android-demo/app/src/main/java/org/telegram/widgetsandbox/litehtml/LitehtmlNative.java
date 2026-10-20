@@ -85,4 +85,7 @@ public final class LitehtmlNative {
 
     /** The last rebuild as JSON: serializeMs, parseLayoutMs, passes, htmlBytes, builds, displayOps. */
     public static native String stats(long handle);
+
+    /** Runs a display list FilterPush's "fl" over an ARGB_8888 bitmap's pixels; `scale` is its px per CSS px. */
+    public static native void filterPixels(android.graphics.Bitmap bitmap, String filters, float scale);
 }

@@ -52,4 +52,6 @@ internal object LitehtmlNative {
     external fun trim(handle: Long)
     /** The last rebuild as JSON: serializeMs, parseLayoutMs, passes, htmlBytes, builds, displayOps. */
     external fun stats(handle: Long): String
+    /** Runs a display list FilterPush's "fl" over an ARGB_8888 bitmap's pixels; `scale` is its px per CSS px. */
+    external fun filterPixels(bitmap: android.graphics.Bitmap, filters: String, scale: Float)
 }

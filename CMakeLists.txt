@@ -77,7 +77,7 @@ endif()
 
 if(ANDROID)
     add_library(twidget_litehtml SHARED "${TW_PLATFORM}/android/jni.cpp")
-    target_link_libraries(twidget_litehtml PRIVATE twidget_core log)
+    target_link_libraries(twidget_litehtml PRIVATE twidget_core log jnigraphics)
     target_compile_options(twidget_litehtml PRIVATE -fvisibility=hidden)
     target_link_options(twidget_litehtml PRIVATE -Wl,--gc-sections)
 elseif(APPLE)

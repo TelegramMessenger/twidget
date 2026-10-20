@@ -6,8 +6,10 @@
 // the document needs no lock and the JNIEnv of the current entry serves the
 // callbacks. Exceptions are caught and logged, never thrown into the JVM.
 
+#include "filters.h"
 #include "renderer.h"
 
+#include <android/bitmap.h>
 #include <android/log.h>
 #include <jni.h>
 
@@ -448,6 +450,32 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
         o.set("viewportHeight", hd.renderer->viewport_height());
         return o.dump();
     }));
+}
+
+/// Runs a FilterPush's filters (its "fl", display_list.h's Filter as [kind, amount, x, y, argb]) over an
+/// ARGB_8888 bitmap's premultiplied pixels; `scale` is its px per CSS px.
+JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_filterPixels(JNIEnv* env, jclass, jobject bitmap, jstring filters, jfloat scale) {
+    auto parsed = Json::parse(get_string(env, filters));
+    if (!parsed) return;
+    twlite::Filters steps;
+    for (const Json& f : parsed->arr()) {
+        twlite::Filter step;
+        int kind = f[size_t(0)].asInt(-1);
+        if (kind < 0 || kind > int(twlite::Filter::DropShadow)) continue;
+        step.kind = twlite::Filter::Kind(kind);
+        step.amount = float(f[size_t(1)].asNumber());
+        step.x = float(f[size_t(2)].asNumber());
+        step.y = float(f[size_t(3)].asNumber());
+        uint32_t argb = uint32_t(f[size_t(4)].asNumber());
+        step.color = twlite::Color{uint8_t(argb >> 16), uint8_t(argb >> 8), uint8_t(argb), uint8_t(argb >> 24)};
+        steps.push_back(step);
+    }
+    AndroidBitmapInfo info;
+    void* pixels = nullptr;
+    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS || info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return;
+    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) return;
+    twlite::filter_pixels(static_cast<uint8_t*>(pixels), int(info.width), int(info.height), info.stride, false, steps, scale);
+    AndroidBitmap_unlockPixels(env, bitmap);
 }
 
 } // extern "C"

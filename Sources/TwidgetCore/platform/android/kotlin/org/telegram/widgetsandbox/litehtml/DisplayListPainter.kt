@@ -62,16 +62,22 @@ internal class DisplayListPainter {
             canvas.clipPath(clipPath)
             canvas.drawPaint(clear)
         }
-        paintAll(canvas, list, res, density)
+        paintAll(canvas, list, 0, list.length(), res, density)
         canvas.restoreToCount(base)
     }
 
-    private fun paintAll(canvas: Canvas, list: JSONArray, res: PaintResources, density: Float) {
+    private fun paintAll(canvas: Canvas, list: JSONArray, from: Int, to: Int, res: PaintResources, density: Float) {
         // Clips and groups nest in paint order and unwind together, as on every platform: each is one save.
         var depth = 0
-        for (i in 0 until list.length()) {
-            val c = list.optJSONObject(i) ?: continue
+        var i = from
+        while (i < to) {
+            val c = list.optJSONObject(i++) ?: continue
             when (c.optInt("k")) {
+                15 -> { // FilterPush: what it wraps goes through the filters on a bitmap of its own
+                    val end = filterEnd(list, i - 1, to)
+                    filtered(canvas, c, list, i, end, res, density)
+                    i = end + 1
+                }
                 0 -> { // FillRect
                     canvas.save()
                     clipRect(canvas, c)
@@ -139,9 +145,66 @@ internal class DisplayListPainter {
                     if (c.optInt("h") != 0) canvas.clipRect(0f, 0f, 0f, 0f)
                 }
                 14 -> shadow(canvas, c, density)
+                // 16 FilterPop closes in filtered(); 17 Backdrop needs the pixels under it, which a Canvas does not give.
             }
         }
         while (depth-- > 0) canvas.restore()
+    }
+
+    /** The index of the FilterPop closing the FilterPush at `at`, or `to`. */
+    private fun filterEnd(list: JSONArray, at: Int, to: Int): Int {
+        var depth = 0
+        for (j in at until to) {
+            when (list.optJSONObject(j)?.optInt("k")) {
+                15 -> depth++
+                16 -> if (--depth == 0) return j
+            }
+        }
+        return to
+    }
+
+    private fun filtered(canvas: Canvas, c: JSONObject, list: JSONArray, from: Int, to: Int, res: PaintResources, density: Float) {
+        val fl = c.optJSONArray("fl")
+        @Suppress("DEPRECATION") val m = canvas.matrix
+        m.getValues(values)
+        // How far the filters spread past the box, in CSS px: blurs three deviations, a shadow that and its offset.
+        var left = 0f; var top = 0f; var right = 0f; var bottom = 0f
+        for (k in 0 until (fl?.length() ?: 0)) {
+            val f = fl!!.optJSONArray(k) ?: continue
+            val amount = f.optDouble(1).toFloat().coerceAtLeast(0f)
+            if (f.optInt(0) == 0) { left += 3 * amount; top += 3 * amount; right += 3 * amount; bottom += 3 * amount }
+            else if (f.optInt(0) == 9) {
+                val x = f.optDouble(2).toFloat(); val y = f.optDouble(3).toFloat()
+                left = max(left, 1.5f * amount - x); right = max(right, 1.5f * amount + x)
+                top = max(top, 1.5f * amount - y); bottom = max(bottom, 1.5f * amount + y)
+            }
+        }
+        readRect(c, "r", rectF)
+        rectF.set(rectF.left - left, rectF.top - top, rectF.right + right, rectF.bottom + bottom)
+        val device = RectF()
+        m.mapRect(device, rectF)
+        val w = ceil(device.right).toInt() - floor(device.left).toInt()
+        val h = ceil(device.bottom).toInt() - floor(device.top).toInt()
+        // Under a rotation or past a sensible size the filters do not apply: what they wrap draws as it is.
+        if (fl == null || fl.length() == 0 || values[1] != 0f || values[3] != 0f || w <= 0 || h <= 0 || w.toLong() * h > 4096L * 4096L) {
+            paintAll(canvas, list, from, to, res, density)
+            return
+        }
+        val x0 = floor(device.left)
+        val y0 = floor(device.top)
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val layer = Canvas(bitmap)
+        layer.translate(-x0, -y0)
+        layer.concat(m)
+        paintAll(layer, list, from, to, res, density)
+        LitehtmlNative.filterPixels(bitmap, fl.toString(), values[0])
+        // Back where it was drawn, in user space: the inverse of the device rect it covers.
+        val inverse = Matrix()
+        m.invert(inverse)
+        val back = RectF(x0, y0, x0 + w, y0 + h)
+        inverse.mapRect(back)
+        canvas.drawBitmap(bitmap, null, back, bitmapPaint)
+        bitmap.recycle()
     }
 
     private fun solid(paint: Paint, color: Int) {

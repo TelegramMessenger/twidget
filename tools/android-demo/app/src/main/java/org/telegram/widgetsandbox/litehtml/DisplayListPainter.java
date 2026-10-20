@@ -72,19 +72,26 @@ final class DisplayListPainter {
             canvas.clipPath(clipPath);
             canvas.drawPaint(clear);
         }
-        paintAll(canvas, list, res, density);
+        paintAll(canvas, list, 0, list.length(), res, density);
         canvas.restoreToCount(base);
     }
 
-    private void paintAll(Canvas canvas, JSONArray list, Resources res, float density) {
+    private void paintAll(Canvas canvas, JSONArray list, int from, int to, Resources res, float density) {
         // Clips and groups nest in paint order and unwind together, as on every platform: each is one save.
         int depth = 0;
-        for (int i = 0; i < list.length(); i++) {
+        for (int i = from; i < to; i++) {
             JSONObject c = list.optJSONObject(i);
             if (c == null) {
                 continue;
             }
             switch (c.optInt("k")) {
+                case 15: { // FilterPush: what it wraps goes through the filters on a bitmap of its own
+                    int end = filterEnd(list, i, to);
+                    filtered(canvas, c, list, i + 1, end, res, density);
+                    i = end;
+                    break;
+                }
+                // 16 FilterPop closes in filtered(); 17 Backdrop needs the pixels under it, which a Canvas does not give.
                 case 0: { // FillRect
                     canvas.save();
                     clipRect(canvas, c);
@@ -200,6 +207,67 @@ final class DisplayListPainter {
         while (depth-- > 0) {
             canvas.restore();
         }
+    }
+
+    /** The index of the FilterPop closing the FilterPush at `at`, or `to`. */
+    private static int filterEnd(JSONArray list, int at, int to) {
+        int depth = 0;
+        for (int j = at; j < to; j++) {
+            JSONObject c = list.optJSONObject(j);
+            int k = c == null ? -1 : c.optInt("k");
+            if (k == 15) {
+                depth++;
+            } else if (k == 16 && --depth == 0) {
+                return j;
+            }
+        }
+        return to;
+    }
+
+    private void filtered(Canvas canvas, JSONObject c, JSONArray list, int from, int to, Resources res, float density) {
+        JSONArray fl = c.optJSONArray("fl");
+        @SuppressWarnings("deprecation") Matrix m = canvas.getMatrix();
+        m.getValues(values);
+        // How far the filters spread past the box, in CSS px: blurs three deviations, a shadow that and its offset.
+        float left = 0f, top = 0f, right = 0f, bottom = 0f;
+        for (int k = 0; fl != null && k < fl.length(); k++) {
+            JSONArray f = fl.optJSONArray(k);
+            if (f == null) {
+                continue;
+            }
+            float amount = Math.max((float) f.optDouble(1), 0f);
+            if (f.optInt(0) == 0) {
+                left += 3 * amount; top += 3 * amount; right += 3 * amount; bottom += 3 * amount;
+            } else if (f.optInt(0) == 9) {
+                float x = (float) f.optDouble(2), y = (float) f.optDouble(3);
+                left = Math.max(left, 1.5f * amount - x); right = Math.max(right, 1.5f * amount + x);
+                top = Math.max(top, 1.5f * amount - y); bottom = Math.max(bottom, 1.5f * amount + y);
+            }
+        }
+        Paths.readRect(c, "r", rectF);
+        rectF.set(rectF.left - left, rectF.top - top, rectF.right + right, rectF.bottom + bottom);
+        RectF device = new RectF();
+        m.mapRect(device, rectF);
+        float x0 = (float) Math.floor(device.left), y0 = (float) Math.floor(device.top);
+        int w = (int) Math.ceil(device.right) - (int) x0, h = (int) Math.ceil(device.bottom) - (int) y0;
+        // Under a rotation or past a sensible size the filters do not apply: what they wrap draws as it is.
+        if (fl == null || fl.length() == 0 || values[1] != 0f || values[3] != 0f || w <= 0 || h <= 0 || (long) w * h > 4096L * 4096L) {
+            paintAll(canvas, list, from, to, res, density);
+            return;
+        }
+        Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas layer = new Canvas(bitmap);
+        layer.translate(-x0, -y0);
+        layer.concat(m);
+        paintAll(layer, list, from, to, res, density);
+        LitehtmlNative.filterPixels(bitmap, fl.toString(), values[0]);
+        // Back where it was drawn, in user space: the inverse of the device rect it covers.
+        Matrix inverse = new Matrix();
+        m.invert(inverse);
+        RectF back = new RectF(x0, y0, x0 + w, y0 + h);
+        inverse.mapRect(back);
+        canvas.drawBitmap(bitmap, null, back, bitmapPaint);
+        bitmap.recycle();
     }
 
     private static void solid(Paint paint, int color) {
