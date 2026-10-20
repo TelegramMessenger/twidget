@@ -1,4 +1,5 @@
 #include "qt_backend.h"
+#include "filters.h"
 #include "png.h"
 
 #include <QFontDatabase>
@@ -8,6 +9,7 @@
 #include <QPainter>
 #include <QRadialGradient>
 #include <QRawFont>
+#include <QSysInfo>
 #include <QConicalGradient>
 
 #include <algorithm>
@@ -754,6 +756,8 @@ void QtBackend::paint_area(std::span<const Command> list, QImage& target, const 
         QPoint origin;
         QImage mask;
         qreal opacity = 1;
+        const Filters* filters = nullptr;  // a filter layer: run over its pixels when it closes
+        float scale = 1;                   // device px per CSS px, for the filters' lengths
     };
     struct Entry {
         QPainter* saved = nullptr;
@@ -802,6 +806,7 @@ void QtBackend::paint_area(std::span<const Command> list, QImage& target, const 
             layers.pop_back();
             Layer& l = *e.layer;
             l.painter->end();
+            if (l.filters) filter_pixels(l.image.bits(), l.image.width(), l.image.height(), size_t(l.image.bytesPerLine()), QSysInfo::ByteOrder == QSysInfo::LittleEndian, *l.filters, l.scale);
             if (!l.mask.isNull()) keep(l.image, l.mask);
             QPainter& under = current();
             under.save();
@@ -843,8 +848,25 @@ void QtBackend::paint_area(std::span<const Command> list, QImage& target, const 
             continue;
         case Cmd::ClipPop:
         case Cmd::GroupPop:
+        case Cmd::FilterPop:
             pop();
             continue;
+        case Cmd::FilterPush: {
+            // What the element paints, on a layer as wide as the filters spread, filtered as it closes.
+            Entry e;
+            if (c.filter && !c.filter->empty() && hidden == 0) {
+                FilterReach reach = filter_reach(*c.filter);
+                QRectF box(c.rect.x - reach.left, c.rect.y - reach.top, c.rect.w + reach.left + reach.right, c.rect.h + reach.top + reach.bottom);
+                QTransform d = device();
+                push_layer(e, d.mapRect(box).toAlignedRect(), nullptr, 1);
+                if (e.layer) {
+                    e.layer->filters = c.filter.get();
+                    e.layer->scale = float(std::sqrt(std::fabs(d.determinant())));
+                }
+            }
+            stack.push_back(std::move(e));
+            continue;
+        }
         case Cmd::GroupPush: {
             if (c.key && !c.hidden && c.opacity >= 1 && hidden == 0) {
                 size_t end = group_end(list, i);
@@ -938,6 +960,29 @@ void QtBackend::paint_area(std::span<const Command> list, QImage& target, const 
                 cut.drawImage(0, 0, box_mask);
             }
             p.drawImage(ink.translated(dx, dy), image);
+            break;
+        }
+        case Cmd::Backdrop: {
+            // What is painted under the box so far, filtered, back inside it. A blur reads around the box.
+            auto* image = dynamic_cast<QImage*>(p.device());
+            if (!image || !c.filter || c.filter->empty() || c.rect.empty()) break;
+            QTransform d = device();
+            if (d.type() > QTransform::TxScale) break;
+            float spread = 0;
+            for (const Filter& f : *c.filter)
+                if (f.kind == Filter::Blur) spread += 3 * f.amount;
+            QRect from = d.mapRect(QRectF(c.rect.x - spread, c.rect.y - spread, c.rect.w + 2 * spread, c.rect.h + 2 * spread)).toAlignedRect();
+            from = from.translated(-origin()) & image->rect();
+            if (from.isEmpty()) break;
+            QImage copy = image->copy(from).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            filter_pixels(copy.bits(), copy.width(), copy.height(), size_t(copy.bytesPerLine()), QSysInfo::ByteOrder == QSysInfo::LittleEndian, *c.filter,
+                          float(std::sqrt(std::fabs(d.determinant()))));
+            p.save();
+            p.setClipPath(rounded(c.rect, c.radii), Qt::IntersectClip);
+            p.resetTransform();
+            p.setCompositionMode(QPainter::CompositionMode_Source);
+            p.drawImage(from.topLeft(), copy);
+            p.restore();
             break;
         }
         case Cmd::FillRect:
