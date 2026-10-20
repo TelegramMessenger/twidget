@@ -1533,7 +1533,7 @@ public:
         list_.push_back(std::move(c));
     }
 
-    // ── borders: one stroke when uniform, otherwise a strip per side (dashed/dotted drawn solid) ──
+    // ── borders: one stroke when uniform, otherwise a strip per side; dashed, dotted and double by their style ──
     void draw_borders(litehtml::uint_ptr, const litehtml::borders& b, const litehtml::position& draw_pos, bool) override {
         if (litehtml::g_paint_trace) return;
         auto visible = [](const litehtml::border& s) { return float(s.width) > 0 && s.style != litehtml::border_style_none && s.style != litehtml::border_style_hidden && s.color.alpha != 0; };
@@ -1545,6 +1545,13 @@ public:
         bool square = corners.tlx == 0 && corners.tly == 0 && corners.trx == 0 && corners.try_ == 0 && corners.brx == 0 && corners.bry == 0 &&
                       corners.blx == 0 && corners.bly == 0;
 #ifdef TW_LITEHTML_TWIDGET
+        // One style all round, rounded dashed or dotted, or double: as LHContainer draws it.
+        const bool all = l && t && rr && bt && same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom) &&
+                         b.left.style == b.top.style && b.left.style == b.right.style && b.left.style == b.bottom.style;
+        if (all && ((!square && broken(b.left)) || (b.left.style == litehtml::border_style_double && float(b.left.width) >= 3))) {
+            draw_uniform_styled(b.left, rect_of(draw_pos), corners);
+            return;
+        }
         if (square && ((l && broken(b.left)) || (t && broken(b.top)) || (rr && broken(b.right)) || (bt && broken(b.bottom)) ||
                        !(same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom)))) {
             draw_sides(b, rect_of(draw_pos), {l, t, rr, bt});
@@ -1678,6 +1685,104 @@ public:
     }
 
 #ifdef TW_LITEHTML_TWIDGET
+    /// The length of a rounded box's outline, its corners as quarter ellipses (Ramanujan).
+    static float rounded_length(const Rect& r, const Radii& k) {
+        if (r.w <= 0 || r.h <= 0) return 0;
+        auto cx = [&](float v) { return std::min(std::max(v, 0.0f), r.w / 2); };
+        auto cy = [&](float v) { return std::min(std::max(v, 0.0f), r.h / 2); };
+        auto corner = [](float a, float b) {
+            if (a <= 0 || b <= 0) return std::hypot(a, b);
+            return 0.7853982f * (3 * (a + b) - std::sqrt((3 * a + b) * (a + 3 * b)));
+        };
+        const float xs[4] = {cx(k.tlx), cx(k.trx), cx(k.brx), cx(k.blx)}, ys[4] = {cy(k.tly), cy(k.try_), cy(k.bry), cy(k.bly)};
+        float length = 2 * (r.w + r.h);
+        for (int i = 0; i < 4; i++) length += corner(xs[i], ys[i]) - xs[i] - ys[i];
+        return length;
+    }
+
+    /// The gap that fits whole dashes into `length` nearest to `gap` (LHContainer's BestDashGap).
+    static float best_dash_gap(float length, float dash, float gap, bool closed) {
+        const float fewer = std::floor((closed ? length : length + gap) / (dash + gap)), more = fewer + 1;
+        const float fewer_gap = (length - fewer * dash) / (closed ? fewer : fewer - 1);
+        const float more_gap = (length - more * dash) / (closed ? more : more - 1);
+        return more_gap <= 0 || std::fabs(fewer_gap - gap) < std::fabs(more_gap - gap) ? fewer_gap : more_gap;
+    }
+
+    /// A uniform border's style that the solid paths cannot draw, as LHContainer draws it. Rounded
+    /// dashes and dots are fitted round the closed centre line and stroked under a clip to the ring; a
+    /// double border fills the outer and the inner third of the ring.
+    void draw_uniform_styled(const litehtml::border& s, const Rect& p, const Radii& outer) {
+        const float w = float(s.width);
+        auto inset = [&](float d, Rect& r, Radii& k) {
+            r = Rect{p.x + d, p.y + d, std::max(0.0f, p.w - 2 * d), std::max(0.0f, p.h - 2 * d)};
+            k = Radii{std::max(0.0f, outer.tlx - d), std::max(0.0f, outer.tly - d), std::max(0.0f, outer.trx - d), std::max(0.0f, outer.try_ - d),
+                      std::max(0.0f, outer.brx - d), std::max(0.0f, outer.bry - d), std::max(0.0f, outer.blx - d), std::max(0.0f, outer.bly - d)};
+            return r.w > 0 && r.h > 0;
+        };
+        Rect r;
+        Radii k;
+        if (s.style == litehtml::border_style_double) {
+            auto rings = std::make_shared<Path>();
+            rounded_rect(*rings, p, outer);
+            for (float d : {w / 3, 2 * w / 3, w})
+                if (inset(d, r, k)) rounded_rect(*rings, r, k);
+            rings->fill = true;
+            rings->evenodd = true;
+            rings->fill_color = color_of(s.color);
+            Command c;
+            c.kind = Cmd::Path;
+            c.path = std::move(rings);
+            list_.push_back(std::move(c));
+            return;
+        }
+        auto ring = std::make_shared<Path>();
+        rounded_rect(*ring, p, outer);
+        if (inset(w, r, k)) rounded_rect(*ring, r, k);
+        ring->evenodd = true;
+        auto line = std::make_shared<Path>();
+        inset(w / 2, r, k);
+        rounded_rect(*line, r, k);
+        line->stroke = true;
+        line->stroke_color = color_of(s.color);
+        line->stroke_width = w;
+        // Chromium's spacing: dashes 2-3 widths long, dots a width apart, both fitted whole round the line.
+        const float length = std::floor(rounded_length(r, k));
+        const bool dotted = s.style == litehtml::border_style_dotted;
+        if (!dotted || w <= 3) {
+            float dash = w, gap = w;
+            if (!dotted) {
+                dash *= w >= 3 ? 2 : 3;
+                gap *= w >= 3 ? 1 : 2;
+            }
+            if (length > dash * 2) {
+                const float pair = dash + gap;
+                line->dashes = length <= pair ? std::vector<float>{dash * length / pair, gap * length / pair}
+                                              : std::vector<float>{dash, dotted ? gap : best_dash_gap(length, dash, gap, true)};
+                // Square ends, the dash wide enough for the clip to cut it along the ring.
+                line->stroke_width = w * 2.2f;
+            }
+        } else {
+            float gap = length < 2 * w ? 2 * w : best_dash_gap(length, w, w, true) + w - 0.01f;
+            if (!std::isfinite(gap)) gap = length + 2 * w;
+            line->dashes = {0, gap};
+            line->line_cap = 1;
+        }
+        Command clip;
+        clip.kind = Cmd::ClipPush;
+        clip.rect = p;
+        clip.path = std::move(ring);
+        clips_.push_back(clip);
+        list_.push_back(std::move(clip));
+        Command c;
+        c.kind = Cmd::Path;
+        c.path = std::move(line);
+        list_.push_back(std::move(c));
+        clips_.pop_back();
+        Command pop;
+        pop.kind = Cmd::ClipPop;
+        list_.push_back(std::move(pop));
+    }
+
     /// Square borders side by side: each side is the trapezoid its corners mitre, filled when solid, and
     /// stroked along its middle under a clip to it when dashed or dotted, so that the dashes meet in the
     /// corners as browsers draw them.
