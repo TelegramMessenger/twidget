@@ -1557,21 +1557,20 @@ public:
         list_.push_back(std::move(c));
     }
 
-    // ── borders: one stroke when uniform, otherwise a strip per side; dashed, dotted and double by their style ──
+    // ── borders: one stroke when uniform, otherwise each side on its own; dashed, dotted and double by their style ──
     void draw_borders(litehtml::uint_ptr, const litehtml::borders& b, const litehtml::position& draw_pos, bool) override {
         if (litehtml::g_paint_trace) return;
         auto visible = [](const litehtml::border& s) { return float(s.width) > 0 && s.style != litehtml::border_style_none && s.style != litehtml::border_style_hidden && s.color.alpha != 0; };
         bool l = visible(b.left), t = visible(b.top), rr = visible(b.right), bt = visible(b.bottom);
         if (!l && !t && !rr && !bt) return;
-        auto same = [](const litehtml::border& a, const litehtml::border& c) { return a.width == c.width && a.color == c.color; };
+        auto same = [](const litehtml::border& a, const litehtml::border& c) { return a.width == c.width && a.color == c.color && a.style == c.style; };
         auto broken = [](const litehtml::border& s) { return s.style == litehtml::border_style_dashed || s.style == litehtml::border_style_dotted; };
         Radii corners = radii_of(b.radius);
         bool square = corners.tlx == 0 && corners.tly == 0 && corners.trx == 0 && corners.try_ == 0 && corners.brx == 0 && corners.bry == 0 &&
                       corners.blx == 0 && corners.bly == 0;
 #ifdef TW_LITEHTML_TWIDGET
         // One style all round, rounded dashed or dotted, or double: as LHContainer draws it.
-        const bool all = l && t && rr && bt && same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom) &&
-                         b.left.style == b.top.style && b.left.style == b.right.style && b.left.style == b.bottom.style;
+        const bool all = l && t && rr && bt && same(b.left, b.top) && same(b.left, b.right) && same(b.left, b.bottom);
         if (all && ((!square && broken(b.left)) || (b.left.style == litehtml::border_style_double && float(b.left.width) >= 3))) {
             draw_uniform_styled(b.left, rect_of(draw_pos), corners);
             return;
@@ -1640,10 +1639,89 @@ public:
         path.ops.push_back(Path::Close);
     }
 
+    /// How Chromium breaks a dashed or dotted border `width` thick along `length`: dashes three widths
+    /// long with two-width gaps under 3 px and two with one from there; dots square up to 3 px and round
+    /// past it. The gap stretches or shrinks so that a whole number of dashes fits: ending in a dash at
+    /// both ends of an open side, or going round a closed one evenly. Solid when there is no room.
+    struct BorderDash {
+        bool solid = true;
+        bool round = false;
+        float dash = 0, gap = 0;
+    };
+    static BorderDash border_dash(float length, float width, bool dotted, bool closed) {
+        BorderDash out;
+        if (width <= 0 || length <= 0) return out;
+        if (!dotted || width <= 3) {
+            float dash = width, gap = width;
+            if (!dotted) {
+                dash *= width >= 3 ? 2 : 3;
+                gap *= width >= 3 ? 1 : 2;
+            }
+            if (length <= dash * 2) return out;
+            float pair = closed ? dash + gap : 2 * dash + gap;
+            out.solid = false;
+            if (length <= pair) {
+                out.dash = dash * length / pair;
+                out.gap = gap * length / pair;
+            } else {
+                out.dash = dash;
+                out.gap = dotted ? gap : best_dash_gap(length, dash, gap, closed);
+            }
+            return out;
+        }
+        out.solid = false;
+        out.round = true;
+        if (length < 2 * width) {
+            out.gap = 2 * width;
+            return out;
+        }
+        // Round caps draw each zero-length dash as a dot a width across.
+        out.gap = best_dash_gap(length, width, width, closed) + width - 0.01f;
+        if (!std::isfinite(out.gap)) out.gap = length + 2 * width;
+        return out;
+    }
+    static void apply_dash(Path& path, const BorderDash& d) {
+        path.line_cap = d.round ? 1 : 0;
+        if (!d.solid) path.dashes = {d.dash, d.gap};
+    }
+    /// A dashed or dotted rounded border: its centre line `mid` (corners `mrad`) stroked with the dashes
+    /// fitted round it, under a clip to the ring between the border's edges so that dash ends follow the
+    /// ring. Square dashes are stroked wider than the border (`reach`) for the clip to cut them.
+    void dashed_ring(const Rect& outer_rect, const Radii& outer, const Rect& in, const Radii& inner, const Rect& mid, const Radii& mrad,
+                     float width, float reach, bool dotted, const Color& color) {
+        BorderDash d = border_dash(std::floor(rounded_length(mid, mrad)), width, dotted, true);
+        auto ring = std::make_shared<Path>();
+        rounded_rect(*ring, outer_rect, outer);
+        rounded_rect(*ring, in, inner);
+        ring->fill = true;
+        ring->evenodd = true;
+        Command clip;
+        clip.kind = Cmd::ClipPush;
+        clip.rect = outer_rect;
+        clip.path = std::move(ring);
+        clips_.push_back(clip);
+        list_.push_back(std::move(clip));
+        auto line = std::make_shared<Path>();
+        rounded_rect(*line, mid, mrad);
+        line->stroke = true;
+        line->stroke_color = color;
+        line->stroke_width = d.round ? width : reach * 2.2f;
+        apply_dash(*line, d);
+        Command c;
+        c.kind = Cmd::Path;
+        c.path = std::move(line);
+        list_.push_back(std::move(c));
+        clips_.pop_back();
+        Command pop;
+        pop.kind = Cmd::ClipPop;
+        list_.push_back(std::move(pop));
+    }
+
     /// Rounded borders whose sides differ: each side fills the ring between the outer and the inner
     /// rounded box, clipped to the part of the box it owns. That part runs from its two outer corners
     /// along the lines to their inner corners, where browsers split a corner between two colours, on to
-    /// the box's midline or to where the two lines meet. Dashed and dotted sides are drawn solid.
+    /// the box's midline or to where the two lines meet. A dashed or dotted side keeps its part of the
+    /// centre line dashed all the way round.
     void draw_rounded_sides(const litehtml::borders& b, const Rect& p, const Radii& outer, std::array<bool, 4> visible) {
         const litehtml::border* sides[4] = {&b.left, &b.top, &b.right, &b.bottom};
         const float wl = float(b.left.width), wt = float(b.top.width), wr = float(b.right.width), wb = float(b.bottom.width);
@@ -1684,23 +1762,33 @@ public:
             }
             share->ops.push_back(Path::Close);
 
-            auto ring = std::make_shared<Path>();
-            rounded_rect(*ring, p, outer);
-            rounded_rect(*ring, in, inner);
-            ring->fill = true;
-            ring->evenodd = true;
-            ring->fill_color = color_of(sides[i]->color);
-
             Command clip;
             clip.kind = Cmd::ClipPush;
             clip.rect = Rect{minx, miny, maxx - minx, maxy - miny};
             clip.path = std::move(share);
             clips_.push_back(clip);
             list_.push_back(std::move(clip));
-            Command fill;
-            fill.kind = Cmd::Path;
-            fill.path = std::move(ring);
-            list_.push_back(std::move(fill));
+            if (sides[i]->style == litehtml::border_style_dashed || sides[i]->style == litehtml::border_style_dotted) {
+                // The whole centre line, dashed round as one, of which the share keeps this side's part.
+                const Rect mid{x0 + wl / 2, y0 + wt / 2, p.w - (wl + wr) / 2, p.h - (wt + wb) / 2};
+                const Radii mrad{std::max(0.0f, outer.tlx - wl / 2), std::max(0.0f, outer.tly - wt / 2), std::max(0.0f, outer.trx - wr / 2),
+                                 std::max(0.0f, outer.try_ - wt / 2), std::max(0.0f, outer.brx - wr / 2), std::max(0.0f, outer.bry - wb / 2),
+                                 std::max(0.0f, outer.blx - wl / 2), std::max(0.0f, outer.bly - wb / 2)};
+                const float w = float(sides[i]->width);
+                const float reach = vertical ? std::max({w, wt, wb}) : std::max({w, wl, wr});
+                dashed_ring(p, outer, in, inner, mid, mrad, w, reach, sides[i]->style == litehtml::border_style_dotted, color_of(sides[i]->color));
+            } else {
+                auto ring = std::make_shared<Path>();
+                rounded_rect(*ring, p, outer);
+                rounded_rect(*ring, in, inner);
+                ring->fill = true;
+                ring->evenodd = true;
+                ring->fill_color = color_of(sides[i]->color);
+                Command fill;
+                fill.kind = Cmd::Path;
+                fill.path = std::move(ring);
+                list_.push_back(std::move(fill));
+            }
             clips_.pop_back();
             Command pop;
             pop.kind = Cmd::ClipPop;
@@ -1759,52 +1847,11 @@ public:
             list_.push_back(std::move(c));
             return;
         }
-        auto ring = std::make_shared<Path>();
-        rounded_rect(*ring, p, outer);
-        if (inset(w, r, k)) rounded_rect(*ring, r, k);
-        ring->evenodd = true;
-        auto line = std::make_shared<Path>();
-        inset(w / 2, r, k);
-        rounded_rect(*line, r, k);
-        line->stroke = true;
-        line->stroke_color = color_of(s.color);
-        line->stroke_width = w;
-        // Chromium's spacing: dashes 2-3 widths long, dots a width apart, both fitted whole round the line.
-        const float length = std::floor(rounded_length(r, k));
-        const bool dotted = s.style == litehtml::border_style_dotted;
-        if (!dotted || w <= 3) {
-            float dash = w, gap = w;
-            if (!dotted) {
-                dash *= w >= 3 ? 2 : 3;
-                gap *= w >= 3 ? 1 : 2;
-            }
-            if (length > dash * 2) {
-                const float pair = dash + gap;
-                line->dashes = length <= pair ? std::vector<float>{dash * length / pair, gap * length / pair}
-                                              : std::vector<float>{dash, dotted ? gap : best_dash_gap(length, dash, gap, true)};
-                // Square ends, the dash wide enough for the clip to cut it along the ring.
-                line->stroke_width = w * 2.2f;
-            }
-        } else {
-            float gap = length < 2 * w ? 2 * w : best_dash_gap(length, w, w, true) + w - 0.01f;
-            if (!std::isfinite(gap)) gap = length + 2 * w;
-            line->dashes = {0, gap};
-            line->line_cap = 1;
-        }
-        Command clip;
-        clip.kind = Cmd::ClipPush;
-        clip.rect = p;
-        clip.path = std::move(ring);
-        clips_.push_back(clip);
-        list_.push_back(std::move(clip));
-        Command c;
-        c.kind = Cmd::Path;
-        c.path = std::move(line);
-        list_.push_back(std::move(c));
-        clips_.pop_back();
-        Command pop;
-        pop.kind = Cmd::ClipPop;
-        list_.push_back(std::move(pop));
+        Rect mid;
+        Radii mrad;
+        inset(w, r, k);
+        inset(w / 2, mid, mrad);
+        dashed_ring(p, outer, r, k, mid, mrad, w, w, s.style == litehtml::border_style_dotted, color_of(s.color));
     }
 
     /// Square borders side by side: each side is the trapezoid its corners mitre, filled when solid, and
@@ -1851,19 +1898,12 @@ public:
             line->stroke = true;
             line->stroke_color = color_of(s.color);
             line->stroke_width = w;
-            if (dotted) {
-                // Round dots a width across, a width apart, a dot in each corner.
-                int gaps = std::max(1, int(std::lround((length - w) / (2 * w))));
-                line->line_cap = 1;
-                line->dashes = {0, (length - w) / float(gaps)};
+            BorderDash d = border_dash(std::round(length), w, dotted, false);
+            apply_dash(*line, d);
+            if (d.round) {
+                // A round dot sits inside each end, its cap reaching the corner.
                 ax += horizontal ? w / 2 : 0; ay += horizontal ? 0 : w / 2;
                 bx -= horizontal ? w / 2 : 0; by -= horizontal ? 0 : w / 2;
-            } else {
-                // Dashes twice the width, gaps near one width, stretched to end in a dash at each corner.
-                float dash = 2 * w;
-                int count = std::max(1, int(std::lround((length + w) / (dash + w))));
-                float gap = count > 1 ? std::max(0.0f, (length - count * dash) / float(count - 1)) : 0;
-                line->dashes = {dash, gap};
             }
             line->ops = {Path::Move, Path::Line};
             line->points = {ax, ay, bx, by};

@@ -1577,6 +1577,41 @@ int main() {
         }
         bool strips = std::any_of(rl.begin(), rl.end(), [](const Command& c) { return c.kind == Cmd::FillRect; });
         check(rings == 4 && clipped == 4 && !strips, "rounded borders of different colours are rings clipped per side, not rectangles");
+
+        // Chromium's dashes: by width on square sides, and round the centre line of rounded ones.
+        auto strokes = [&](const char* style) {
+            Renderer br(300, 1, false, ib);
+            br.receive(parse(std::string(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","width:100px;height:40px;)J") + style + R"J("]]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+            std::vector<std::pair<const Command*, const Command*>> out;  // each stroke and the clip it is under
+            static DisplayList keep;
+            keep = br.paint();
+            const Command* clip = nullptr;
+            for (const Command& c : keep) {
+                if (c.kind == Cmd::ClipPush) clip = &c;
+                else if (c.kind == Cmd::Path && c.path && c.path->stroke) out.emplace_back(&c, clip);
+            }
+            return out;
+        };
+        auto top = strokes("border:1px dashed #000");
+        check(!top.empty() && top[0].first->path->dashes.size() == 2 && top[0].first->path->dashes[0] == 3 && top[0].first->path->line_cap == 0,
+              "a 1px dash is three widths long");
+        auto wide = strokes("border:4px dashed #000");
+        // Left, then top: 108 px along the top, 8 px dashes; 9 of them leave 36 px for 8 gaps, the nearest to 4 px each.
+        check(wide.size() == 4 && wide[1].first->path->dashes[0] == 8 && std::fabs(wide[1].first->path->dashes[1] - 4.5f) < 1e-3f,
+              "a 4px dash is two widths, its gaps fitted to end in a dash");
+        auto small = strokes("border:2px dotted #000");
+        check(!small.empty() && small[0].first->path->line_cap == 0 && small[0].first->path->dashes[0] == 2 && small[0].first->path->dashes[1] == 2,
+              "2px dots are square");
+        auto big = strokes("border:6px dotted #000");
+        check(!big.empty() && big[0].first->path->line_cap == 1 && big[0].first->path->dashes[0] == 0, "6px dots are round");
+        auto round = strokes("border:3px dashed #000;border-radius:12px");
+        check(round.size() == 1 && round[0].first->path->dashes.size() == 2 && round[0].second && round[0].second->path && round[0].second->path->evenodd &&
+                  std::count(round[0].first->path->ops.begin(), round[0].first->path->ops.end(), Path::Cubic) == 4,
+              "a rounded dashed border is one dashed centre line under a clip to its ring (" + std::to_string(round.size()) + " strokes)");
+        auto mixed = strokes("border:3px dashed #000;border-top:3px dashed #f00;border-radius:12px");
+        check(mixed.size() == 4, "rounded dashed sides of different colours stroke the centre line under each side's share (" + std::to_string(mixed.size()) + ")");
         check(count(Cmd::Image) >= 13, "a repeated background is drawn once per tile, and the image once (got " + std::to_string(count(Cmd::Image)) + ")");
         bool contained = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Image && c.rect.w == 40 && c.rect.h == 20; });
         check(contained, "object-fit: contain fits the image inside its box");
