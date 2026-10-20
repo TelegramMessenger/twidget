@@ -1443,12 +1443,16 @@ public:
         list_.push_back(std::move(c));
     }
 
-    /// widget-sandbox's placeholder (url-policy.ts, PLACEHOLDER_IMAGE), its 48 × 48 drawing stretched over the image.
+    /// widget-sandbox's placeholder (url-policy.ts, PLACEHOLDER_IMAGE), its 48 × 48 drawing fitted into the image, centred.
     void draw_placeholder(const litehtml::background_layer& layer) {
         Rect to = rect_of(layer.origin_box);
         Rect clip = rect_of(layer.clip_box);
         clip_intersect(clip, rect_of(layer.border_box));
         float sx = to.w / 48, sy = to.h / 48;
+        // The placeholder is an SVG with a view box, so it keeps its aspect ratio, centred
+        // (preserveAspectRatio xMidYMid meet), as browsers and LHContainer draw it.
+        sx = sy = std::min(sx, sy);
+        to = Rect{to.x + (to.w - 48 * sx) / 2, to.y + (to.h - 48 * sy) / 2, 48 * sx, 48 * sy};
         const Color faint{136, 136, 136, 34}, mark{136, 136, 136, 102};
         Command c;
         c.kind = Cmd::ClipPush;
