@@ -21,6 +21,7 @@ each platform's painter needs its own run.
 | 2026-10-19 | events and animations (E2–E4, A1, A2, L7) | 135 / 21 / 7 / 10 | 79 / 1 / 0 |
 | 2026-10-19 | layout and style in the fork (L1–L13, O4) | 148 / 9 / 6 / 10 | 80 / 0 / 0 |
 | 2026-10-19 | SVG queries and painting (Q3, P1–P9) | 158 / 5 / 0 / 10 | 80 / 0 / 0 |
+| 2026-10-20 | the Swift renderer's text, border, canvas and image fixes | 159 / 4 / 0 / 10 | 80 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 
@@ -63,9 +64,14 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | `direction` and `dir` (`auto` too): right to left lines, alignment, blocks, and a simplified bidi that keeps embedded runs in their order | the fork's `line_box::reorder_bidi`, `render_block_context` |
 | `:lang()` on the nearest `lang`, `:empty` | the fork's `html_tag::select_pseudoclass` |
 | The `translate`, `rotate` and `scale` properties | the fork's `css_properties::compute_transform` |
-| `letter-spacing` and `word-spacing` | `Container` (`spacing_units`), the fork's `font_description` |
+| `letter-spacing` and `word-spacing`, a no-break space widened inside its word too | `Container` (`spacing_units`, `spacing_words`), the fork's `font_description` |
+| `font-variant-numeric` and `font-feature-settings` as OpenType features | the fork's `font_description::features`; `Backend::create_font` |
 | SVG: `getComputedTextLength`, text `getBBox`, a shape's or text's rect through the view box, `<use>` of a `<symbol>`, `<tspan>` with its own fill and shifts | the fork's `svg_ctm`, `svg_text_runs`, `el_svg` painter; `svg_box_of` |
-| Dashed and dotted borders and outlines, mitred corners between sides that differ | `Container::draw_sides` |
+| Dashed and dotted borders and outlines, mitred corners between sides that differ; dashes and dots spaced as Chromium does, round the centre line of a rounded border | `Container::border_dash`, `draw_sides`, `dashed_ring` |
+| Computed `fill` and `stroke` inherited (through `<use>` too), `currentColor` resolved | the fork's `svg_paint_color` |
+| A link in Chromium's `#0000ee` | `UA_EXTRA` |
+| Canvas `textBaseline` on the em box (the font's OS/2 typographic metrics), as Chromium places it | `FontMetrics::em_ascent`, `Canvas::text` |
+| A PNG cut short or corrupt keeps the rows before the damage, the rest transparent | `png_intact_rows` (`src/png.cpp`), in each backend's image loading |
 | `background-repeat` | `Container::draw_image` |
 | `object-fit`, `object-position` | the fork's `el_image::fitted` |
 | Gradient stop positions fixed up as CSS does (an explicit `0` is a position) | the fork's `prepare_color_points` |
@@ -90,7 +96,6 @@ Dashed and dotted borders are `Path` strokes with dashes, which every painter dr
 |---|---|
 | `Intl`: number grouping, dates, plural rules, relative time, collation | the C++ desktop host's `IntlProvider` (`BasicIntl`); a Windows client needs ICU or Windows.Globalization behind it |
 | `innerHTML` replacing children, live `getElementsByClassName` | widget-sandbox's shim (its `docs/changes.md` lists the second as known) |
-| The `background` stage (`css.background.basic`) | its 20 px PNG is corrupt: a bad IDAT CRC and zlib checksum, and row 5 has filter byte 51. Chromium stops there and leaves the rows below transparent, WIC decodes them as colours. The tiling is right |
 | The `emoji` stage (`css.text.emoji`) | the reference is Apple Color Emoji; Windows draws Segoe UI Emoji |
 | A Web Animations seek seen by a layout query in the same task (`anim.waapi`) | widget-sandbox's `query()` flushes the DOM ops but not the animation records, which go out at the end of the task; its own renderers fail this check too |
 | Right click / long press | the runner has no secondary button; profile 1 forwards no `contextmenu` anyway |

@@ -28,7 +28,10 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
 ## What a platform implements
 
 - **`twlite::Backend`** (`src/backend.h`): fonts with metrics, text width, image decoding, and the
-  canvas bitmaps (`canvas_run`, `canvas_read`, `canvas_release`).
+  canvas bitmaps (`canvas_run`, `canvas_read`, `canvas_release`). A font comes with the OpenType
+  features to apply (`tnum=1,zero=1`), and reports its em box from its OS/2 table when the platform
+  can read it. A decoded PNG goes through `png_intact_rows` (`src/png.h`), which says how many rows to
+  keep when the stream is damaged.
 - **A painter** for `DisplayList` (`src/display_list.h`): rectangles, borders, text, images,
   gradients, clips, paths, groups and shadows, in CSS px.
 - **A clock.** Call `tick()` while `wants_tick()` holds, and once `next_tick_in()` seconds have passed
@@ -37,6 +40,11 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   widget no wheel and no keyboard. For text controls, `editor()` describes the one being edited for
   the platform to cover with its own editor, which reports back through `edit()` and `end_editing()`;
   profile 1 has no text controls, so it only matters to a host that hands the renderer one.
+
+With `set_resize_tracking(true)`, each height change comes with `resize_diff()` (and `resize` in the
+size message): how much of the top and of the bottom stayed put, where the element pressed last went,
+and which side to keep still, as the Swift renderer's `WidgetResizeDiff` decides it. A host anchors the
+bubble on that side, and shows the frame of the new height in the same frame as the bubble's new size.
 
 With `set_compositing(true)`, the platform also plays `composition()`: a list of layers, each an
 element's own display list with a track of linear keys (a 2D matrix and an opacity per key) that the
