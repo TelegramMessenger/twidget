@@ -587,6 +587,9 @@ namespace litehtml
              split_inlines();
         bool fetch_positioned();
         void render_positioned(render_type rt = render_all);
+        /// The in-flow pass over an absolute or fixed child: shrink-to-fit, min(max(min-content,
+        /// available), max-content), which render_positioned() then places.
+        void render_out_of_flow(pixel_t y, const containing_block_context& self_size, formatting_context* fmt_ctx);
         // returns element offset related to the containing block
         std::tuple<pixel_t, pixel_t> element_static_offset(const std::shared_ptr<litehtml::render_item>& el);
 

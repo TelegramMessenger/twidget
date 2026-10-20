@@ -37,11 +37,7 @@ litehtml::rendered_width litehtml::render_item_block_context::_render_content(pi
             if(el->src_el()->css().get_position() == element_position_absolute ||
                el->src_el()->css().get_position() == element_position_fixed)
             {
-                pixel_t min_rendered_width = el->render(0_px, child_top, self_size, fmt_ctx).natural_width;
-                if(min_rendered_width < el->width() && el->src_el()->css().get_width().is_predefined())
-                {
-                    el->render(0_px, child_top, self_size.new_width(min_rendered_width), fmt_ctx);
-                }
+                el->render_out_of_flow(child_top, self_size, fmt_ctx);
             } else
             {
                 child_top           = fmt_ctx->get_cleared_top(el, child_top);

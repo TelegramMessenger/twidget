@@ -557,6 +557,12 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
         auto position = el->src_el()->css().get_position();
         if(position == element_position_absolute || position == element_position_fixed)
         {
+            // Out of flow, but render_positioned() takes the shrink-to-fit size from this pass, as the
+            // block context does (render_block_context.cpp); left unrendered the box stays 0 x 0.
+            if(el->src_el()->css().get_display() != display_none)
+            {
+                el->render_out_of_flow(0_px, self_size, fmt_ctx);
+            }
             continue;
         }
         grid_cell cell;

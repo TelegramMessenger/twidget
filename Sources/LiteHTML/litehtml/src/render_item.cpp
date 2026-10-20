@@ -498,6 +498,24 @@ bool litehtml::render_item::fetch_positioned()
     return ret;
 }
 
+void litehtml::render_item::render_out_of_flow(pixel_t y, const containing_block_context& self_size,
+                                               formatting_context* fmt_ctx)
+{
+    rendered_width rw = render(0_px, y, self_size, fmt_ctx);
+    if(!src_el()->css().get_width().is_predefined())
+    {
+        return;
+    }
+    if(rw.natural_width < width())
+    {
+        render(0_px, y, self_size.new_width(rw.natural_width), fmt_ctx);
+    } else if(rw.min_width > width())
+    {
+        // A zero-width parent (a 'left: 0; right: 0' box before it is placed) still fits the words.
+        render(0_px, y, self_size.new_width(rw.min_width), fmt_ctx);
+    }
+}
+
 void litehtml::render_item::render_positioned(render_type rt)
 {
     position view_port;
