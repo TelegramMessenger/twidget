@@ -419,8 +419,10 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         counter++;
         if((align == text_align_right || spacing_x != 0_px) && counter == static_cast<int>(m_items.size()))
         {
-            // Forcible justify the last element to the right side for text align right and justify;
-            lbi->pos().x = m_right - lbi->pos().width;
+            // Forcible justify the last element to the right side for text align right and justify.
+            // Its outer edge meets the side: padding, borders and margins of an inline-block or an
+            // inline end stay inside the line, as in browsers (pos() alone is the content box).
+            lbi->pos().x += m_right - lbi->right();
         } else if(shift_x != 0_px)
         {
             lbi->pos().x += shift_x;
