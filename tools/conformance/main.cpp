@@ -125,9 +125,11 @@ struct Verdict {
 /// snapshots) take turns on one mutex; messages to the host go out after it is released.
 class OffscreenRenderer final : public twidget::Renderer {
 public:
-    OffscreenRenderer(Device& device, bool dark, double width)
+    OffscreenRenderer(Device& device, bool dark, double width, double max_height)
         : device_(device), backend_(device.d2d.get(), device.dwrite.get(), device.wic.get()),
           core_(std::make_unique<twlite::Renderer>(width, DPR, dark, backend_)) {
+        std::vector<Json> out;
+        core_->set_max_height(max_height, out);
         clock_ = std::thread([this] { clock_loop(); });
     }
     ~OffscreenRenderer() override { destroy(); }
@@ -352,11 +354,18 @@ std::string key_code(const std::string& key) {
     return key;
 }
 
+constexpr double VISUAL_HEIGHT = 2400;
+
 struct Options {
     fs::path sandbox = TW_SANDBOX;
     fs::path out = "conformance-run";
     std::vector<double> widths;
     std::string filter;
+    // What a client preloads, as {"local": {...}, "session": {...}}: a restart, for the storage widgets.
+    twidget::WidgetStorage storage;
+    // The visual set instead of the automatic one (the SDK group aside, which needs a client's host):
+    // stage crops at each of a widget's widths for tools/conformance/visual-report.mjs.
+    bool visual = false;
 };
 
 Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& resources, const Options& options, const Json& test,
@@ -367,9 +376,12 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
     twidget::WidgetHostOptions host_options;
     host_options.devicePixelRatio = DPR;
     host_options.features = {"webAnimations"};
+    host_options.storage = options.storage;
     OffscreenRenderer* renderer = nullptr;
     auto factory = [&](std::shared_ptr<twidget::SandboxResources>, const std::string& scheme, double w) -> std::unique_ptr<twidget::Renderer> {
-        auto r = std::make_unique<OffscreenRenderer>(device, scheme == "dark", w);
+        // A visual widget is a column of stages taller than a bubble: it is drawn whole, as the Swift
+        // runner draws it, and a stage below the bubble's bound is marked.
+        auto r = std::make_unique<OffscreenRenderer>(device, scheme == "dark", w, options.visual ? VISUAL_HEIGHT : 600.0);
         renderer = r.get();
         return r;
     };
@@ -393,6 +405,13 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
         call.set("args", std::move(args));
         std::lock_guard l(bridge_mutex);
         bridge.push(std::move(call));
+    };
+    Json commits = Json::array();
+    host.onStorageCommit = [&](const std::string& area, const std::map<std::string, std::string>& values) {
+        Json o = Json::object();
+        for (const auto& [k, v] : values) o.set(k, v);
+        std::lock_guard l(bridge_mutex);
+        commits.push(Json::object().set("area", area).set("values", std::move(o)));
     };
     host.start();
 
@@ -486,8 +505,16 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
             std::replace(file.begin(), file.end(), '/', '_');
             file += "." + theme + "." + name + ".png";
             write_png(device.wic.get(), crops / file, crop(image, r[size_t(0)].asNumber(), r[size_t(1)].asNumber(), r[size_t(2)].asNumber(), r[size_t(3)].asNumber()));
-            stages.push(Json::object().set("name", name).set("crop", "crops/" + file));
+            stages.push(Json::object().set("name", name).set("crop", "crops/" + file).set("rect", r)
+                            .set("beyondCap", r[size_t(1)].asNumber() + r[size_t(3)].asNumber() > 600));
         }
+    }
+    std::string full;
+    if (options.visual && width == 390) {
+        full = id;
+        std::replace(full.begin(), full.end(), '/', '_');
+        full = "crops/" + full + "." + theme + ".full.png";
+        write_png(device.wic.get(), options.out / full, renderer->snapshot());
     }
 
     twidget::WidgetDiagnostics diagnostics = host.diagnostics();
@@ -501,6 +528,7 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
     {
         std::lock_guard l(bridge_mutex);
         observed.set("bridge", bridge);
+        observed.set("storageCommits", commits);
     }
     observed.set("height", diagnostics.height).set("chatFocused", chat_focused).set("syntheticInput", false);
 
@@ -510,6 +538,7 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
     run.set("status", verdict.status().empty() ? std::string("running") : verdict.status());
     run.set("checks", checks).set("stages", std::move(stages)).set("observed", std::move(observed));
     run.set("skippedActions", std::move(skipped)).set("errors", std::move(errors));
+    if (!full.empty()) run.set("full", full);
     return run;
 }
 
@@ -523,8 +552,20 @@ int main(int argc, char** argv) {
         if (arg == "--width" && i + 1 < argc) options.widths.push_back(std::atof(argv[++i]));
         else if (arg == "--filter" && i + 1 < argc) options.filter = argv[++i];
         else if (arg == "--sandbox" && i + 1 < argc) options.sandbox = argv[++i];
+        else if (arg == "--visual") options.visual = true;
+        else if (arg == "--storage" && i + 1 < argc) {
+            auto preload = Json::parse(read_file(argv[++i]));
+            auto area = [&](const char* name) {
+                twidget::StorageArea out;
+                if (preload)
+                    for (const auto& [k, v] : (*preload)[name].obj()) out[k] = v.asString();
+                return out;
+            };
+            options.storage = twidget::WidgetStorage{area("local"), area("session")};
+        }
         else options.out = arg;
     }
+    const bool own_widths = !options.widths.empty();
     if (options.widths.empty()) options.widths = {390};
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -541,10 +582,15 @@ int main(int argc, char** argv) {
 
     Json runs = Json::array();
     for (const Json& test : (*manifest)["tests"].arr()) {
-        if (test["set"].asString() != "auto") continue;
+        if (test["set"].asString() != (options.visual ? "visual" : "auto") || test["group"].asString() == "sdk") continue;
         const std::string& id = test["id"].asString();
         if (!options.filter.empty() && id.find(options.filter) == std::string::npos) continue;
-        for (double width : options.widths) {
+        std::vector<double> widths = options.widths;
+        if (options.visual && !own_widths) {
+            widths.clear();
+            for (const Json& w : test["widths"].arr()) widths.push_back(w.asNumber());
+        }
+        for (double width : widths) {
             for (const Json& theme : test["themes"].arr()) {
                 double t0 = now_ms();
                 Json run = run_one(device, resources, options, test, theme.asString(), width, crops);
@@ -570,7 +616,9 @@ int main(int argc, char** argv) {
     file.set("platform", "windows").set("renderer", "twidget-core").set("engine", "TwidgetCore, Direct2D (WARP)");
     file.set("framework", TW_FRAMEWORK).set("commit", TW_COMMIT).set("policy", "strict");
     file.set("features", Json(Json::Array{Json("webAnimations")})).set("date", date).set("runs", std::move(runs));
-    std::ofstream(options.out / "run.json", std::ios::binary) << file.dump();
-    std::printf("wrote %s\n", (options.out / "run.json").string().c_str());
+    file.set("palette", "the set's theme params").set("locale", "en");
+    fs::path written = options.out / (options.visual ? "windows-twidget-core.visual.run.json" : "run.json");
+    std::ofstream(written, std::ios::binary) << file.dump();
+    std::printf("wrote %s\n", written.string().c_str());
     return 0;
 }
