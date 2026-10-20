@@ -134,6 +134,25 @@ public:
     /// the document is rebuilt with it. Returns renderer → host messages (a `size`, when it changed).
     std::vector<twidget::Json> image_ready(int id, float w, float h);
 
+    /// Where the content went when the document changed height, for a host that keeps part of the
+    /// widget still on screen while it resizes (the Swift renderer's WidgetResizeDiff). Edges are in
+    /// CSS px of the document before the change.
+    struct ResizeDiff {
+        double old_height = 0, new_height = 0;
+        /// How far down from the top, and up from the bottom, nothing moved.
+        double unchanged_top = 0, unchanged_bottom = 0;
+        /// A point of the element pressed last, before and after, when it was pressed recently.
+        bool has_pointer = false;
+        double pointer_from = 0, pointer_to = 0;
+        /// The side to keep still: the bottom (the widget grows or shrinks upward) or the top.
+        bool keeps_bottom = false;
+    };
+    /// Diffs each layout that changes the document's height. Off by default: it measures every element
+    /// after each layout. `prefers_bottom` is the side to keep when the content does not decide.
+    void set_resize_tracking(bool enabled, bool prefers_bottom = false);
+    /// The last height change, null before one; the size message carries it too, as `resize`.
+    const ResizeDiff* resize_diff() const { return has_resize_ ? &resize_ : nullptr; }
+
     /// Viewport in CSS px (the height the document converged to) and in physical px.
     double width() const { return width_; }
     int viewport_height() const { return vp_height_; }
@@ -230,6 +249,8 @@ private:
     double first_charge_ = -1;
     double throttled_until_ = 0;
     void report_size(std::vector<twidget::Json>& out);
+    /// After a layout, with tracking on: the element edges, and the diff when the height changed.
+    void note_resize();
     // queries & events
     twidget::Json answer(const twidget::Json& q);
     bool match_media(const std::string& query) const;
@@ -391,6 +412,19 @@ private:
     bool damage_valid_ = false;
     std::unordered_set<int> canvases_drawn_;
     double max_height_ = 600;
+    struct Edges {
+        float top, bottom;
+    };
+    bool track_resize_ = false, prefers_bottom_ = false;
+    std::unordered_map<int64_t, Edges> edges_;  // the elements' vertical edges at the last layout
+    double edges_height_ = 0;
+    uint64_t edges_layouts_ = 0;  // the layout they were taken after; 0 for none
+    bool has_resize_ = false;
+    ResizeDiff resize_;
+    double resize_at_ = -1e9;
+    uint64_t resize_serial_ = 0, resize_reported_ = 0;
+    int64_t press_id_ = 0;  // the element pressed last, kept past the release for the layout it causes
+    double press_y_ = 0, press_at_ = -1e9;
     PatchLog patch_log_;
     // What changed since the last paint, for layers to keep their content: the elements patched, or
     // everything (a build, a layout, hover state).

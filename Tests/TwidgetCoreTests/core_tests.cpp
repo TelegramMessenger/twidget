@@ -1547,6 +1547,45 @@ int main() {
         check(ask(Json::object().set("q", "cs").set("id", 22))["color"].asString() == "rgb(0, 0, 238)", "a link is #0000ee");
     }
 
+    // ── resize diffs: which side of a widget changing height a host keeps still ──
+    {
+        auto run = [&](const char* grow, double press_y) {
+            StubBackend rb;
+            Renderer r(300, 1, false, rb);
+            r.set_resize_tracking(true);
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","height:50px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["style","height:50px"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+            r.paint();
+            if (press_y >= 0) {
+                r.touch(0, 10, press_y, 1, true);
+                r.touch(2, 10, press_y, 1, true);
+            }
+            Json size;
+            for (const Json& m : r.receive(parse(std::string(R"({"type":"ops","ops":[{"op":"style","id":)") + grow + R"(,"name":"height","value":"80px"}]})"))) {
+                if (m["type"].asString() == "size") size = m;
+            }
+            r.paint();
+            for (const Json& m : r.tick())
+                if (m["type"].asString() == "size") size = m;
+            const Renderer::ResizeDiff* d = r.resize_diff();
+            return std::make_pair(d ? *d : Renderer::ResizeDiff{}, d != nullptr && size["resize"].isObject());
+        };
+        auto [below, sent] = run("11", -1);
+        check(sent && below.old_height == 100 && below.new_height == 130 && below.unchanged_top == 100 && !below.keeps_bottom,
+              "growing at the bottom keeps the top (top " + std::to_string(below.unchanged_top) + ")");
+        auto [above, sent2] = run("10", -1);
+        check(sent2 && above.unchanged_top == 50 && above.unchanged_bottom == 100 && above.keeps_bottom,
+              "growing at the top keeps the bottom (top " + std::to_string(above.unchanged_top) + ", bottom " + std::to_string(above.unchanged_bottom) + ")");
+        auto [pressed_below, s3] = run("10", 75);
+        check(pressed_below.has_pointer && pressed_below.pointer_to - pressed_below.pointer_from == 30 && pressed_below.keeps_bottom,
+              "a press below what grew keeps the pressed element still");
+        auto [pressed_on, s4] = run("10", 25);
+        check(pressed_on.has_pointer && pressed_on.pointer_to == pressed_on.pointer_from && !pressed_on.keeps_bottom,
+              "a press on what grew keeps its top still");
+    }
+
     // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──
     {
         struct Images : StubBackend {

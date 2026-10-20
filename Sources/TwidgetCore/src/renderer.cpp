@@ -1128,6 +1128,7 @@ public:
         auto it = elements_.find(id);
         return it == elements_.end() ? nullptr : it->second;
     }
+    const std::unordered_map<int64_t, litehtml::element::ptr>& elements() const { return elements_; }
     /// The widget id of a litehtml element or of its nearest ancestor with one (0 when none).
     int64_t widget_id(litehtml::element::ptr el, Rect* placement) const {
         while (el) {
@@ -3970,6 +3971,7 @@ int64_t Renderer::canvas_allowance(int id) {
 }
 
 void Renderer::report_size(std::vector<Json>& out) {
+    if (track_resize_) note_resize();
     // Every frame asks; the message goes out when a number moved.
     std::array<double, 4> size{width_, doc_height_, double(vp_height_), dpr_};
     if (size == last_size_) return;
@@ -3977,7 +3979,115 @@ void Renderer::report_size(std::vector<Json>& out) {
     Json msg = Json::object();
     msg.set("type", "size").set("width", width_).set("height", doc_height_);
     msg.set("innerWidth", width_).set("innerHeight", vp_height_).set("dpr", dpr_);
+    if (has_resize_ && resize_serial_ != resize_reported_) {
+        resize_reported_ = resize_serial_;
+        Json r = Json::object();
+        r.set("oldHeight", resize_.old_height).set("newHeight", resize_.new_height);
+        r.set("unchangedTop", resize_.unchanged_top).set("unchangedBottom", resize_.unchanged_bottom);
+        if (resize_.has_pointer) r.set("pointerFrom", resize_.pointer_from).set("pointerTo", resize_.pointer_to);
+        r.set("keepsBottom", resize_.keeps_bottom);
+        msg.set("resize", std::move(r));
+    }
     out.push_back(std::move(msg));
+}
+
+void Renderer::set_resize_tracking(bool enabled, bool prefers_bottom) {
+    track_resize_ = enabled;
+    prefers_bottom_ = prefers_bottom;
+    if (!enabled) {
+        edges_.clear();
+        edges_layouts_ = 0;
+    }
+}
+
+namespace {
+/// How long a press decides the side to keep, and how close height steps come in one burst (a CSS
+/// height transition), whose tiny or unclear steps keep the side the burst started with.
+constexpr double RESIZE_PRESS_AGE = 1.5, RESIZE_BURST_GAP = 0.15;
+/// Edges that moved less than this did not move.
+constexpr double RESIZE_TOLERANCE = 0.5;
+
+bool keeps_bottom(const Renderer::ResizeDiff& d, std::optional<double> press, bool prefers_bottom, std::optional<bool> previous) {
+    double old_h = d.old_height, delta = d.new_height - d.old_height;
+    if (previous && (std::fabs(delta) <= 1.5 || (d.unchanged_top >= old_h && d.unchanged_bottom >= old_h))) return *previous;
+    if (d.has_pointer) {
+        // Whichever side the pressed element stays closer to.
+        double shift = d.pointer_to - d.pointer_from;
+        if (previous && std::fabs(shift) < 1 && std::fabs(shift - delta) < 1) return *previous;
+        return std::fabs(shift - delta) < std::fabs(shift);
+    }
+    if (press) {
+        double y = std::clamp(*press, 0.0, old_h);
+        if (y <= d.unchanged_top) return false;
+        if (y >= old_h - d.unchanged_bottom) return true;
+        return y >= old_h / 2;
+    }
+    return prefers_bottom || d.unchanged_bottom > d.unchanged_top;
+}
+} // namespace
+
+void Renderer::note_resize() {
+    uint64_t layouts = container_->layouts();
+    if (layouts == edges_layouts_) return;
+    std::unordered_map<int64_t, Edges> now;
+    now.reserve(edges_.size());
+    for (const auto& [id, el] : container_->elements()) {
+        Rect r = border_box_of(el);
+        if (r.w > 0 || r.h > 0) now.emplace(id, Edges{r.y, r.y + r.h});
+    }
+    double old_h = edges_height_, new_h = container_->height();
+    if (edges_layouts_ && std::fabs(std::ceil(old_h) - std::ceil(new_h)) > RESIZE_TOLERANCE) {
+        // Edges that moved, appeared or went bound the parts that did not, from the top and from the bottom.
+        ResizeDiff d;
+        d.old_height = old_h;
+        d.new_height = new_h;
+        double top = old_h, bottom = old_h;
+        auto unstable_top = [&](double y) { top = std::min(top, std::max(y, 0.0)); };
+        auto unstable_bottom = [&](double distance) { bottom = std::min(bottom, std::max(distance, 0.0)); };
+        for (const auto& [id, before] : edges_) {
+            auto after = now.find(id);
+            if (after == now.end()) {
+                unstable_top(before.top);
+                unstable_bottom(old_h - before.bottom);
+                continue;
+            }
+            for (auto [a, b] : {std::pair<double, double>{before.top, after->second.top}, {before.bottom, after->second.bottom}}) {
+                if (std::fabs(a - b) > RESIZE_TOLERANCE) unstable_top(std::min(a, b));
+                if (std::fabs((old_h - a) - (new_h - b)) > RESIZE_TOLERANCE) unstable_bottom(std::min(old_h - a, new_h - b));
+            }
+        }
+        for (const auto& [id, after] : now) {
+            if (edges_.count(id)) continue;
+            unstable_top(after.top);
+            unstable_bottom(new_h - after.bottom);
+        }
+        d.unchanged_top = std::min(top, old_h);
+        d.unchanged_bottom = std::min(bottom, old_h);
+
+        double t = now_s();
+        bool recent = t - press_at_ < RESIZE_PRESS_AGE;
+        auto before = edges_.find(press_id_);
+        auto after = now.find(press_id_);
+        if (recent && before != edges_.end() && after != now.end()) {
+            double inset = std::clamp(press_y_ - before->second.top, 0.0,
+                                      double(std::min(before->second.bottom - before->second.top, after->second.bottom - after->second.top)));
+            d.has_pointer = true;
+            d.pointer_from = before->second.top + inset;
+            d.pointer_to = after->second.top + inset;
+        }
+        std::optional<bool> previous;
+        if (has_resize_ && t - resize_at_ < RESIZE_BURST_GAP) previous = resize_.keeps_bottom;
+        d.keeps_bottom = keeps_bottom(d, recent ? std::optional<double>(press_y_) : std::nullopt, prefers_bottom_, previous);
+        // The press stays on the content it was on.
+        if (d.keeps_bottom) press_y_ += new_h - old_h;
+        resize_ = d;
+        resize_at_ = t;
+        has_resize_ = true;
+        resize_serial_++;
+    }
+    edges_ = std::move(now);
+    edges_height_ = new_h;
+    edges_layouts_ = layouts;
 }
 
 DisplayList Renderer::paint() {
@@ -4798,6 +4908,11 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         Touch t{x, y, x, y, 0, Rect{}, false, primary, pointer, mouse, modifiers};
         t.target = widget_id_at(x, y, &t.target_rect);
         touches_[pointer] = t;
+        if (primary) {
+            press_id_ = t.target;
+            press_y_ = y;
+            press_at_ = now_s();
+        }
         if (primary) {
             auto [claim_x, claim_y] = gesture_claim(t.target);
             out.push_back(Json::object().set("type", "gesture").set("wants", claim_y).set("x", claim_x).set("y", claim_y));
