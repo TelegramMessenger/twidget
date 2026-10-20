@@ -79,14 +79,30 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | `filter` and `backdrop-filter`: blur, brightness, contrast, grayscale, hue-rotate, invert, opacity, saturate, sepia, drop-shadow | `FilterPush`, `Backdrop` in the display list; `D2DBackend::filtered` |
 | A canvas drawn from another canvas that the same batch draws later | `Renderer::apply_ops` |
 
+## The visual set
+
+`twidget-conformance --visual` runs the visual widgets (the SDK group aside, which needs a client's
+host) at each of their widths, drawn whole as the Swift runner draws them (2400 px), and writes the stage
+crops for `tools/conformance/visual-report.mjs`, which judges them with the set's `diff.mjs`. On
+2026-10-20: 123 of 171 crops pass. What fails is not a rendering difference to fix:
+
+- text stages (03 align, families, weights, scripts, ellipsis, text-shadow; 08 and 09 text; 13 fonts and
+  forms): the references were drawn with other fonts (system-ui is not Segoe UI there, and the strokes are
+  heavier); the layout matches;
+- motion diagrams (06 slide, spin-pulse; 07 bounce; 09 smil): a template shows the animation's path, the
+  crop is a frame of it;
+- 08 paint: `createPattern` is out of profile 1 and draws nothing, the reference shows Chromium's;
+- 04 table: 5 % of ink, at the threshold, in antialiasing.
+
 ## Each platform's painter
 
-The pixel stages above judge the Direct2D painter. These display list commands are new to the other
-painters, which still draw what they wrap as it is:
+The pixel stages above judge the Direct2D painter. The filter commands on the others, which this machine
+type-checks but does not run:
 
 | Command | CoreGraphics | Android | Web | Qt |
 |---|---|---|---|---|
-| `FilterPush` / `FilterPop` (filter), `Backdrop` (backdrop-filter) | to do (passed through) | to do (ignored) | to do (ignored) | to do (ignored) |
+| `FilterPush` / `FilterPop` (filter) | a bitmap context through `filter_pixels` | a bitmap through `filter_pixels` (JNI) | the canvas's own `filter` | a layer through `filter_pixels` |
+| `Backdrop` (backdrop-filter) | the bitmap's pixels through `filter_pixels` | not drawn: a `Canvas` gives no pixels to read | a copy of the canvas through `filter` | the layer's pixels through `filter_pixels` |
 
 Dashed and dotted borders are `Path` strokes with dashes, which every painter draws for SVG already.
 

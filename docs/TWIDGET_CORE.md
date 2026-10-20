@@ -33,7 +33,8 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   can read it. A decoded PNG goes through `png_intact_rows` (`src/png.h`), which says how many rows to
   keep when the stream is damaged.
 - **A painter** for `DisplayList` (`src/display_list.h`): rectangles, borders, text, images,
-  gradients, clips, paths, groups and shadows, in CSS px.
+  gradients, clips, paths, groups and shadows, in CSS px, and the CSS filters, whose colour matrices
+  and whose CPU pass over a painter's own pixels are in `src/filters.h`.
 - **A clock.** Call `tick()` while `wants_tick()` holds, and once `next_tick_in()` seconds have passed
   when it does not.
 - **Input.** `touch` and `hover`. `wheel` and `key` remain but do nothing: widget profile 1 gives a
