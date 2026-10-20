@@ -478,8 +478,10 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
             bool themed = false;
             for (const Json& t : stage["themes"].arr()) themed = themed || t.asString() == theme;
             if (!themed) continue;
-            const Json& r = stage["rect"];
             std::string name = stage["name"].asString();
+            // A visual widget's stages have no fixed rect: its harness measures them.
+            const Json& r = stage["rect"].isArray() || !verdict.value ? stage["rect"] : (*verdict.value)["stages"][name];
+            if (!r.isArray() || r.arr().size() < 4) continue;
             std::string file = id;
             std::replace(file.begin(), file.end(), '/', '_');
             file += "." + theme + "." + name + ".png";
