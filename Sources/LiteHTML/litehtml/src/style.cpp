@@ -2541,30 +2541,49 @@ namespace litehtml
 
     void style::subst_vars(const html_tag* el)
     {
-        for(auto& prop : m_properties)
+        // In cascade order: a shorthand re-added here writes its longhands, and a later declaration
+        // (border-color: var(--a) after border: … var(--b)) must still win over an earlier one. The
+        // map's key order made the earlier shorthand's fresh longhands look "later" and stick.
+        std::vector<std::pair<string_id, property_value>> pending;
+        for(const auto& prop : m_properties)
         {
             if(prop.second.m_has_var)
             {
-                auto& value = prop.second.get<css_token_vector>();
-                subst_vars_(prop.first, value, el);
-                std::vector<std::pair<string_id, property_value>> later;
-                for(auto longhand : at(shorthands, prop.first))
+                pending.emplace_back(prop.first, prop.second);
+            }
+        }
+        std::stable_sort(pending.begin(), pending.end(),
+                         [](const auto& a, const auto& b) { return a.second.m_order < b.second.m_order; });
+        for(auto& [name, prop] : pending)
+        {
+            auto& value = prop.template get<css_token_vector>();
+            subst_vars_(name, value, el);
+            std::vector<std::pair<string_id, property_value>> later;
+            for(auto longhand : at(shorthands, name))
+            {
+                auto it = m_properties.find(longhand);
+                if(it != m_properties.end() && it->second.m_order > prop.m_order &&
+                   (it->second.m_important || !prop.m_important))
                 {
-                    auto it = m_properties.find(longhand);
-                    if(it != m_properties.end() && it->second.m_order > prop.second.m_order &&
-                       (it->second.m_important || !prop.second.m_important))
-                    {
-                        later.emplace_back(longhand, it->second);
-                    }
+                    later.emplace_back(longhand, it->second);
                 }
-                // re-adding the same property
-                // if it is a custom property it will be re-added as a css_token_vector
-                // if it is a standard css property it will be parsed and properly added as typed property
-                add_property(prop.first, value, "", prop.second.m_important, el->get_document()->container());
-                for(const auto& kept : later)
+            }
+            // re-adding the same property
+            // if it is a custom property it will be re-added as a css_token_vector
+            // if it is a standard css property it will be parsed and properly added as typed property
+            add_property(name, value, "", prop.m_important, el->get_document()->container());
+            // The longhands it wrote take its place in the cascade, not a fresh later one.
+            for(auto longhand : at(shorthands, name))
+            {
+                auto it = m_properties.find(longhand);
+                if(it != m_properties.end())
                 {
-                    m_properties[kept.first] = kept.second;
+                    it->second.m_order = prop.m_order;
                 }
+            }
+            for(const auto& kept : later)
+            {
+                m_properties[kept.first] = kept.second;
             }
         }
     }
