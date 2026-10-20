@@ -75,6 +75,21 @@ final class WidgetInteractionTests: XCTestCase {
             return [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
         }
 
+        func presented(_ id: String) throws -> [Int]? {
+            let box = try self.box(id)
+            let view = renderer.view
+            let inWindow = view.convert(CGPoint(x: box.minX + 7, y: box.midY), to: nil)
+            guard let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]), image.width > 0 else {
+                return nil
+            }
+            let rep = NSBitmapImageRep(cgImage: image)
+            let scale = CGFloat(image.width) / window.frame.width
+            guard let color = rep.colorAt(x: Int(inWindow.x * scale), y: Int((window.frame.height - inWindow.y) * scale))?.usingColorSpace(.sRGB) else {
+                return nil
+            }
+            return [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
+        }
+
         func background(_ id: String) -> String? {
             guard let node = element(id) else { return nil }
             return renderer.document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(renderer.dom.publicId(node)))["background-color"]
@@ -180,6 +195,36 @@ final class WidgetInteractionTests: XCTestCase {
         XCTAssertEqual(checks["input.tap"], "pass")
         XCTAssertEqual(checks["html.el.details"], "pass")
         XCTAssertEqual(checks["input.drag"], "pass")
+    }
+
+    func testHoverAndPressPaintOnScreen() throws {
+        let h = try Harness(self, html: WidgetInteractionTests.html)
+        defer { h.close() }
+        pump(0.6)
+        guard let idle = try h.presented("hov"), idle != [0, 0, 0] else {
+            throw XCTSkip("no window capture (screen recording permission or locked screen)")
+        }
+        assertColor(idle, [221, 221, 221])
+
+        h.send(.mouseMoved, try h.center("hov"))
+        pump(0.3)
+        let hovered = try XCTUnwrap(h.presented("hov"))
+        XCTAssertGreaterThan(hovered[1], hovered[0] + 40, "\(hovered) is not green on screen")
+        XCTAssertGreaterThan(hovered[1], hovered[2] + 40, "\(hovered) is not green on screen")
+
+        let press = try h.center("press")
+        h.send(.mouseMoved, press)
+        pump(0.3)
+        let rest = try XCTUnwrap(h.presented("press"))
+        assertColor(rest, [220, 224, 232])
+        assertColor(try XCTUnwrap(h.presented("hov")), idle)
+        h.send(.leftMouseDown, press)
+        pump(0.3)
+        let held = try XCTUnwrap(h.presented("press"))
+        XCTAssertGreaterThan(held[2], held[0] + 40, "\(held) is not blue on screen")
+        h.send(.leftMouseUp, press)
+        pump(0.3)
+        assertColor(try XCTUnwrap(h.presented("press")), rest)
     }
 
     static let html = #"""

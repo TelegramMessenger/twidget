@@ -796,6 +796,7 @@ struct LHCoverVisit
     BOOL                         _consumed;
     BOOL                         _consumedCulling;
     BOOL                         _reusedPrevious;
+    BOOL                         _inheritedPointerRestyle;
     CGFloat                      _consumedMaxWidth;
     NSString                    *_exclusionAttribute;
     NSSet<NSString *>           *_exclusions;
@@ -1098,6 +1099,7 @@ static std::string MasterWithCSS(NSString *css)
                 previous->_consumedMaxWidth = previous->_lastMaxWidth;
                 previous->_consumedCulling  = _container->clip_culling();
                 _reusedPrevious             = YES;
+                _inheritedPointerRestyle    = previous->_pointerRestyled;
                 if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0 && !previous->_pointerRestyled)
                 {
                     _lastMaxWidth = previous->_lastMaxWidth;
@@ -1251,6 +1253,7 @@ static std::string MasterWithCSS(NSString *css)
     previous->_consumedMaxWidth = previous->_lastMaxWidth;
     previous->_consumedCulling  = _container->clip_culling();
     _reusedPrevious             = YES;
+    _inheritedPointerRestyle    = previous->_pointerRestyled;
     if(_doc->last_patch_paint_only() && previous->_lastMaxWidth > 0 && !previous->_pointerRestyled)
     {
         _lastMaxWidth = previous->_lastMaxWidth;
@@ -1330,7 +1333,7 @@ static std::string MasterWithCSS(NSString *css)
 - (NSArray<NSValue *> *)layoutDirtyRects
 {
     std::lock_guard<std::mutex> guard(_lock);
-    if(!_reusedPrevious || _paintOnly || !_doc)
+    if(!_reusedPrevious || _paintOnly || !_doc || _inheritedPointerRestyle)
         return nil;
     std::vector<lh::position> regions;
     if(!_doc->layout_dirty_regions(regions))
