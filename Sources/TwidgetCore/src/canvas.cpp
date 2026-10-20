@@ -527,10 +527,14 @@ void Canvas::text(const std::string& full, double x, double y, const Value* max_
     const std::string& align = state_.align;
     o.text_dx = align == "center" ? -width / 2 : (align == "right" || align == "end") ? -width : 0;
     const std::string& baseline = state_.baseline;
+    // As Chromium places them: top, middle and bottom on the em box, hanging and ideographic on the
+    // font's own ascent and descent.
     float shift = 0;
-    if (baseline == "top" || baseline == "hanging") shift = m.ascent;
-    else if (baseline == "middle") shift = (m.ascent - m.descent) / 2;
-    else if (baseline == "bottom" || baseline == "ideographic") shift = -m.descent;
+    if (baseline == "top") shift = m.em_ascent;
+    else if (baseline == "hanging") shift = m.ascent * 0.8f;
+    else if (baseline == "middle") shift = (m.em_ascent - m.em_descent) / 2;
+    else if (baseline == "bottom") shift = -m.em_descent;
+    else if (baseline == "ideographic") shift = -m.descent;
     o.x = float(x);
     o.y = float(y) + shift;
     if (max_width && max_width->kind == Value::Number && max_width->number > 0 && width > max_width->number) o.scale_x = float(max_width->number / width);

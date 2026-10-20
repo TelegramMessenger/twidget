@@ -1673,6 +1673,31 @@ int main() {
         check(feb.asked.count("tnum=1,zero=1") && feb.asked.count("ss01=1,tnum=1,zero=0"),
               "font features from the variant and the settings, the settings winning");
 
+        // Canvas baselines: top, middle and bottom on the em box, hanging and ideographic on the font.
+        struct EmBox : StubBackend {
+            int create_font(const std::string&, float size, int, bool, const std::string&, FontMetrics& out) override {
+                out.ascent = size * 0.9f;
+                out.descent = size * 0.3f;
+                out.height = size * 1.2f;
+                out.em_ascent = size * 0.7f;
+                out.em_descent = size * 0.3f;
+                return ++next;
+            }
+        };
+        EmBox eb;
+        Renderer em(300, 1, false, eb);
+        em.receive(parse(PAGE));
+        std::string baselines;
+        for (const char* baseline : {"top", "hanging", "middle", "alphabetic", "bottom", "ideographic"})
+            baselines += std::string(R"(["s","textBaseline",")") + baseline + R"("],["c","fillText","x",0,0],)";
+        baselines.pop_back();
+        em.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","40"],["height","40"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"canvas","id":40,"cmds":[["s","font","10px sans-serif"],)" + baselines + "]}]}"));
+        std::string ys;
+        for (const CanvasOp& op : eb.runs.back())
+            if (op.kind == CanvasOp::Text) ys += css::format_number(op.y, 3) + " ";
+        check(ys == "7 7.2 2 0 -3 -3 ", "canvas text sits on the em box (got " + ys + ")");
+
         // A canvas drawn from a canvas made in the same batch, whose drawing comes after.
         Renderer c(300, 1, false, ib);
         c.receive(parse(PAGE));

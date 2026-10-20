@@ -205,6 +205,25 @@ namespace twlite
                 face->metrics.descent = m.descent * scale;
                 face->metrics.height = (m.ascent + m.descent + m.lineGap) * scale;
                 face->metrics.x_height = m.xHeight * scale;
+
+                // sTypoAscender and sTypoDescender, big-endian at 68 and 70 in the OS/2 table.
+                winrt::com_ptr<IDWriteFontFace> fontFace;
+                const void* table = nullptr;
+                UINT32 length = 0;
+                void* context = nullptr;
+                BOOL found = FALSE;
+                if (SUCCEEDED(font->CreateFontFace(fontFace.put()))
+                    && SUCCEEDED(fontFace->TryGetFontTable(DWRITE_MAKE_OPENTYPE_TAG('O', 'S', '/', '2'), &table, &length, &context, &found)) && found)
+                {
+                    auto bytes = static_cast<const uint8_t*>(table);
+                    if (length >= 72)
+                    {
+                        float typoAscent = float(int16_t(bytes[68] << 8 | bytes[69]));
+                        float typoDescent = -float(int16_t(bytes[70] << 8 | bytes[71]));
+                        set_em_box(face->metrics, typoAscent, typoDescent, size);
+                    }
+                    fontFace->ReleaseFontTable(context);
+                }
             }
             else
             {

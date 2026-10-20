@@ -241,6 +241,14 @@ int CGBackend::create_font(const std::string& families, float size, int weight, 
     f.metrics.descent = float(CTFontGetDescent(font));
     f.metrics.height = f.metrics.ascent + f.metrics.descent + float(CTFontGetLeading(font));
     f.metrics.x_height = float(CTFontGetXHeight(font));
+    // sTypoAscender and sTypoDescender, big-endian at 68 and 70 in the OS/2 table.
+    if (CFDataRef os2 = CTFontCopyTable(font, kCTFontTableOS2, kCTFontTableOptionNoOptions)) {
+        if (CFDataGetLength(os2) >= 72) {
+            const uint8_t* b = CFDataGetBytePtr(os2);
+            set_em_box(f.metrics, float(int16_t(b[68] << 8 | b[69])), -float(int16_t(b[70] << 8 | b[71])), size);
+        }
+        CFRelease(os2);
+    }
     int id = ++next_font_;
     fonts_[id] = f;
     f.metrics.zero_width = text_width(id, "0");

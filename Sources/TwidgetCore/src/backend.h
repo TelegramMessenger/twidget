@@ -7,6 +7,7 @@
 
 #include "canvas_ops.h"
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,7 +20,21 @@ struct FontMetrics {
     float height = 0;      // line height the font asks for (ascent + descent + leading)
     float x_height = 0;
     float zero_width = 0;  // advance of "0" (the `ch` unit)
+    // The em box canvas text is placed on: the font's typographic ascent and descent (OS/2 table)
+    // scaled to add up to its size, as Chromium normalises them. 0 and 0 when the backend cannot read
+    // them; the core then normalises ascent and descent instead.
+    float em_ascent = 0, em_descent = 0;
 };
+
+/// Sets `m`'s em box from an ascent and a descent (any unit, the descent positive) for a font `size` px:
+/// the ascent rounded to 1/64 px, the descent the rest. False, leaving it, when they make no box.
+inline bool set_em_box(FontMetrics& m, float ascent, float descent, float size) {
+    float height = ascent + descent;
+    if (ascent < 0 || descent < 0 || height <= 0 || size <= 0) return false;
+    m.em_ascent = std::round(ascent * size / height * 64) / 64;
+    m.em_descent = size - m.em_ascent;
+    return true;
+}
 
 class Backend {
 public:

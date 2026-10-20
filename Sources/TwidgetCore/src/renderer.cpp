@@ -1233,13 +1233,14 @@ public:
         }
         Face* face = face_for(family, size, weight, italic);
         FontMetrics fm = face ? face->metrics : FontMetrics{};
+        if (fm.em_ascent == 0 && fm.em_descent == 0) set_em_box(fm, fm.ascent, fm.descent, size);
         Json o = Json::object();
         float width = face ? face->width(backend_, text) : 0.0f;
         o.set("width", width);
         o.set("actualBoundingBoxLeft", 0).set("actualBoundingBoxRight", width);
         o.set("actualBoundingBoxAscent", fm.ascent * 0.8f).set("actualBoundingBoxDescent", fm.descent * 0.6f);
         o.set("fontBoundingBoxAscent", fm.ascent).set("fontBoundingBoxDescent", fm.descent);
-        o.set("emHeightAscent", fm.ascent).set("emHeightDescent", fm.descent);
+        o.set("emHeightAscent", fm.em_ascent).set("emHeightDescent", fm.em_descent);
         o.set("hangingBaseline", fm.ascent * 0.8f).set("alphabeticBaseline", 0).set("ideographicBaseline", -fm.descent);
         return o;
     }
@@ -3940,6 +3941,7 @@ int Renderer::canvas_font(const std::string& font, FontMetrics& metrics) {
     }
     css::Font f = css::parse_font(font);
     int handle = backend_.create_font(f.family, f.size, f.weight, f.italic, {}, metrics);
+    if (handle && metrics.em_ascent == 0 && metrics.em_descent == 0) set_em_box(metrics, metrics.ascent, metrics.descent, f.size);
     if (handle) canvas_fonts_.emplace(font, std::make_pair(handle, metrics));
     return handle;
 }

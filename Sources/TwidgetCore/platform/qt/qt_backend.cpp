@@ -6,6 +6,7 @@
 #include <QLinearGradient>
 #include <QPainter>
 #include <QRadialGradient>
+#include <QRawFont>
 #include <QConicalGradient>
 
 #include <algorithm>
@@ -421,6 +422,12 @@ int QtBackend::create_font(const std::string& families, float size, int weight, 
         face->metrics.height = float(m.lineSpacing());
         face->metrics.x_height = float(m.xHeight());
         face->metrics.zero_width = float(m.horizontalAdvance(QStringLiteral("0")));
+        // sTypoAscender and sTypoDescender, big-endian at 68 and 70 in the OS/2 table.
+        QByteArray os2 = QRawFont::fromFont(face->font).fontTable("OS/2");
+        if (os2.size() >= 72) {
+            auto at = [&](int i) { return float(int16_t(uint8_t(os2[i]) << 8 | uint8_t(os2[i + 1]))); };
+            set_em_box(face->metrics, at(68), -at(70), size);
+        }
         it = faces_.emplace(key, std::move(face)).first;
     }
 
