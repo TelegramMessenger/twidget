@@ -46,6 +46,8 @@ export interface Cmd {
   o?: number;
   h?: number;
   n?: number;
+  /** FilterPush, Backdrop: [kind, amount, x, y, argb] per function (display_list.h's Filter). */
+  fl?: number[][];
 }
 
 /** One canvas operation. */
@@ -83,7 +85,7 @@ export interface CanvasOpJson extends Partial<PathJson> {
 }
 
 /** Cmd kinds, CanvasOp kinds and Composite values, in the order of the C++ enums. */
-export const enum K { FillRect, StrokeRect, FillEllipse, StrokeEllipse, Text, Image, Linear, Radial, Conic, ClipPush, ClipPop, Path, GroupPush, GroupPop, Shadow }
+export const enum K { FillRect, StrokeRect, FillEllipse, StrokeEllipse, Text, Image, Linear, Radial, Conic, ClipPush, ClipPop, Path, GroupPush, GroupPop, Shadow, FilterPush, FilterPop, Backdrop }
 export const enum Op { Reset, Fill, Stroke, Clear, Text, Image, PutImage }
 const COMPOSITE: GlobalCompositeOperation[] = [
   'source-over', 'source-in', 'source-out', 'source-atop', 'destination-over', 'destination-in', 'destination-out', 'destination-atop',
@@ -106,6 +108,17 @@ export interface PaintResources {
 export function color(argb: number): string {
   const a = (argb >>> 24) & 255, r = (argb >>> 16) & 255, g = (argb >>> 8) & 255, b = argb & 255;
   return `rgba(${r},${g},${b},${a / 255})`;
+}
+
+/** A filter chain as the CSS the canvas's own `filter` takes; lengths times `scale`, canvas px per CSS px. */
+export function filterCss(fl: number[][], scale: number): string {
+  const names = ['blur', 'brightness', 'contrast', 'grayscale', 'hue-rotate', 'invert', 'opacity', 'saturate', 'sepia'];
+  return fl.map(([kind, amount, x, y, argb]) => {
+    if (kind === 0) return `blur(${amount * scale}px)`;
+    if (kind === 4) return `hue-rotate(${amount}deg)`;
+    if (kind === 9) return `drop-shadow(${x * scale}px ${y * scale}px ${amount * scale}px ${color(argb)})`;
+    return names[kind] ? `${names[kind]}(${amount})` : '';
+  }).join(' ') || 'none';
 }
 
 export function path2d(p: PathJson, into = new Path2D()): Path2D {
@@ -165,7 +178,7 @@ export class DisplayListPainter {
     }
     // A group with opacity draws into its own surface, composited once at its end: canvas 2D has no
     // transparency layer, and an alpha per primitive would darken where children overlap.
-    type Frame = { kind: 'save' } | { kind: 'layer'; parent: Ctx; surface: Surface; alpha: number };
+    type Frame = { kind: 'save' } | { kind: 'layer'; parent: Ctx; surface: Surface; alpha: number; filter?: string };
     const stack: Frame[] = [];
     let ctx: Ctx = root;
     const pop = () => {
@@ -176,6 +189,7 @@ export class DisplayListPainter {
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = f.alpha;
+      if (f.filter) ctx.filter = f.filter;
       ctx.drawImage(f.surface, 0, 0);
       ctx.restore();
       ctx.restore();
@@ -273,6 +287,39 @@ export class DisplayListPainter {
           } else {
             stack.push({ kind: 'save' });
           }
+          break;
+        }
+        case K.FilterPush: {
+          // What the element paints, on a surface of its own, drawn through the filters at FilterPop.
+          ctx.save();
+          if (!c.fl?.length) {
+            stack.push({ kind: 'save' });
+            break;
+          }
+          const t = ctx.getTransform();
+          const surface = makeSurface(ctx.canvas.width, ctx.canvas.height);
+          const inner = surface.getContext('2d') as Ctx;
+          inner.setTransform(t);
+          stack.push({ kind: 'layer', parent: ctx, surface, alpha: 1, filter: filterCss(c.fl, Math.hypot(t.a, t.b)) });
+          ctx = inner;
+          break;
+        }
+        case K.FilterPop:
+          pop();
+          break;
+        case K.Backdrop: {
+          // What is painted so far, filtered, back inside the box.
+          if (!c.fl?.length || !c.r) break;
+          const t = ctx.getTransform();
+          const copy = makeSurface(ctx.canvas.width, ctx.canvas.height);
+          (copy.getContext('2d') as Ctx).drawImage(ctx.canvas, 0, 0);
+          ctx.save();
+          ctx.clip(rounded(c.r, c.q));
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.filter = filterCss(c.fl, Math.hypot(t.a, t.b));
+          ctx.globalCompositeOperation = 'copy';
+          ctx.drawImage(copy, 0, 0);
+          ctx.restore();
           break;
         }
         case K.Path:
