@@ -130,6 +130,10 @@ namespace litehtml
         }
 
       public:
+        /// Sides a collapsed-border table cell leaves to its neighbour or the table, which win the
+        /// conflict (CSS 2.1 17.6.2.1): 1 left, 2 top, 4 right, 8 bottom.
+        uint8_t collapse_skip = 0;
+
         explicit render_item(std::shared_ptr<element> src_el);
 
         virtual ~render_item() = default;

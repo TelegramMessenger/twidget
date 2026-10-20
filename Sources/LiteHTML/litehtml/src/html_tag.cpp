@@ -1616,6 +1616,14 @@ namespace litehtml
                 }
 
                 borders bdr = m_css.get_borders();
+                if(ri->collapse_skip)
+                {
+                    // A collapsed table border its neighbour or the table draws instead.
+                    if(ri->collapse_skip & 1) bdr.left.style = border_style_none;
+                    if(ri->collapse_skip & 2) bdr.top.style = border_style_none;
+                    if(ri->collapse_skip & 4) bdr.right.style = border_style_none;
+                    if(ri->collapse_skip & 8) bdr.bottom.style = border_style_none;
+                }
                 if(bdr.is_visible())
                 {
                     border_box.round();

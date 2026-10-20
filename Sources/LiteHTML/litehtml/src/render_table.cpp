@@ -10,6 +10,107 @@ litehtml::render_item_table::render_item_table(std::shared_ptr<element> _src_el)
 {
 }
 
+namespace
+{
+    // CSS 2.1 17.6.2.1: wider wins, then the style in this order, then the cell over the table.
+    int border_rank(litehtml::border_style style)
+    {
+        using namespace litehtml;
+        switch(style)
+        {
+            case border_style_double: return 8;
+            case border_style_solid: return 7;
+            case border_style_dashed: return 6;
+            case border_style_dotted: return 5;
+            case border_style_ridge: return 4;
+            case border_style_outset: return 3;
+            case border_style_groove: return 2;
+            case border_style_inset: return 1;
+            default: return 0;
+        }
+    }
+
+    /// > 0 when a beats b, < 0 when b beats a, 0 on a tie.
+    float compare_borders(litehtml::pixel_t aw, litehtml::border_style as, litehtml::pixel_t bw, litehtml::border_style bs)
+    {
+        using namespace litehtml;
+        if(as == border_style_hidden || bs == border_style_hidden)
+        {
+            return as == border_style_hidden ? 1.f : -1.f;
+        }
+        aw = as == border_style_none ? 0_px : aw;
+        bw = bs == border_style_none ? 0_px : bw;
+        if(aw != bw)
+        {
+            return (aw - bw).value();
+        }
+        return float(border_rank(as) - border_rank(bs));
+    }
+} // namespace
+
+void litehtml::render_item_table::resolve_collapsed_borders()
+{
+    const css_borders& table = src_el()->css().get_borders();
+    const int          cols  = m_grid->cols_count(), rows = m_grid->rows_count();
+    for(int row = 0; row < rows; row++)
+    {
+        for(int col = 0; col < cols; col++)
+        {
+            if(table_cell* cell = m_grid->cell(col, row); cell->el)
+            {
+                cell->el->collapse_skip = 0;
+            }
+        }
+    }
+    for(int row = 0; row < rows; row++)
+    {
+        for(int col = 0; col < cols; col++)
+        {
+            table_cell* cell = m_grid->cell(col, row);
+            if(!cell->el)
+            {
+                continue;
+            }
+            const css_borders& own = cell->el->src_el()->css().get_borders();
+            // The table's own border beats a cell only when strictly stronger.
+            const int right = col + std::max(1, cell->colspan), below = row + std::max(1, cell->rowspan);
+            if(col == 0 && compare_borders(m_borders.left, table.left.style, cell->borders.left, own.left.style) > 0)
+                cell->el->collapse_skip |= 1;
+            if(row == 0 && compare_borders(m_borders.top, table.top.style, cell->borders.top, own.top.style) > 0)
+                cell->el->collapse_skip |= 2;
+            if(right >= cols && compare_borders(m_borders.right, table.right.style, cell->borders.right, own.right.style) > 0)
+                cell->el->collapse_skip |= 4;
+            if(below >= rows && compare_borders(m_borders.bottom, table.bottom.style, cell->borders.bottom, own.bottom.style) > 0)
+                cell->el->collapse_skip |= 8;
+            // Between cells the one to the left or above wins a tie.
+            if(right < cols)
+            {
+                table_cell* next = m_grid->cell(right, row);
+                if(next->el && next->el != cell->el)
+                {
+                    const css_borders& other = next->el->src_el()->css().get_borders();
+                    if(compare_borders(next->borders.left, other.left.style, cell->borders.right, own.right.style) > 0)
+                        cell->el->collapse_skip |= 4;
+                    else
+                        next->el->collapse_skip |= 1;
+                }
+            }
+            if(below < rows)
+            {
+                table_cell* next = m_grid->cell(col, below);
+                if(next->el && next->el != cell->el)
+                {
+                    const css_borders& other = next->el->src_el()->css().get_borders();
+                    if(compare_borders(next->borders.top, other.top.style, cell->borders.bottom, own.bottom.style) > 0)
+                        cell->el->collapse_skip |= 8;
+                    else
+                        next->el->collapse_skip |= 2;
+                }
+            }
+        }
+    }
+}
+
 litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t y,
                                                               const containing_block_context& containing_block_size,
                                                               formatting_context* fmt_ctx, bool /*second_pass*/)
@@ -20,6 +121,11 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
     }
 
     containing_block_context self_size = calculate_containing_block_context(containing_block_size);
+
+    if(src_el()->css().get_border_collapse() == border_collapse_collapse)
+    {
+        resolve_collapsed_borders();
+    }
 
     // Calculate table spacing
     pixel_t table_width_spacing = 0_px;
