@@ -60,6 +60,10 @@ private:
     /// Draws a keyed group (`inner`, between its GroupPush and GroupPop) from its raster, made first
     /// when missing. False when it cannot be rastered: the transform turns it, or it is too large.
     bool draw_raster(CGContextRef ctx, const Command& push, std::span<const Command> inner);
+    // `inner` (between a FilterPush and its FilterPop) drawn on a bitmap of its own and filtered there.
+    void draw_filtered(CGContextRef ctx, const Command& push, std::span<const Command> inner);
+    // backdrop-filter: the bitmap's pixels under the command's rect, filtered, back inside it.
+    void backdrop(CGContextRef ctx, const Command& c);
     // A raster depends on the scale and the fraction of a pixel it was drawn at, besides the key.
     using RasterKey = std::tuple<uint64_t, int64_t, int64_t, int64_t, int64_t>;
     struct Raster {

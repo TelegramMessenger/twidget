@@ -1,4 +1,5 @@
 #include "coregraphics.h"
+#include "filters.h"
 #include "png.h"
 
 #include <ImageIO/ImageIO.h>
@@ -557,7 +558,92 @@ size_t group_end(std::span<const Command> list, size_t at) {
     }
     return list.size();
 }
+
+/// The index of the FilterPop closing the filter opened at `at`, or list.size().
+size_t filter_end(std::span<const Command> list, size_t at) {
+    int depth = 0;
+    for (size_t i = at; i < list.size(); i++) {
+        if (list[i].kind == Cmd::FilterPush) depth++;
+        else if (list[i].kind == Cmd::FilterPop && --depth == 0) return i;
+    }
+    return list.size();
+}
 } // namespace
+
+void CGBackend::draw_filtered(CGContextRef ctx, const Command& push, std::span<const Command> inner) {
+    // User space → device px, y up; a filter under a rotation draws unfiltered.
+    CGAffineTransform device = CGContextGetCTM(ctx);
+    if (!push.filter || push.filter->empty() || device.b != 0 || device.c != 0 || !(device.a > 0) || device.d == 0) {
+        draw(ctx, inner);
+        return;
+    }
+    FilterReach reach = filter_reach(*push.filter);
+    CGRect box = CGRectMake(push.rect.x - reach.left, push.rect.y - reach.top, push.rect.w + reach.left + reach.right, push.rect.h + reach.top + reach.bottom);
+    CGRect bounds = CGRectIntegral(CGRectApplyAffineTransform(box, device));
+    size_t w = size_t(bounds.size.width), h = size_t(bounds.size.height);
+    if (CGRectIsEmpty(bounds) || int64_t(w) * int64_t(h) > MAX_RASTER_PIXELS / 4) {
+        draw(ctx, inner);
+        return;
+    }
+    CGContextRef layer = CGBitmapContextCreate(nullptr, w, h, 8, 0, rgb_, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    if (!layer) {
+        draw(ctx, inner);
+        return;
+    }
+    CGContextConcatCTM(layer, CGAffineTransformConcat(device, CGAffineTransformMakeTranslation(-bounds.origin.x, -bounds.origin.y)));
+    CGContextSetTextMatrix(layer, CGAffineTransformMakeScale(1, -1));
+    CGContextSetShouldAntialias(layer, true);
+    CGContextSetShouldSmoothFonts(layer, false);
+    CGContextSetInterpolationQuality(layer, kCGInterpolationHigh);
+    draw(layer, inner);
+    CGContextFlush(layer);
+    // The bitmap's first row is its top, as CSS has it: offsets go the right way.
+    filter_pixels(static_cast<uint8_t*>(CGBitmapContextGetData(layer)), int(w), int(h), CGBitmapContextGetBytesPerRow(layer), false, *push.filter, float(device.a));
+    CGImageRef image = CGBitmapContextCreateImage(layer);
+    CGContextRelease(layer);
+    if (!image) return;
+    CGContextSaveGState(ctx);
+    CGContextConcatCTM(ctx, CGAffineTransformInvert(CGContextGetCTM(ctx)));
+    CGContextDrawImage(ctx, bounds, image);
+    CGContextRestoreGState(ctx);
+    CGImageRelease(image);
+}
+
+void CGBackend::backdrop(CGContextRef ctx, const Command& c) {
+    // Only the bitmap the paint draws into has pixels to read; a transparency layer reads as what is under it.
+    auto* base = static_cast<uint8_t*>(CGBitmapContextGetData(ctx));
+    CGAffineTransform device = CGContextGetCTM(ctx);
+    if (!base || !c.filter || c.filter->empty() || c.rect.empty() || device.b != 0 || device.c != 0 || !(device.a > 0) || device.d == 0) return;
+    float spread = 0;
+    for (const Filter& f : *c.filter)
+        if (f.kind == Filter::Blur) spread += 3 * f.amount;
+    const size_t bw = CGBitmapContextGetWidth(ctx), bh = CGBitmapContextGetHeight(ctx), stride = CGBitmapContextGetBytesPerRow(ctx);
+    CGRect from = CGRectIntersection(CGRectIntegral(CGRectApplyAffineTransform(
+                                         CGRectMake(c.rect.x - spread, c.rect.y - spread, c.rect.w + 2 * spread, c.rect.h + 2 * spread), device)),
+                                     CGRectMake(0, 0, CGFloat(bw), CGFloat(bh)));
+    if (CGRectIsEmpty(from)) return;
+    const size_t x0 = size_t(from.origin.x), w = size_t(from.size.width), h = size_t(from.size.height);
+    // Device y is up; memory rows go down from the top.
+    const size_t top = bh - size_t(from.origin.y) - h;
+    std::vector<uint8_t> copy(w * h * 4);
+    for (size_t y = 0; y < h; y++) std::memcpy(&copy[y * w * 4], base + (top + y) * stride + x0 * 4, w * 4);
+    filter_pixels(copy.data(), int(w), int(h), w * 4, false, *c.filter, float(device.a));
+    CFHolder data(CFDataCreate(kCFAllocatorDefault, copy.data(), CFIndex(copy.size())));
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((CFDataRef)data.ref);
+    CGImageRef image = CGImageCreate(w, h, 8, 32, w * 4, rgb_, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big, provider, nullptr, false, kCGRenderingIntentDefault);
+    CGDataProviderRelease(provider);
+    if (!image) return;
+    CGContextSaveGState(ctx);
+    CGPathRef shape = rounded_path(c.rect, c.radii);
+    CGContextAddPath(ctx, shape);
+    CGContextClip(ctx);
+    CGPathRelease(shape);
+    CGContextConcatCTM(ctx, CGAffineTransformInvert(CGContextGetCTM(ctx)));
+    CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+    CGContextDrawImage(ctx, from, image);
+    CGContextRestoreGState(ctx);
+    CGImageRelease(image);
+}
 
 void CGBackend::trim() {
     for (auto& [key, raster] : rasters_) CGImageRelease(raster.image);
@@ -670,10 +756,16 @@ void CGBackend::draw(CGContextRef ctx, std::span<const Command> list) {
             stack.push_back(layer);
             break;
         }
-        // No filters here yet: what they wrap is drawn as it is (the Direct2D painter has them).
-        case Cmd::FilterPush:
+        case Cmd::FilterPush: {
+            size_t end = filter_end(list, i);
+            draw_filtered(ctx, c, list.subspan(i + 1, std::min(end, list.size()) - i - 1));
+            i = end;
+            break;
+        }
         case Cmd::FilterPop:
+            break;
         case Cmd::Backdrop:
+            backdrop(ctx, c);
             break;
         case Cmd::Path:
             if (c.path) draw_path(ctx, *c.path);
