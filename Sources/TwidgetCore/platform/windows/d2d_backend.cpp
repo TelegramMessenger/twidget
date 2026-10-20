@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -153,9 +155,9 @@ namespace twlite
         return L"Segoe UI";
     }
 
-    int D2DBackend::create_font(const std::string& families, float size, int weight, bool italic, FontMetrics& out)
+    int D2DBackend::create_font(const std::string& families, float size, int weight, bool italic, const std::string& features, FontMetrics& out)
     {
-        FaceKey key{ families, size, weight, italic };
+        FaceKey key{ families, size, weight, italic, features };
         auto it = m_faces.find(key);
         if (it == m_faces.end())
         {
@@ -170,6 +172,23 @@ namespace twlite
             }
 
             face->format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+            for (size_t start = 0; start < features.size();)
+            {
+                size_t end = std::min(features.find(',', start), features.size());
+                std::string_view entry(features.data() + start, end - start);
+                start = end + 1;
+                if (entry.size() < 6 || entry[4] != '=')
+                {
+                    continue;
+                }
+                if (!face->typography && FAILED(m_dwrite->CreateTypography(face->typography.put())))
+                {
+                    break;
+                }
+                auto tag = DWRITE_FONT_FEATURE_TAG(uint32_t(uint8_t(entry[0])) | uint32_t(uint8_t(entry[1])) << 8 | uint32_t(uint8_t(entry[2])) << 16 | uint32_t(uint8_t(entry[3])) << 24);
+                face->typography->AddFontFeature({ tag, UINT32(std::strtoul(std::string(entry.substr(5)).c_str(), nullptr, 10)) });
+            }
 
             UINT32 index;
             BOOL exists = FALSE;
@@ -233,6 +252,11 @@ namespace twlite
         if (FAILED(m_dwrite->CreateTextLayout(wide.c_str(), UINT32(wide.size()), face.format.get(), 1e6f, 1e6f, entry.layout.put())))
         {
             return nullptr;
+        }
+
+        if (face.typography)
+        {
+            entry.layout->SetTypography(face.typography.get(), { 0, UINT32(wide.size()) });
         }
 
         DWRITE_TEXT_METRICS metrics;

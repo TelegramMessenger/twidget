@@ -1245,7 +1245,7 @@ public:
 
     // ── document_container: fonts and text ──
     litehtml::uint_ptr create_font(const litehtml::font_description& descr, const litehtml::document*, litehtml::font_metrics* fm) override {
-        Face* face = face_for(descr.family, float(descr.size), descr.weight, descr.style == litehtml::font_style_italic);
+        Face* face = face_for(descr.family, float(descr.size), descr.weight, descr.style == litehtml::font_style_italic, descr.features);
         if (!face) return 0;
         const FontMetrics& m = face->metrics;
         face->uses++;
@@ -2183,9 +2183,9 @@ private:
             return w;
         }
     };
-    using FaceKey = std::tuple<std::string, float, int, bool>;
-    Face* face_for(const std::string& family, float size, int weight, bool italic) {
-        FaceKey key{family, size, weight, italic};
+    using FaceKey = std::tuple<std::string, float, int, bool, std::string>;
+    Face* face_for(const std::string& family, float size, int weight, bool italic, const std::string& features = {}) {
+        FaceKey key{family, size, weight, italic, features};
         auto it = faces_.find(key);
         if (it == faces_.end()) {
             // Past the bound, faces no document holds go, least recently used first.
@@ -2205,7 +2205,7 @@ private:
 #endif
             }
             auto face = std::make_unique<Face>();
-            face->handle = backend_.create_font(family, size, weight, italic, face->metrics);
+            face->handle = backend_.create_font(family, size, weight, italic, features, face->metrics);
             if (!face->handle) return nullptr;
             it = faces_.emplace(std::move(key), std::move(face)).first;
         }
@@ -3898,7 +3898,7 @@ int Renderer::canvas_font(const std::string& font, FontMetrics& metrics) {
         return it->second.first;
     }
     css::Font f = css::parse_font(font);
-    int handle = backend_.create_font(f.family, f.size, f.weight, f.italic, metrics);
+    int handle = backend_.create_font(f.family, f.size, f.weight, f.italic, {}, metrics);
     if (handle) canvas_fonts_.emplace(font, std::make_pair(handle, metrics));
     return handle;
 }

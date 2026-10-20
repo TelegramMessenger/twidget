@@ -28,7 +28,7 @@ void check(bool ok, const std::string& what) {
 struct StubBackend : Backend {
     int next = 0;
     std::vector<std::vector<CanvasOp>> runs;
-    int create_font(const std::string&, float size, int, bool, FontMetrics& out) override {
+    int create_font(const std::string&, float size, int, bool, const std::string&, FontMetrics& out) override {
         out.ascent = size * 0.8f;
         out.descent = size * 0.2f;
         out.height = size * 1.2f;
@@ -1606,6 +1606,26 @@ int main() {
         // The no-break space stays inside its word, so it reaches the painter in the middle of a run (the
         // stub measures it as its two bytes).
         check(runs == "ab@0 cd@34 e@76 ", "word-spacing widens each space as it paints (got " + runs + ")");
+
+        // font-variant-numeric and font-feature-settings reach the backend as one feature list.
+        struct Features : StubBackend {
+            std::set<std::string> asked;
+            int create_font(const std::string& families, float size, int weight, bool italic, const std::string& features, FontMetrics& out) override {
+                asked.insert(features);
+                return StubBackend::create_font(families, size, weight, italic, features, out);
+            }
+        };
+        Features feb;
+        Renderer fe(300, 1, false, feb);
+        fe.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","font-variant-numeric:tabular-nums slashed-zero"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"10"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"span","attrs":[["style","font-feature-settings:'zero' off, 'ss01'"]]},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"text","id":13,"data":"20"},{"op":"ins","parent":12,"id":13,"before":null}]})J"));
+        fe.paint();
+        check(feb.asked.count("tnum=1,zero=1") && feb.asked.count("ss01=1,tnum=1,zero=0"),
+              "font features from the variant and the settings, the settings winning");
 
         // A canvas drawn from a canvas made in the same batch, whose drawing comes after.
         Renderer c(300, 1, false, ib);

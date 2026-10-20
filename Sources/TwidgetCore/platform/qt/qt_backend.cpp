@@ -397,8 +397,8 @@ QStringList QtBackend::resolve_families(const std::string& families) {
     return out;
 }
 
-int QtBackend::create_font(const std::string& families, float size, int weight, bool italic, FontMetrics& out) {
-    FaceKey key{families, size, weight, italic};
+int QtBackend::create_font(const std::string& families, float size, int weight, bool italic, const std::string& features, FontMetrics& out) {
+    FaceKey key{families, size, weight, italic, features};
     auto it = faces_.find(key);
     if (it == faces_.end()) {
         auto face = std::make_shared<Face>();
@@ -408,6 +408,12 @@ int QtBackend::create_font(const std::string& families, float size, int weight, 
         face->font.setItalic(italic);
         // Unhinted outlines scale linearly, so widths measured here hold at any device pixel ratio.
         face->font.setHintingPreference(QFont::PreferNoHinting);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+        for (const QString& entry : QString::fromStdString(features).split(u',', Qt::SkipEmptyParts)) {
+            auto tag = QFont::Tag::fromString(entry.left(4));
+            if (entry.size() > 5 && entry[4] == u'=' && tag) face->font.setFeature(*tag, entry.mid(5).toUInt());
+        }
+#endif
 
         QFontMetricsF m(face->font, &reference_);
         face->metrics.ascent = float(m.ascent());

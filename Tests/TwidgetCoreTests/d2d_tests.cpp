@@ -117,10 +117,21 @@ static void test_cached_svg(Device& device) {
     check(backend.cached_rasters() == 0, "trim drops the rasters");
 }
 
+/// OpenType features reach the layout: Segoe UI's figures are tabular unless proportional ones are asked for.
+static void test_font_features(Device& device) {
+    D2DBackend backend(device.d2d.get(), device.dwrite.get(), device.wic.get());
+    FontMetrics m;
+    int tabular = backend.create_font("Segoe UI", 20, 400, false, "", m);
+    int proportional = backend.create_font("Segoe UI", 20, 400, false, "pnum=1", m);
+    float a = backend.text_width(tabular, "1111"), b = backend.text_width(proportional, "1111");
+    check(b > 0 && b < a - 1, "pnum=1 narrows the figures");
+}
+
 int main() {
     winrt::init_apartment(winrt::apartment_type::single_threaded);
     Device device;
     test_cached_svg(device);
+    test_font_features(device);
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

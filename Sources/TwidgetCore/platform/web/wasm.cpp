@@ -26,10 +26,10 @@ using twidget::Json;
 // ───────────── the JS side of the backend ─────────────
 // `Module` is the Emscripten module object (MODULARIZE); the TS glue puts its backend registry there.
 
-EM_JS(int, twl_js_create_font, (int backend, const char* families, float size, int weight, int italic, float* metrics), {
+EM_JS(int, twl_js_create_font, (int backend, const char* families, float size, int weight, int italic, const char* features, float* metrics), {
     var b = Module.twlBackends && Module.twlBackends.get(backend);
     if (!b) return 0;
-    var r = b.createFont(UTF8ToString(families), size, weight, !!italic);
+    var r = b.createFont(UTF8ToString(families), size, weight, !!italic, UTF8ToString(features));
     if (!r) return 0;
     var o = metrics >> 2;
     HEAPF32[o] = r.ascent; HEAPF32[o + 1] = r.descent; HEAPF32[o + 2] = r.height; HEAPF32[o + 3] = r.xHeight; HEAPF32[o + 4] = r.zeroWidth;
@@ -80,9 +80,9 @@ namespace {
 class JsBackend : public twlite::Backend {
 public:
     explicit JsBackend(int id) : id_(id) {}
-    int create_font(const std::string& families, float size, int weight, bool italic, twlite::FontMetrics& out) override {
+    int create_font(const std::string& families, float size, int weight, bool italic, const std::string& features, twlite::FontMetrics& out) override {
         float m[5] = {0, 0, 0, 0, 0};
-        int font = twl_js_create_font(id_, families.c_str(), size, weight, italic ? 1 : 0, m);
+        int font = twl_js_create_font(id_, families.c_str(), size, weight, italic ? 1 : 0, features.c_str(), m);
         out.ascent = m[0];
         out.descent = m[1];
         out.height = m[2];

@@ -22,7 +22,7 @@ namespace twlite
     public:
         D2DBackend(ID2D1Device* device, IDWriteFactory* dwrite, IWICImagingFactory* wic);
 
-        int create_font(const std::string& families, float size_px, int weight, bool italic, FontMetrics& out) override;
+        int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features, FontMetrics& out) override;
         void delete_font(int font) override;
         float text_width(int font, const std::string& text) override;
         bool load_image(int id, const std::string& url, float& w, float& h) override;
@@ -53,11 +53,13 @@ namespace twlite
         struct Face
         {
             winrt::com_ptr<IDWriteTextFormat> format;
+            // The OpenType features every run of the face is laid out with; null for the font's defaults.
+            winrt::com_ptr<IDWriteTypography> typography;
             FontMetrics metrics;
             std::unordered_map<std::string, Layout> layouts;
         };
 
-        using FaceKey = std::tuple<std::string, float, int, bool>;
+        using FaceKey = std::tuple<std::string, float, int, bool, std::string>;
 
         void paint_span(std::span<const Command> list, ID2D1DeviceContext* ctx);
         // Draws a keyed group (`inner`, between its GroupPush and GroupPop) from its raster, made first

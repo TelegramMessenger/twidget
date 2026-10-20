@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <iterator>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 static inline void TWClipPath(CGContextRef ctx, bool evenOdd) {
@@ -160,7 +161,7 @@ CGBackend::~CGBackend() {
     CGColorSpaceRelease(rgb_);
 }
 
-int CGBackend::create_font(const std::string& families, float size, int weight, bool italic, FontMetrics& out) {
+int CGBackend::create_font(const std::string& families, float size, int weight, bool italic, const std::string& features, FontMetrics& out) {
     CTFontRef base = nullptr;
     std::string list = families;
     size_t start = 0;
@@ -208,6 +209,30 @@ int CGBackend::create_font(const std::string& families, float size, int weight, 
         if (CTFontRef it = CTFontCreateCopyWithSymbolicTraits(font, size, nullptr, kCTFontTraitItalic, kCTFontTraitItalic)) {
             CFRelease(font);
             font = it;
+        }
+    }
+    if (!features.empty()) {
+        CFHolder settings(CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks));
+        for (size_t start = 0; start < features.size();) {
+            size_t end = std::min(features.find(',', start), features.size());
+            std::string entry = features.substr(start, end - start);
+            start = end + 1;
+            if (entry.size() < 6 || entry[4] != '=') continue;
+            int value = std::atoi(entry.c_str() + 5);
+            CFHolder tag(cfstr(entry.substr(0, 4)));
+            CFHolder number(CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &value));
+            const void* keys[] = {kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue};
+            const void* vals[] = {tag.ref, number.ref};
+            CFHolder setting(CFDictionaryCreate(kCFAllocatorDefault, keys, vals, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
+            CFArrayAppendValue((CFMutableArrayRef)settings.ref, setting.ref);
+        }
+        const void* akeys[] = {kCTFontFeatureSettingsAttribute};
+        const void* avals[] = {settings.ref};
+        CFHolder attrs(CFDictionaryCreate(kCFAllocatorDefault, akeys, avals, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
+        CFHolder desc(CTFontDescriptorCreateWithAttributes((CFDictionaryRef)attrs.ref));
+        if (CTFontRef featured = CTFontCreateCopyWithAttributes(font, size, nullptr, (CTFontDescriptorRef)desc.ref)) {
+            CFRelease(font);
+            font = featured;
         }
     }
     Font f;

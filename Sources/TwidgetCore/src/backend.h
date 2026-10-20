@@ -26,8 +26,10 @@ public:
     virtual ~Backend() = default;
     /// `families`: the CSS `font-family` list as written (quotes kept, comma separated); the
     /// backend resolves generics (`-apple-system`, `system-ui`, `sans-serif`, …) and falls back
-    /// to its default face. Returns a handle > 0, or 0 when no font at all could be made.
-    virtual int create_font(const std::string& families, float size_px, int weight, bool italic, FontMetrics& out) = 0;
+    /// to its default face. `features`: OpenType features to turn on or off, as `tag=value` pairs
+    /// joined by commas (`tnum=1,zero=1`), from font-variant-numeric and font-feature-settings; empty
+    /// for the font's defaults. Returns a handle > 0, or 0 when no font at all could be made.
+    virtual int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features, FontMetrics& out) = 0;
     virtual void delete_font(int font) = 0;
     /// Advance width of `text` (UTF-8) in CSS px.
     virtual float text_width(int font, const std::string& text) = 0;

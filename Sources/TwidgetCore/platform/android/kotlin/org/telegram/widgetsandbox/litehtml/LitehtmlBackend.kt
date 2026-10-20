@@ -29,12 +29,16 @@ class LitehtmlBackend {
 
     // ── callbacks from C++ (names and signatures are looked up by jni.cpp) ──
 
-    /** [id, ascent, descent, height, xHeight, zeroWidth]; id 0 when no font could be made. */
+    /**
+     * [id, ascent, descent, height, xHeight, zeroWidth]; id 0 when no font could be made. `features` is
+     * in font-feature-settings syntax, empty for the font's defaults.
+     */
     @Keep
-    fun createFont(families: String, sizePx: Float, weight: Int, italic: Boolean): FloatArray {
+    fun createFont(families: String, sizePx: Float, weight: Int, italic: Boolean, features: String): FloatArray {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
         paint.textSize = sizePx
         paint.typeface = typeface(families, weight, italic)
+        if (features.isNotEmpty()) paint.fontFeatureSettings = features
         val fm = paint.fontMetrics
         val id = ++nextFont
         fonts[id] = paint

@@ -19,7 +19,7 @@ namespace {
 
 struct StubBackend : Backend {
     int next = 0;
-    int create_font(const std::string&, float size, int, bool, FontMetrics& out) override {
+    int create_font(const std::string&, float size, int, bool, const std::string&, FontMetrics& out) override {
         out.ascent = size * 0.8f;
         out.descent = size * 0.2f;
         out.height = size * 1.2f;

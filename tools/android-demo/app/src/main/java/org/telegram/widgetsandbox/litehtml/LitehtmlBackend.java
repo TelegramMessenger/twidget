@@ -59,11 +59,17 @@ public final class LitehtmlBackend {
 
     // ── callbacks from C++ ──
 
-    /** [id, ascent, descent, height, xHeight, zeroWidth]; id 0 when no font could be made. */
-    public float[] createFont(String families, float sizePx, int weight, boolean italic) {
+    /**
+     * [id, ascent, descent, height, xHeight, zeroWidth]; id 0 when no font could be made. `features` is
+     * in font-feature-settings syntax, empty for the font's defaults.
+     */
+    public float[] createFont(String families, float sizePx, int weight, boolean italic, String features) {
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         paint.setTextSize(sizePx);
         paint.setTypeface(typeface(families, weight, italic));
+        if (!features.isEmpty()) {
+            paint.setFontFeatureSettings(features);
+        }
         Paint.FontMetrics fm = paint.getFontMetrics();
         int id = ++nextFont;
         fonts.put(id, paint);

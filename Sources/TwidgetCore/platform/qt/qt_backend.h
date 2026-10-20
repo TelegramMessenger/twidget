@@ -24,7 +24,7 @@ class QtBackend : public Backend {
 public:
     QtBackend();
 
-    int create_font(const std::string& families, float size_px, int weight, bool italic, FontMetrics& out) override;
+    int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features, FontMetrics& out) override;
     void delete_font(int font) override;
     float text_width(int font, const std::string& text) override;
     bool load_image(int id, const std::string& url, float& w, float& h) override;
@@ -50,7 +50,7 @@ private:
         FontMetrics metrics;
         std::unordered_map<std::string, float> widths;
     };
-    using FaceKey = std::tuple<std::string, float, int, bool>;
+    using FaceKey = std::tuple<std::string, float, int, bool, std::string>;
 
     Face* face(int font);
     /// One pass of paint(): everything, or only `area_only` (device px), cleared first.

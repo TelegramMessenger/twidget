@@ -11,6 +11,7 @@
 #include <android/log.h>
 #include <jni.h>
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <memory>
@@ -101,7 +102,7 @@ public:
     JniBackend(JNIEnv* env, jobject backend) {
         backend_ = env->NewGlobalRef(backend);
         jclass cls = env->GetObjectClass(backend);
-        create_font_ = env->GetMethodID(cls, "createFont", "(Ljava/lang/String;FIZ)[F");
+        create_font_ = env->GetMethodID(cls, "createFont", "(Ljava/lang/String;FIZLjava/lang/String;)[F");
         delete_font_ = env->GetMethodID(cls, "deleteFont", "(I)V");
         text_width_ = env->GetMethodID(cls, "textWidth", "(ILjava/lang/String;)F");
         load_image_ = env->GetMethodID(cls, "loadImage", "(ILjava/lang/String;)[F");
@@ -115,12 +116,24 @@ public:
         if (g_env) g_env->DeleteGlobalRef(backend_);
     }
 
-    int create_font(const std::string& families, float size, int weight, bool italic, twlite::FontMetrics& out) override {
+    int create_font(const std::string& families, float size, int weight, bool italic, const std::string& features, twlite::FontMetrics& out) override {
         JNIEnv* env = g_env;
         if (!env) return 0;
         jstring fam = new_string(env, families);
-        auto arr = (jfloatArray)env->CallObjectMethod(backend_, create_font_, fam, (jfloat)size, (jint)weight, (jboolean)italic);
+        // Paint.setFontFeatureSettings takes CSS syntax: `tnum=1,zero=1` becomes `'tnum' 1, 'zero' 1`.
+        std::string css;
+        for (size_t start = 0; start < features.size();) {
+            size_t end = std::min(features.find(',', start), features.size());
+            if (end - start > 5 && features[start + 4] == '=') {
+                if (!css.empty()) css += ", ";
+                css += "'" + features.substr(start, 4) + "' " + features.substr(start + 5, end - start - 5);
+            }
+            start = end + 1;
+        }
+        jstring feat = new_string(env, css);
+        auto arr = (jfloatArray)env->CallObjectMethod(backend_, create_font_, fam, (jfloat)size, (jint)weight, (jboolean)italic, feat);
         env->DeleteLocalRef(fam);
+        env->DeleteLocalRef(feat);
         if (clear_exception(env) || !arr) return 0;
         jfloat v[6] = {0, 0, 0, 0, 0, 0};
         jsize n = env->GetArrayLength(arr);
