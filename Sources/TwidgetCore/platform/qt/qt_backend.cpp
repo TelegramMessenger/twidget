@@ -1,4 +1,5 @@
 #include "qt_backend.h"
+#include "png.h"
 
 #include <QFontDatabase>
 #include <QFontInfo>
@@ -10,6 +11,7 @@
 #include <QConicalGradient>
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <optional>
 
@@ -468,7 +470,10 @@ bool QtBackend::load_image(int id, const std::string& url, float& w, float& h) {
     QByteArray bytes = meta.find(";base64") != std::string::npos ? QByteArray::fromBase64(payload) : QByteArray::fromPercentEncoding(payload);
     QImage image;
     if (bytes.isEmpty() || !image.loadFromData(bytes)) return false;
-    images_[id] = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QImage& kept = images_[id] = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    // Qt's decoder carries on through a broken stream; Chromium leaves what follows the damage transparent.
+    size_t intact = png_intact_rows(reinterpret_cast<const uint8_t*>(bytes.constData()), size_t(bytes.size()));
+    for (int y = int(std::min<size_t>(intact, size_t(kept.height()))); y < kept.height(); y++) std::memset(kept.scanLine(y), 0, size_t(kept.bytesPerLine()));
     w = float(image.width());
     h = float(image.height());
     return true;

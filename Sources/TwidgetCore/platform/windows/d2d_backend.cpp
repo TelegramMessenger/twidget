@@ -1,4 +1,5 @@
 #include "d2d_backend.h"
+#include "png.h"
 
 #include <d2d1effects.h>
 #include <dwrite_1.h>
@@ -356,6 +357,23 @@ namespace twlite
         bitmap->GetSize(&width, &height);
         w = float(width);
         h = float(height);
+
+        // WIC carries on through a broken stream; Chromium leaves what follows the damage transparent.
+        size_t intact = png_intact_rows(bytes.data(), bytes.size());
+        if (intact < height)
+        {
+            WICRect rows{ 0, INT(intact), INT(width), INT(height - intact) };
+            winrt::com_ptr<IWICBitmapLock> lock;
+            UINT stride = 0, size = 0;
+            BYTE* pixels = nullptr;
+            if (SUCCEEDED(bitmap->Lock(&rows, WICBitmapLockWrite, lock.put())) && SUCCEEDED(lock->GetStride(&stride)) && SUCCEEDED(lock->GetDataPointer(&size, &pixels)))
+            {
+                for (UINT y = 0; y < UINT(rows.Height); y++)
+                {
+                    std::memset(pixels + size_t(y) * stride, 0, size_t(width) * 4);
+                }
+            }
+        }
 
         m_images[id] = Image{ bitmap, nullptr };
         return true;

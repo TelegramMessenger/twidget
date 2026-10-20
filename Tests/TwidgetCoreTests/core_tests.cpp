@@ -1,6 +1,7 @@
 // Drives TwidgetCore without a platform: ops in, events, display lists and layers out, against a
 // stub backend that measures text as 8 px per byte.
 #include "css.h"
+#include "png.h"
 #include "renderer.h"
 
 #include <algorithm>
@@ -1697,6 +1698,42 @@ int main() {
         for (const CanvasOp& op : eb.runs.back())
             if (op.kind == CanvasOp::Text) ys += css::format_number(op.y, 3) + " ";
         check(ys == "7 7.2 2 0 -3 -3 ", "canvas text sits on the em box (got " + ys + ")");
+
+        // A broken PNG keeps the rows before the damage. These are 2 × 3 RGBA, their data one stored block.
+        auto png = [](std::vector<uint8_t> rows, bool end) {
+            auto crc = [](const std::vector<uint8_t>& v, size_t from) {
+                uint32_t c = 0xFFFFFFFFu;
+                for (size_t i = from; i < v.size(); i++) {
+                    c ^= v[i];
+                    for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                }
+                return c ^ 0xFFFFFFFFu;
+            };
+            std::vector<uint8_t> out{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+            auto chunk = [&](const char* type, const std::vector<uint8_t>& data) {
+                for (int s = 24; s >= 0; s -= 8) out.push_back(uint8_t(data.size() >> s));
+                size_t start = out.size();
+                out.insert(out.end(), type, type + 4);
+                out.insert(out.end(), data.begin(), data.end());
+                uint32_t c = crc(out, start);
+                for (int s = 24; s >= 0; s -= 8) out.push_back(uint8_t(c >> s));
+            };
+            chunk("IHDR", {0, 0, 0, 2, 0, 0, 0, 3, 8, 6, 0, 0, 0});
+            std::vector<uint8_t> z{0x78, 0x01, 0x01, uint8_t(rows.size()), uint8_t(rows.size() >> 8), uint8_t(~rows.size()), uint8_t(~rows.size() >> 8)};
+            z.insert(z.end(), rows.begin(), rows.end());
+            chunk("IDAT", z);
+            if (end) chunk("IEND", {});
+            return out;
+        };
+        std::vector<uint8_t> good(27, 0x7f), bad = good, truncated(good.begin(), good.begin() + 20);
+        good[0] = good[9] = good[18] = 0;
+        bad[0] = bad[9] = 0;
+        bad[18] = 7;
+        truncated[0] = truncated[9] = 0;
+        auto rows_of = [](const std::vector<uint8_t>& p) { return png_intact_rows(p.data(), p.size()); };
+        check(rows_of(png(good, true)) == SIZE_MAX, "an intact PNG keeps every row");
+        check(rows_of(png(bad, false)) == 2, "rows stop at an unknown filter type");
+        check(rows_of(png(truncated, false)) == 2, "and where the data runs out");
 
         // A canvas drawn from a canvas made in the same batch, whose drawing comes after.
         Renderer c(300, 1, false, ib);

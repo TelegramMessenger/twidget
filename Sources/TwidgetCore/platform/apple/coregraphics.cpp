@@ -1,4 +1,5 @@
 #include "coregraphics.h"
+#include "png.h"
 
 #include <ImageIO/ImageIO.h>
 
@@ -321,6 +322,21 @@ bool CGBackend::load_image(int id, const std::string& url, float& w, float& h) {
     if (!source.ref) return false;
     CGImageRef img = CGImageSourceCreateImageAtIndex((CGImageSourceRef)source.ref, 0, nullptr);
     if (!img) return false;
+    // ImageIO carries on through a broken stream; Chromium leaves what follows the damage transparent.
+    size_t intact = png_intact_rows(bytes.data(), bytes.size());
+    size_t iw = CGImageGetWidth(img), ih = CGImageGetHeight(img);
+    if (intact < ih) {
+        if (CGContextRef ctx = CGBitmapContextCreate(nullptr, iw, ih, 8, 0, rgb_, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big)) {
+            // The context's origin is its bottom left: the kept rows are the top ones.
+            CGContextClipToRect(ctx, CGRectMake(0, CGFloat(ih - intact), CGFloat(iw), CGFloat(intact)));
+            CGContextDrawImage(ctx, CGRectMake(0, 0, CGFloat(iw), CGFloat(ih)), img);
+            if (CGImageRef kept = CGBitmapContextCreateImage(ctx)) {
+                CGImageRelease(img);
+                img = kept;
+            }
+            CGContextRelease(ctx);
+        }
+    }
     auto old = images_.find(id);
     if (old != images_.end() && old->second) CGImageRelease(old->second);
     images_[id] = img;
