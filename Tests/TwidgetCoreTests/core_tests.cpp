@@ -1533,6 +1533,17 @@ int main() {
               "an SVG shape's rect goes through the view box (got x " + std::to_string(rect["x"].asNumber()) + " w " + std::to_string(rect["width"].asNumber()) + ")");
         double length = ask(Json::object().set("q", "svg").set("id", 12).set("method", "getComputedTextLength")).asNumber();
         check(length > 10, "getComputedTextLength measures an SVG text (got " + std::to_string(length) + ")");
+
+        // Computed paint: inherited from a group, currentColor resolved; a link in the UA colour.
+        s.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":20,"tag":"g","svg":true,"attrs":[["fill","#0a0"],["stroke","currentColor"],["style","color:rgb(1, 2, 3)"]]},{"op":"ins","parent":10,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"circle","svg":true,"attrs":[["r","4"]]},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"el","id":22,"tag":"a","attrs":[["href","https://t.me"]]},{"op":"ins","parent":4,"id":22,"before":null},
+            {"op":"text","id":23,"data":"link"},{"op":"ins","parent":22,"id":23,"before":null}]})J"));
+        Json cs = ask(Json::object().set("q", "cs").set("id", 21));
+        check(cs["fill"].asString() == "rgb(0, 170, 0)" && cs["stroke"].asString() == "rgb(1, 2, 3)",
+              "fill and stroke inherit, currentColor resolved (got " + cs["fill"].asString() + ", " + cs["stroke"].asString() + ")");
+        check(ask(Json::object().set("q", "cs").set("id", 11))["stroke"].asString() == "none", "no stroke is none");
+        check(ask(Json::object().set("q", "cs").set("id", 22))["color"].asString() == "rgb(0, 0, 238)", "a link is #0000ee");
     }
 
     // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──

@@ -3,6 +3,7 @@
 #include "css.h"
 
 #include <litehtml/el_before_after.h>
+#include <litehtml/el_svg.h>
 #include <litehtml/html_tag.h>
 #include <litehtml/render_item.h>
 
@@ -336,10 +337,17 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("outline-width", outlined ? len(outline.width, "3px") : std::string("0px"));
     o.set("outline-color", color(outline.color.alpha ? outline.color : css.get_color()));
     o.set("outline-offset", px(double(css.get_outline_offset())));
-    o.set("fill", declared("fill", "rgb(0, 0, 0)")).set("stroke", declared("stroke", "none"));
-    for (const char* paint : {"fill", "stroke"}) {
+    for (bool fill : {true, false}) {
+        // A paint server stays as written. Otherwise the paint is the one litehtml draws with: inherited
+        // (through a <use> to what it draws, too), currentColor resolved.
+        const char* name = fill ? "fill" : "stroke";
+        std::string value = declared(name, "");
         Color c;
-        if (css::parse_color(o[paint].asString(), c)) o.set(paint, color(litehtml::web_color(c.r, c.g, c.b, c.a)));
+        litehtml::web_color painted;
+        if (value.find("url(") != std::string::npos) o.set(name, value);
+        else if (css::parse_color(value, c)) o.set(name, color(litehtml::web_color(c.r, c.g, c.b, c.a)));
+        else if (litehtml::svg_paint_color(el, fill, painted, el->get_document()->container())) o.set(name, color(painted));
+        else o.set(name, "none");
     }
 
     // Flex and grid.

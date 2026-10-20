@@ -58,6 +58,7 @@ constexpr double SCRIPT_FOCUS_S = 1;
 /// (the fork has no layers; the master sheet is below every author rule anyway). Its
 /// `user-select: none` rule is left out: the renderer has no text selection.
 const char* const UA_EXTRA = R"css(
+a:link{color:#0000ee}
 button,input,select,textarea,meter,progress{box-sizing:border-box}
 input,select,textarea{display:inline-block;border:1px solid #8f8f8f;border-radius:3px;background:#fff;color:#000;padding:2px 6px;font:13.333px -apple-system,system-ui,sans-serif;min-height:1.8em;min-width:2em;vertical-align:middle}
 :where(button){display:inline-block;text-align:center}
