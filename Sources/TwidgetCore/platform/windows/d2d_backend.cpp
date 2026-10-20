@@ -1,4 +1,5 @@
 #include "d2d_backend.h"
+#include "filters.h"
 #include "png.h"
 
 #include <d2d1effects.h>
@@ -1170,8 +1171,7 @@ namespace twlite
 
     winrt::com_ptr<ID2D1Image> D2DBackend::filtered(ID2D1DeviceContext* ctx, ID2D1Image* input, const Filters& steps, float scale)
     {
-        // https://drafts.fxtf.org/filter-effects-1/#ShorthandEquivalents: the colour functions are colour
-        // matrices on straight alpha; blur is a Gaussian whose standard deviation is the radius.
+        // Blur is a Gaussian whose standard deviation is the radius; the colour functions are color_matrix's.
         auto matrix = [](const float rgb[9], float offset, float alpha) {
             D2D1_MATRIX_5X4_F m{};
             for (int out = 0; out < 3; out++)
@@ -1211,64 +1211,10 @@ namespace twlite
             }
             else
             {
-                const float a = f.amount;
-                float rgb[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-                float offset = 0, alpha = 1;
-                switch (f.kind)
-                {
-                case Filter::Brightness:
-                    rgb[0] = rgb[4] = rgb[8] = a;
-                    break;
-                case Filter::Contrast:
-                    rgb[0] = rgb[4] = rgb[8] = a;
-                    offset = (1 - a) / 2;
-                    break;
-                case Filter::Invert:
-                {
-                    const float k = std::min(a, 1.0f);
-                    rgb[0] = rgb[4] = rgb[8] = 1 - 2 * k;
-                    offset = k;
-                    break;
-                }
-                case Filter::Opacity:
-                    alpha = std::clamp(a, 0.0f, 1.0f);
-                    break;
-                case Filter::Grayscale:
-                case Filter::Sepia:
-                {
-                    const float s = 1 - std::min(a, 1.0f);
-                    const float grey[9] = {0.2126f + 0.7874f * s, 0.7152f - 0.7152f * s, 0.0722f - 0.0722f * s,
-                                           0.2126f - 0.2126f * s, 0.7152f + 0.2848f * s, 0.0722f - 0.0722f * s,
-                                           0.2126f - 0.2126f * s, 0.7152f - 0.7152f * s, 0.0722f + 0.9278f * s};
-                    const float sepia[9] = {0.393f + 0.607f * s, 0.769f - 0.769f * s, 0.189f - 0.189f * s,
-                                            0.349f - 0.349f * s, 0.686f + 0.314f * s, 0.168f - 0.168f * s,
-                                            0.272f - 0.272f * s, 0.534f - 0.534f * s, 0.131f + 0.869f * s};
-                    std::copy_n(f.kind == Filter::Grayscale ? grey : sepia, 9, rgb);
-                    break;
-                }
-                case Filter::Saturate:
-                {
-                    const float s = a;
-                    const float m[9] = {0.213f + 0.787f * s, 0.715f - 0.715f * s, 0.072f - 0.072f * s,
-                                        0.213f - 0.213f * s, 0.715f + 0.285f * s, 0.072f - 0.072f * s,
-                                        0.213f - 0.213f * s, 0.715f - 0.715f * s, 0.072f + 0.928f * s};
-                    std::copy_n(m, 9, rgb);
-                    break;
-                }
-                case Filter::HueRotate:
-                {
-                    const float r = a * 3.14159265f / 180, c = std::cos(r), s = std::sin(r);
-                    const float m[9] = {0.213f + c * 0.787f - s * 0.213f, 0.715f - c * 0.715f - s * 0.715f, 0.072f - c * 0.072f + s * 0.928f,
-                                        0.213f - c * 0.213f + s * 0.143f, 0.715f + c * 0.285f + s * 0.140f, 0.072f - c * 0.072f - s * 0.283f,
-                                        0.213f - c * 0.213f - s * 0.787f, 0.715f - c * 0.715f + s * 0.715f, 0.072f + c * 0.928f + s * 0.072f};
-                    std::copy_n(m, 9, rgb);
-                    break;
-                }
-                default:
-                    break;
-                }
+                ColorMatrix cm;
+                if (!color_matrix(f, cm)) continue;
                 if (FAILED(ctx->CreateEffect(CLSID_D2D1ColorMatrix, effect.put()))) continue;
-                effect->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, matrix(rgb, offset, alpha));
+                effect->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, matrix(cm.rgb, cm.offset, cm.alpha));
                 effect->SetValue(D2D1_COLORMATRIX_PROP_ALPHA_MODE, D2D1_COLORMATRIX_ALPHA_MODE_STRAIGHT);
                 effect->SetValue(D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT, TRUE);
             }

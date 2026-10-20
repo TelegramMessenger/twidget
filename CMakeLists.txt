@@ -62,6 +62,7 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/canvas.cpp"
     "${TW_CORE}/src/compositor.cpp"
     "${TW_CORE}/src/encode.cpp"
+    "${TW_CORE}/src/filters.cpp"
     "${TW_CORE}/src/png.cpp")
 add_library(twidget::core ALIAS twidget_core)
 target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" "${TW_SANDBOX_INCLUDE}")

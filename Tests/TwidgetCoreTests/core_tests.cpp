@@ -1,6 +1,7 @@
 // Drives TwidgetCore without a platform: ops in, events, display lists and layers out, against a
 // stub backend that measures text as 8 px per byte.
 #include "css.h"
+#include "filters.h"
 #include "png.h"
 #include "renderer.h"
 
@@ -1773,6 +1774,38 @@ int main() {
         check(rows_of(png(good, true)) == SIZE_MAX, "an intact PNG keeps every row");
         check(rows_of(png(bad, false)) == 2, "rows stop at an unknown filter type");
         check(rows_of(png(truncated, false)) == 2, "and where the data runs out");
+
+        // The CPU filters of the painters that draw into memory.
+        auto filtered = [](std::vector<uint8_t> px, int w, int h, Filters fs, bool bgra = false) {
+            filter_pixels(px.data(), w, h, size_t(w) * 4, bgra, fs, 1);
+            return px;
+        };
+        auto f = [](Filter::Kind kind, float amount) { Filter x; x.kind = kind; x.amount = amount; return x; };
+        std::vector<uint8_t> red{255, 0, 0, 255};
+        auto grey = filtered(red, 1, 1, {f(Filter::Grayscale, 1)});
+        check(grey[0] == 54 && grey[1] == 54 && grey[2] == 54 && grey[3] == 255, "grayscale(1) of red is its luminance (got " + std::to_string(grey[0]) + ")");
+        auto bgr = filtered({0, 0, 255, 255}, 1, 1, {f(Filter::Grayscale, 1)}, true);
+        check(bgr[2] == 54 && bgr[0] == 54, "B, G, R, A bytes are read as such");
+        auto faded = filtered(red, 1, 1, {f(Filter::Opacity, 0.5f)});
+        check(faded[3] == 128 && faded[0] == 128, "opacity keeps the colour premultiplied (got " + std::to_string(faded[0]) + ", " + std::to_string(faded[3]) + ")");
+        auto inverted = filtered({0, 0, 0, 255}, 1, 1, {f(Filter::Invert, 1)});
+        check(inverted[0] == 255 && inverted[1] == 255, "invert(1) of black is white");
+        std::vector<uint8_t> dot(21 * 21 * 4, 0);
+        dot[(10 * 21 + 10) * 4 + 3] = 255;
+        auto blurred = filtered(dot, 21, 21, {f(Filter::Blur, 2)});
+        int spread = 0, total = 0;
+        for (int i = 0; i < 21 * 21; i++) {
+            spread += blurred[size_t(i) * 4 + 3] > 0;
+            total += blurred[size_t(i) * 4 + 3];
+        }
+        check(spread > 9 && blurred[(10 * 21 + 10) * 4 + 3] < 255 && total > 180 && total < 330, "blur spreads a dot and keeps its alpha (" + std::to_string(spread) + " px, " + std::to_string(total) + ")");
+        Filter shadow = f(Filter::DropShadow, 0);
+        shadow.x = 3;
+        shadow.color = Color{0, 0, 255, 255};
+        std::vector<uint8_t> left(8 * 1 * 4, 0);
+        left[0] = 255; left[3] = 255;
+        auto shadowed = filtered(left, 8, 1, {shadow});
+        check(shadowed[3 * 4 + 2] == 255 && shadowed[3 * 4 + 3] == 255 && shadowed[0] == 255, "a drop shadow is the alpha in its colour, moved, under the image");
 
         // A canvas drawn from a canvas made in the same batch, whose drawing comes after.
         Renderer c(300, 1, false, ib);
