@@ -163,6 +163,25 @@ size_t spacing_spaces(std::string_view text) {
     return n;
 }
 
+/// `text` cut around the spaces word-spacing widens, each space on its own.
+std::vector<std::string_view> spacing_words(std::string_view text) {
+    std::vector<std::string_view> words;
+    size_t start = 0;
+    for (size_t i = 0; i < text.size();) {
+        size_t n = text[i] == ' ' ? 1 : uint8_t(text[i]) == 0xC2 && i + 1 < text.size() && uint8_t(text[i + 1]) == 0xA0 ? 2 : 0;
+        if (!n) {
+            i++;
+            continue;
+        }
+        if (i > start) words.push_back(text.substr(start, i - start));
+        words.push_back(text.substr(i, n));
+        i += n;
+        start = i;
+    }
+    if (start < text.size()) words.push_back(text.substr(start));
+    return words;
+}
+
 Rect rect_of(const litehtml::position& p) {
     return Rect{float(p.x), float(p.y), float(p.width), float(p.height)};
 }
@@ -1286,17 +1305,18 @@ public:
         c.y = float(pos.y) + float(pos.height) - f.metrics.descent;
         // The line box, for damage: where the run can paint.
         c.rect = Rect{float(pos.x), float(pos.y), float(pos.width) > 0 ? float(pos.width) : f.width(backend_, text), float(pos.height)};
-        if (f.letter_spacing != 0) {
-            // A painter draws a run as the font spaces it: each character goes on its own.
+        if (f.letter_spacing != 0 || (f.word_spacing != 0 && spacing_spaces(text))) {
+            // A painter draws a run as the font spaces it: each character goes on its own, or each word
+            // when only the spaces widen, so that words keep their shaping.
             float x = c.x;
-            for (std::string_view unit : spacing_units(text)) {
+            for (std::string_view unit : f.letter_spacing != 0 ? spacing_units(text) : spacing_words(text)) {
                 Command u = c;
                 u.text = std::string(unit);
                 u.x = x;
                 u.rect.x = x;
                 u.rect.w = f.width(backend_, unit);
                 x += u.rect.w;
-                if (!u.text.empty() && u.text != " ") list_.push_back(std::move(u));
+                if (!u.text.empty() && u.text != " " && u.text != "\xC2\xA0") list_.push_back(std::move(u));
             }
         } else {
             list_.push_back(std::move(c));

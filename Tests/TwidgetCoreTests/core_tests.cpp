@@ -8,8 +8,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 using twidget::Json;
 using namespace twlite;
@@ -1590,6 +1592,20 @@ int main() {
                   count(Cmd::FilterPop) == 1,
               "filter wraps the element in a FilterPush with its functions");
         check(count(Cmd::Backdrop) == 1, "backdrop-filter draws a Backdrop");
+
+        // Word spacing: each glyph where layout put it, in one run per word.
+        Renderer ws(300, 1, false, ib);
+        ws.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","word-spacing:10px;white-space:pre"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"ab cd e"},{"op":"ins","parent":10,"id":11,"before":null}]})J"));
+        DisplayList wl = ws.paint();
+        std::string runs;
+        for (const Command& c : wl)
+            if (c.kind == Cmd::Text && c.text != " ") runs += c.text + "@" + std::to_string(int(c.x)) + " ";
+        // The no-break space stays inside its word, so it reaches the painter in the middle of a run (the
+        // stub measures it as its two bytes).
+        check(runs == "ab@0 cd@34 e@76 ", "word-spacing widens each space as it paints (got " + runs + ")");
 
         // A canvas drawn from a canvas made in the same batch, whose drawing comes after.
         Renderer c(300, 1, false, ib);
