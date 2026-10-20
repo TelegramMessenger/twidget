@@ -543,6 +543,13 @@ void Canvas::text(const std::string& full, double x, double y, const Value* max_
     o.text = std::move(s);
     o.stroke_text = stroke_text;
     o.line_width = state_.line_width;
+    if (stroke_text) {
+        o.line_cap = state_.line_cap;
+        o.line_join = state_.line_join;
+        o.miter_limit = state_.miter_limit;
+        o.dashes = state_.dash;
+        o.dash_offset = state_.dash_offset;
+    }
     out.push_back(std::move(o));
 }
 

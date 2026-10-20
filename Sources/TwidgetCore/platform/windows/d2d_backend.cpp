@@ -17,6 +17,57 @@ namespace twlite
 {
     namespace
     {
+        // A layout's glyph runs as outlines, each at its baseline origin, for strokeText.
+        struct GlyphOutlines : winrt::implements<GlyphOutlines, IDWriteTextRenderer>
+        {
+            explicit GlyphOutlines(ID2D1Factory* factory) : m_factory(factory) {}
+
+            std::vector<winrt::com_ptr<ID2D1Geometry>> runs;
+
+            HRESULT __stdcall IsPixelSnappingDisabled(void*, BOOL* disabled) noexcept override
+            {
+                *disabled = TRUE;
+                return S_OK;
+            }
+            HRESULT __stdcall GetCurrentTransform(void*, DWRITE_MATRIX* transform) noexcept override
+            {
+                *transform = DWRITE_MATRIX{ 1, 0, 0, 1, 0, 0 };
+                return S_OK;
+            }
+            HRESULT __stdcall GetPixelsPerDip(void*, FLOAT* pixels) noexcept override
+            {
+                *pixels = 1;
+                return S_OK;
+            }
+            HRESULT __stdcall DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE, DWRITE_GLYPH_RUN const* run, DWRITE_GLYPH_RUN_DESCRIPTION const*, IUnknown*) noexcept override
+            {
+                winrt::com_ptr<ID2D1PathGeometry> path;
+                winrt::com_ptr<ID2D1GeometrySink> sink;
+                if (FAILED(m_factory->CreatePathGeometry(path.put())) || FAILED(path->Open(sink.put())))
+                {
+                    return S_OK;
+                }
+                HRESULT hr = run->fontFace->GetGlyphRunOutline(run->fontEmSize, run->glyphIndices, run->glyphAdvances, run->glyphOffsets, run->glyphCount,
+                    run->isSideways, run->bidiLevel % 2, sink.get());
+                if (FAILED(hr) || FAILED(sink->Close()))
+                {
+                    return S_OK;
+                }
+                winrt::com_ptr<ID2D1TransformedGeometry> placed;
+                if (SUCCEEDED(m_factory->CreateTransformedGeometry(path.get(), D2D1::Matrix3x2F::Translation(x, y), placed.put())))
+                {
+                    runs.push_back(placed);
+                }
+                return S_OK;
+            }
+            HRESULT __stdcall DrawUnderline(void*, FLOAT, FLOAT, DWRITE_UNDERLINE const*, IUnknown*) noexcept override { return S_OK; }
+            HRESULT __stdcall DrawStrikethrough(void*, FLOAT, FLOAT, DWRITE_STRIKETHROUGH const*, IUnknown*) noexcept override { return S_OK; }
+            HRESULT __stdcall DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL, IUnknown*) noexcept override { return S_OK; }
+
+        private:
+            ID2D1Factory* m_factory;
+        };
+
         std::wstring widen(const std::string& s)
         {
             if (s.empty())
@@ -807,9 +858,39 @@ namespace twlite
             auto entry = layout(*it->second, op.text);
             auto brush = canvas_brush(ctx, op.paint, op.alpha);
             if (!entry || !brush) return;
-            // strokeText is filled: DirectWrite outlines would need a glyph-run geometry.
             ctx->SetTransform(D2D1::Matrix3x2F::Scale(op.scale_x, 1) * D2D1::Matrix3x2F::Translation(op.x, op.y) * m);
-            ctx->DrawTextLayout(D2D1::Point2F(op.text_dx, -entry->baseline), entry->layout.get(), brush.get(), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+            if (!op.stroke_text)
+            {
+                ctx->DrawTextLayout(D2D1::Point2F(op.text_dx, -entry->baseline), entry->layout.get(), brush.get(), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                return;
+            }
+
+            auto outlines = winrt::make_self<GlyphOutlines>(m_factory.get());
+            entry->layout->Draw(nullptr, outlines.get(), op.text_dx, -entry->baseline);
+            D2D1_STROKE_STYLE_PROPERTIES props{};
+            auto cap = op.line_cap == 1 ? D2D1_CAP_STYLE_ROUND : op.line_cap == 2 ? D2D1_CAP_STYLE_SQUARE : D2D1_CAP_STYLE_FLAT;
+            props.startCap = props.endCap = props.dashCap = cap;
+            props.lineJoin = op.line_join == 1 ? D2D1_LINE_JOIN_ROUND : op.line_join == 2 ? D2D1_LINE_JOIN_BEVEL : D2D1_LINE_JOIN_MITER_OR_BEVEL;
+            props.miterLimit = op.miter_limit;
+            props.dashStyle = D2D1_DASH_STYLE_SOLID;
+            std::vector<float> dashes;
+            bool dashed = false;
+            for (float d : op.dashes)
+            {
+                dashes.push_back(d / op.line_width);
+                dashed = dashed || d > 0;
+            }
+            if (dashed)
+            {
+                props.dashStyle = D2D1_DASH_STYLE_CUSTOM;
+                props.dashOffset = op.dash_offset / op.line_width;
+            }
+            winrt::com_ptr<ID2D1StrokeStyle> style;
+            m_factory->CreateStrokeStyle(props, dashed ? dashes.data() : nullptr, dashed ? UINT32(dashes.size()) : 0, style.put());
+            for (const auto& run : outlines->runs)
+            {
+                ctx->DrawGeometry(run.get(), brush.get(), op.line_width, style.get());
+            }
             return;
         }
         case CanvasOp::Image:
