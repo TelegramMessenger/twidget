@@ -1999,6 +1999,11 @@ public:
         p->miter_limit = path.miter_limit;
         p->dashes = path.dashes;
         p->dash_offset = path.dash_offset;
+        const auto& sg = path.stroke_gradient;
+        p->stroke_gradient = sg.type;
+        const float sa[7] = {sg.x1, sg.y1, sg.x2, sg.y2, sg.r, sg.fx, sg.fy};
+        std::copy(std::begin(sa), std::end(sa), p->sg);
+        for (const auto& [offset, color] : sg.stops) p->stroke_stops.push_back(Stop{offset, color_of(color)});
         Command c;
         c.kind = Cmd::Path;
         c.path = std::move(p);

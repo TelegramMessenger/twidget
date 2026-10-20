@@ -107,6 +107,10 @@ struct Path {
     float miter_limit = 4;
     std::vector<float> dashes;
     float dash_offset = 0;
+    // stroke gradient: as the fill's, sg[] = x1, y1, x2, y2, r, fx, fy
+    int stroke_gradient = 0;
+    float sg[7] = {};
+    std::vector<Stop> stroke_stops;
 };
 
 struct Command {
@@ -141,7 +145,8 @@ using DisplayList = std::vector<Command>;
 /// - Linear/Radial/Conic and Shadow: "a" (ax, ay, bx, by), "s" stops as offset, ARGB pairs; Shadow: "n" inset;
 /// - ClipPush with a clip path, and Path: "p" {"o" op codes (0 move, 1 line, 2 quad, 3 cubic, 4 close),
 ///   "v" points, "e" evenodd}; a Path adds "f" fill, or "g" gradient (1 linear, 2 radial) with "ga"
-///   (x1, y1, x2, y2, r, fx, fy) and "s", and "sc", "sw", "lc", "lj", "ml", "d", "do" for its stroke;
+///   (x1, y1, x2, y2, r, fx, fy) and "s", and "sc", "sw", "lc", "lj", "ml", "d", "do" for its stroke,
+///   with "sg", "sga", "ss" for a gradient stroke as "g", "ga", "s";
 /// - GroupPush: "m" matrix (a, b, c, d, tx, ty), "o" opacity, "h" hidden;
 /// - FilterPush and Backdrop: "fl" the filters, each [kind, amount, x, y, ARGB].
 /// Flags are present only when set.

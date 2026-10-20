@@ -147,6 +147,9 @@ void digest(Digest& d, const Command& c) {
         d.value(p->miter_limit);
         d.bytes(p->dashes.data(), p->dashes.size() * sizeof(float));
         d.value(p->dash_offset);
+        d.value(p->stroke_gradient);
+        d.value(p->sg);
+        d.stops(p->stroke_stops);
     }
 }
 

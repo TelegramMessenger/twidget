@@ -85,7 +85,7 @@ void svg_path(Writer& w, const Path& p) {
     w.open();
     w.geometry(p.ops, p.points);
     w.flag("e", p.evenodd);
-    if (p.fill && p.gradient != 0 && !p.stops.empty()) {
+    if (p.fill && p.gradient != 0 && p.stops.size() >= 2) {
         w.key("g");
         out += std::to_string(p.gradient);
         const float a[] = {p.x1, p.y1, p.x2, p.y2, p.r, p.fx, p.fy};
@@ -96,6 +96,12 @@ void svg_path(Writer& w, const Path& p) {
     }
     if (p.stroke) {
         w.color("sc", p.stroke_color);
+        if (p.stroke_gradient != 0 && p.stroke_stops.size() >= 2) {
+            w.key("sg");
+            out += std::to_string(p.stroke_gradient);
+            w.floats("sga", p.sg, 7, false);
+            w.stops("ss", p.stroke_stops);
+        }
         w.key("sw"); w.num(p.stroke_width);
         w.key("lc"); out += std::to_string(p.line_cap);
         w.key("lj"); out += std::to_string(p.line_join);
