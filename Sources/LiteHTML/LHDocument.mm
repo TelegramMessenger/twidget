@@ -3226,7 +3226,15 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"display"]     = @(std::string(lh::style_display_strings[css.get_display()]).c_str());
     out[@"position"]    = @(std::string(lh::element_position_strings[css.get_position()]).c_str());
     out[@"font-size"]   = px(css.get_font_size().value());
-    out[@"line-height"] = css.line_height().css_value.is_predefined() ? @"normal" : px(css.line_height().computed_value.value());
+    const lh::css_length &lineHeight = css.line_height().css_value;
+    if(lineHeight.is_predefined())
+        out[@"line-height"] = @"normal";
+    else if(lineHeight.units() == lh::css_units_none)
+        out[@"line-height"] = px(lineHeight.val() * css.get_font_size().value());
+    else if(lineHeight.units() == lh::css_units_percentage)
+        out[@"line-height"] = px(lineHeight.val() * css.get_font_size().value() / 100);
+    else
+        out[@"line-height"] = px(css.line_height().computed_value.value());
     out[@"font-weight"] = [NSString stringWithFormat:@"%d", (int)css.font_weight().val()];
     out[@"font-family"] = @(css.font_family().c_str());
     out[@"font-style"]  = css.font_style_value() == lh::font_style_italic ? @"italic" : @"normal";
@@ -3287,8 +3295,11 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"text-decoration-color"] = decorationColor;
     out[@"text-decoration"]       = [NSString stringWithFormat:@"%@ %@ %@", decorationLine, decorationStyle, decorationColor];
     out[@"text-indent"]           = length(css.get_text_indent(), @"0px");
-    out[@"user-select"]           = @"none";
-    out[@"-webkit-user-select"]   = @"none";
+    NSString *userSelect          = raw("user-select", raw("-webkit-user-select", @"auto"));
+    out[@"user-select"]           = userSelect;
+    out[@"-webkit-user-select"]   = raw("-webkit-user-select", userSelect);
+    out[@"vertical-align"]        = name(lh::vertical_align_strings[css.get_vertical_align()]);
+    out[@"border-collapse"]       = name(lh::border_collapse_strings[css.get_border_collapse()]);
     out[@"list-style-type"]       = name(lh::list_style_type_strings[css.get_list_style_type()]);
     out[@"list-style-position"]   = name(lh::list_style_position_strings[css.get_list_style_position()]);
     out[@"list-style-image"]      = css.get_list_style_image().empty() ? @"none" : [NSString stringWithFormat:@"url(\"%s\")", css.get_list_style_image().c_str()];
@@ -3343,6 +3354,31 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return out;
 }
 
+static std::string LHCustomPropertyText(const lh::css_token_vector &tokens)
+{
+    std::string             out;
+    const lh::css_token *previous = nullptr;
+    for(const auto &tok : tokens)
+    {
+        if(tok.type == lh::WHITESPACE)
+            continue;
+        if(previous && tok.type != lh::COMMA && tok.type != '/' && previous->type != '/')
+            out += ' ';
+        if(tok.type == lh::CV_FUNCTION)
+            out += tok.name() + "(" + LHCustomPropertyText(tok.value) + ")";
+        else if(tok.type == lh::ROUND_BLOCK)
+            out += "(" + LHCustomPropertyText(tok.value) + ")";
+        else if(tok.type == lh::SQUARE_BLOCK)
+            out += "[" + LHCustomPropertyText(tok.value) + "]";
+        else if(tok.type == lh::CURLY_BLOCK)
+            out += "{" + LHCustomPropertyText(tok.value) + "}";
+        else
+            out += tok.get_repr(false);
+        previous = &tok;
+    }
+    return out;
+}
+
 - (nullable NSString *)customProperty:(NSString *)property attribute:(NSString *)attribute value:(NSString *)value
 {
     std::lock_guard<std::mutex> guard(_lock);
@@ -3364,9 +3400,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     lh::css_token_vector tokens;
     if(!tag || !tag->get_custom_property(lh::_id(property.UTF8String ?: ""), tokens))
         return nil;
-    std::string repr  = lh::get_repr(tokens, 0, -1, false);
-    const size_t first = repr.find_first_not_of(" \t\n\r\f");
-    return first == std::string::npos ? @"" : @(repr.substr(first, repr.find_last_not_of(" \t\n\r\f") - first + 1).c_str());
+    return @(LHCustomPropertyText(tokens).c_str());
 }
 
 - (void)visitBoundsLocked:(NSString *)name transformed:(BOOL)transformed lineBoxes:(BOOL)lineBoxes visitor:(const std::function<void(const char *, CGRect)> &)visitor
