@@ -51,6 +51,12 @@ public final class LitehtmlNative {
     /** The EditText let go of the keyboard. */
     public static native String endEditing(long handle);
 
+    /** The text a mouse drag selected, "" without a selection: what the host's copy takes. */
+    public static native String selectedText(long handle);
+
+    /** Drops the selection, for a press the host handles itself; true when there was one. */
+    public static native boolean clearSelection(long handle);
+
     /** One display frame (Choreographer): animations advance. Every frame while wantsTick, else after nextTickIn seconds. */
     public static native String tick(long handle);
 

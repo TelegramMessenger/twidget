@@ -141,6 +141,14 @@ char* twl_end_editing(twl_renderer* h) {
     return ret_string(guarded<std::string>(h, "[]", "end_editing", [&](twlite::Renderer& r) { return messages(r.end_editing()); }));
 }
 
+char* twl_selected_text(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "", "selected_text", [&](twlite::Renderer& r) { return r.selected_text(); }));
+}
+
+bool twl_clear_selection(twl_renderer* h) {
+    return guarded<bool>(h, false, "clear_selection", [&](twlite::Renderer& r) { return r.clear_selection(); });
+}
+
 char* twl_tick(twl_renderer* h) {
     return ret_string(guarded<std::string>(h, "[]", "tick", [&](twlite::Renderer& r) { return messages(r.tick()); }));
 }

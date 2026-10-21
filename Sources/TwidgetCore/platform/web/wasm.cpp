@@ -228,6 +228,16 @@ EMSCRIPTEN_KEEPALIVE char* twl_end_editing(Handle* h) {
     return ret_string(messages(h->renderer->end_editing()));
 }
 
+/// The text a mouse drag selected, "" without a selection: what the page's copy takes.
+EMSCRIPTEN_KEEPALIVE char* twl_selected_text(Handle* h) {
+    return ret_string(h ? h->renderer->selected_text() : std::string());
+}
+
+/// Drops the selection; 1 when there was one.
+EMSCRIPTEN_KEEPALIVE int twl_clear_selection(Handle* h) {
+    return h && h->renderer->clear_selection() ? 1 : 0;
+}
+
 /// One animation frame (requestAnimationFrame): animations advance. Call it every frame while twl_wants_tick
 /// holds, otherwise after twl_next_tick_in seconds.
 EMSCRIPTEN_KEEPALIVE char* twl_tick(Handle* h) {

@@ -30,6 +30,10 @@ internal object LitehtmlNative {
     external fun edit(handle: Long, generation: Long, text: String, inputType: String): String
     /** The EditText let go of the keyboard. */
     external fun endEditing(handle: Long): String
+    /** The text a mouse drag selected, "" without a selection: what the host's copy takes. */
+    external fun selectedText(handle: Long): String
+    /** Drops the selection, for a press the host handles itself; true when there was one. */
+    external fun clearSelection(handle: Long): Boolean
     /** One display frame (Choreographer): animations advance. Every frame while wantsTick, else after nextTickIn seconds. */
     external fun tick(handle: Long): String
     external fun wantsTick(handle: Long): Boolean

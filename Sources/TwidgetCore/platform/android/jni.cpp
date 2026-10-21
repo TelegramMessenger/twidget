@@ -425,6 +425,16 @@ JNIEXPORT jlong JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_
     });
 }
 
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_selectedText(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "", "selected_text", [&](Handle& hd) { return hd.renderer->selected_text(); }));
+}
+
+JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_clearSelection(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return guarded<bool>(h, false, "clear_selection", [&](Handle& hd) { return hd.renderer->clear_selection(); });
+}
+
 JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_dirty(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return guarded<bool>(h, false, "dirty", [&](Handle& hd) { return hd.renderer->dirty(); });

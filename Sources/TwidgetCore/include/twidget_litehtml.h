@@ -42,6 +42,11 @@ char *twl_editor(twl_renderer *handle);
 char *twl_edit(twl_renderer *handle, uint64_t generation, const char *text, const char *input_type);
 /// The platform's editor let go of the keyboard. Returns renderer → host messages.
 char *twl_end_editing(twl_renderer *handle);
+/// The text a mouse drag selected (Renderer::selected_text), "" without a selection: what the host's copy
+/// command takes.
+char *twl_selected_text(twl_renderer *handle);
+/// Drops the selection, for a press the host handles itself; true when there was one (the renderer is dirty).
+bool twl_clear_selection(twl_renderer *handle);
 /// One display frame: animations advance and coalesced moves go out. Call it each frame while twl_wants_tick holds,
 /// otherwise after twl_next_tick_in seconds (infinity: nothing scheduled). Returns renderer → host messages.
 char *twl_tick(twl_renderer *handle);
