@@ -3295,9 +3295,9 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     out[@"text-decoration-color"] = decorationColor;
     out[@"text-decoration"]       = [NSString stringWithFormat:@"%@ %@ %@", decorationLine, decorationStyle, decorationColor];
     out[@"text-indent"]           = length(css.get_text_indent(), @"0px");
-    NSString *userSelect          = raw("user-select", raw("-webkit-user-select", @"auto"));
+    NSString *userSelect          = name(lh::user_select_strings[css.get_user_select()]);
     out[@"user-select"]           = userSelect;
-    out[@"-webkit-user-select"]   = raw("-webkit-user-select", userSelect);
+    out[@"-webkit-user-select"]   = userSelect;
     out[@"vertical-align"]        = name(lh::vertical_align_strings[css.get_vertical_align()]);
     out[@"border-collapse"]       = name(lh::border_collapse_strings[css.get_border_collapse()]);
     out[@"list-style-type"]       = name(lh::list_style_type_strings[css.get_list_style_type()]);
@@ -3921,20 +3921,11 @@ static bool LHUserSelectable(lh::element::ptr el)
 {
     for(; el; el = el->parent())
     {
-        auto tag = std::dynamic_pointer_cast<lh::html_tag>(el);
-        if(!tag)
+        if(!std::dynamic_pointer_cast<lh::html_tag>(el))
             continue;
-        std::string value = tag->raw_declaration("user-select");
-        if(value.empty())
-            value = tag->raw_declaration("-webkit-user-select");
-        const size_t first = value.find_first_not_of(" \t\n\r\f");
-        if(first == std::string::npos)
-            continue;
-        value = value.substr(first, value.find_last_not_of(" \t\n\r\f") - first + 1);
-        for(auto &c : value)
-            c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-        if(value != "auto")
-            return value == "text";
+        const lh::user_select value = el->css().get_user_select();
+        if(value != lh::user_select_auto)
+            return value == lh::user_select_text;
     }
     return false;
 }
