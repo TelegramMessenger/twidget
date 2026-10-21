@@ -1293,6 +1293,66 @@ int main() {
         check(sup < base, "a sup is raised by its relative offset, with its text (sup " + std::to_string(sup) + ", base " + std::to_string(base) + ")");
     }
 
+    // ── text selection: a mouse drag over user-select: text, its text, its highlight ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":".s{user-select:text} p{margin:0;font:10px/20px sans-serif}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"p","attrs":[["class","s"]]},{"op":"ins","parent":4,"id":10,"before":null},{"op":"text","id":11,"data":"Hello world"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"p","attrs":[["class","s"]]},{"op":"ins","parent":4,"id":12,"before":null},{"op":"text","id":13,"data":"Second"},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"p"},{"op":"ins","parent":4,"id":14,"before":null},{"op":"text","id":15,"data":"Plain"},{"op":"ins","parent":14,"id":15,"before":null}]})"));
+        auto wants = [](const std::vector<Json>& out) {
+            for (const Json& m : out)
+                if (m["type"].asString() == "gesture") return m["wants"].asBool() && m["x"].asBool();
+            return false;
+        };
+        bool claimed = wants(t.touch(0, 1, 10, 1, true, true));
+        t.touch(1, 200, 10, 1, true, true);
+        t.touch(2, 200, 10, 1, true, true);
+        check(t.selected_text() == "Hello world" && claimed, "a mouse drag over selectable text selects it and claims the drag (got '" + t.selected_text() + "')");
+
+        t.touch(0, 17, 10, 1, true, true);
+        t.touch(1, 33, 10, 1, true, true);
+        t.touch(2, 33, 10, 1, true, true);
+        check(t.selected_text() == "ll", "the ends snap to the nearest character boundaries (got '" + t.selected_text() + "')");
+        DisplayList list = t.paint();
+        bool tint = std::any_of(list.begin(), list.end(), [](const Command& c) {
+            return c.kind == Cmd::FillRect && c.color.r == 51 && c.color.g == 144 && c.color.b == 236 && c.color.a == 77 && c.rect.x == 16 && c.rect.w == 16;
+        });
+        check(tint, "the selection paints in the link colour over its characters");
+
+        t.touch(0, 1, 10, 1, true, true);
+        t.touch(1, 200, 30, 1, true, true);
+        t.touch(2, 200, 30, 1, true, true);
+        check(t.selected_text() == "Hello world\nSecond", "a selection across blocks keeps a line break between them (got '" + t.selected_text() + "')");
+        t.touch(0, 2, 50, 1, true, true);
+        t.touch(2, 2, 50, 1, true, true);
+        check(!t.has_selection(), "a press elsewhere drops it");
+
+        t.touch(0, 1, 50, 1, true, true);
+        t.touch(1, 200, 50, 1, true, true);
+        t.touch(2, 200, 50, 1, true, true);
+        check(!t.has_selection(), "text without user-select: text does not select");
+        t.touch(0, 1, 10, 0, true, false);
+        t.touch(1, 200, 10, 0, true, false);
+        t.touch(2, 200, 10, 0, true, false);
+        check(!t.has_selection(), "a finger's drag does not select: touch selection starts from the client's menu");
+
+        t.receive(parse(R"({"type":"preventDefault","keys":["10:pointerdown"]})"));
+        t.touch(0, 1, 10, 1, true, true);
+        t.touch(1, 200, 10, 1, true, true);
+        t.touch(2, 200, 10, 1, true, true);
+        check(!t.has_selection(), "a widget that prevents the press keeps the drag");
+        t.receive(parse(R"({"type":"preventDefault","keys":[]})"));
+
+        t.touch(0, 1, 30, 1, true, true);
+        t.touch(1, 200, 30, 1, true, true);
+        t.touch(2, 200, 30, 1, true, true);
+        check(t.clear_selection() && !t.has_selection() && !t.clear_selection(), "clear_selection drops it once");
+    }
+
     // ── getComputedStyle ──
     {
         StubBackend sb;

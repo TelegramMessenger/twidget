@@ -115,6 +115,14 @@ public:
     /// The platform's editor let go (the user dismissed it, or it lost the keyboard): change if the
     /// value differs from when editing began, then blur and focusout.
     std::vector<twidget::Json> end_editing();
+    /// Text selection (widget-sandbox v0.1.1, docs/sdk-v1.md §5.10). A mouse drag that starts on text under
+    /// `user-select: text`, where the widget does not prevent the press, selects it; any other primary press
+    /// drops the selection. The host copies it with its own command, and clears it on what it handles itself.
+    bool has_selection() const;
+    /// The selected text, with a line break between blocks and at `<br>`; empty without a selection.
+    std::string selected_text() const;
+    /// Drops the selection; true when there was one, and the next paint draws no highlight.
+    bool clear_selection();
     /// One display frame: coalesced move events go out and animations advance. Returns renderer → host messages.
     std::vector<twidget::Json> tick();
     /// Something waits for the next frame: a running animation or a coalesced move.
@@ -392,6 +400,39 @@ private:
     bool canvas_source(int64_t node, int& image, int& canvas, float& w, float& h) override;
     int64_t canvas_allowance(int id) override;
     void freeze(const std::string& reason, bool fatal);
+
+    /// A place in the text: an element (its `data-twid`) and a byte offset into the text of the runs it owns,
+    /// those whose nearest element with an id it is. It outlives a patch or a layout that keeps the element.
+    struct TextPoint {
+        int64_t owner = 0;
+        size_t offset = 0;
+        bool operator==(const TextPoint& o) const { return owner == o.owner && offset == o.offset; }
+    };
+    /// A piece of text as laid out, in document order: a word, a space or a fragment of one on its line.
+    struct TextRun {
+        int64_t owner = 0;
+        size_t offset = 0;      // in the owner's text
+        std::string text;       // as drawn
+        Rect box;               // document coordinates; empty for a <br>
+        uintptr_t font = 0;     // litehtml's font handle
+        int block = 0;          // the block container it flows in
+        bool selectable = false;
+        bool line_break = false;
+    };
+    std::vector<TextRun> text_runs() const;
+    /// The run `p` falls in and the offset into it; false when its owner has no text now.
+    bool locate(const TextPoint& p, const std::vector<TextRun>& runs, size_t& run, size_t& offset) const;
+    /// The place nearest the point: the run on the closest line, the closest character boundary in it.
+    bool point_at(double x, double y, const std::vector<TextRun>& runs, TextPoint& out) const;
+    /// How far into `run` its first `bytes` reach, in CSS px.
+    float run_advance(const TextRun& run, size_t bytes) const;
+    /// The selection's ends in document order, as runs and offsets; false when there is no selected text.
+    bool selection_range(const std::vector<TextRun>& runs, size_t& first, size_t& first_offset, size_t& last, size_t& last_offset) const;
+    /// Whether a mouse press on `target` starts a selection: `user-select` lets it, and no listener on the
+    /// way prevents the press.
+    bool starts_selection(int64_t target) const;
+    void paint_selection(DisplayList& list) const;
+    void selection_changed();
     /// The host's theme: the root's variables, and the master CSS's UA layer with their values. False when
     /// neither changed.
     bool apply_theme(const twidget::Json& theme);
@@ -451,6 +492,10 @@ private:
     /// From the host's `theme` message (the scheme's defaults before one), set on the root after the widget's own style.
     std::vector<std::pair<std::string, std::string>> theme_vars_;
     bool theme_received_ = false;
+    struct {
+        TextPoint anchor, focus;
+        int pointer = -1;  // the mouse dragging it out, while it does
+    } selection_;
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
     std::string frozen_reason_;

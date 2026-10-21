@@ -10,7 +10,10 @@
 #include <litehtml/render_item.h>
 #ifdef TW_LITEHTML_TWIDGET
 #include <litehtml/css_effects.h>
+#include <litehtml/el_break.h>
 #include <litehtml/el_svg.h>
+#include <litehtml/el_text.h>
+#include <litehtml/render_inline.h>
 #endif
 
 #include <algorithm>
@@ -4122,6 +4125,7 @@ DisplayList Renderer::paint() {
     composition_only_ = false;
     DisplayList list = paint_document();
     drop_inert_clips(list);
+    paint_selection(list);
     // What changed against the last paint, for a platform to repaint only that.
     PaintSummary summary = summarize(list);
     damage_valid_ = painted_valid_ && painted_size_ == std::make_pair(px_width(), px_height()) &&
@@ -4924,13 +4928,25 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         Touch t{x, y, x, y, 0, Rect{}, false, primary, pointer, mouse, modifiers};
         t.target = widget_id_at(x, y, &t.target_rect);
         touches_[pointer] = t;
+        bool selecting = false;
         if (primary) {
             press_id_ = t.target;
             press_y_ = y;
             press_at_ = now_s();
+            // A press drops the selection; a mouse's on selectable text starts the next one there.
+            bool had = !(selection_.anchor == selection_.focus);
+            selection_ = {};
+            TextPoint at;
+            if (mouse && t.target && starts_selection(t.target) && point_at(x, y, text_runs(), at)) {
+                selection_.anchor = selection_.focus = at;
+                selection_.pointer = pointer;
+                selecting = true;
+            }
+            if (had) selection_changed();
         }
         if (primary) {
-            auto [claim_x, claim_y] = gesture_claim(t.target);
+            // A drag that selects is the widget's in both directions.
+            auto [claim_x, claim_y] = selecting ? std::pair{true, true} : gesture_claim(t.target);
             out.push_back(Json::object().set("type", "gesture").set("wants", claim_y).set("x", claim_x).set("y", claim_y));
         }
         if (container_->mouse(0, x, y)) dirty_ = touched_all_ = true;
@@ -4948,6 +4964,13 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     t.x = x;
     t.y = y;
     t.modifiers = modifiers;
+    if (action == 1 && selection_.pointer == pointer) {
+        TextPoint at;
+        if (point_at(x, y, text_runs(), at) && !(at == selection_.focus)) {
+            selection_.focus = at;
+            selection_changed();
+        }
+    }
     if (action == 1) {
         if (!t.moved) {
             if (std::fabs(x - t.x0) < TAP_SLOP && std::fabs(y - t.y0) < TAP_SLOP) return out;
@@ -4971,6 +4994,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     }
     Touch done = t;
     touches_.erase(it);
+    if (selection_.pointer == pointer) selection_.pointer = -1;
     if (container_->mouse(action, x, y, done.mouse && action == 2)) dirty_ = touched_all_ = true;
     if (action == 2) {
         Rect up_rect;
@@ -5136,6 +5160,211 @@ void Renderer::freeze(const std::string& reason, bool fatal) {
     touches_.clear();
     pending_moves_.clear();
     hover_ = 0;
+}
+
+// ───────────────────────── text selection ─────────────────────────
+
+std::vector<Renderer::TextRun> Renderer::text_runs() const {
+    std::vector<TextRun> runs;
+#ifdef TW_LITEHTML_TWIDGET
+    litehtml::document* doc = container_->doc();
+    if (!doc || !doc->root()) return runs;
+    std::unordered_map<int64_t, size_t> lengths;  // each owner's text so far
+    int blocks = 0;
+    // user-select is not inherited, but `auto` follows the parent: the nearest element that says text or none decides.
+    auto selectable = [](const litehtml::element* el) {
+        for (; el; el = el->parent().get()) {
+            auto value = el->css().get_user_select();
+            if (value != litehtml::user_select_auto) return value == litehtml::user_select_text;
+        }
+        return false;
+    };
+    auto add = [&](int64_t owner, int block, std::string text, const litehtml::position* box, uintptr_t font, bool can) {
+        if (text.empty()) return;
+        TextRun r;
+        r.owner = owner;
+        r.offset = lengths[owner];
+        r.block = block;
+        r.font = font;
+        r.selectable = can;
+        r.line_break = !box;
+        if (box) r.box = Rect{float(box->x), float(box->y), float(box->width), float(box->height)};
+        lengths[owner] += text.size();
+        r.text = std::move(text);
+        runs.push_back(std::move(r));
+    };
+    std::function<void(const litehtml::element::ptr&, int64_t, int)> walk = [&](const litehtml::element::ptr& el, int64_t owner, int block) {
+        if (!el->is_text()) {
+            if (el->css().get_display() == litehtml::display_none) return;
+            if (const char* id = el->get_attr("data-twid")) owner = std::strtoll(id, nullptr, 10);
+            if (!el->is_inline()) block = ++blocks;
+            if (dynamic_cast<const litehtml::el_break*>(el.get())) {
+                add(owner, block, "\n", nullptr, 0, selectable(el.get()));
+                return;
+            }
+            for (const auto& child : el->children()) walk(child, owner, block);
+            return;
+        }
+        auto text = std::dynamic_pointer_cast<litehtml::el_text>(el);
+        auto parent = el->parent();
+        if (!text || !parent) return;
+        bool can = selectable(parent.get());
+        uintptr_t font = uintptr_t(parent->css().get_font());
+        const std::string& shown = text->display_text();
+        el->for_each_render_item([&](const std::shared_ptr<litehtml::render_item>& ri) {
+            litehtml::position placed = ri->get_placement();
+            auto item = std::dynamic_pointer_cast<litehtml::render_text>(ri);
+            if (item && !item->fragments.empty()) {
+                // A fragment's box is in its item's frame.
+                for (const auto& fragment : item->fragments) {
+                    litehtml::position box = fragment->pos();
+                    box.x += placed.x - ri->pos().x;
+                    box.y += placed.y - ri->pos().y;
+                    add(owner, block, fragment->fragment_text, &box, font, can);
+                }
+            } else {
+                add(owner, block, item && item->cut >= 0 ? shown.substr(0, size_t(item->cut)) : shown, &placed, font, can);
+            }
+        });
+    };
+    walk(doc->root(), 0, 0);
+#endif
+    return runs;
+}
+
+bool Renderer::locate(const TextPoint& p, const std::vector<TextRun>& runs, size_t& run, size_t& offset) const {
+    bool found = false;
+    for (size_t i = 0; i < runs.size(); i++) {
+        const TextRun& r = runs[i];
+        if (r.owner != p.owner || p.offset < r.offset || p.offset > r.offset + r.text.size()) continue;
+        run = i;
+        offset = p.offset - r.offset;
+        found = true;
+        // The end of a run is also the start of the owner's next one: that one takes it.
+        if (offset < r.text.size()) return true;
+    }
+    return found;
+}
+
+float Renderer::run_advance(const TextRun& run, size_t bytes) const {
+    if (run.line_break || bytes == 0) return 0;
+    if (bytes >= run.text.size()) return run.box.w;
+    return float(container_->text_width(run.text.substr(0, bytes).c_str(), litehtml::uint_ptr(run.font)));
+}
+
+bool Renderer::point_at(double x, double y, const std::vector<TextRun>& runs, TextPoint& out) const {
+    const TextRun* best = nullptr;
+    double best_dy = 0, best_dx = 0;
+    for (const TextRun& r : runs) {
+        if (r.line_break) continue;
+        double dy = y < r.box.y ? r.box.y - y : y > r.box.y + r.box.h ? y - (r.box.y + r.box.h) : 0;
+        double dx = x < r.box.x ? r.box.x - x : x > r.box.x + r.box.w ? x - (r.box.x + r.box.w) : 0;
+        if (!best || dy < best_dy || (dy == best_dy && dx < best_dx)) {
+            best = &r;
+            best_dy = dy;
+            best_dx = dx;
+        }
+    }
+    if (!best) return false;
+    size_t bytes = 0;
+    double gap = std::fabs(x - best->box.x);
+    for (size_t i = 1; i <= best->text.size(); i++) {
+        if (i < best->text.size() && (uint8_t(best->text[i]) & 0xC0) == 0x80) continue;  // inside a UTF-8 sequence
+        double d = std::fabs(x - (best->box.x + run_advance(*best, i)));
+        if (d < gap) {
+            gap = d;
+            bytes = i;
+        }
+    }
+    out = TextPoint{best->owner, best->offset + bytes};
+    return true;
+}
+
+bool Renderer::selection_range(const std::vector<TextRun>& runs, size_t& first, size_t& first_offset, size_t& last, size_t& last_offset) const {
+    if (selection_.anchor == selection_.focus) return false;
+    size_t ar = 0, ao = 0, fr = 0, fo = 0;
+    if (!locate(selection_.anchor, runs, ar, ao) || !locate(selection_.focus, runs, fr, fo)) return false;
+    if (std::tie(ar, ao) > std::tie(fr, fo)) {
+        std::swap(ar, fr);
+        std::swap(ao, fo);
+    }
+    first = ar;
+    first_offset = ao;
+    last = fr;
+    last_offset = fo;
+    return true;
+}
+
+bool Renderer::starts_selection(int64_t target) const {
+#ifdef TW_LITEHTML_TWIDGET
+    // A listener that prevents the press keeps it, as preventDefault on mousedown does in a browser.
+    for (const Node* n = node(target); n; n = n->parent) {
+        std::string id = std::to_string(n->id);
+        if (prevent_.count(id + ":pointerdown") || prevent_.count(id + ":mousedown")) return false;
+    }
+    for (auto el = container_->element(target); el; el = el->parent()) {
+        auto value = el->css().get_user_select();
+        if (value != litehtml::user_select_auto) return value == litehtml::user_select_text;
+    }
+#endif
+    return false;
+}
+
+std::string Renderer::selected_text() const {
+    auto runs = text_runs();
+    size_t first = 0, first_offset = 0, last = 0, last_offset = 0;
+    if (!selection_range(runs, first, first_offset, last, last_offset)) return {};
+    auto space = [](char c) { return c == ' ' || c == '\n' || c == '\t'; };
+    std::string out;
+    const TextRun* previous = nullptr;
+    for (size_t i = first; i <= last; i++) {
+        const TextRun& r = runs[i];
+        size_t from = i == first ? first_offset : 0, to = i == last ? last_offset : r.text.size();
+        if (!r.selectable || from >= to) continue;
+        if (previous && !out.empty() && out.back() != '\n' && !r.line_break) {
+            // Blocks apart by a line break; the lines of one block by a space, where a wrap ate the one between.
+            if (r.block != previous->block) out += '\n';
+            else if (r.box.y >= previous->box.y + previous->box.h / 2 && !space(out.back()) && !space(r.text[from])) out += ' ';
+        }
+        out.append(r.text, from, to - from);
+        previous = &r;
+    }
+    return out;
+}
+
+bool Renderer::has_selection() const { return !selected_text().empty(); }
+
+bool Renderer::clear_selection() {
+    bool had = !(selection_.anchor == selection_.focus);
+    selection_ = {};
+    if (had) selection_changed();
+    return had;
+}
+
+void Renderer::selection_changed() { dirty_ = touched_all_ = true; }
+
+void Renderer::paint_selection(DisplayList& list) const {
+    if (selection_.anchor == selection_.focus) return;
+    auto runs = text_runs();
+    size_t first = 0, first_offset = 0, last = 0, last_offset = 0;
+    if (!selection_range(runs, first, first_offset, last, last_offset)) return;
+    // Over the text, in the theme's link colour: a tint the text shows through, on every painter.
+    Color color{51, 144, 236, 255};
+    for (const auto& [name, value] : theme_vars_)
+        if (name == "--tg-theme-link-color") css::parse_color(value, color);
+    color.a = uint8_t(std::lround(color.a * 0.3));
+    for (size_t i = first; i <= last; i++) {
+        const TextRun& r = runs[i];
+        size_t from = i == first ? first_offset : 0, to = i == last ? last_offset : r.text.size();
+        if (!r.selectable || r.line_break || from >= to) continue;
+        float x0 = run_advance(r, from), x1 = run_advance(r, to);
+        if (x1 <= x0) continue;
+        Command c;
+        c.kind = Cmd::FillRect;
+        c.rect = Rect{r.box.x + x0, r.box.y, x1 - x0, r.box.h};
+        c.color = color;
+        list.push_back(std::move(c));
+    }
 }
 
 } // namespace twlite
