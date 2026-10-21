@@ -15,7 +15,7 @@ magic move). Until then both exist side by side.
 | Area | Where |
 |---|---|
 | The protocol: ops into a shadow tree, queries, events, theme, freeze | `src/renderer.*` |
-| SDK v1's theme variables (palette, colour scheme, button tokens) | `src/css.*` |
+| SDK v1's theme variables (palette, colour scheme, button and text tokens) and the profile's UA layer | `src/css.*`, `Renderer::apply_theme` |
 | CSS animations and transitions, Web Animations records (`anim`), the `anims` query | `src/animations.*` |
 | Pointer and hover events, trusted; moves coalesced per frame; the gesture claim | `src/renderer.cpp` |
 | Canvas 2D: the command interpreter, resolved into `CanvasOp`s a backend draws | `src/canvas.*`, `src/canvas_ops.h` |
@@ -96,8 +96,9 @@ ctest --test-dir build
 
 widget-sandbox has to be checked out next to twidget (`../widget-sandbox`), or its path given in
 `TWIDGET_WIDGET_SANDBOX`, as for `Package.swift`: TwidgetCore reads the protocol's JSON helper
-(`twidget/json.h`) from it. TwidgetCore follows release `v0.1.0`: check out that tag, never a branch,
-and its QuickJS submodule with `git submodule update --init` (widget-sandbox's `docs/integration.md`).
+(`twidget/json.h`) from it. TwidgetCore follows release `v0.1.1`: check out that tag, never a branch,
+and its QuickJS submodule with `git submodule update --init` (widget-sandbox's `docs/integration.md`). The
+build reads the profile's UA layer from its `packages/core/profile.json` into a generated header.
 
 The build produces `twidget::litehtml` (the fork and its gumbo), `twidget::core` and the platform's
 backend; Android and Emscripten builds go through their toolchain files. With `TWIDGET_BUILD_TESTS`
@@ -127,8 +128,8 @@ copies the Kotlin backend and painter under `platform/android`. Not yet built: s
 TwidgetCore, Windows only: each widget of the automatic set through the desktop host, drawn off screen
 by the Direct2D backend at DPR 2, its scripted input sent through the renderer. It writes the run file
 that the set's `tools/report.mjs` turns into the per-feature report. `docs/CONFORMANCE.md` tracks the results.
-Its widgets get Intl from the system's ICU through widget-sandbox's `IcuIntl`, which is newer than v0.1.0:
-the runner needs widget-sandbox `main` from b7c47cc on.
+Its widgets get Intl from the system's ICU through widget-sandbox's `IcuIntl`, and it paints the default
+palette's `bg_color` under the widget, as a client draws its bubble.
 
 ```sh
 cmake -S tools/conformance -B build-conformance -G Ninja && cmake --build build-conformance

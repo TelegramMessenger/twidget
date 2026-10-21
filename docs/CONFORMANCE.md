@@ -1,6 +1,7 @@
-# Conformance with widget-sandbox v0.1.0
+# Conformance with widget-sandbox v0.1.1
 
-widget-sandbox v0.1.0 freezes widget profile 1 and ships a conformance set that every client runs on its
+widget-sandbox v0.1.0 froze widget profile 1, and v0.1.1 settles its defaults (the renderer's UA layer, text
+tokens, the bubble as the canvas, opt-in selection). Each ships a conformance set that every client runs on its
 renderer (`packages/conformance/CLIENTS.md` there). This page tracks TwidgetCore against it: what the
 contract asks of the renderer, and what the set reports, item by item.
 
@@ -11,7 +12,7 @@ each platform's painter needs its own run.
 
 ## Where it stands
 
-| Date | Commit | In profile (173): pass / partly / fail / untested | Out of profile (82): neutralised / not yet / fail |
+| Date | Commit | In profile: pass / partly / fail / untested | Out of profile: neutralised / not yet / fail |
 |---|---|---|---|
 | 2026-10-18 | f649455 (contract) | 90 / 49 / 24 / 10 | 69 / 3 / 8 |
 | 2026-10-18 | 3420fc5 (computed style) | 111 / 38 / 14 / 10 | 73 / 2 / 5 |
@@ -23,6 +24,7 @@ each platform's painter needs its own run.
 | 2026-10-19 | SVG queries and painting (Q3, P1–P9) | 158 / 5 / 0 / 10 | 80 / 0 / 0 |
 | 2026-10-20 | the Swift renderer's text, border, canvas and image fixes | 159 / 4 / 0 / 10 | 80 / 0 / 0 |
 | 2026-10-20 | widget-sandbox main 7654e69 (live collections, Web Animations state before a query); Intl on the system's ICU (`IcuIntl`) | 162 / 1 / 0 / 10 | 80 / 0 / 0 |
+| 2026-10-21 | v0.1.1 (selection moves into the profile): the profile's UA layer, text tokens, `user-select`, relative offsets on inline elements | 163 / 1 / 0 / 10 | 79 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 
@@ -34,12 +36,15 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 
 ## Done
 
-| What v0.1.0 asks | Where |
+| What the contract asks | Where |
 |---|---|
 | Real input marked `trusted: true`, or the hosts count no user gesture | `Renderer::event_message` |
 | Only profile 1's events: no keys, focus, input, dblclick, contextmenu, touch, wheel or scroll | `PROFILE_EVENTS`, `listened` |
-| The `theme` message: `--tg-theme-*`, `--tg-color-scheme` and `--tg-button-*` on the root, important, values checked | `css::theme_variables` |
-| The profile's `<button>` template in the UA sheet | `UA_EXTRA` |
+| The `theme` message: `--tg-theme-*`, `--tg-color-scheme`, `--tg-button-*` and `--tg-text-*` on the root, important, values checked, the palette and text tokens always complete | `css::theme_variables` |
+| The profile's UA layer (`tables.uaStylesheet`) in the master CSS, the theme's values substituted and `:where()` unwrapped | `Renderer::apply_theme`, `tw_ua_stylesheet.h` (CMake) |
+| `revert` goes past that layer to litehtml's own sheet, as it goes past author layers to Chromium's | the fork's `css_selector::m_layered` |
+| `user-select` and `-webkit-user-select` computed (`none`, `text`, `auto`); the text is not selectable yet, an exception v0.1.1 allows | the fork's `css_properties::get_user_select` |
+| `position: relative` on an inline element moves its text and its line boxes | the fork's `line_box::finish` |
 | `gesture` claims with `x` and `y` | `Renderer::gesture_claim` |
 | The shared height bounds, 50 to 600 CSS px | `MIN_HEIGHT`, `max_height_` |
 | `getComputedStyle` answered for every property the fork computes, as Chromium writes it | `computed_style.cpp` |
@@ -70,7 +75,6 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | SVG: `getComputedTextLength`, text `getBBox`, a shape's or text's rect through the view box, `<use>` of a `<symbol>`, `<tspan>` with its own fill and shifts | the fork's `svg_ctm`, `svg_text_runs`, `el_svg` painter; `svg_box_of` |
 | Dashed and dotted borders and outlines, mitred corners between sides that differ; dashes and dots spaced as Chromium does, round the centre line of a rounded border | `Container::border_dash`, `draw_sides`, `dashed_ring` |
 | Computed `fill` and `stroke` inherited (through `<use>` too), `currentColor` resolved | the fork's `svg_paint_color` |
-| A link in Chromium's `#0000ee` | `UA_EXTRA` |
 | Canvas `textBaseline` on the em box (the font's OS/2 typographic metrics), as Chromium places it | `FontMetrics::em_ascent`, `Canvas::text` |
 | A PNG cut short or corrupt keeps the rows before the damage, the rest transparent | `png_intact_rows` (`src/png.cpp`), in each backend's image loading |
 | `background-repeat` | `Container::draw_image` |
@@ -94,6 +98,12 @@ crops for `tools/conformance/visual-report.mjs`, which judges them with the set'
   crop is a frame of it;
 - 08 paint: `createPattern` is out of profile 1 and draws nothing, the reference shows Chromium's;
 - 04 table: 5 % of ink, at the threshold, in antialiasing.
+
+v0.1.1 adds widgets judged whole: 14 (no CSS at all), 15 (a body background without a margin reset) and 16
+(selection). The runner paints the default palette's `bg_color` under the transparent renderer, as a client
+draws its bubble. On 2026-10-21 they differ from the references by where their lines wrap, the fonts again:
+the body background of 15 fills the bubble edge to edge, and 14 lays out as the reference does. 16's
+selection is the tester's and the renderer selects nothing yet.
 
 ## Each platform's painter
 
