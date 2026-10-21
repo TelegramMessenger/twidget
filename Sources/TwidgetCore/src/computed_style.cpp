@@ -97,7 +97,14 @@ std::string computed_custom_property(const litehtml::element::ptr& el, const std
     auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(el);
     litehtml::css_token_vector tokens;
     if (!tag || !tag->get_custom_property(litehtml::_id(name), tokens)) return {};
-    return css::trim(litehtml::get_repr(tokens, 0, -1, false));
+    // The fork drops a declaration's whitespace as it parses: one space goes back between two values, as in
+    // `8px 12px`, and none next to punctuation (`,` `/`), whose types are their characters, the values' negative.
+    std::string out;
+    for (size_t i = 0; i < tokens.size(); i++) {
+        if (i && tokens[i - 1].type < 0 && tokens[i].type < 0) out += ' ';
+        out += tokens[i].get_repr(false);
+    }
+    return css::trim(out);
 }
 
 std::string computed_touch_action(const litehtml::element::ptr& el) {
