@@ -392,6 +392,9 @@ private:
     bool canvas_source(int64_t node, int& image, int& canvas, float& w, float& h) override;
     int64_t canvas_allowance(int id) override;
     void freeze(const std::string& reason, bool fatal);
+    /// The host's theme: the root's variables, and the master CSS's UA layer with their values. False when
+    /// neither changed.
+    bool apply_theme(const twidget::Json& theme);
 
     std::unique_ptr<Container> container_;
     Backend& backend_;
@@ -445,8 +448,9 @@ private:
     std::vector<int64_t> pending_images_;
     std::unordered_map<int, std::vector<int64_t>> waiting_images_;
     std::unordered_set<std::string> interest_;
-    /// From the host's `theme` message, set on the root after the widget's own style.
+    /// From the host's `theme` message (the scheme's defaults before one), set on the root after the widget's own style.
     std::vector<std::pair<std::string, std::string>> theme_vars_;
+    bool theme_received_ = false;
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
     std::string frozen_reason_;

@@ -73,9 +73,18 @@ std::optional<float> parse_opacity(std::string_view text);
 
 /// The custom properties the host's `theme` message sets on the widget's root (widget-sandbox
 /// docs/sdk-v1.md §2.3, §2.4): the palette completed from the scheme's defaults, `--tg-color-scheme`,
-/// and each button token whose value passes its grammar. Twin of `themeVariables` in sdk-policy.ts.
+/// each button token whose value passes its grammar, and the text tokens completed from the reference set.
+/// Twin of `themeVariables` in sdk-policy.ts.
 std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::Json& theme);
 /// A name `theme_variables` may set: the widget's own style ops cannot set it on the root.
 bool is_theme_variable(std::string_view name);
+
+/// `css` with every `var(--name[, fallback])` replaced by the value of `--name` in `vars`, else by its
+/// fallback; a var() with neither stays.
+std::string substitute_variables(std::string_view css, const std::vector<std::pair<std::string, std::string>>& vars);
+/// Every `:where(X)` as `X`, for the profile's UA layer in litehtml's master CSS: litehtml sorts the master
+/// CSS by specificity, so its own `body {margin: 8px}` would beat a later zero-specificity rule, while no
+/// author rule can lose to the master CSS anyway.
+std::string unwrap_where(std::string_view css);
 
 } // namespace twlite::css

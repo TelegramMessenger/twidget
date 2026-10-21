@@ -1241,6 +1241,56 @@ int main() {
               "button tokens within their grammar pass as given, colours lowercased");
         check(var("--tg-color-scheme") == "dark" && var("--tg-theme-bg-color") == "#212121" && var("--tg-button-bg") == "-",
               "a dark theme without a palette takes the dark defaults; a missing token sets no variable");
+        check(var("--tg-text-font-size") == "15px" && var("--tg-text-line-height") == "1.35" && var("--tg-text-padding") == "8px 12px",
+              "without text tokens the reference set stands in");
+
+        vars = css::theme_variables(parse(R"({"text":{"fontSize":17.256,"lineHeight":"1.5","padding":"4px 6px"}})"));
+        check(var("--tg-text-font-size") == "17.26px" && var("--tg-text-line-height") == "1.5" && var("--tg-text-padding") == "4px 6px",
+              "text tokens within their grammar pass, a font size rounded to two decimals (got " + var("--tg-text-font-size") + ")");
+        vars = css::theme_variables(parse(R"({"text":{"fontSize":"100px","lineHeight":0.5,"padding":"4px auto"}})"));
+        check(var("--tg-text-font-size") == "15px" && var("--tg-text-line-height") == "1.35" && var("--tg-text-padding") == "8px 12px",
+              "text tokens outside their grammar fall back to the reference set");
+        check(css::is_theme_variable("--tg-text-padding"), "the widget cannot set a text token on the root");
+
+        check(css::substitute_variables("a{margin:var(--x, 1px) var(--y,rgba(0,0,0,.5)) var(--z)}", {{"--x", "2px"}}) ==
+                  "a{margin:2px rgba(0,0,0,.5) var(--z)}",
+              "var() takes the theme's value, else its fallback, else stays");
+        check(css::unwrap_where(":where(h1,h2){a:1}:where(a[href]){b:2}:where(li ul,li ol) b{c:3}:where(button:not([disabled])):active{d:4}") ==
+                  "h1,h2{a:1}a[href]{b:2}:where(li ul,li ol) b{c:3}button:not([disabled]):active{d:4}",
+              ":where() unwraps, except a list that more of its selector follows");
+    }
+
+    // ── v0.1.1: the profile's UA layer on the text tokens, user-select, relative offsets inside a line ──
+    {
+        StubBackend ub;
+        Renderer u(300, 1, false, ub);
+        u.receive(parse(R"({"type":"theme","theme":{"colorScheme":"light","text":{"fontSize":20,"padding":"4px 6px"}}})"));
+        u.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":"#sel{user-select:text} #flat{margin:0}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"h1"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"text","id":11,"data":"Title"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"p","attrs":[["id","sel"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"b"},{"op":"ins","parent":12,"id":13,"before":null},{"op":"text","id":14,"data":"bold"},{"op":"ins","parent":13,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"span"},{"op":"ins","parent":12,"id":15,"before":null},{"op":"text","id":16,"data":"base"},{"op":"ins","parent":15,"id":16,"before":null},
+            {"op":"el","id":17,"tag":"sup"},{"op":"ins","parent":12,"id":17,"before":null},{"op":"text","id":18,"data":"2"},{"op":"ins","parent":17,"id":18,"before":null},
+            {"op":"el","id":19,"tag":"p","attrs":[["id","flat"]]},{"op":"ins","parent":4,"id":19,"before":null}]})"));
+        auto ask = [&](Json query) {
+            for (const Json& m : u.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) { return ask(Json::object().set("q", "cs").set("id", id))[prop].asString(); };
+        check(cs(2, "font-size") == "20px" && cs(10, "font-size") == "32px" && cs(10, "font-weight") == "600",
+              "the root takes the text token's size and h1 the layer's 1.6em at 600 (got " + cs(2, "font-size") + ", " + cs(10, "font-size") + ", " + cs(10, "font-weight") + ")");
+        check(cs(4, "margin-top") == "4px" && cs(4, "margin-left") == "6px" && cs(4, "padding-top") == "0px",
+              "the body's margin is the padding token (got " + cs(4, "margin-top") + " " + cs(4, "margin-left") + ")");
+        check(cs(19, "margin-top") == "0px", "the widget's own CSS beats the layer");
+        std::string padding = ask(Json::object().set("q", "cs").set("id", 2).set("prop", "--tg-text-padding")).asString();
+        check(padding == "4px 6px", "a custom property reads back with its spaces (got " + padding + ")");
+        check(cs(2, "user-select") == "none" && cs(12, "user-select") == "text" && cs(13, "user-select") == "auto",
+              "text is not selectable by default; user-select: text opts in and a child follows with auto");
+        double base = ask(Json::object().set("q", "rect").set("id", 15))["y"].asNumber(), sup = ask(Json::object().set("q", "rect").set("id", 17))["y"].asNumber();
+        check(sup < base, "a sup is raised by its relative offset, with its text (sup " + std::to_string(sup) + ", base " + std::to_string(base) + ")");
     }
 
     // ── getComputedStyle ──
@@ -1367,7 +1417,7 @@ int main() {
         check(cs(30, "display") == "inline", "display: initial is inline (got " + cs(30, "display") + ")");
         check(cs(32, "color") == "rgb(0, 0, 140)", "color: unset inherits (got " + cs(32, "color") + ")");
         check(cs(33, "display") == "block", "display: revert is the UA's block (got " + cs(33, "display") + ")");
-        check(cs(34, "margin-top") == "16px", "margin: revert brings back the UA's 1em (got " + cs(34, "margin-top") + ")");
+        check(cs(34, "margin-top") == "15px", "margin: revert brings back litehtml's 1em, past the profile's layer (got " + cs(34, "margin-top") + ")");
         check(cs(35, "color") == "rgb(102, 51, 153)", "rebeccapurple is a colour (got " + cs(35, "color") + ")");
         double natural = 0;
         for (const Json& ev : events(loaded))
@@ -1536,7 +1586,7 @@ int main() {
         double length = ask(Json::object().set("q", "svg").set("id", 12).set("method", "getComputedTextLength")).asNumber();
         check(length > 10, "getComputedTextLength measures an SVG text (got " + std::to_string(length) + ")");
 
-        // Computed paint: inherited from a group, currentColor resolved; a link in the UA colour.
+        // Computed paint: inherited from a group, currentColor resolved; a link in the theme's link colour, from the UA layer.
         s.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":20,"tag":"g","svg":true,"attrs":[["fill","#0a0"],["stroke","currentColor"],["style","color:rgb(1, 2, 3)"]]},{"op":"ins","parent":10,"id":20,"before":null},
             {"op":"el","id":21,"tag":"circle","svg":true,"attrs":[["r","4"]]},{"op":"ins","parent":20,"id":21,"before":null},
             {"op":"el","id":22,"tag":"a","attrs":[["href","https://t.me"]]},{"op":"ins","parent":4,"id":22,"before":null},
@@ -1545,7 +1595,9 @@ int main() {
         check(cs["fill"].asString() == "rgb(0, 170, 0)" && cs["stroke"].asString() == "rgb(1, 2, 3)",
               "fill and stroke inherit, currentColor resolved (got " + cs["fill"].asString() + ", " + cs["stroke"].asString() + ")");
         check(ask(Json::object().set("q", "cs").set("id", 11))["stroke"].asString() == "none", "no stroke is none");
-        check(ask(Json::object().set("q", "cs").set("id", 22))["color"].asString() == "rgb(0, 0, 238)", "a link is #0000ee");
+        Json link = ask(Json::object().set("q", "cs").set("id", 22));
+        check(link["color"].asString() == "rgb(51, 144, 236)" && link["text-decoration-line"].asString() == "none",
+              "a link is --tg-theme-link-color, not underlined (got " + link["color"].asString() + ", " + link["text-decoration-line"].asString() + ")");
     }
 
     // ── resize diffs: which side of a widget changing height a host keeps still ──

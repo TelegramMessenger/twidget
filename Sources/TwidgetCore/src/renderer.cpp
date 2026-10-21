@@ -2,6 +2,7 @@
 
 #include "computed_style.h"
 #include "css.h"
+#include "tw_ua_stylesheet.h"
 
 #include <litehtml.h>
 #include <litehtml/html_tag.h>
@@ -54,17 +55,12 @@ constexpr double SCRIPT_FOCUS_S = 1;
 /// visible box: litehtml has no controls of its own (the container would own them), so they are
 /// bordered inline blocks here, with the value as text where the shadow tree knows it.
 ///
-/// `<button>` is profile 1's: `uaStylesheet` in widget-sandbox's profile.json, out of its `@layer`
-/// (the fork has no layers; the master sheet is below every author rule anyway). Its
-/// `user-select: none` rule is left out: the renderer has no text selection.
+/// The profile's UA layer (TW_UA_STYLESHEET, `tables.uaStylesheet` in widget-sandbox's profile.json) comes
+/// after these: the root, the text elements and `<button>` on the theme's variables, as every renderer draws them.
 const char* const UA_EXTRA = R"css(
-a:link{color:#0000ee}
 button,input,select,textarea,meter,progress{box-sizing:border-box}
 input,select,textarea{display:inline-block;border:1px solid #8f8f8f;border-radius:3px;background:#fff;color:#000;padding:2px 6px;font:13.333px -apple-system,system-ui,sans-serif;min-height:1.8em;min-width:2em;vertical-align:middle}
 :where(button){display:inline-block;text-align:center}
-:where(button){appearance:none;-webkit-appearance:none;margin:0;border:0;border-radius:var(--tg-button-radius,8px);padding:var(--tg-button-padding,8px 14px);min-height:var(--tg-button-height,auto);font:var(--tg-button-font,500 14px/1.2 system-ui,sans-serif);background:var(--tg-button-bg,rgba(51,144,236,.12));color:var(--tg-button-text,inherit);cursor:pointer;-webkit-tap-highlight-color:transparent}
-:where(button:not([disabled])):active{opacity:var(--tg-button-pressed-opacity,.7)}
-:where(button[disabled]){opacity:var(--tg-button-disabled-opacity,.5);cursor:default}
 input[type=checkbox],input[type=radio]{min-width:13px;width:13px;height:13px;min-height:13px;padding:0;margin:3px 3px 3px 4px;vertical-align:middle}
 input[type=radio]{border-radius:50%}
 input[type=range]{border:none;background:transparent;padding:0}
@@ -648,6 +644,13 @@ public:
 
     /// The viewport is now `vp_height` tall, without a layout: the document does not depend on it.
     void viewport_resized(int vp_height) { vp_height_ = vp_height; }
+    /// The master CSS of the next document. A change drops the current one: a patch keeps the master it was parsed with.
+    void set_master(std::string css) {
+        if (css == master_css_) return;
+        master_css_ = std::move(css);
+        elements_.clear();
+        doc_ = nullptr;
+    }
     /// False when the document is exactly as it was: same HTML, viewport and width.
     bool build(const std::string& html, int vp_height) {
         bool viewport_changed = vp_height != vp_height_;
@@ -687,9 +690,9 @@ public:
         // The fork's keys are only good within a document: a new one may resolve colours differently.
         cached_.clear();
         cached_commands_ = 0;
-        doc_ = litehtml::document::createUpdatableFromString(html, this, std::string(litehtml::master_css) + UA_EXTRA);
+        doc_ = litehtml::document::createUpdatableFromString(html, this, master_css_);
 #else
-        doc_ = litehtml::document::createFromString(litehtml::estring(html), this, std::string(litehtml::master_css) + UA_EXTRA);
+        doc_ = litehtml::document::createFromString(litehtml::estring(html), this, master_css_);
 #endif
         if (!doc_) return true;
         rendered_width_ = float(r_.width_);
@@ -2342,6 +2345,7 @@ private:
     int vp_height_ = int(MIN_HEIGHT);
     float rendered_width_ = 0;
     bool viewport_units_ = false;  // the current document has lengths folded from the viewport
+    std::string master_css_;
 #ifdef TW_LITEHTML_TWIDGET
     struct Scan {
         std::vector<std::string> names, gates;
@@ -2402,7 +2406,19 @@ Renderer::Renderer(double width, double dpr, bool dark, Backend& backend)
     head_node_->parent = html_node_.get();
     body_node_->parent = html_node_.get();
     html_node_->children = {head_node_.get(), body_node_.get()};
+    apply_theme(Json::object().set("colorScheme", dark ? "dark" : "light"));
     rebuild();
+}
+
+bool Renderer::apply_theme(const Json& theme) {
+    auto vars = css::theme_variables(theme);
+    if (vars == theme_vars_) return false;
+    theme_vars_ = std::move(vars);
+    // The layer with the theme's values in place of its var(), since the fork applies a var() in a shorthand
+    // after the cascade (`margin: var(…)` from the master CSS would beat the widget's own `margin: 0`), and
+    // without :where() (css.h, unwrap_where).
+    container_->set_master(std::string(litehtml::master_css) + UA_EXTRA + css::unwrap_where(css::substitute_variables(TW_UA_STYLESHEET, theme_vars_)));
+    return true;
 }
 
 Renderer::~Renderer() {
@@ -2476,9 +2492,8 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         prevent_.clear();
         for (const Json& k : msg["keys"].arr()) if (k.isString()) prevent_.insert(k.asString());
     } else if (type == "theme") {
-        auto vars = css::theme_variables(msg["theme"]);
-        if (vars != theme_vars_) {
-            theme_vars_ = std::move(vars);
+        theme_received_ = true;
+        if (apply_theme(msg["theme"])) {
             rebuild();
             report_size(out);
         }
@@ -2557,6 +2572,7 @@ void Renderer::set_max_height(double height, std::vector<Json>& out) {
 void Renderer::set_theme(bool dark, std::vector<Json>& out) {
     if (dark == dark_) return;
     dark_ = dark;
+    if (!theme_received_) apply_theme(Json::object().set("colorScheme", dark ? "dark" : "light"));
     rebuild();
     report_size(out);
 }

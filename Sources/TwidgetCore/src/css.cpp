@@ -749,6 +749,12 @@ constexpr const char* BUTTON_VARS[][2] = {
     {"pressedOpacity", "--tg-button-pressed-opacity"},
     {"disabledOpacity", "--tg-button-disabled-opacity"},
 };
+/// The text tokens and the reference set that stands for any the host leaves out (DEFAULT_TEXT_TOKENS).
+constexpr const char* TEXT_VARS[][3] = {
+    {"fontSize", "--tg-text-font-size", "15px"},
+    {"lineHeight", "--tg-text-line-height", "1.35"},
+    {"padding", "--tg-text-padding", "8px 12px"},
+};
 
 constexpr const char* GENERIC_FAMILIES[] = {"system-ui", "sans-serif", "serif", "monospace", "ui-sans-serif", "ui-serif", "ui-monospace", "ui-rounded"};
 
@@ -789,6 +795,25 @@ bool token_length(std::string_view v) {
     if (v == "0") return true;
     size_t i = 0;
     return consume_number(v, i, 4, 3) && consume_unit(v, i) && i == v.size();
+}
+
+// A number in [min, max] with at most `decimals` decimals, given as a number or as `[0-9]{1,2}(.d…)` + `unit`;
+// written back rounded, with the unit.
+std::optional<std::string> bounded(const twidget::Json& value, double min, double max, size_t decimals, std::string_view unit) {
+    double n;
+    if (value.isNumber()) {
+        n = value.asNumber();
+    } else if (value.isString()) {
+        std::string_view v = value.asString();
+        size_t i = 0;
+        if (!consume_number(v, i, 2, decimals) || v.substr(i) != unit) return std::nullopt;
+        n = twidget::Json::parseDouble(value.asString().c_str());
+    } else {
+        return std::nullopt;
+    }
+    if (!std::isfinite(n) || n < min || n > max) return std::nullopt;
+    double f = std::pow(10.0, double(decimals));
+    return twidget::Json::number(std::round(n * f) / f) + std::string(unit);
 }
 
 // `[normal|italic] [normal|bold|N00] size[/line-height] family, …` with generic families only.
@@ -880,7 +905,7 @@ std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::
     bool dark = theme["colorScheme"].asString() == "dark";
     const twidget::Json& params = theme["params"];
     std::vector<std::pair<std::string, std::string>> vars;
-    vars.reserve(THEME_KEY_COUNT + 1 + std::size(BUTTON_VARS));
+    vars.reserve(THEME_KEY_COUNT + 1 + std::size(BUTTON_VARS) + std::size(TEXT_VARS));
     for (size_t k = 0; k < THEME_KEY_COUNT; k++) {
         const std::string& v = params[THEME_KEYS[k]].asString();
         vars.emplace_back(theme_variable_name(THEME_KEYS[k]), hex_color(v) ? lower(v) : THEME_DEFAULTS[dark][k]);
@@ -891,6 +916,15 @@ std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::
         if (const twidget::Json* value = button.find(field))
             if (auto token = button_token(field, *value)) vars.emplace_back(name, std::move(*token));
     }
+    const twidget::Json& text = theme["text"];
+    for (const auto& [field, name, fallback] : TEXT_VARS) {
+        std::optional<std::string> token;
+        if (const twidget::Json* value = text.find(field)) {
+            std::string_view f = field;
+            token = f == "fontSize" ? bounded(*value, 8, 64, 2, "px") : f == "lineHeight" ? bounded(*value, 1, 3, 3, "") : button_token("padding", *value);
+        }
+        vars.emplace_back(name, token ? std::move(*token) : std::string(fallback));
+    }
     return vars;
 }
 
@@ -898,9 +932,66 @@ bool is_theme_variable(std::string_view name) {
     if (name == "--tg-color-scheme") return true;
     for (const auto& [field, var] : BUTTON_VARS)
         if (name == var) return true;
+    for (const auto& [field, var, fallback] : TEXT_VARS)
+        if (name == var) return true;
     for (const char* key : THEME_KEYS)
         if (name == theme_variable_name(key)) return true;
     return false;
+}
+
+std::string substitute_variables(std::string_view css, const std::vector<std::pair<std::string, std::string>>& vars) {
+    std::string out;
+    out.reserve(css.size());
+    size_t i = 0;
+    while (i < css.size()) {
+        size_t at = css.find("var(", i);
+        if (at == std::string_view::npos) break;
+        // The matching ')': a fallback may hold functions of its own, `rgba(…)`.
+        size_t end = at + 4, comma = std::string_view::npos;
+        int depth = 1;
+        for (; end < css.size() && depth; end++) {
+            if (css[end] == '(') depth++;
+            else if (css[end] == ')') depth--;
+            else if (css[end] == ',' && depth == 1 && comma == std::string_view::npos) comma = end;
+        }
+        if (depth) break;
+        std::string name = trim(css.substr(at + 4, (comma == std::string_view::npos ? end - 1 : comma) - at - 4));
+        out.append(css.substr(i, at - i));
+        auto var = std::find_if(vars.begin(), vars.end(), [&](const auto& v) { return v.first == name; });
+        if (var != vars.end()) out += var->second;
+        else if (comma != std::string_view::npos) out.append(trim(css.substr(comma + 1, end - 2 - comma)));
+        else out.append(css.substr(at, end - at));
+        i = end;
+    }
+    out.append(css.substr(i));
+    return out;
+}
+
+std::string unwrap_where(std::string_view css) {
+    std::string out;
+    out.reserve(css.size());
+    size_t i = 0;
+    while (i < css.size()) {
+        size_t at = css.find(":where(", i);
+        if (at == std::string_view::npos) break;
+        size_t end = at + 7;
+        int depth = 1;
+        bool list = false;
+        for (; end < css.size() && depth; end++) {
+            if (css[end] == '(') depth++;
+            else if (css[end] == ')') depth--;
+            else if (css[end] == ',' && depth == 1) list = true;
+        }
+        if (depth) break;
+        out.append(css.substr(i, at - i));
+        // A list followed by more of its compound selector cannot be unwrapped: `:where(a,b).x` is not `a,b.x`.
+        char next = end < css.size() ? css[end] : '{';
+        if (list && next != '{' && next != ',') out.append(css.substr(at, end - at));
+        else out.append(css.substr(at + 7, end - 1 - (at + 7)));
+        i = end;
+    }
+    out.append(css.substr(i));
+    return out;
 }
 
 } // namespace twlite::css
