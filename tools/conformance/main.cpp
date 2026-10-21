@@ -128,7 +128,7 @@ class OffscreenRenderer final : public twidget::Renderer {
 public:
     OffscreenRenderer(Device& device, bool dark, double width, double max_height)
         : device_(device), backend_(device.d2d.get(), device.dwrite.get(), device.wic.get()),
-          core_(std::make_unique<twlite::Renderer>(width, DPR, dark, backend_)) {
+          core_(std::make_unique<twlite::Renderer>(width, DPR, dark, backend_)), dark_(dark) {
         std::vector<Json> out;
         core_->set_max_height(max_height, out);
         clock_ = std::thread([this] { clock_loop(); });
@@ -154,7 +154,8 @@ public:
     void setTheme(const std::string& theme) override {
         run([&] {
             std::vector<Json> out;
-            core_->set_theme(theme == "dark", out);
+            dark_ = theme == "dark";
+            core_->set_theme(dark_, out);
             return out;
         });
     }
@@ -217,7 +218,8 @@ public:
         winrt::check_hresult(ctx->CreateBitmap(D2D1::SizeU(image.w, image.h), nullptr, 0, D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW, format), readback.put()));
         ctx->SetTarget(target.get());
         ctx->BeginDraw();
-        ctx->Clear(D2D1::ColorF(0, 0));
+        // The bubble under the transparent renderer, in the default palette's bg_color as the host passes no other.
+        ctx->Clear(D2D1::ColorF(dark_ ? 0x212121 : 0xffffff));
         ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         ctx->SetTransform(D2D1::Matrix3x2F::Scale(float(DPR), float(DPR)));
         backend_.paint(list, ctx.get());
@@ -319,6 +321,7 @@ private:
     twlite::D2DBackend backend_;
     std::mutex mutex_;  // core_ and every call into it
     std::unique_ptr<twlite::Renderer> core_;
+    bool dark_;
 
     std::mutex clock_mutex_;
     std::thread clock_;
