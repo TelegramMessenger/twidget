@@ -756,6 +756,26 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         }
 
         lbi->get_el()->apply_relative_shift(containing_block_size);
+        // What a relatively positioned inline element holds moves with it: its text and boxes are items of their own.
+        // So do its start and end, which keep a position of their own that the element's shift above does not move.
+        const bool marker = lbi->get_type() == line_box_item::type_inline_start ||
+                            lbi->get_type() == line_box_item::type_inline_continue ||
+                            lbi->get_type() == line_box_item::type_inline_end;
+        for(auto p = marker ? lbi->get_el()->src_el() : lbi->get_el()->src_el()->parent();
+            p && p->css().get_display() == display_inline; p = p->parent())
+        {
+            if(p->css().get_position() != element_position_relative)
+                continue;
+            css_offsets offsets = p->css().get_offsets();
+            if(!offsets.left.is_predefined())
+                lbi->pos().x += offsets.left.calc_percent(containing_block_size.width);
+            else if(!offsets.right.is_predefined())
+                lbi->pos().x -= offsets.right.calc_percent(containing_block_size.width);
+            if(!offsets.top.is_predefined())
+                lbi->pos().y += offsets.top.calc_percent(containing_block_size.height);
+            else if(!offsets.bottom.is_predefined())
+                lbi->pos().y -= offsets.bottom.calc_percent(containing_block_size.height);
+        }
 
         // Calculate and push inline box into the render item element. An inline box spans whatever its items
         // take, in whichever order a reordered line (reorder_bidi) shows them.
