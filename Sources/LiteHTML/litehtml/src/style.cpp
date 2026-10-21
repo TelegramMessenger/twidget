@@ -49,6 +49,7 @@ namespace litehtml
         {_white_space_,            white_space_strings                 },
         {_overflow_wrap_,          overflow_wrap_strings               },
         {_word_break_,             word_break_strings                  },
+        {_user_select_,            user_select_strings                 },
 
         {_font_style_,             font_style_strings                  },
         {_font_variant_,           font_variant_strings                },
@@ -465,6 +466,8 @@ namespace litehtml
 
         if(name == _word_wrap_)
             name = _overflow_wrap_;
+        if(name == __webkit_user_select_)
+            name = _user_select_;
         if(ident == "inherit")
         {
             return inherit_property(name, important);
@@ -521,6 +524,7 @@ namespace litehtml
         case _white_space_:
         case _overflow_wrap_:
         case _word_break_:
+        case _user_select_:
 
         case _font_style_:
         case _font_variant_:

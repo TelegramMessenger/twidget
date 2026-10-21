@@ -94,6 +94,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
         static_cast<white_space>(el->get_property<int>(_white_space_, true, white_space_normal, offset(m_white_space)));
     m_overflow_wrap = static_cast<overflow_wrap>(el->get_property<int>(_overflow_wrap_, true, overflow_wrap_normal, offset(m_overflow_wrap)));
     m_word_break = static_cast<word_break>(el->get_property<int>(_word_break_, true, word_break_normal, offset(m_word_break)));
+    m_user_select = static_cast<user_select>(el->get_property<int>(_user_select_, false, user_select_auto, offset(m_user_select)));
     m_caption_side = static_cast<caption_side>(
         el->get_property<int>(_caption_side_, true, caption_side_top, offset(m_caption_side)));
 

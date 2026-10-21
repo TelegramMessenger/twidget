@@ -251,8 +251,9 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     std::string decoration_color = color(css.get_text_decoration_color().alpha ? css.get_text_decoration_color() : css.get_color());
     o.set("text-decoration-line", decoration).set("text-decoration-style", decoration_style).set("text-decoration-color", decoration_color);
     o.set("text-decoration", decoration + " " + decoration_style + " " + decoration_color);
-    // The renderer never selects text, whatever the widget asks (profile 1, D18).
-    o.set("user-select", "none").set("-webkit-user-select", "none");
+    // What the widget asked for. The renderer selects no text yet, an exception v0.1.1 allows a native renderer.
+    const char* select = css.get_user_select() == litehtml::user_select_text ? "text" : css.get_user_select() == litehtml::user_select_none ? "none" : "auto";
+    o.set("user-select", select).set("-webkit-user-select", select);
 
     // Lists.
     o.set("list-style-type", name_of(litehtml::list_style_type_strings[css.get_list_style_type()]));

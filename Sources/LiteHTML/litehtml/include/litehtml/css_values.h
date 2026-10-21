@@ -527,6 +527,16 @@ namespace litehtml
         content_property_no_close_quote,
     };
 
+    // `all` and `contain` are outside widget profile 1.
+    inline constexpr auto user_select_strings = split_css_values<3>("auto;text;none");
+
+    enum user_select
+    {
+        user_select_auto,
+        user_select_text,
+        user_select_none,
+    };
+
     inline constexpr auto overflow_wrap_strings = split_css_values<3>("normal;break-word;anywhere");
 
     enum overflow_wrap

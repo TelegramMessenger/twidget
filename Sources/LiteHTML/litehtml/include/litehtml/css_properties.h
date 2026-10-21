@@ -42,6 +42,7 @@ namespace litehtml
         white_space           m_white_space    = white_space_normal;
         overflow_wrap         m_overflow_wrap  = overflow_wrap_normal;
         word_break            m_word_break     = word_break_normal;
+        user_select           m_user_select    = user_select_auto;
         style_display         m_display        = display_inline;
         visibility            m_visibility     = visibility_visible;
         appearance            m_appearance     = appearance_none;
@@ -172,6 +173,8 @@ namespace litehtml
         white_space get_white_space() const;
         void        set_white_space(white_space mWhiteSpace);
         overflow_wrap get_overflow_wrap() const { return m_overflow_wrap; }
+        /// Not inherited: `auto` follows the parent's, as in browsers.
+        user_select get_user_select() const { return m_user_select; }
         void set_overflow_wrap(overflow_wrap value) { m_overflow_wrap = value; }
         word_break get_word_break() const { return m_word_break; }
         void set_word_break(word_break value) { m_word_break = value; }

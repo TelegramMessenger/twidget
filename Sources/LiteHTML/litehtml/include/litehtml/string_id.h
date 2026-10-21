@@ -84,7 +84,7 @@ namespace litehtml
 
         _white_space_, _overflow_wrap_, _word_wrap_, _word_break_, _text_align_, _direction_, _vertical_align_, _color_, _width_, _height_, _min_width_, _min_height_,
         _max_width_, _max_height_, _position_, _overflow_, _overflow_x_, _overflow_y_, _display_, _visibility_, _appearance_, _resize_, _box_sizing_,
-        _z_index_, _float_, _clear_, _text_indent_, _top_, _right_, _bottom_, _left_, _cursor_, _content_,
+        _z_index_, _float_, _clear_, _text_indent_, _top_, _right_, _bottom_, _left_, _cursor_, _content_, _user_select_, __webkit_user_select_,
         _border_collapse_, _text_transform_,
 
         _flex_, _flex_flow_, _flex_direction_, _flex_wrap_, _justify_content_, _align_items_, _align_content_,
