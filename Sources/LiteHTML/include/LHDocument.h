@@ -173,6 +173,7 @@ typedef struct LHKeyedRect {
 - (nullable NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required changedSince:(uint64_t)known generation:(uint64_t *)generation NS_SWIFT_NAME(declarations(_:byAttribute:requiringAny:changedSince:generation:));
 
 - (NSArray<LHTextFragment *> *)textFragmentsWithMaxWidth:(CGFloat)maxWidth NS_SWIFT_NAME(textFragments(maxWidth:));
+- (NSArray<LHTextFragment *> *)selectableTextFragments NS_SWIFT_NAME(selectableTextFragments());
 
 - (BOOL)mouseMoved:(CGPoint)point;
 - (BOOL)mouseDown:(CGPoint)point;

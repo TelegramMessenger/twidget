@@ -3917,6 +3917,65 @@ static std::string LHCustomPropertyText(const lh::css_token_vector &tokens)
     return image;
 }
 
+static bool LHUserSelectable(lh::element::ptr el)
+{
+    for(; el; el = el->parent())
+    {
+        auto tag = std::dynamic_pointer_cast<lh::html_tag>(el);
+        if(!tag)
+            continue;
+        std::string value = tag->raw_declaration("user-select");
+        if(value.empty())
+            value = tag->raw_declaration("-webkit-user-select");
+        const size_t first = value.find_first_not_of(" \t\n\r\f");
+        if(first == std::string::npos)
+            continue;
+        value = value.substr(first, value.find_last_not_of(" \t\n\r\f") - first + 1);
+        for(auto &c : value)
+            c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        if(value != "auto")
+            return value == "text";
+    }
+    return false;
+}
+
+- (NSArray<LHTextFragment *> *)selectableTextFragments
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || _lastMaxWidth <= 0)
+        return @[];
+    CGSize size = [self layoutLockedWithMaxWidth:_lastMaxWidth];
+    auto   root = _doc->root_render();
+    if(!root)
+        return @[];
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef    ctx   = CGBitmapContextCreate(nullptr, 1, 1, 8, 0, space,
+                                                  kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(space);
+    if(!ctx)
+        return @[];
+    std::vector<LHTextRun> runs;
+    _container->set_text_runs(&runs);
+    [self drawLockedInContext:ctx origin:CGPointZero clip:CGRectMake(0, 0, size.width, std::max<CGFloat>(size.height, 1))];
+    _container->set_text_runs(nullptr);
+    CGContextRelease(ctx);
+
+    const auto any = [](const std::shared_ptr<lh::render_item> &) { return true; };
+    NSMutableArray<LHTextFragment *> *fragments = [NSMutableArray array];
+    for(const auto &run : runs)
+    {
+        NSString *text = @(run.text.c_str());
+        if(text.length == 0 || !run.font)
+            continue;
+        const float x = static_cast<float>(CGRectGetMidX(run.frame)), y = static_cast<float>(CGRectGetMidY(run.frame));
+        if(!LHUserSelectable(root->get_element_by_point(x, y, x, y, any)))
+            continue;
+        [fragments addObject:[[LHTextFragment alloc] initWithText:text font:run.font frame:run.frame]];
+    }
+    return fragments;
+}
+
 - (NSArray<LHTextFragment *> *)textFragmentsWithMaxWidth:(CGFloat)maxWidth
 {
     std::lock_guard<std::mutex> guard(_lock);

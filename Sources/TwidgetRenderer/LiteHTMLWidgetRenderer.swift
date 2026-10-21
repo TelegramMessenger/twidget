@@ -399,6 +399,24 @@ public final class LiteHTMLWidgetRenderer {
         post(["type": "media"])
     }
 
+    public var selectedText: String? {
+        return documentView.textSelection.text
+    }
+
+    public func clearTextSelection() {
+        documentView.textSelection.clear()
+    }
+
+    public var onTextSelectionChange: ((Bool) -> Void)? {
+        get { return documentView.textSelection.onChange }
+        set { documentView.textSelection.onChange = newValue }
+    }
+
+    public var textSelectionColor: NSColor {
+        get { return documentView.textSelection.color }
+        set { documentView.textSelection.color = newValue }
+    }
+
     public func snapshot() -> NSImage? {
         guard let document = document else {
             return nil
@@ -3386,7 +3404,18 @@ public final class LiteHTMLWidgetRenderer {
 class WidgetDocumentView: NSView {
     weak var owner: LiteHTMLWidgetRenderer?
     var formEditor: WidgetTextEditor?
-    var document: LHDocument?
+    let textSelection = WidgetTextSelection()
+    var document: LHDocument? {
+        didSet {
+            if Thread.isMainThread {
+                textSelection.revalidate(document)
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.textSelection.revalidate(self?.document)
+                }
+            }
+        }
+    }
     private let rasterLifetime = WidgetRasterLifetime()
     private var tracking: NSTrackingArea?
 
@@ -3410,6 +3439,9 @@ class WidgetDocumentView: NSView {
         content.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         content.actions = ["bounds": NSNull(), "position": NSNull(), "contents": NSNull(), "sublayers": NSNull()]
         layer?.twAddSublayer(content)
+        textSelection.layer.frame = CGRect(origin: .zero, size: frame.size)
+        textSelection.layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        layer?.twAddSublayer(textSelection.layer)
     }
 
     private let content = CALayer()
@@ -5137,16 +5169,21 @@ class WidgetDocumentView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let at = point(event)
+        if owner?.frozen != true {
+            _ = textSelection.press(at: at, clickCount: event.clickCount, document: document)
+        }
         toOwner { $0.handleMouseDown(at, event: event) }
     }
 
     override func mouseDragged(with event: NSEvent) {
         let at = point(event)
+        textSelection.drag(to: at)
         toOwner { $0.handleMouseDragged(at, event: event) }
     }
 
     override func mouseUp(with event: NSEvent) {
         let at = point(event)
+        textSelection.release()
         toOwner { $0.handleMouseUp(at, event: event) }
     }
 
