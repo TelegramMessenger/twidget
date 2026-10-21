@@ -43,7 +43,8 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | The `theme` message: `--tg-theme-*`, `--tg-color-scheme`, `--tg-button-*` and `--tg-text-*` on the root, important, values checked, the palette and text tokens always complete | `css::theme_variables` |
 | The profile's UA layer (`tables.uaStylesheet`) in the master CSS, the theme's values substituted and `:where()` unwrapped | `Renderer::apply_theme`, `tw_ua_stylesheet.h` (CMake) |
 | `revert` goes past that layer to litehtml's own sheet, as it goes past author layers to Chromium's | the fork's `css_selector::m_layered` |
-| `user-select` and `-webkit-user-select` computed (`none`, `text`, `auto`); the text is not selectable yet, an exception v0.1.1 allows | the fork's `css_properties::get_user_select` |
+| `user-select` and `-webkit-user-select` computed (`none`, `text`, `auto`) | the fork's `css_properties::get_user_select` |
+| Text selection (`docs/sdk-v1.md` §5.10): a mouse drag that starts on `user-select: text`, unless the widget prevents the press, selects it and claims the drag; the host copies `selected_text()` and calls `clear_selection()` on a press of its own. Touch selection, which starts from the client's message menu, is not done yet | `Renderer::touch`, `text_runs`, `paint_selection` |
 | `position: relative` on an inline element moves its text and its line boxes | the fork's `line_box::finish` |
 | `gesture` claims with `x` and `y` | `Renderer::gesture_claim` |
 | The shared height bounds, 50 to 600 CSS px | `MIN_HEIGHT`, `max_height_` |
@@ -102,8 +103,8 @@ crops for `tools/conformance/visual-report.mjs`, which judges them with the set'
 v0.1.1 adds widgets judged whole: 14 (no CSS at all), 15 (a body background without a margin reset) and 16
 (selection). The runner paints the default palette's `bg_color` under the transparent renderer, as a client
 draws its bubble. On 2026-10-21 they differ from the references by where their lines wrap, the fonts again:
-the body background of 15 fills the bubble edge to edge, and 14 lays out as the reference does. 16's
-selection is the tester's and the renderer selects nothing yet.
+the body background of 15 fills the bubble edge to edge, and 14 lays out as the reference does. 16 is a
+tester's: a mouse selects its opted-in paragraph in the Windows spike, touch does not yet.
 
 ## Each platform's painter
 
