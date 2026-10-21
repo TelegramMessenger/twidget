@@ -211,6 +211,7 @@ final class VisualQueryTests: XCTestCase {
     func testComputedLineHeightPreservesNormalAndResolvesLengths() {
         let renderer = make()
         defer { renderer.destroy() }
+        send(renderer, ["type": "ops", "ops": [["op": "style", "id": 8, "name": "line-height", "value": "normal"]]])
         XCTAssertEqual(query(renderer, "cs")["line-height"] as? String, "normal")
         send(renderer, ["type": "ops", "ops": [
             ["op": "style", "id": 8, "name": "font-size", "value": "20px"],

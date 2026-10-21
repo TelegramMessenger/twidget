@@ -69,6 +69,7 @@ public final class LiteHTMLWidgetRenderer {
     let dom = WidgetDOM()
     private var theme: String
     private(set) var document: LHDocument?
+    private var masterCSS = WidgetThemeStyle.uaStylesheet
     private var buffered: [String] = []
     var listened: Set<String> = []
     var prevented: Set<String> = []
@@ -869,7 +870,11 @@ public final class LiteHTMLWidgetRenderer {
         case "frozen":
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
         case "theme":
-            if dom.setRootVariables(WidgetThemeStyle.variables(message["theme"])) {
+            let variables = WidgetThemeStyle.variables(message["theme"])
+            let css = WidgetThemeStyle.masterCSS(variables)
+            let restyled = css != masterCSS
+            masterCSS = css
+            if dom.setRootVariables(variables) || restyled {
                 setNeedsRender()
             }
         case "anim":
@@ -1730,7 +1735,7 @@ public final class LiteHTMLWidgetRenderer {
         guard let changes = dom.patchChanges(theme: theme, overrides: overrides, previous: last), !changes.isEmpty else {
             return nil
         }
-        return LHDocument(previous: document, changes: Data(changes), attribute: WidgetDOM.idAttribute, css: WidgetThemeStyle.uaStylesheet)
+        return LHDocument(previous: document, changes: Data(changes), attribute: WidgetDOM.idAttribute, css: masterCSS)
     }
 
     private func layout(_ overrides: [Int: [(String, String)]]) {
@@ -1759,7 +1764,7 @@ public final class LiteHTMLWidgetRenderer {
         stage("style-patch")
         let html = fast == nil || LiteHTMLWidgetRenderer.patchCheck ? dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) }) : ""
         stage("serialize")
-        let next = fast ?? LHDocument(html: html, css: WidgetThemeStyle.uaStylesheet, previous: document, viewportSize: layoutViewport)
+        let next = fast ?? LHDocument(html: html, css: masterCSS, previous: document, viewportSize: layoutViewport)
         next.controlsActive = controlsActive
         dom.resetPatchLog()
         if fast != nil {
@@ -1818,7 +1823,7 @@ public final class LiteHTMLWidgetRenderer {
         stage("layout")
         if LiteHTMLWidgetRenderer.patchCheck && next.reusedPrevious {
             patchChecks += 1
-            let fresh = LHDocument(html: html, css: WidgetThemeStyle.uaStylesheet, previous: nil, viewportSize: layoutViewport)
+            let fresh = LHDocument(html: html, css: masterCSS, previous: nil, viewportSize: layoutViewport)
             fresh.controlsActive = controlsActive
             if !textExcluded.isEmpty {
                 fresh.setTextPaintExclusions(Set(textExcluded.map { String($0) }), attribute: WidgetDOM.idAttribute)
@@ -2113,7 +2118,7 @@ public final class LiteHTMLWidgetRenderer {
             return
         }
         let html = dom.serialize(theme: theme, overrides: sampled, canvasSource: { [unowned self] node in self.canvasSource(node) })
-        let reference = LHDocument(html: html, css: WidgetThemeStyle.uaStylesheet, previous: nil, viewportSize: document.viewportSize)
+        let reference = LHDocument(html: html, css: masterCSS, previous: nil, viewportSize: document.viewportSize)
         reference.controlsActive = controlsActive
         _ = reference.layout(maxWidth: width, preferredWidth: width)
         let size = CGSize(width: width, height: max(1, ceil(document.size.height)))

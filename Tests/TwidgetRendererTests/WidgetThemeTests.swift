@@ -119,20 +119,21 @@ document.body.appendChild(done);
 
     func testVariablesUseDefaultsForMissingParams() {
         let light = WidgetThemeStyle.variables(["colorScheme": "light"])
-        XCTAssertEqual(light.count, 16)
+        XCTAssertEqual(light.count, 19)
         XCTAssertEqual(light.first?.name, "--tg-theme-bg-color")
         XCTAssertEqual(light.first?.value, "#ffffff")
-        XCTAssertEqual(light.last?.name, "--tg-color-scheme")
-        XCTAssertEqual(light.last?.value, "light")
+        XCTAssertEqual(light[15].name, "--tg-color-scheme")
+        XCTAssertEqual(light[15].value, "light")
+        XCTAssertEqual(light.last?.name, "--tg-text-padding")
         let dark = Dictionary(uniqueKeysWithValues: WidgetThemeStyle.variables(["colorScheme": "dark", "params": ["bg_color": "#0A0B0C"]]).map { ($0.name, $0.value) })
         XCTAssertEqual(dark["--tg-theme-bg-color"], "#0a0b0c")
         XCTAssertEqual(dark["--tg-theme-text-color"], "#ffffff")
         XCTAssertEqual(dark["--tg-theme-secondary-bg-color"], "#181818")
         XCTAssertEqual(dark["--tg-theme-bottom-bar-bg-color"], "#212121")
         XCTAssertEqual(dark["--tg-color-scheme"], "dark")
-        XCTAssertEqual(WidgetThemeStyle.variables(nil).count, 16)
-        XCTAssertEqual(WidgetThemeStyle.variables(["colorScheme": "sepia"]).last?.value, "light")
-        XCTAssertEqual(WidgetThemeStyle.variableNames.count, 24)
+        XCTAssertEqual(WidgetThemeStyle.variables(nil).count, 19)
+        XCTAssertEqual(WidgetThemeStyle.variables(["colorScheme": "sepia"])[15].value, "light")
+        XCTAssertEqual(WidgetThemeStyle.variableNames.count, 27)
     }
 
     func testInvalidTokensAreDropped() {
@@ -155,7 +156,7 @@ document.body.appendChild(done);
             "height": "12345px", "pressedOpacity": true, "disabledOpacity": 2,
         ]
         let dropped = WidgetThemeStyle.variables(["button": bad, "params": ["bg_color": "#fff", "text_color": "#12345g", "link_color": 255]])
-        XCTAssertEqual(dropped.count, 16)
+        XCTAssertEqual(dropped.count, 19)
         XCTAssertFalse(dropped.contains { $0.name.hasPrefix("--tg-button-") })
         XCTAssertEqual(dropped.first { $0.name == "--tg-theme-bg-color" }?.value, "#ffffff")
         XCTAssertEqual(dropped.first { $0.name == "--tg-theme-link-color" }?.value, "#3390ec")
@@ -188,10 +189,11 @@ document.body.appendChild(done);
     }
 
     func testUAStylesheetKeepsTheProfileText() {
-        XCTAssertTrue(WidgetThemeStyle.uaStylesheet.hasPrefix(WidgetThemeStyle.linkStylesheet + "@layer tw-ua{button{appearance:none;"))
-        XCTAssertTrue(WidgetThemeStyle.uaStylesheet.contains("}button:not([disabled]):active{opacity:var(--tg-button-pressed-opacity,.7)}button[disabled]{opacity:"))
+        XCTAssertTrue(WidgetThemeStyle.uaStylesheet.hasPrefix("@layer tw-ua{html{color:#000000;font:15px/1.35 system-ui,sans-serif;"))
+        XCTAssertTrue(WidgetThemeStyle.uaStylesheet.contains("}button:not([disabled]):active{opacity:var(--tg-button-pressed-opacity,.7)}button[disabled]{opacity:var(--tg-button-disabled-opacity,.5);cursor:default}}"))
+        XCTAssertTrue(WidgetThemeStyle.uaStylesheet.contains("html{color:#000000;font:15px/1.35 system-ui,sans-serif;-webkit-text-size-adjust:none;text-size-adjust:none;overflow-wrap:break-word;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}"))
         XCTAssertFalse(WidgetThemeStyle.uaStylesheet.contains(":where("))
-        XCTAssertEqual(WidgetThemeStyle.uaStylesheet.count, WidgetThemeStyle.linkStylesheet.count + WidgetThemeStyle.profileUAStylesheet.count - 3 * ":where()".count)
+        XCTAssertFalse(WidgetThemeStyle.uaStylesheet.contains("!important"))
     }
 
     func testRootVariablesWinOverWidgetRules() throws {
@@ -306,11 +308,11 @@ document.body.appendChild(done);
         let html = ##"<!doctype html><html><head><style>body{margin:0;color:#111}.own{color:#00aa00;text-decoration:none}</style></head><body><a id="frag" href="#t">fragment</a> <a id="ext" href="https://example.org/">external</a> <a id="own" class="own" href="#x">own</a> <a id="none">none</a><i id="done"></i></body></html>"##
         let h = try Harness(self, html: html, theme: WidgetThemeTests.theme)
         defer { h.close() }
-        XCTAssertEqual(h.style("frag")["color"], "rgb(0, 0, 238)")
-        XCTAssertEqual(h.style("frag")["text-decoration-line"], "underline")
+        XCTAssertEqual(h.style("frag")["color"], "rgb(0, 170, 0)")
+        XCTAssertEqual(h.style("frag")["text-decoration-line"], "none")
         XCTAssertEqual(h.element("ext")?.attribute("href"), "#")
-        XCTAssertEqual(h.style("ext")["color"], "rgb(0, 0, 238)")
-        XCTAssertEqual(h.style("ext")["text-decoration-line"], "underline")
+        XCTAssertEqual(h.style("ext")["color"], "rgb(0, 170, 0)")
+        XCTAssertEqual(h.style("ext")["text-decoration-line"], "none")
         XCTAssertEqual(h.style("own")["color"], "rgb(0, 170, 0)")
         XCTAssertEqual(h.style("own")["text-decoration-line"], "none")
         XCTAssertEqual(h.style("none")["color"], "rgb(17, 17, 17)")
@@ -346,7 +348,7 @@ document.body.appendChild(done);
         XCTAssertEqual(h.style("text")["background-color"], "rgb(171, 205, 239)")
         XCTAssertEqual(h.style("link")["background-color"], "rgb(51, 144, 236)")
         XCTAssertEqual(h.style("plain")["background-color"], "rgb(64, 80, 96)")
-        XCTAssertEqual(h.style("plain")["color"], "rgb(0, 0, 0)")
+        XCTAssertEqual(h.style("plain")["color"], "rgb(171, 205, 239)")
         XCTAssertEqual(h.style("plain")["padding-left"], "5px")
         XCTAssertEqual(h.renderer.styleFastMismatches, 0)
     }
