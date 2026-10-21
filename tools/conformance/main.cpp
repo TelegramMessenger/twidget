@@ -8,6 +8,7 @@
 //   twidget-conformance [out dir] [--width N]... [--filter text] [--sandbox <widget-sandbox>]
 #include "d2d_backend.h"
 #include "renderer.h"
+#include "twidget/icu_intl.h"
 #include "twidget/json.h"
 #include "twidget/renderer.h"
 #include "twidget/resources.h"
@@ -388,7 +389,8 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
 
     std::mutex bridge_mutex;
     Json bridge = Json::array();
-    twidget::WidgetHost host(html, twidget::WidgetTheme{theme}, width, host_options, resources, factory);
+    // A client's Intl: the system's ICU, as a Windows client configures it.
+    twidget::WidgetHost host(html, twidget::WidgetTheme{theme}, width, host_options, resources, factory, std::make_shared<twidget::IcuIntl>());
     host.onAction = [&](const twidget::WidgetAction& a) {
         Json call = Json::object();
         Json args = Json::array();

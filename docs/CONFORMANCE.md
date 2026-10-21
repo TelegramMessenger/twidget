@@ -22,6 +22,7 @@ each platform's painter needs its own run.
 | 2026-10-19 | layout and style in the fork (L1–L13, O4) | 148 / 9 / 6 / 10 | 80 / 0 / 0 |
 | 2026-10-19 | SVG queries and painting (Q3, P1–P9) | 158 / 5 / 0 / 10 | 80 / 0 / 0 |
 | 2026-10-20 | the Swift renderer's text, border, canvas and image fixes | 159 / 4 / 0 / 10 | 80 / 0 / 0 |
+| 2026-10-20 | widget-sandbox main 7654e69 (live collections, Web Animations state before a query); Intl on the system's ICU (`IcuIntl`) | 162 / 1 / 0 / 10 | 80 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 
@@ -110,8 +111,5 @@ Dashed and dotted borders are `Path` strokes with dashes, which every painter dr
 
 | Item | Where |
 |---|---|
-| `Intl`: number grouping, dates, plural rules, relative time, collation | the C++ desktop host's `IntlProvider` (`BasicIntl`); a Windows client needs ICU or Windows.Globalization behind it |
-| `innerHTML` replacing children, live `getElementsByClassName` | widget-sandbox's shim (its `docs/changes.md` lists the second as known) |
 | The `emoji` stage (`css.text.emoji`) | the reference is Apple Color Emoji; Windows draws Segoe UI Emoji |
-| A Web Animations seek seen by a layout query in the same task (`anim.waapi`) | widget-sandbox's `query()` flushes the DOM ops but not the animation records, which go out at the end of the task; its own renderers fail this check too |
 | Right click / long press | the runner has no secondary button; profile 1 forwards no `contextmenu` anyway |
