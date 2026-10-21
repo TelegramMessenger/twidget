@@ -589,6 +589,8 @@ namespace litehtml
         const property_value* found = &none;
         for(const auto& sel : doc->master_css().selectors())
         {
+            if(sel->m_layered)
+                continue;
             const property_value& value = sel->m_style->get_property(name);
             if(value.is<invalid>() || (found->m_important && !value.m_important) || !sel->is_media_valid())
                 continue;

@@ -226,7 +226,9 @@ namespace litehtml
                     // is ignored, and the rules of a layer block are used as if they were not layered.
                     if(rule->block.type == CURLY_BLOCK)
                     {
+                        m_layer_depth++;
                         parse_css_stylesheet(rule->block.value, baseurl, doc, media, false);
+                        m_layer_depth--;
                         import_allowed = false;
                     }
                     // a layer statement rule is allowed before @import and does not disallow it

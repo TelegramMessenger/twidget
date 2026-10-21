@@ -204,6 +204,8 @@ namespace litehtml
         css_combinator             m_combinator = combinator_descendant;
         media_query_list_list::ptr m_media_query;
         style::ptr                 m_style;
+        /// From an @layer block: author CSS in a browser, so a layer in the master CSS is not what `revert` goes back to.
+        bool                       m_layered = false;
 
         bool parse(const std::string& text, document_mode mode);
         void calc_specificity();
