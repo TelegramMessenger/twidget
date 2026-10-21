@@ -1038,6 +1038,7 @@ public final class LiteHTMLWidgetRenderer {
             stageMilliseconds["scroll-fast", default: 0] += 1
             return
         }
+        let ops = WidgetCanvasOrder.ordered(ops)
         notePendingGeometry(ops)
         if LiteHTMLWidgetRenderer.canvasFastPath, !ops.isEmpty, ops.allSatisfy({ $0.kind == .canvas && $0.canvas != nil }) {
             sendCanvas(ops.map { ($0.id, CanvasStream(batch: $0.canvas!)) })
