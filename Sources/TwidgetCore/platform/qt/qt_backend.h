@@ -66,6 +66,7 @@ private:
     std::unordered_map<int, std::shared_ptr<Face>> handles_;
     int next_font_ = 0;
     std::unordered_map<int, QImage> images_;
+    int64_t image_bytes_ = 0;  // decoded, for MAX_IMAGE_BYTES
     std::unordered_map<int, QImage> canvases_;
     QImage reference_;  // the 96 dpi device fonts are measured against
     // A raster depends on the scale and the fraction of a pixel it was drawn at, besides the key.

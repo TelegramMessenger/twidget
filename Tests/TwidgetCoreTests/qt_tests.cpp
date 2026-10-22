@@ -368,6 +368,32 @@ static void test_stroke_gradient() {
           "an SVG stroke paints its gradient");
 }
 
+static void test_budgets() {
+    QtBackend backend;
+    float w = 0, h = 0;
+    check(!backend.load_image(1, "data:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>", w, h), "an SVG in capitals is refused too");
+    check(backend.load_image(2, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", w, h) && w == 1 && h == 1,
+          "a small PNG decodes");
+    // A valid 4097 × 1 PNG of 83 bytes: refused from its header, before it is decoded.
+    check(!backend.load_image(3, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAEAEAAAABCAAAAACUiF+eAAAAGklEQVR42u3BAQ0AAADCoPdPbQ8HFAAAAPBvEAIAAaWMqb0AAAAASUVORK5CYII=", w, h),
+          "an image past 4096 px a side is refused from its header");
+
+    auto red_square = [&](int id) {
+        CanvasOp fill;
+        fill.kind = CanvasOp::Fill;
+        fill.path = rect_path(0, 0, 10, 10);
+        fill.paint.color = Color{255, 0, 0, 255};
+        backend.canvas_run(id, 10, 10, {fill});
+        std::vector<uint8_t> rgba;
+        backend.canvas_read(id, 5, 5, 1, 1, rgba);
+        return rgba.size() == 4 && rgba[0] == 255 && rgba[3] == 255;
+    };
+    backend.canvas_run(10, 4096, 4096, {});
+    check(!red_square(11), "past every canvas's pixel budget a new canvas gets no bitmap");
+    backend.canvas_release(10);
+    check(red_square(11), "and gets one once another is released");
+}
+
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
@@ -380,6 +406,7 @@ int main(int argc, char** argv) {
     test_inert_clips();
     test_cached_svg();
     test_stroke_gradient();
+    test_budgets();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

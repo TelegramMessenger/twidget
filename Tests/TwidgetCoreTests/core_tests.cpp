@@ -2155,6 +2155,20 @@ int main() {
         check(rows_of(png(bad, false)) == 2, "rows stop at an unknown filter type");
         check(rows_of(png(truncated, false)) == 2, "and where the data runs out");
 
+        // What an image's header declares, before a decoder allocates it.
+        auto size_of = [](std::vector<uint8_t> bytes) {
+            uint32_t w = 0, h = 0;
+            return image_dimensions(bytes.data(), bytes.size(), w, h) ? std::to_string(w) + "x" + std::to_string(h) : std::string("none");
+        };
+        std::vector<uint8_t> intact = png(good, true);
+        std::vector<uint8_t> gif = {'G', 'I', 'F', '8', '9', 'a', 3, 0, 2, 0};
+        std::vector<uint8_t> jpeg = {0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC2, 0, 17, 8, 0, 5, 0, 7, 3};
+        std::vector<uint8_t> webp = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', 'X', 10, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 19, 0, 0};
+        std::vector<uint8_t> short_jpeg = {0xFF, 0xD8, 0xFF, 0xE0, 0, 40};
+        check(size_of(intact) == "2x3" && size_of(gif) == "3x2" && size_of(jpeg) == "7x5" && size_of(webp) == "10x20" && size_of(short_jpeg) == "none",
+              "image_dimensions reads PNG, GIF, JPEG and WebP headers (got " + size_of(intact) + ", " + size_of(gif) + ", " + size_of(jpeg) + ", " + size_of(webp) + ", " +
+                  size_of(short_jpeg) + ")");
+
         // The CPU filters of the painters that draw into memory.
         auto filtered = [](std::vector<uint8_t> px, int w, int h, Filters fs, bool bgra = false) {
             filter_pixels(px.data(), w, h, size_t(w) * 4, bgra, fs, 1);

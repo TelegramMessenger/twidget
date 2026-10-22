@@ -22,6 +22,14 @@ namespace twlite {
 namespace {
 
 constexpr float kPi = 3.14159265f;
+/// Decoded images, as the Apple renderer bounds them: a side, and all of them together. Over either the
+/// image is refused (an error for the widget) before it is decoded; nothing evicts one a document holds.
+constexpr int MAX_IMAGE_SIDE = 4096;
+constexpr int64_t MAX_IMAGE_BYTES = int64_t(24) << 20;
+/// Every canvas's bitmap together, as the core bounds one renderer's (Canvas::MAX_PIXELS).
+constexpr int64_t MAX_CANVAS_PIXELS = int64_t(4096) * 4096;
+/// Measured widths kept per face: longer text is measured each time.
+constexpr size_t MAX_WIDTH_KEY = 256;
 
 std::string lower(std::string s) {
     for (auto& c : s) c = char(std::tolower((unsigned char)c));
@@ -453,9 +461,10 @@ float QtBackend::text_width(int font, const std::string& text) {
     if (!f) return 0;
     auto it = f->widths.find(text);
     if (it != f->widths.end()) return it->second;
-    // Words repeat across rebuilds, but a widget that types a counter would grow this forever.
-    if (f->widths.size() > 4096) f->widths.clear();
     float w = float(QFontMetricsF(f->font, &reference_).horizontalAdvance(QString::fromUtf8(text.data(), qsizetype(text.size()))));
+    // Words repeat across rebuilds, but a widget that types a counter would grow this forever.
+    if (text.size() > MAX_WIDTH_KEY) return w;
+    if (f->widths.size() > 4096) f->widths.clear();
     f->widths.emplace(text, w);
     return w;
 }
@@ -464,14 +473,21 @@ bool QtBackend::load_image(int id, const std::string& url, float& w, float& h) {
     // data:[<mime>][;base64],<payload>
     size_t comma = url.find(',');
     if (url.rfind("data:", 0) != 0 || comma == std::string::npos) return false;
-    std::string meta = url.substr(5, comma - 5);
+    std::string meta = lower(url.substr(5, comma - 5));
     // No SVG rasteriser on the other platforms, so none here either.
     if (meta.find("svg") != std::string::npos) return false;
 
     QByteArray payload = QByteArray::fromStdString(url.substr(comma + 1));
     QByteArray bytes = meta.find(";base64") != std::string::npos ? QByteArray::fromBase64(payload) : QByteArray::fromPercentEncoding(payload);
+    if (bytes.isEmpty()) return false;
+    // The size from the header, before a decoder allocates what a small file can claim.
+    uint32_t declared_w = 0, declared_h = 0;
+    if (!image_dimensions(reinterpret_cast<const uint8_t*>(bytes.constData()), size_t(bytes.size()), declared_w, declared_h)) return false;
+    if (declared_w == 0 || declared_h == 0 || declared_w > uint32_t(MAX_IMAGE_SIDE) || declared_h > uint32_t(MAX_IMAGE_SIDE)) return false;
+    if (image_bytes_ + int64_t(declared_w) * declared_h * 4 > MAX_IMAGE_BYTES) return false;
     QImage image;
-    if (bytes.isEmpty() || !image.loadFromData(bytes)) return false;
+    if (!image.loadFromData(bytes) || image.width() > MAX_IMAGE_SIDE || image.height() > MAX_IMAGE_SIDE) return false;
+    image_bytes_ += int64_t(image.width()) * image.height() * 4;
     QImage& kept = images_[id] = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     // Qt's decoder carries on through a broken stream; Chromium leaves what follows the damage transparent.
     size_t intact = png_intact_rows(reinterpret_cast<const uint8_t*>(bytes.constData()), size_t(bytes.size()));
@@ -626,6 +642,13 @@ void QtBackend::canvas_op(QImage& target, const CanvasOp& op, int id) {
 
 void QtBackend::canvas_run(int id, int w, int h, const std::vector<CanvasOp>& ops) {
     if (w <= 0 || h <= 0) {
+        canvases_.erase(id);
+        return;
+    }
+    int64_t others = 0;
+    for (const auto& [other, bitmap] : canvases_)
+        if (other != id) others += int64_t(bitmap.width()) * bitmap.height();
+    if (others + int64_t(w) * h > MAX_CANVAS_PIXELS) {
         canvases_.erase(id);
         return;
     }

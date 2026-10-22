@@ -220,4 +220,66 @@ size_t png_intact_rows(const uint8_t* bytes, size_t length) {
     return rows->intact < height ? size_t(rows->intact) : SIZE_MAX;
 }
 
+bool image_dimensions(const uint8_t* b, size_t n, uint32_t& w, uint32_t& h) {
+    auto be16 = [&](size_t at) { return uint32_t(b[at]) << 8 | b[at + 1]; };
+    auto le16 = [&](size_t at) { return uint32_t(b[at]) | uint32_t(b[at + 1]) << 8; };
+    auto be32 = [&](size_t at) { return be16(at) << 16 | be16(at + 2); };
+    auto le24 = [&](size_t at) { return le16(at) | uint32_t(b[at + 2]) << 16; };
+    if (!b) return false;
+    static const uint8_t png[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    if (n >= 24 && std::memcmp(b, png, 8) == 0 && std::memcmp(b + 12, "IHDR", 4) == 0) {
+        w = be32(16);
+        h = be32(20);
+        return true;
+    }
+    if (n >= 10 && (std::memcmp(b, "GIF87a", 6) == 0 || std::memcmp(b, "GIF89a", 6) == 0)) {
+        w = le16(6);
+        h = le16(8);
+        return true;
+    }
+    if (n >= 4 && b[0] == 0xFF && b[1] == 0xD8) {
+        // The first start-of-frame marker, past the segments before it.
+        for (size_t i = 2; i + 3 < n;) {
+            if (b[i] != 0xFF) return false;
+            uint8_t marker = b[i + 1];
+            if (marker == 0xFF) {
+                i++;
+                continue;
+            }
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+                i += 2;
+                continue;
+            }
+            if (marker == 0xDA || marker == 0xD9) return false;
+            if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
+                if (i + 9 > n) return false;
+                h = be16(i + 5);
+                w = be16(i + 7);
+                return true;
+            }
+            i += 2 + be16(i + 2);
+        }
+        return false;
+    }
+    if (n >= 30 && std::memcmp(b, "RIFF", 4) == 0 && std::memcmp(b + 8, "WEBP", 4) == 0) {
+        if (std::memcmp(b + 12, "VP8 ", 4) == 0) {
+            w = le16(26) & 0x3FFF;
+            h = le16(28) & 0x3FFF;
+            return true;
+        }
+        if (std::memcmp(b + 12, "VP8L", 4) == 0 && b[20] == 0x2F) {
+            uint32_t bits = uint32_t(b[21]) | uint32_t(b[22]) << 8 | uint32_t(b[23]) << 16 | uint32_t(b[24]) << 24;
+            w = (bits & 0x3FFF) + 1;
+            h = ((bits >> 14) & 0x3FFF) + 1;
+            return true;
+        }
+        if (std::memcmp(b + 12, "VP8X", 4) == 0) {
+            w = le24(24) + 1;
+            h = le24(27) + 1;
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace twlite

@@ -14,4 +14,8 @@ namespace twlite {
 /// runs out. SIZE_MAX when nothing is damaged, or `data` is no non-interlaced PNG.
 size_t png_intact_rows(const uint8_t* data, size_t size);
 
+/// The size a PNG, GIF, JPEG or WebP header in `data` declares, read before decoding: what a decoder
+/// would allocate for a small file. False for anything else, or a header cut short.
+bool image_dimensions(const uint8_t* data, size_t size, uint32_t& w, uint32_t& h);
+
 } // namespace twlite
