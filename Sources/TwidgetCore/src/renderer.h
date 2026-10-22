@@ -74,6 +74,9 @@ public:
     /// A mouse over the view with no button down (`action` 0), or leaving it (1): hover state and
     /// the over/out/enter/leave events.
     std::vector<twidget::Json> hover(int action, double x, double y, int modifiers = 0);
+    /// The CSS cursor where the mouse last was (`hover` or a mouse `touch`): "pointer", "text", … as the
+    /// document computes it, "auto" when it says nothing, after the mouse left, or while frozen.
+    std::string cursor() const;
     /// A wheel or trackpad scroll over the view. `mode`: 0 pixels, 1 lines, 2 pages.
     std::vector<twidget::Json> wheel(double x, double y, double dx, double dy, int mode, int modifiers = 0);
     /// `type` keydown or keyup, with DOM `key` and `code`, aimed at the control being edited, or else

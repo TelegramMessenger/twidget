@@ -1517,6 +1517,25 @@ int main() {
         check(!sized_at_once && waits && sized, "a size from a build in paint() keeps wants_tick() until the next tick hands it out");
     }
 
+    // ── the cursor under the mouse ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","height:20px;cursor:pointer"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["style","display:block;height:20px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["style","height:20px"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        c.hover(0, 5, 10);
+        std::string over = c.cursor();
+        c.hover(0, 5, 30);
+        std::string plain = c.cursor();
+        c.hover(0, 5, 10);
+        c.hover(1, 0, 0);
+        check(over == "pointer" && plain == "auto" && c.cursor() == "auto",
+              "cursor() is the document's cursor under the mouse, inherited, and auto elsewhere or once it left (got " + over + ", " + plain + ", " + c.cursor() + ")");
+    }
+
     // ── image sources: what reaches the backend ──
     {
         struct LoadingBackend : StubBackend {

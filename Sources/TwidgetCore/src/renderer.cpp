@@ -1130,6 +1130,7 @@ public:
 #endif
     /// The pointer left the view: :hover ends. True when something must repaint.
     bool leave() {
+        cursor_.clear();
         if (!doc_) return false;
         bool redraw = false;
         doc_->on_mouse_leave([&](const litehtml::position&) { redraw = true; });
@@ -1980,7 +1981,9 @@ public:
     void link(const std::shared_ptr<litehtml::document>&, const litehtml::element::ptr&) override {}
     void on_anchor_click(const char*, const litehtml::element::ptr&) override {}  // navigation is the sandbox's business (openLink)
     void on_mouse_event(const litehtml::element::ptr&, litehtml::mouse_event) override {}
-    void set_cursor(const char*) override {}
+    void set_cursor(const char* cursor) override { cursor_ = cursor ? cursor : ""; }
+    /// The `cursor` of the element the mouse is over, as the document computes it; empty when none.
+    const std::string& cursor() const { return cursor_; }
     void transform_text(std::string& text, litehtml::text_transform tt) override {
         // ASCII only; the platforms' Unicode case mapping would need a backend call.
         switch (tt) {
@@ -2427,6 +2430,7 @@ private:
     std::tuple<const litehtml::document*, uint32_t, uint64_t> cover_key_{};
     std::tuple<const litehtml::document*, uint32_t, uint64_t> trace_key_{};
     std::unordered_map<int64_t, litehtml::element::ptr> elements_;
+    std::string cursor_;
     size_t width_bytes_ = 0;  // before faces_, whose destruction gives its bytes back
     std::map<FaceKey, std::unique_ptr<Face>> faces_;
     uint64_t face_clock_ = 0;
@@ -2480,6 +2484,11 @@ bool Renderer::apply_theme(const Json& theme) {
 }
 
 const std::string& Renderer::master_css() const { return container_->master(); }
+
+std::string Renderer::cursor() const {
+    const std::string& c = container_->cursor();
+    return c.empty() || frozen_ ? "auto" : css::trim(lower(c));
+}
 
 Renderer::~Renderer() {
     for (const auto& [id, canvas] : canvases_) backend_.canvas_release(canvas->id());
