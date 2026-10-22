@@ -4996,7 +4996,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             auto [claim_x, claim_y] = selecting ? std::pair{true, true} : gesture_claim(t.target);
             out.push_back(Json::object().set("type", "gesture").set("wants", claim_y).set("x", claim_x).set("y", claim_y));
         }
-        if (container_->mouse(0, x, y)) dirty_ = touched_all_ = true;
+        if (container_->mouse(0, x, y)) restyled_by_input();
         if (t.target) {
             emit_event("pointerdown", t.target, t.target_rect, t, 0, out);
             emit_event("mousedown", t.target, t.target_rect, t, 0, out);
@@ -5023,7 +5023,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             if (std::fabs(x - t.x0) < TAP_SLOP && std::fabs(y - t.y0) < TAP_SLOP) return out;
             t.moved = true;
         }
-        if (container_->mouse(1, x, y)) dirty_ = touched_all_ = true;
+        if (container_->mouse(1, x, y)) restyled_by_input();
         if (t.target) {
             // A finger's events stay with the element it pressed; a mouse's go to the element under
             // it. Either way a capture takes the pointer events.
@@ -5042,7 +5042,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     Touch done = t;
     touches_.erase(it);
     if (selection_.pointer == pointer) selection_.pointer = -1;
-    if (container_->mouse(action, x, y, done.mouse && action == 2)) dirty_ = touched_all_ = true;
+    if (container_->mouse(action, x, y, done.mouse && action == 2)) restyled_by_input();
     if (action == 2) {
         Rect up_rect;
         int64_t up_target = widget_id_at(x, y, &up_rect);
@@ -5107,12 +5107,12 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
         in.movement_y = y - hover_y_;
         in.x = hover_x_ = x;
         in.y = hover_y_ = y;
-        if (container_->mouse(1, x, y)) dirty_ = touched_all_ = true;
+        if (container_->mouse(1, x, y)) restyled_by_input();
         target = widget_id_at(x, y, nullptr);
     } else {
         in.x = hover_x_;
         in.y = hover_y_;
-        if (container_->leave()) dirty_ = touched_all_ = true;
+        if (container_->leave()) restyled_by_input();
     }
     if (target != previous) {
         hover_ = target;
@@ -5478,6 +5478,12 @@ bool Renderer::clear_selection() {
 }
 
 void Renderer::selection_changed() { dirty_ = touched_all_ = true; }
+
+void Renderer::restyled_by_input() {
+    // :hover and :active restyle without a message: the transitions they start begin now, not with the next batch.
+    dirty_ = touched_all_ = true;
+    animate();
+}
 
 bool Renderer::selectable_text() const {
 #ifdef TW_LITEHTML_TWIDGET

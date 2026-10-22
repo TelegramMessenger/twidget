@@ -471,6 +471,8 @@ private:
     /// Where promoted layer `id`'s track shows it now, over its parents', and with what opacity.
     bool layer_shown(int64_t id, double now, Affine& shown, float& opacity) const;
     void selection_changed();
+    /// The pointer changed :hover or :active: a repaint, and the transitions the new styles start.
+    void restyled_by_input();
     /// The host's theme: the root's variables, and the master CSS's UA layer with their values. False when
     /// neither changed.
     bool apply_theme(const twidget::Json& theme);

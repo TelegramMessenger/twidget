@@ -1536,6 +1536,30 @@ int main() {
         check(!sized_at_once && waits && sized, "a size from a build in paint() keeps wants_tick() until the next tick hands it out");
     }
 
+    // ── :hover and :active start their transitions at once ──
+    {
+        StubBackend hb;
+        Renderer h(300, 1, false, hb);
+        h.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":".b{height:20px;opacity:1;transition:opacity 1s} .b:hover{opacity:0}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","b"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        h.paint();
+        bool idle = !h.wants_tick();
+        h.hover(0, 5, 10);
+        bool hovered = h.wants_tick();
+        StubBackend pb;
+        Renderer p(300, 1, false, pb);
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":".c{height:20px;opacity:1;transition:opacity 1s} .c:active{opacity:0}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+        p.paint();
+        p.touch(0, 5, 10, 0, true, false);
+        bool pressed = p.wants_tick();
+        check(idle && hovered && pressed, "a :hover or :active restyle starts its transition without waiting for a message");
+    }
+
     // ── the cursor under the mouse ──
     {
         StubBackend cb;
