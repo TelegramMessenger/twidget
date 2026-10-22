@@ -1285,6 +1285,11 @@ int main() {
         check(cs(4, "margin-top") == "4px" && cs(4, "margin-left") == "6px" && cs(4, "padding-top") == "0px",
               "the body's margin is the padding token (got " + cs(4, "margin-top") + " " + cs(4, "margin-left") + ")");
         check(cs(19, "margin-top") == "0px", "the widget's own CSS beats the layer");
+        bool token = false;
+        for (const auto& [name, value] : u.theme_variables()) token = token || (name == "--tg-text-font-size" && value == "20px");
+        const std::string& master = u.master_css();
+        check(token && master.find("var(--tg-") == std::string::npos && master.find("20px") != std::string::npos,
+              "theme_variables() and master_css() give the root's tokens and the UA layer with their values in place");
         std::string padding = ask(Json::object().set("q", "cs").set("id", 2).set("prop", "--tg-text-padding")).asString();
         check(padding == "4px 6px", "a custom property reads back with its spaces (got " + padding + ")");
         check(cs(2, "user-select") == "none" && cs(12, "user-select") == "text" && cs(13, "user-select") == "auto",

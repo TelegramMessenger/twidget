@@ -125,6 +125,11 @@ public:
     std::string selected_text() const;
     /// Drops the selection; true when there was one, and the next paint draws no highlight.
     bool clear_selection();
+    /// The master CSS documents are parsed with: litehtml's, the renderer's own rules, and the profile's UA
+    /// layer with the theme's values in place, for a host or a tool that lays the document out elsewhere.
+    const std::string& master_css() const;
+    /// The variables the theme sets on the root, from the host's `theme` message or the scheme's defaults.
+    const std::vector<std::pair<std::string, std::string>>& theme_variables() const { return theme_vars_; }
     /// The text under `user-select: text` as laid out, for a host that selects it with its own UI: touch
     /// selection starts from the client's message menu and its handles (§5.10). JSON, in document order:
     /// [[block, x, y, w, h, baseline, font, letter spacing, word spacing, text, [a, b, c, d, e, f]], …] in

@@ -674,6 +674,7 @@ public:
 
     /// The viewport is now `vp_height` tall, without a layout: the document does not depend on it.
     void viewport_resized(int vp_height) { vp_height_ = vp_height; }
+    const std::string& master() const { return master_css_; }
     /// The master CSS of the next document. A change drops the current one: a patch keeps the master it was parsed with.
     void set_master(std::string css) {
         if (css == master_css_) return;
@@ -2477,6 +2478,8 @@ bool Renderer::apply_theme(const Json& theme) {
     container_->set_master(std::string(litehtml::master_css) + UA_EXTRA + css::unwrap_where(css::substitute_variables(TW_UA_STYLESHEET, theme_vars_)));
     return true;
 }
+
+const std::string& Renderer::master_css() const { return container_->master(); }
 
 Renderer::~Renderer() {
     for (const auto& [id, canvas] : canvases_) backend_.canvas_release(canvas->id());
