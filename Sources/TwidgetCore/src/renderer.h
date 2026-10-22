@@ -416,6 +416,8 @@ private:
     void run_canvas(Canvas& canvas, const twidget::Json& cmds);
     void forget_canvas(int64_t id);
     int canvas_font(const std::string& css, FontMetrics& metrics) override;
+    /// `measureText`: the text in the canvas font `font` names, the one fillText draws it with.
+    twidget::Json measure_text(const std::string& font, const std::string& text);
     float canvas_text_width(int font, const std::string& text) override;
     bool canvas_source(int64_t node, int& image, int& canvas, float& w, float& h) override;
     int64_t canvas_allowance(int id) override;

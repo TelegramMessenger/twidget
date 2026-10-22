@@ -44,6 +44,8 @@ public:
     /// to its default face. `features`: OpenType features to turn on or off, as `tag=value` pairs
     /// joined by commas (`tnum=1,zero=1`), from font-variant-numeric and font-feature-settings; empty
     /// for the font's defaults. Returns a handle > 0, or 0 when no font at all could be made.
+    /// Documents and canvases never share a handle: a canvas's fonts (fillText, strokeText,
+    /// measureText) are made for it alone, with empty `features`, and deleted when it drops them.
     virtual int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features, FontMetrics& out) = 0;
     virtual void delete_font(int font) = 0;
     /// Advance width of `text` (UTF-8) in CSS px.

@@ -1236,61 +1236,6 @@ public:
         }
         return std::move(list_);
     }
-    /// A font for `measureText` (CSS font shorthand parsed loosely).
-    Json measure_text(const std::string& font, const std::string& text) {
-        float size = 10;
-        bool italic = false;
-        int weight = 400;
-        std::string family = "sans-serif";
-        std::vector<std::string> tokens;
-        {
-            std::string cur;
-            bool quoted = false;
-            for (char c : font) {
-                if (c == '"' || c == '\'') quoted = !quoted;
-                if (c == ' ' && !quoted) {
-                    if (!cur.empty()) tokens.push_back(cur);
-                    cur.clear();
-                } else cur.push_back(c);
-            }
-            if (!cur.empty()) tokens.push_back(cur);
-        }
-        size_t i = 0;
-        for (; i < tokens.size(); i++) {
-            const std::string t = lower(tokens[i]);
-            if (t == "italic" || t == "oblique") italic = true;
-            else if (t == "bold" || t == "bolder") weight = 700;
-            else if (t == "normal" || t == "lighter" || t == "small-caps") {}
-            else if (std::isdigit((unsigned char)t[0]) && t.find("px") == std::string::npos && t.find('/') == std::string::npos && t.size() == 3) weight = std::atoi(t.c_str());
-            else if (std::isdigit((unsigned char)t[0]) || t[0] == '.') {
-                size = float(std::atof(t.c_str()));
-                if (t.find("pt") != std::string::npos) size *= 96.0f / 72.0f;
-                else if (t.find("em") != std::string::npos) size *= 16.0f;
-                i++;
-                break;
-            } else break;
-        }
-        if (i < tokens.size()) {
-            family.clear();
-            for (; i < tokens.size(); i++) {
-                if (!family.empty()) family += ' ';
-                family += tokens[i];
-            }
-        }
-        Face* face = face_for(family, size, weight, italic);
-        FontMetrics fm = face ? face->metrics : FontMetrics{};
-        if (fm.em_ascent == 0 && fm.em_descent == 0) set_em_box(fm, fm.ascent, fm.descent, size);
-        Json o = Json::object();
-        float width = face ? face->width(backend_, text) : 0.0f;
-        o.set("width", width);
-        o.set("actualBoundingBoxLeft", 0).set("actualBoundingBoxRight", width);
-        o.set("actualBoundingBoxAscent", fm.ascent * 0.8f).set("actualBoundingBoxDescent", fm.descent * 0.6f);
-        o.set("fontBoundingBoxAscent", fm.ascent).set("fontBoundingBoxDescent", fm.descent);
-        o.set("emHeightAscent", fm.em_ascent).set("emHeightDescent", fm.em_descent);
-        o.set("hangingBaseline", fm.ascent * 0.8f).set("alphabeticBaseline", 0).set("ideographicBaseline", -fm.descent);
-        return o;
-    }
-
     // ── document_container: fonts and text ──
     litehtml::uint_ptr create_font(const litehtml::font_description& descr, const litehtml::document*, litehtml::font_metrics* fm) override {
         Face* face = face_for(descr.family, float(descr.size), descr.weight, descr.style == litehtml::font_style_italic, descr.features);
@@ -4035,6 +3980,25 @@ int Renderer::canvas_font(const std::string& font, FontMetrics& metrics) {
 
 float Renderer::canvas_text_width(int font, const std::string& text) { return backend_.text_width(font, text); }
 
+Json Renderer::measure_text(const std::string& font, const std::string& text) {
+    // In the font fillText draws it with: the canvas's, not a document's.
+    if (canvas_fonts_.size() > 64) {
+        for (const auto& [font_css, held] : canvas_fonts_) backend_.delete_font(held.first);
+        canvas_fonts_.clear();
+    }
+    FontMetrics fm;
+    int handle = canvas_font(font, fm);
+    float width = handle ? backend_.text_width(handle, text) : 0.0f;
+    Json o = Json::object();
+    o.set("width", width);
+    o.set("actualBoundingBoxLeft", 0).set("actualBoundingBoxRight", width);
+    o.set("actualBoundingBoxAscent", fm.ascent * 0.8f).set("actualBoundingBoxDescent", fm.descent * 0.6f);
+    o.set("fontBoundingBoxAscent", fm.ascent).set("fontBoundingBoxDescent", fm.descent);
+    o.set("emHeightAscent", fm.em_ascent).set("emHeightDescent", fm.em_descent);
+    o.set("hangingBaseline", fm.ascent * 0.8f).set("alphabeticBaseline", 0).set("ideographicBaseline", -fm.descent);
+    return o;
+}
+
 bool Renderer::canvas_source(int64_t id, int& image, int& canvas, float& w, float& h) {
     if (auto it = canvases_.find(id); it != canvases_.end()) {
         canvas = it->second->id();
@@ -4566,7 +4530,7 @@ Json Renderer::answer(const Json& q) {
         return computed_style(el, q["pseudo"].asString(), extras);
     }
     if (kind == "elementFromPoint") return double(widget_id_at(q["x"].asNumber(), q["y"].asNumber(), nullptr));
-    if (kind == "measureText") return container_->measure_text(q["font"].isString() ? q["font"].asString() : "10px sans-serif", q["text"].asString());
+    if (kind == "measureText") return measure_text(q["font"].isString() ? q["font"].asString() : "10px sans-serif", q["text"].asString());
     if (kind == "validity") return Json::object().set("valid", true).set("message", "");
     if (kind == "matchMedia") return Json::object().set("matches", match_media(q["query"].asString()));
     if (kind == "viewport") return Json::object().set("innerWidth", width_).set("innerHeight", double(vp_height_)).set("dpr", dpr_);

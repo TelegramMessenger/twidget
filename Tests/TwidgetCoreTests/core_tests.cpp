@@ -1473,27 +1473,46 @@ int main() {
     // ── measured widths: long text is not kept ──
     {
         struct CountingBackend : StubBackend {
-            size_t measured = 0;
+            size_t shorter = 0, longer = 0;
             float text_width(int f, const std::string& text) override {
-                measured++;
+                (text.size() > 1000 ? longer : shorter)++;
                 return StubBackend::text_width(f, text);
             }
         } mb;
         Renderer m(300, 1, false, mb);
         m.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
-            {"op":"el","id":4,"tag":"body","adopt":"body"}]})"));
-        auto measure = [&](const std::string& text) {
-            m.receive(parse(R"({"type":"query","qid":1,"query":{"q":"measureText","font":"12px serif","text":")" + text + R"("}})"));
-        };
-        mb.measured = 0;
-        measure("abc");
-        measure("abc");
-        check(mb.measured == 1, "a short text's width is kept (" + std::to_string(mb.measured) + " measured)");
-        std::string longer(100000, 'x');
-        mb.measured = 0;
-        measure(longer);
-        measure(longer);
-        check(mb.measured == 2, "a 100,000-character text is measured each time, never kept (" + std::to_string(mb.measured) + " measured)");
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","white-space:nowrap"]]},
+            {"op":"el","id":10,"tag":"p"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"text","id":11,"data":"abc )" + std::string(100000, 'x') + R"("},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        m.paint();
+        mb.shorter = mb.longer = 0;
+        // The same words again, in a second paragraph.
+        m.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":12,"tag":"p"},{"op":"ins","parent":4,"id":12,"before":null},{"op":"text","id":13,"data":"abc )" +
+                        std::string(100000, 'x') + R"("},{"op":"ins","parent":12,"id":13,"before":null}]})"));
+        m.paint();
+        check(mb.shorter == 0 && mb.longer > 0, "a laid-out word's width is kept, a 100,000-character one's measured again (" + std::to_string(mb.shorter) + " short, " +
+                                                    std::to_string(mb.longer) + " long measured)");
+    }
+
+    // ── measureText measures in the canvas's font, the one fillText draws with ──
+    {
+        struct FontBackend : StubBackend {
+            std::vector<int> measured_in;
+            float text_width(int f, const std::string& text) override {
+                measured_in.push_back(f);
+                return StubBackend::text_width(f, text);
+            }
+        } fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},{"op":"el","id":30,"tag":"canvas","attrs":[["width","50"],["height","20"]]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"canvas","id":30,"cmds":[["s","font","bold 12px serif"],["c","fillText","hi",0,10]]}]})"));
+        int drawn = 0;
+        for (const auto& run : fb.runs)
+            for (const CanvasOp& op : run)
+                if (op.kind == CanvasOp::Text) drawn = op.font;
+        fb.measured_in.clear();
+        f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"measureText","font":"bold 12px serif","text":"hi"}})"));
+        check(drawn != 0 && fb.measured_in.size() == 1 && fb.measured_in[0] == drawn, "measureText measures in the font fillText drew with");
     }
 
     // ── what a build in paint() says waits for the next tick ──
