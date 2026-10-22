@@ -572,7 +572,42 @@ void Canvas::image(const std::vector<Value>& a, std::vector<CanvasOp>& out) {
     default: return;
     }
     if (o.dw == 0 || o.dh == 0 || (a.size() == 9 && (o.sw == 0 || o.sh == 0))) return;
-    out.push_back(std::move(o));
+    if (o.image || o.canvas) {
+        out.push_back(std::move(o));
+        return;
+    }
+    // A refused image is widget-sandbox's placeholder (url-policy.ts, PLACEHOLDER_IMAGE), which no
+    // backend holds: its drawing, as a document draws it (draw_placeholder), from the source rect into
+    // the destination.
+    double sx = a.size() == 9 ? o.sx : 0, sy = a.size() == 9 ? o.sy : 0, sw = a.size() == 9 ? o.sw : w, sh = a.size() == 9 ? o.sh : h;
+    double kx = o.dw / sw * w / 48, ky = o.dh / sh * h / 48;
+    auto at = [&](double px, double py) { return std::pair{o.dx + (px * w / 48 - sx) * o.dw / sw, o.dy + (py * h / 48 - sy) * o.dh / sh}; };
+    auto number = [](double v) { return Value{Value::Number, v}; };
+    auto clips = state_.clips ? std::make_shared<std::vector<CanvasClip>>(*state_.clips) : std::make_shared<std::vector<CanvasClip>>();
+    clips->push_back(CanvasClip{rect_geometry(o.dx, o.dy, o.dw, o.dh), false});
+    auto draw = [&](Geometry g, Color color) {
+        CanvasOp f = op(CanvasOp::Fill);
+        f.paint.kind = CanvasPaint::Solid;
+        f.paint.color = color;
+        f.path = std::move(g);
+        f.clips = clips;
+        out.push_back(std::move(f));
+    };
+    const Color faint{136, 136, 136, 34}, mark{136, 136, 136, 102};
+    auto [x0, y0] = at(0, 0);
+    draw(rect_geometry(x0, y0, 48 * kx, 48 * ky), faint);
+    Builder hills;
+    const double points[] = {8, 36, 18, 24, 26, 33, 32, 26, 40, 36};
+    for (size_t i = 0; i < std::size(points); i += 2) {
+        auto [x, y] = at(points[i], points[i + 1]);
+        path_method(hills, state_.matrix, i ? "lineTo" : "moveTo", {number(x), number(y)});
+    }
+    path_method(hills, state_.matrix, "closePath", {});
+    draw(std::move(hills.geometry), mark);
+    Builder sun;
+    auto [cx, cy] = at(33, 15);
+    path_method(sun, state_.matrix, "ellipse", {number(cx), number(cy), number(4 * std::fabs(kx)), number(4 * std::fabs(ky)), number(0), number(0), number(2 * PI)});
+    draw(std::move(sun.geometry), mark);
 }
 
 bool Canvas::color_of(const std::string& text, Color& out) {

@@ -2060,6 +2060,23 @@ int main() {
             for (const CanvasOp& op : run)
                 if (op.kind == CanvasOp::Image && op.canvas == 41) sourced = true;
         check(sourced, "drawImage of a canvas drawn later in the batch draws it");
+
+        // A refused image is the placeholder in a canvas too, drawn as the document draws it.
+        ib.runs.clear();
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":50,"tag":"img","attrs":[["src","data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"]]},
+            {"op":"el","id":42,"tag":"canvas","attrs":[["width","48"],["height","48"]]},{"op":"ins","parent":4,"id":42,"before":null},
+            {"op":"canvas","id":42,"cmds":[["c","drawImage",{"n":50},0,0,24,24]]}]})"));
+        int images = 0, fills = 0;
+        bool inside = true;
+        for (const auto& run : ib.runs)
+            for (const CanvasOp& op : run) {
+                if (op.kind == CanvasOp::Image) images++;
+                if (op.kind != CanvasOp::Fill) continue;
+                fills++;
+                inside = inside && op.paint.color.r == 136 && op.clips && !op.clips->empty();
+                for (size_t i = 0; i < op.path.points.size(); i++) inside = inside && op.path.points[i] >= -0.01f && op.path.points[i] <= 24.01f;
+            }
+        check(images == 0 && fills == 3 && inside, "drawImage of the placeholder draws its drawing into the destination (" + std::to_string(images) + " images, " + std::to_string(fills) + " fills)");
     }
 
     std::printf("%d failure(s)\n", failures);
