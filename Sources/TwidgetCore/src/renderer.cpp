@@ -511,6 +511,9 @@ constexpr size_t MAX_CACHED_COMMANDS = 50000;
 constexpr size_t MAX_WIDTH_ENTRIES = 4096;
 constexpr size_t MAX_WIDTH_KEY = 256;
 constexpr size_t MAX_WIDTH_BYTES = 1 << 20;
+/// Past this a selectable run's carets are spread evenly over its width rather than measured: a press
+/// or a move must not shape a long unbroken run once per probe.
+constexpr size_t MAX_MEASURED_RUN = 4096;
 
 } // namespace
 
@@ -5196,10 +5199,16 @@ void Renderer::freeze(const std::string& reason, bool fatal) {
 
 // ───────────────────────── text selection ─────────────────────────
 
-std::vector<Renderer::TextRun> Renderer::text_runs() const {
-    std::vector<TextRun> runs;
+const std::vector<Renderer::TextRun>& Renderer::text_runs() const {
 #ifdef TW_LITEHTML_TWIDGET
     litehtml::document* doc = container_->doc();
+    auto [painted, generation, layouts] = container_->paint_key();
+    auto key = std::make_tuple(painted, generation, layouts, doc ? doc->style_epoch() : 0);
+    if (key == runs_key_) return runs_;
+    runs_key_ = key;
+    std::vector<TextRun> before = std::move(runs_);
+    runs_.clear();
+    std::vector<TextRun>& runs = runs_;
     if (!doc || !doc->root()) return runs;
     std::unordered_map<int64_t, size_t> lengths;  // each owner's text so far
     int blocks = 0;
@@ -5260,8 +5269,17 @@ std::vector<Renderer::TextRun> Renderer::text_runs() const {
         });
     };
     walk(doc->root(), 0, 0);
+    // A restyle that moved nothing (a press's :active) keeps the carets measured in each run.
+    if (before.size() == runs.size()) {
+        for (size_t i = 0; i < runs.size(); i++) {
+            TextRun& r = runs[i];
+            TextRun& old = before[i];
+            if (r.owner != old.owner || r.offset != old.offset || r.font != old.font || r.text != old.text || std::memcmp(&r.box, &old.box, sizeof(Rect)) != 0) continue;
+            r.advances = std::move(old.advances);
+        }
+    }
 #endif
-    return runs;
+    return runs_;
 }
 
 std::string Renderer::selectable_text_json() const {
@@ -5297,7 +5315,11 @@ bool Renderer::locate(const TextPoint& p, const std::vector<TextRun>& runs, size
 float Renderer::run_advance(const TextRun& run, size_t bytes) const {
     if (run.line_break || bytes == 0) return 0;
     if (bytes >= run.text.size()) return run.box.w;
-    return float(container_->text_width(run.text.substr(0, bytes).c_str(), litehtml::uint_ptr(run.font)));
+    if (run.text.size() > MAX_MEASURED_RUN) return run.box.w * float(bytes) / float(run.text.size());
+    if (auto it = run.advances.find(bytes); it != run.advances.end()) return it->second;
+    float w = float(container_->text_width(run.text.substr(0, bytes).c_str(), litehtml::uint_ptr(run.font)));
+    run.advances.emplace(bytes, w);
+    return w;
 }
 
 bool Renderer::point_at(double x, double y, const std::vector<TextRun>& runs, TextPoint& out) const {
@@ -5314,15 +5336,29 @@ bool Renderer::point_at(double x, double y, const std::vector<TextRun>& runs, Te
         }
     }
     if (!best) return false;
+    const std::string& text = best->text;
+    auto inside_sequence = [&](size_t i) { return i < text.size() && (uint8_t(text[i]) & 0xC0) == 0x80; };
+    double target = x - best->box.x;
     size_t bytes = 0;
-    double gap = std::fabs(x - best->box.x);
-    for (size_t i = 1; i <= best->text.size(); i++) {
-        if (i < best->text.size() && (uint8_t(best->text[i]) & 0xC0) == 0x80) continue;  // inside a UTF-8 sequence
-        double d = std::fabs(x - (best->box.x + run_advance(*best, i)));
-        if (d < gap) {
-            gap = d;
-            bytes = i;
+    if (text.size() > MAX_MEASURED_RUN) {
+        // Evenly spread, as run_advance spreads them.
+        double share = best->box.w > 0 ? std::clamp(target / best->box.w, 0.0, 1.0) : 0.0;
+        bytes = size_t(std::lround(share * double(text.size())));
+        while (inside_sequence(bytes)) bytes--;
+    } else {
+        // The character boundaries' advances grow along the run: the first one at or past the point, or
+        // the one before it when that is closer.
+        std::vector<size_t> stops{0};
+        for (size_t i = 1; i <= text.size(); i++)
+            if (!inside_sequence(i)) stops.push_back(i);
+        size_t lo = 0, hi = stops.size() - 1;
+        while (lo < hi) {
+            size_t mid = (lo + hi) / 2;
+            if (run_advance(*best, stops[mid]) < target) lo = mid + 1;
+            else hi = mid;
         }
+        bytes = stops[lo];
+        if (lo > 0 && target - run_advance(*best, stops[lo - 1]) <= run_advance(*best, stops[lo]) - target) bytes = stops[lo - 1];
     }
     out = TextPoint{best->owner, best->offset + bytes};
     return true;
@@ -5359,7 +5395,7 @@ bool Renderer::starts_selection(int64_t target) const {
 }
 
 std::string Renderer::selected_text() const {
-    auto runs = text_runs();
+    const auto& runs = text_runs();
     size_t first = 0, first_offset = 0, last = 0, last_offset = 0;
     if (!selection_range(runs, first, first_offset, last, last_offset)) return {};
     auto space = [](char c) { return c == ' ' || c == '\n' || c == '\t'; };
@@ -5393,7 +5429,7 @@ void Renderer::selection_changed() { dirty_ = touched_all_ = true; }
 
 void Renderer::paint_selection(DisplayList& list) const {
     if (selection_.anchor == selection_.focus) return;
-    auto runs = text_runs();
+    const auto& runs = text_runs();
     size_t first = 0, first_offset = 0, last = 0, last_offset = 0;
     if (!selection_range(runs, first, first_offset, last, last_offset)) return;
     // Over the text, in the theme's link colour: a tint the text shows through, on every painter.

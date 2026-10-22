@@ -24,6 +24,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -423,8 +424,10 @@ private:
         int block = 0;          // the block container it flows in
         bool selectable = false;
         bool line_break = false;
+        mutable std::unordered_map<size_t, float> advances;  // measured so far, by byte count
     };
-    std::vector<TextRun> text_runs() const;
+    /// Built again only when the layout, the styles or the document change.
+    const std::vector<TextRun>& text_runs() const;
     /// The run `p` falls in and the offset into it; false when its owner has no text now.
     bool locate(const TextPoint& p, const std::vector<TextRun>& runs, size_t& run, size_t& offset) const;
     /// The place nearest the point: the run on the closest line, the closest character boundary in it.
@@ -501,6 +504,8 @@ private:
         TextPoint anchor, focus;
         int pointer = -1;  // the mouse dragging it out, while it does
     } selection_;
+    mutable std::tuple<const void*, uint32_t, uint64_t, uint64_t> runs_key_{};
+    mutable std::vector<TextRun> runs_;
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
     std::string frozen_reason_;

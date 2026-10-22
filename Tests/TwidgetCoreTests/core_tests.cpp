@@ -1367,6 +1367,35 @@ int main() {
         check(t.clear_selection() && !t.has_selection() && !t.clear_selection(), "clear_selection drops it once");
     }
 
+    // ── text selection: a long unbroken run costs a bounded number of measurements ──
+    {
+        struct CountingBackend : StubBackend {
+            size_t measured = 0;
+            float text_width(int f, const std::string& text) override {
+                measured++;
+                return StubBackend::text_width(f, text);
+            }
+        } tb;
+        auto drag = [&](size_t length) {
+            Renderer t(300, 1, false, tb);
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":"p{user-select:text;margin:0;font:10px/20px sans-serif;white-space:nowrap}"},{"op":"ins","parent":3,"id":5,"before":null},
+                {"op":"el","id":10,"tag":"p"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"text","id":11,"data":")" +
+                            std::string(length, 'a') + R"("},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+            t.paint();
+            tb.measured = 0;
+            t.touch(0, 1, 10, 1, true, true);
+            for (int x = 100; x <= 800; x += 100) t.touch(1, x, 10, 1, true, true);
+            t.touch(2, 800, 10, 1, true, true);
+            return t.selected_text();
+        };
+        std::string got = drag(3000);
+        check(got == std::string(100, 'a') && tb.measured <= 64, "a press and eight moves over a 3,000-character run search its carets, reusing them (" + std::to_string(tb.measured) + " measured)");
+        got = drag(65536);
+        check(got == std::string(100, 'a') && tb.measured == 0, "past the bound a run's carets are spread over its width, unmeasured (" + std::to_string(tb.measured) + " measured)");
+    }
+
     // ── inert clips: many siblings go in one pass, the rest in order ──
     {
         DisplayList list;
