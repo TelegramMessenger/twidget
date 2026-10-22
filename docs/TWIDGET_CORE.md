@@ -31,16 +31,20 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   canvas bitmaps (`canvas_run`, `canvas_read`, `canvas_release`). A font comes with the OpenType
   features to apply (`tnum=1,zero=1`), and reports its em box from its OS/2 table when the platform
   can read it. A decoded PNG goes through `png_intact_rows` (`src/png.h`), which says how many rows to
-  keep when the stream is damaged.
+  keep when the stream is damaged, and `image_dimensions` there reads the size a header declares, for a
+  backend to refuse an image before decoding it. The container hands a backend only the profile's image
+  types (`data:` PNG, JPEG, GIF, WebP): an SVG in any spelling is the placeholder, drawn by the core.
 - **A painter** for `DisplayList` (`src/display_list.h`): rectangles, borders, text, images,
   gradients, clips, paths, groups and shadows, in CSS px, and the CSS filters, whose colour matrices
   and whose CPU pass over a painter's own pixels are in `src/filters.h`.
 - **A clock.** Call `tick()` while `wants_tick()` holds, and once `next_tick_in()` seconds have passed
-  when it does not.
+  when it does not. A build inside `paint()` or `last_html()` keeps `wants_tick()` until a `tick()` hands
+  out its messages.
 - **Input.** `touch` and `hover`. `wheel` and `key` remain but do nothing: widget profile 1 gives a
   widget no wheel and no keyboard. For text controls, `editor()` describes the one being edited for
   the platform to cover with its own editor, which reports back through `edit()` and `end_editing()`;
-  profile 1 has no text controls, so it only matters to a host that hands the renderer one.
+  profile 1 has no text controls, so it only matters to a host that hands the renderer one. `cursor()`
+  is the document's CSS cursor where the mouse last was.
 - **Text selection.** A mouse drag over `user-select: text` selects (widget-sandbox v0.1.1, §5.10) and the
   next paint tints it; the host copies `selected_text()` with its own command and calls `clear_selection()`
   for a press the renderer does not get. For touch, a host selects with its own UI (the message menu and
@@ -48,6 +52,8 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   host lays its selection over them; the Telegram Android client does so. Each run carries the matrix it
   shows under (CSS transforms as last painted, its layer's track as of the call), so a host asks again
   after a paint or while a layer moves.
+- **Tools that lay the document out elsewhere** read `master_css()` (litehtml's, the renderer's own rules
+  and the UA layer with the theme's values) and `theme_variables()`.
 
 With `set_resize_tracking(true)`, each height change comes with `resize_diff()` (and `resize` in the
 size message): how much of the top and of the bottom stayed put, where the element pressed last went,

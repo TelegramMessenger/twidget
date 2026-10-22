@@ -44,7 +44,7 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | The profile's UA layer (`tables.uaStylesheet`) in the master CSS, the theme's values substituted and `:where()` unwrapped | `Renderer::apply_theme`, `tw_ua_stylesheet.h` (CMake) |
 | `revert` goes past that layer to litehtml's own sheet, as it goes past author layers to Chromium's | the fork's `css_selector::m_layered` |
 | `user-select` and `-webkit-user-select` computed (`none`, `text`, `auto`) | the fork's `css_properties::get_user_select` |
-| Text selection (`docs/sdk-v1.md` §5.10): a mouse drag that starts on `user-select: text`, unless the widget prevents the press, selects it and claims the drag; the host copies `selected_text()` and calls `clear_selection()` on a press of its own. Touch selection, which starts from the client's message menu, is not done yet | `Renderer::touch`, `text_runs`, `paint_selection` |
+| Text selection (`docs/sdk-v1.md` §5.10): a mouse drag that starts on `user-select: text`, unless the widget prevents the press, selects it and claims the drag; the host copies `selected_text()` and calls `clear_selection()` on a press of its own. Touch selection starts from the client's message menu and is the host's: `selectable_text_json()` lists the runs, each with the transform it shows under | `Renderer::touch`, `text_runs`, `paint_selection`, `selectable_text_json` |
 | `position: relative` on an inline element moves its text and its line boxes | the fork's `line_box::finish` |
 | `gesture` claims with `x` and `y` | `Renderer::gesture_claim` |
 | The shared height bounds, 50 to 600 CSS px | `MIN_HEIGHT`, `max_height_` |
