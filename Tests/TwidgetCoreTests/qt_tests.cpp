@@ -348,6 +348,26 @@ static void test_cached_svg() {
     check(backend.cached_rasters() == 0, "trim drops the rasters");
 }
 
+static void test_stroke_gradient() {
+    QtBackend backend;
+    QImage image = QtBackend::make_image(100, 20);
+    auto line = std::make_shared<Path>();
+    line->ops = {Path::Move, Path::Line};
+    line->points = {0, 10, 100, 10};
+    line->stroke = true;
+    line->stroke_width = 10;
+    line->stroke_gradient = 1;
+    float sg[7] = {0, 0, 100, 0, 0, 0, 0};
+    std::copy(std::begin(sg), std::end(sg), line->sg);
+    line->stroke_stops = {Stop{0, Color{255, 0, 0, 255}}, Stop{1, Color{0, 0, 255, 255}}};
+    Command stroke;
+    stroke.kind = Cmd::Path;
+    stroke.path = line;
+    backend.paint({stroke}, image, QTransform());
+    check(qRed(at(image, 3, 10)) > 200 && qBlue(at(image, 3, 10)) < 60 && qBlue(at(image, 97, 10)) > 200 && qRed(at(image, 97, 10)) < 60,
+          "an SVG stroke paints its gradient");
+}
+
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
@@ -359,6 +379,7 @@ int main(int argc, char** argv) {
     test_damage_repaints();
     test_inert_clips();
     test_cached_svg();
+    test_stroke_gradient();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

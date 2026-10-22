@@ -913,8 +913,22 @@ void QtBackend::paint_area(std::span<const Command> list, QImage& target, const 
                 } else if (path.fill && path.fill_color.a > 0) {
                     p.fillPath(shape, qcolor(path.fill_color));
                 }
-                if (path.stroke && path.stroke_color.a > 0 && path.stroke_width > 0)
-                    p.strokePath(shape, pen(qcolor(path.stroke_color), path.stroke_width, path.line_cap, path.line_join, path.miter_limit, path.dashes, path.dash_offset));
+                if (path.stroke && path.stroke_width > 0) {
+                    QBrush brush;
+                    if (path.stroke_gradient == 1 && path.stroke_stops.size() >= 2) {
+                        QLinearGradient g(path.sg[0], path.sg[1], path.sg[2], path.sg[3]);
+                        g.setStops(gradient_stops(path.stroke_stops));
+                        brush = QBrush(g);
+                    } else if (path.stroke_gradient == 2 && path.stroke_stops.size() >= 2) {
+                        QRadialGradient g(QPointF(path.sg[0], path.sg[1]), path.sg[4], QPointF(path.sg[5], path.sg[6]));
+                        g.setStops(gradient_stops(path.stroke_stops));
+                        brush = QBrush(g);
+                    } else if (path.stroke_color.a > 0) {
+                        brush = QBrush(qcolor(path.stroke_color));
+                    }
+                    if (brush.style() != Qt::NoBrush)
+                        p.strokePath(shape, pen(brush, path.stroke_width, path.line_cap, path.line_join, path.miter_limit, path.dashes, path.dash_offset));
+                }
             }
             break;
         case Cmd::Shadow: {
