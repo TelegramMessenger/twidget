@@ -1321,7 +1321,7 @@ int main() {
         if (shaped) {
             for (const Json& r : parsed->arr()) {
                 joined += r[size_t(9)].asString();
-                shaped = shaped && r.arr().size() == 10 && r[size_t(6)].asInt() > 0 && r[size_t(5)].asNumber() > r[size_t(2)].asNumber();
+                shaped = shaped && r.arr().size() == 11 && r[size_t(6)].asInt() > 0 && r[size_t(5)].asNumber() > r[size_t(2)].asNumber();
             }
         }
         check(shaped && joined.find("Hello") != std::string::npos && joined.find("Second") != std::string::npos && joined.find("Plain") == std::string::npos,
@@ -1382,6 +1382,15 @@ int main() {
         t.touch(1, 67, 10, 1, true, true);
         t.touch(2, 67, 10, 1, true, true);
         check(t.selected_text() == "He", "translated text selects where it shows (got '" + t.selected_text() + "')");
+        std::string runs = t.selectable_text_json();
+        auto listed = Json::parse(runs);
+        bool moved = listed && !listed->arr().empty();
+        for (size_t i = 0; moved && i < listed->arr().size(); i++) {
+            const Json& run = (*listed)[i];
+            double e = run[size_t(10)][size_t(4)].asNumber();
+            moved = run[size_t(9)].asString() == "Hello" ? e == 50 : e == 0;
+        }
+        check(moved, "selectable_text_json gives each run the transform it shows under (got " + runs + ")");
         DisplayList list = t.paint();
         int depth = 0;
         bool grouped = false;

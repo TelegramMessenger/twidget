@@ -22,6 +22,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -126,8 +127,10 @@ public:
     bool clear_selection();
     /// The text under `user-select: text` as laid out, for a host that selects it with its own UI: touch
     /// selection starts from the client's message menu and its handles (§5.10). JSON, in document order:
-    /// [[block, x, y, w, h, baseline, font, letter spacing, word spacing, text], …] in document CSS px, `font`
-    /// the backend's font the run is drawn with; a line break is "\n" with an empty box. "[]" when none.
+    /// [[block, x, y, w, h, baseline, font, letter spacing, word spacing, text, [a, b, c, d, e, f]], …] in
+    /// document CSS px, `font` the backend's font the run is drawn with; a line break is "\n" with an empty box.
+    /// The matrix maps the box to where it shows: the CSS transforms around it as last painted, and its
+    /// layer's track as of now, so a host lays its selection again while a layer moves. "[]" when none.
     std::string selectable_text_json() const;
     /// One display frame: coalesced move events go out and animations advance. Returns renderer → host messages.
     std::vector<twidget::Json> tick();
@@ -449,6 +452,9 @@ private:
     void paint_selection(DisplayList& list, int64_t layer, bool tint) const;
     /// Whether any displayed element's text can be selected: a paint of a document without any does no more.
     bool selectable_text() const;
+    /// Where run `r` shows now: the groups' transform around it, after its layer's track (`layers` caches
+    /// those for a pass); false when its layer is not shown. Identity for a run no paint drew yet.
+    bool run_shown(const TextRun& r, double now, std::unordered_map<int64_t, std::optional<Affine>>& layers, Affine& out) const;
     /// Where promoted layer `id`'s track shows it now, over its parents', and with what opacity.
     bool layer_shown(int64_t id, double now, Affine& shown, float& opacity) const;
     void selection_changed();

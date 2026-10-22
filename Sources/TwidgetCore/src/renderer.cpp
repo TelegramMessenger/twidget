@@ -5321,8 +5321,26 @@ const std::vector<Renderer::TextRun>& Renderer::text_runs() const {
     return runs_;
 }
 
+bool Renderer::run_shown(const TextRun& r, double now, std::unordered_map<int64_t, std::optional<Affine>>& layers, Affine& out) const {
+    out = {};
+    if (!r.drawn) return true;
+    out = r.shown;
+    if (!r.layer) return true;
+    auto it = layers.find(r.layer);
+    if (it == layers.end()) {
+        Affine shown;
+        float opacity = 1;
+        it = layers.emplace(r.layer, layer_shown(r.layer, now, shown, opacity) ? std::optional<Affine>(shown) : std::nullopt).first;
+    }
+    if (!it->second) return false;
+    out = *it->second * out;
+    return true;
+}
+
 std::string Renderer::selectable_text_json() const {
     Json out = Json::array();
+    std::unordered_map<int64_t, std::optional<Affine>> layers;
+    double now = now_s();
     for (const TextRun& r : text_runs()) {
         if (!r.selectable) continue;
         int font = 0;
@@ -5332,6 +5350,11 @@ std::string Renderer::selectable_text_json() const {
         run.push(r.block).push(r.box.x).push(r.box.y).push(r.box.w).push(r.box.h);
         // Where the run is drawn: draw_text puts the baseline `descent` above the bottom of its box.
         run.push(r.line_break ? 0.0f : r.box.y + r.box.h - descent).push(font).push(letter).push(word).push(r.text);
+        // Where it shows: the transforms around it as last painted, after its layer's track as it is now.
+        // A run whose layer is hidden keeps its place in the text, at its layout position.
+        Affine m;
+        if (!run_shown(r, now, layers, m)) m = {};
+        run.push(Json::array().push(m.a).push(m.b).push(m.c).push(m.d).push(m.e).push(m.f));
         out.push(std::move(run));
     }
     return out.dump();
@@ -5371,24 +5394,12 @@ bool Renderer::point_at(double x, double y, const std::vector<TextRun>& runs, Te
     for (const TextRun& r : runs) {
         if (r.line_break) continue;
         double rx = x, ry = y;
-        if (r.drawn) {
-            Affine m = r.shown;
-            if (r.layer) {
-                auto it = layers.find(r.layer);
-                if (it == layers.end()) {
-                    Affine shown;
-                    float opacity = 1;
-                    it = layers.emplace(r.layer, layer_shown(r.layer, now, shown, opacity) ? std::optional<Affine>(shown) : std::nullopt).first;
-                }
-                if (!it->second) continue;
-                m = *it->second * m;
-            }
-            Affine inverse;
-            if (!(m == Affine{})) {
-                if (!m.invert(inverse)) continue;
-                rx = inverse.apply_x(float(x), float(y));
-                ry = inverse.apply_y(float(x), float(y));
-            }
+        Affine m, inverse;
+        if (!run_shown(r, now, layers, m)) continue;
+        if (!(m == Affine{})) {
+            if (!m.invert(inverse)) continue;
+            rx = inverse.apply_x(float(x), float(y));
+            ry = inverse.apply_y(float(x), float(y));
         }
         double dy = ry < r.box.y ? r.box.y - ry : ry > r.box.y + r.box.h ? ry - (r.box.y + r.box.h) : 0;
         double dx = rx < r.box.x ? r.box.x - rx : rx > r.box.x + r.box.w ? rx - (r.box.x + r.box.w) : 0;

@@ -45,7 +45,9 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   next paint tints it; the host copies `selected_text()` with its own command and calls `clear_selection()`
   for a press the renderer does not get. For touch, a host selects with its own UI (the message menu and
   its handles): `selectable_text_json()` lists the selectable runs with their fonts and baselines, and the
-  host lays its selection over them; the Telegram Android client does so.
+  host lays its selection over them; the Telegram Android client does so. Each run carries the matrix it
+  shows under (CSS transforms as last painted, its layer's track as of the call), so a host asks again
+  after a paint or while a layer moves.
 
 With `set_resize_tracking(true)`, each height change comes with `resize_diff()` (and `resize` in the
 size message): how much of the top and of the bottom stayed put, where the element pressed last went,
