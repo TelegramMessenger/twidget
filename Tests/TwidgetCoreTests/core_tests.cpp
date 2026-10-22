@@ -1491,6 +1491,27 @@ int main() {
         check(mb.measured == 2, "a 100,000-character text is measured each time, never kept (" + std::to_string(mb.measured) + " measured)");
     }
 
+    // ── what a build in paint() says waits for the next tick ──
+    {
+        StubBackend pb;
+        Renderer p(300, 1, false, pb);
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":"@keyframes f{from{opacity:0}to{opacity:1}} .a{animation:f 0.05s}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","a"],["style","height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        p.tick();
+        // While the animation runs, a batch waits for the frame: its build is the next paint's.
+        auto batch = p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":11,"tag":"div","attrs":[["style","height:100px"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+        bool sized_at_once = false;
+        for (const Json& m : batch) sized_at_once = sized_at_once || m["type"].asString() == "size";
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        p.paint();
+        bool waits = p.wants_tick() && p.next_tick_in() == 0;
+        bool sized = false;
+        for (const Json& m : p.tick()) sized = sized || m["type"].asString() == "size";
+        check(!sized_at_once && waits && sized, "a size from a build in paint() keeps wants_tick() until the next tick hands it out");
+    }
+
     // ── image sources: what reaches the backend ──
     {
         struct LoadingBackend : StubBackend {

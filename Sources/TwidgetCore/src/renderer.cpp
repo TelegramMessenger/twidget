@@ -2498,7 +2498,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         bool fast = scripted_only(ops, scripted);
         // Ticking already (something animates), or held back by the throttle, a batch waits for the
         // frame: a script sending several a frame builds once. Input wants its answer now.
-        bool coalesce = (wants_tick() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S;
+        bool coalesce = (frame_due() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S;
         document_changed_ = false;
         apply_ops(ops, out);
         load_images(out);
@@ -3415,11 +3415,12 @@ std::vector<Json> Renderer::tick() {
     return out;
 }
 
-bool Renderer::wants_tick() const {
-    return !frozen_ && (stale_ || !pending_moves_.empty() || animator_.active(now_s(), layer_ids_));
-}
+bool Renderer::wants_tick() const { return !pending_events_.empty() || !pending_violations_.empty() || frame_due(); }
+
+bool Renderer::frame_due() const { return !frozen_ && (stale_ || !pending_moves_.empty() || animator_.active(now_s(), layer_ids_)); }
 
 double Renderer::next_tick_in() const {
+    if (!pending_events_.empty() || !pending_violations_.empty()) return 0;
     if (frozen_) return std::numeric_limits<double>::infinity();
     if (stale_) return std::max(0.0, throttled_until_ - now_s());
     return std::max(0.0, wake_at_ - now_s());

@@ -134,7 +134,8 @@ public:
     std::string selectable_text_json() const;
     /// One display frame: coalesced move events go out and animations advance. Returns renderer → host messages.
     std::vector<twidget::Json> tick();
-    /// Something waits for the next frame: a running animation or a coalesced move.
+    /// Something waits for the next frame: a running animation, a coalesced move, or messages a build in
+    /// `paint()` or `last_html()` made (its size, its events), which the next `tick()` hands out.
     bool wants_tick() const;
     /// When `wants_tick()` is false: seconds until `tick()` is due anyway (an animation event, the
     /// end of a layer's track); infinity when nothing is scheduled.
@@ -252,6 +253,8 @@ private:
     /// Builds a document a coalesced batch left stale.
     void settle(std::vector<twidget::Json>& out);
     bool throttled() const;
+    /// A frame has work of its own: a build, coalesced moves or a running animation. What a batch waits for.
+    bool frame_due() const;
     /// Charges the outermost pass it spans, whatever nests inside.
     struct Meter {
         Renderer& r;
