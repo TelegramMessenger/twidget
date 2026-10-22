@@ -539,15 +539,20 @@ std::string data_mime(std::string_view raw) {
 // ───────────────────────── color scheme rewrite ─────────────────────────
 
 std::string rewrite_color_scheme(const std::string& css, bool dark) {
-    static const std::string KEY = "prefers-color-scheme";
+    static constexpr std::string_view KEY = "prefers-color-scheme";
     std::string out;
     out.reserve(css.size());
     size_t pos = 0;
-    while (true) {
-        size_t i = css.find(KEY, pos);
-        if (i == std::string::npos) {
-            out.append(css, pos, std::string::npos);
-            break;
+    // The media feature's name as a whole identifier, outside strings, comments and URLs.
+    for (size_t i = 0; i + KEY.size() <= css.size();) {
+        if (size_t skip = css::skip_opaque(css, i); skip != i) {
+            i = skip;
+            continue;
+        }
+        if ((i > 0 && css::ident_char(css[i - 1])) || !css::iequals(std::string_view(css).substr(i, KEY.size()), KEY) ||
+            (i + KEY.size() < css.size() && css::ident_char(css[i + KEY.size()]))) {
+            i++;
+            continue;
         }
         out.append(css, pos, i - pos);
         size_t j = i + KEY.size();
@@ -557,8 +562,9 @@ std::string rewrite_color_scheme(const std::string& css, bool dark) {
         std::string value = lower(css.substr(j, k - j));
         bool matches = value.empty() ? true : (value == "dark") == dark;  // bare `(prefers-color-scheme)` is true
         out += matches ? "min-width:0px" : "min-width:999999px";
-        pos = k;
+        pos = i = k;
     }
+    out.append(css, pos, std::string::npos);
     return out;
 }
 

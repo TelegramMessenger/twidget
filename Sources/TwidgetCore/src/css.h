@@ -39,6 +39,12 @@ bool is_property_name(std::string_view name);
 /// Replaces every `light-dark(a, b)` with the side the theme picks: litehtml knows no such function.
 std::string resolve_light_dark(std::string_view css, bool dark);
 
+/// A character that continues a CSS identifier.
+bool ident_char(char c);
+/// Past what a text rewrite must not look into when it starts at `i`: a string, a comment, an escape or an
+/// unquoted url(…). `i` itself when none starts there.
+size_t skip_opaque(std::string_view css, size_t i);
+
 /// `1.5s`, `200ms` or a `calc()` of times, in seconds.
 std::optional<double> parse_time(std::string_view text);
 

@@ -302,11 +302,51 @@ bool is_property_name(std::string_view name) {
     return valid_name(body, 128, ok, ok);
 }
 
+bool ident_char(char c) { return alpha(c) || digit(c) || c == '-' || c == '_' || uint8_t(c) >= 0x80; }
+
+size_t skip_opaque(std::string_view css, size_t i) {
+    if (i >= css.size()) return i;
+    char c = css[i];
+    if (c == '"' || c == '\'') {
+        // To the closing quote, past escapes; a newline ends a bad string, as the tokenizer has it.
+        for (size_t j = i + 1; j < css.size(); j++) {
+            if (css[j] == '\\') j++;
+            else if (css[j] == c) return j + 1;
+            else if (css[j] == '\n') return j;
+        }
+        return css.size();
+    }
+    if (c == '/' && i + 1 < css.size() && css[i + 1] == '*') {
+        size_t end = css.find("*/", i + 2);
+        return end == std::string_view::npos ? css.size() : end + 2;
+    }
+    if (c == '\\') return std::min(css.size(), i + 2);
+    // An unquoted url(…) is one token: its text is the URL's.
+    if ((c == 'u' || c == 'U') && (i == 0 || !ident_char(css[i - 1])) && iequals(css.substr(i, 4), "url(")) {
+        size_t j = i + 4;
+        while (j < css.size() && (css[j] == ' ' || css[j] == '\t' || css[j] == '\n')) j++;
+        if (j < css.size() && (css[j] == '"' || css[j] == '\'')) return i;
+        for (; j < css.size(); j++) {
+            if (css[j] == '\\') j++;
+            else if (css[j] == ')') return j + 1;
+        }
+        return css.size();
+    }
+    return i;
+}
+
 std::string resolve_light_dark(std::string_view css, bool dark) {
     static constexpr std::string_view KEY = "light-dark(";
+    // A function token: outside strings, comments and URLs, and not the end of a longer name.
     auto find = [](std::string_view s, size_t from) {
-        for (size_t i = from; i + KEY.size() <= s.size(); i++)
-            if (iequals(s.substr(i, KEY.size()), KEY)) return i;
+        for (size_t i = from; i + KEY.size() <= s.size();) {
+            if (size_t skip = skip_opaque(s, i); skip != i) {
+                i = skip;
+                continue;
+            }
+            if ((i == 0 || !ident_char(s[i - 1])) && iequals(s.substr(i, KEY.size()), KEY)) return i;
+            i++;
+        }
         return std::string_view::npos;
     };
     if (find(css, 0) == std::string_view::npos) return std::string(css);
@@ -319,9 +359,14 @@ std::string resolve_light_dark(std::string_view css, bool dark) {
         size_t i = at + KEY.size();
         int depth = 1;
         size_t close = i;
-        for (; close < css.size(); close++) {
+        while (close < css.size()) {
+            if (size_t skip = skip_opaque(css, close); skip != close) {
+                close = skip;
+                continue;
+            }
             if (css[close] == '(') depth++;
             else if (css[close] == ')' && --depth == 0) break;
+            close++;
         }
         auto parts = split_top_level(css.substr(i, close - i), ',');
         std::string chosen = parts.size() == 2 ? parts[dark ? 1 : 0] : parts.empty() ? std::string() : parts[0];

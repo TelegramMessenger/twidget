@@ -1258,6 +1258,12 @@ int main() {
         check(css::unwrap_where(":where(h1,h2){a:1}:where(a[href]){b:2}:where(li ul,li ol) b{c:3}:where(button:not([disabled])):active{d:4}") ==
                   "h1,h2{a:1}a[href]{b:2}:where(li ul,li ol) b{c:3}button:not([disabled]):active{d:4}",
               ":where() unwraps, except a list that more of its selector follows");
+        check(css::resolve_light_dark(R"c(a{content:"light-dark(1,2)";color:LIGHT-DARK(red, blue);background:url(x/light-dark(1,2)) /* light-dark(3,4) */})c", true) ==
+                  R"c(a{content:"light-dark(1,2)";color:blue;background:url(x/light-dark(1,2)) /* light-dark(3,4) */})c",
+              "light-dark() resolves as a function only: strings, URLs and comments keep their text");
+        check(rewrite_color_scheme(R"c(@media (prefers-color-scheme: dark){a{content:"(prefers-color-scheme: dark)";--prefers-color-scheme-x:1}})c", false) ==
+                  R"c(@media (min-width:999999px){a{content:"(prefers-color-scheme: dark)";--prefers-color-scheme-x:1}})c",
+              "prefers-color-scheme resolves as a media feature only, not in a string or a longer name");
     }
 
     // ── v0.1.1: the profile's UA layer on the text tokens, user-select, relative offsets inside a line ──
