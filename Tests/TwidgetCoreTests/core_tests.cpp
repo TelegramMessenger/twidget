@@ -1367,6 +1367,26 @@ int main() {
         check(t.clear_selection() && !t.has_selection() && !t.clear_selection(), "clear_selection drops it once");
     }
 
+    // ── inert clips: many siblings go in one pass, the rest in order ──
+    {
+        DisplayList list;
+        for (int i = 0; i < 1000; i++) {
+            Command push, fill, pop;
+            push.kind = Cmd::ClipPush;
+            push.rect = Rect{float(i), 0, 10, 10};
+            fill.rect = Rect{float(i) + 2, 2, 2, 2};
+            fill.width = float(i);
+            pop.kind = Cmd::ClipPop;
+            list.push_back(push);
+            list.push_back(fill);
+            list.push_back(pop);
+        }
+        size_t gone = drop_inert_clips(list);
+        bool ordered = list.size() == 1000;
+        for (size_t i = 0; ordered && i < list.size(); i++) ordered = list[i].kind == Cmd::FillRect && list[i].width == float(i);
+        check(gone == 1000 && ordered, "1,000 sibling clips around their content all go, the content kept in order");
+    }
+
     // ── getComputedStyle ──
     {
         StubBackend sb;

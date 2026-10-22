@@ -282,12 +282,15 @@ size_t drop_inert_clips(DisplayList& list) {
         for (auto& o : open)
             if (o.keep && !inside(ink, o.area)) o.keep = false;
     }
-    size_t dropped = 0;
-    for (size_t i = list.size(); i-- > 0;)
-        if (drop[i]) {
-            list.erase(list.begin() + long(i));
-            dropped++;
+    // One pass: an erase per dropped command makes many sibling clips quadratic.
+    size_t kept = 0;
+    for (size_t i = 0; i < list.size(); i++)
+        if (!drop[i]) {
+            if (kept != i) list[kept] = std::move(list[i]);
+            kept++;
         }
+    size_t dropped = list.size() - kept;
+    list.erase(list.begin() + long(kept), list.end());
     return dropped / 2;
 }
 
