@@ -379,7 +379,9 @@ void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
             stops.insert(std::upper_bound(stops.begin(), stops.end(), stop, [](const Stop& a, const Stop& b) { return a.offset < b.offset; }), stop);
         } else if (kind == "pn") {
             int pid = list[1].asInt();
-            if (!paths_.count(pid) && paths_.size() >= MAX_OBJECTS) paths_.erase(paths_.begin());
+            // At the cap a new path is refused: a Path2D is sent once, so evicting one a widget still
+            // holds would make it vanish.
+            if (!paths_.count(pid) && paths_.size() >= MAX_OBJECTS) continue;
             Builder b;
             if (list.size() > 2 && list[2].isString() && list[2].asString().size() <= (1u << 20)) {
                 append_svg_path(list[2].asString(), b.geometry);

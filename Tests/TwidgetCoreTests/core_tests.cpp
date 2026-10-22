@@ -2077,6 +2077,23 @@ int main() {
                 for (size_t i = 0; i < op.path.points.size(); i++) inside = inside && op.path.points[i] >= -0.01f && op.path.points[i] <= 24.01f;
             }
         check(images == 0 && fills == 3 && inside, "drawImage of the placeholder draws its drawing into the destination (" + std::to_string(images) + " images, " + std::to_string(fills) + " fills)");
+
+        // At the cap a new Path2D is refused; one the widget holds keeps drawing.
+        ib.runs.clear();
+        std::string cmds = R"(["s","fillStyle","#ff0000"],["pn",1,"M1 1 L3 1 L3 3 Z"])";
+        for (int i = 2; i <= 4097; i++) cmds += R"(,["pn",)" + std::to_string(i) + R"(,"M0 0 L4 0 L4 4 Z"])";
+        cmds += R"(,["c","fill",{"p":1}],["c","fill",{"p":4097}])";
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":43,"tag":"canvas","attrs":[["width","8"],["height","8"]]},{"op":"ins","parent":4,"id":43,"before":null},
+            {"op":"canvas","id":43,"cmds":[)" + cmds + R"(]}]})"));
+        fills = 0;
+        bool first = false;
+        for (const auto& run : ib.runs)
+            for (const CanvasOp& op : run)
+                if (op.kind == CanvasOp::Fill) {
+                    fills++;
+                    first = !op.path.points.empty() && op.path.points[0] == 1;
+                }
+        check(fills == 1 && first, "past 4,096 paths the first still fills and the refused one does not (" + std::to_string(fills) + " fills)");
     }
 
     std::printf("%d failure(s)\n", failures);
