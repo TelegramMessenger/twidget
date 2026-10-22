@@ -425,6 +425,11 @@ private:
         bool selectable = false;
         bool line_break = false;
         mutable std::unordered_map<size_t, float> advances;  // measured so far, by byte count
+        // Where the last paint drew it: the groups' transform over the box, in the promoted layer `layer`
+        // (0, the document). A run not drawn yet is taken where layout put it.
+        mutable Affine shown;
+        mutable int64_t layer = 0;
+        mutable bool drawn = false;
     };
     /// Built again only when the layout, the styles or the document change.
     const std::vector<TextRun>& text_runs() const;
@@ -439,7 +444,13 @@ private:
     /// Whether a mouse press on `target` starts a selection: `user-select` lets it, and no listener on the
     /// way prevents the press.
     bool starts_selection(int64_t target) const;
-    void paint_selection(DisplayList& list) const;
+    /// Records where `list` (the document's, or promoted layer `layer`'s content) draws the selectable runs,
+    /// and with `tint` puts the selection's tint after each selected one, inside its transforms and clips.
+    void paint_selection(DisplayList& list, int64_t layer, bool tint) const;
+    /// Whether any displayed element's text can be selected: a paint of a document without any does no more.
+    bool selectable_text() const;
+    /// Where promoted layer `id`'s track shows it now, over its parents', and with what opacity.
+    bool layer_shown(int64_t id, double now, Affine& shown, float& opacity) const;
     void selection_changed();
     /// The host's theme: the root's variables, and the master CSS's UA layer with their values. False when
     /// neither changed.
@@ -506,6 +517,8 @@ private:
     } selection_;
     mutable std::tuple<const void*, uint32_t, uint64_t, uint64_t> runs_key_{};
     mutable std::vector<TextRun> runs_;
+    mutable std::pair<const void*, uint64_t> selectable_key_{};
+    mutable bool selectable_ = false;
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
     std::string frozen_reason_;

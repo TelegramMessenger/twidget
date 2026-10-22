@@ -1367,6 +1367,46 @@ int main() {
         check(t.clear_selection() && !t.has_selection() && !t.clear_selection(), "clear_selection drops it once");
     }
 
+    // ── text selection: where the text shows, inside its transforms and clips ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":".s{user-select:text} p{margin:0;font:10px/20px sans-serif;white-space:nowrap} .m{transform:translateX(50px)} .c{overflow:hidden;width:20px}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"p","attrs":[["class","s m"]]},{"op":"ins","parent":4,"id":10,"before":null},{"op":"text","id":11,"data":"Hello"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"p","attrs":[["class","s"]]},{"op":"ins","parent":12,"id":13,"before":null},{"op":"text","id":14,"data":"Clipped text"},{"op":"ins","parent":13,"id":14,"before":null}]})"));
+        t.paint();
+        t.touch(0, 51, 10, 1, true, true);
+        t.touch(1, 67, 10, 1, true, true);
+        t.touch(2, 67, 10, 1, true, true);
+        check(t.selected_text() == "He", "translated text selects where it shows (got '" + t.selected_text() + "')");
+        DisplayList list = t.paint();
+        int depth = 0;
+        bool grouped = false;
+        for (const Command& c : list) {
+            if (c.kind == Cmd::GroupPush) depth++;
+            else if (c.kind == Cmd::GroupPop) depth--;
+            else if (c.kind == Cmd::FillRect && c.color.a == 77) grouped = depth > 0 && c.rect.x == 0 && c.rect.w == 16;
+        }
+        check(grouped, "the tint is painted inside the text's transform, in its coordinates");
+
+        t.touch(0, 1, 30, 1, true, true);
+        t.touch(1, 200, 30, 1, true, true);
+        t.touch(2, 200, 30, 1, true, true);
+        check(t.selected_text() == "Clipped text", "a drag past the clip selects the text under it (got '" + t.selected_text() + "')");
+        list = t.paint();
+        depth = 0;
+        bool clipped = false;
+        for (const Command& c : list) {
+            if (c.kind == Cmd::ClipPush) depth++;
+            else if (c.kind == Cmd::ClipPop) depth--;
+            else if (c.kind == Cmd::FillRect && c.color.a == 77) clipped = depth > 0;
+        }
+        check(clipped, "the tint stays inside the clip of its text");
+    }
+
     // ── text selection: a long unbroken run costs a bounded number of measurements ──
     {
         struct CountingBackend : StubBackend {

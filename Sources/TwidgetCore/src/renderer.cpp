@@ -4158,9 +4158,12 @@ DisplayList Renderer::paint() {
         return painted_list_;
     }
     composition_only_ = false;
+    // The paint finds the runs again, in the document or in a layer.
+    if (selectable_text())
+        for (const TextRun& r : text_runs()) r.drawn = false;
     DisplayList list = paint_document();
     drop_inert_clips(list);
-    paint_selection(list);
+    paint_selection(list, 0, true);
     // What changed against the last paint, for a platform to repaint only that.
     PaintSummary summary = summarize(list);
     damage_valid_ = painted_valid_ && painted_size_ == std::make_pair(px_width(), px_height()) &&
@@ -4417,11 +4420,14 @@ DisplayList Renderer::paint_document() {
                 layer.bounds = p.box;
                 layer.content_version = p.tile_version;
             } else if (keep) {
+                // A selection change touches every layer: this one's tint is still the selection's.
                 layer.content = old->second->content;
                 layer.bounds = old->second->bounds;
                 layer.content_version = old->second->content_version;
+                paint_selection(layer.content, id, false);
             } else {
                 layer.content = container_->draw_layer(container_->element(id), skip, layer.bounds);
+                paint_selection(layer.content, id, true);
                 layer.content_version = content_version(layer.content);
             }
             layer.raster_scale = p.raster_scale;
@@ -4628,20 +4634,9 @@ int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
             // A shimmer's element stays in the document, which takes the point.
             if (p.shimmer) continue;
             if (p.has_clip && !(x >= p.clip.x && y >= p.clip.y && x < p.clip.x + p.clip.w && y < p.clip.y + p.clip.h)) continue;
-            // Where it shows: its key after each parent's, the opacity theirs too.
-            Affine shown;
+            Affine shown, inverse;
             float opacity = 1;
-            bool known = true;
-            for (const Promotion* q = &p; q && known; q = q->parent ? &promoted_.at(q->parent) : nullptr) {
-                double span = 0;
-                auto keys = resume_track(q->track, now - q->track.start, span);
-                known = !keys.empty() && promoted_.count(q->parent) == size_t(q->parent != 0);
-                if (!known) break;
-                shown = keys.front().matrix * shown;
-                opacity *= keys.front().opacity;
-            }
-            Affine inverse;
-            if (!known || opacity <= 0 || !shown.invert(inverse)) continue;
+            if (!layer_shown(id, now, shown, opacity) || opacity <= 0 || !shown.invert(inverse)) continue;
             float mx = inverse.apply_x(float(x), float(y)), my = inverse.apply_y(float(x), float(y));
             if (!(mx >= p.box.x && my >= p.box.y && mx < p.box.x + p.box.w && my < p.box.y + p.box.h)) continue;
             if (int64_t hit = container_->widget_id(container_->element_at_within(container_->element(id), mx, my), placement)) return hit;
@@ -4649,6 +4644,27 @@ int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
     }
 #endif
     return container_->widget_id(container_->element_at(x, y), placement);
+}
+
+bool Renderer::layer_shown(int64_t id, double now, Affine& shown, float& opacity) const {
+    shown = {};
+    opacity = 1;
+#ifdef TW_LITEHTML_TWIDGET
+    // Its key after each parent's, the opacity theirs too.
+    auto it = promoted_.find(id);
+    for (const Promotion* q = it == promoted_.end() ? nullptr : &it->second; q; q = q->parent ? &promoted_.at(q->parent) : nullptr) {
+        double span = 0;
+        auto keys = resume_track(q->track, now - q->track.start, span);
+        if (keys.empty() || promoted_.count(q->parent) != size_t(q->parent != 0)) return false;
+        shown = keys.front().matrix * shown;
+        opacity *= keys.front().opacity;
+    }
+    return it != promoted_.end();
+#else
+    (void)id;
+    (void)now;
+    return false;
+#endif
 }
 
 // ───────────────────────── events ─────────────────────────
@@ -5269,12 +5285,16 @@ const std::vector<Renderer::TextRun>& Renderer::text_runs() const {
         });
     };
     walk(doc->root(), 0, 0);
-    // A restyle that moved nothing (a press's :active) keeps the carets measured in each run.
+    // A restyle that moved nothing (a press's :active) keeps where the last paint drew each run, which is
+    // what shows until the next one, and the carets measured in it.
     if (before.size() == runs.size()) {
         for (size_t i = 0; i < runs.size(); i++) {
             TextRun& r = runs[i];
             TextRun& old = before[i];
             if (r.owner != old.owner || r.offset != old.offset || r.font != old.font || r.text != old.text || std::memcmp(&r.box, &old.box, sizeof(Rect)) != 0) continue;
+            r.shown = old.shown;
+            r.layer = old.layer;
+            r.drawn = old.drawn;
             r.advances = std::move(old.advances);
         }
     }
@@ -5324,21 +5344,46 @@ float Renderer::run_advance(const TextRun& run, size_t bytes) const {
 
 bool Renderer::point_at(double x, double y, const std::vector<TextRun>& runs, TextPoint& out) const {
     const TextRun* best = nullptr;
-    double best_dy = 0, best_dx = 0;
+    double best_dy = 0, best_dx = 0, best_x = 0;
+    // The point in each run's own coordinates: back through the layer's track as it shows now, then the
+    // groups' transforms around the run.
+    std::unordered_map<int64_t, std::optional<Affine>> layers;
+    double now = now_s();
     for (const TextRun& r : runs) {
         if (r.line_break) continue;
-        double dy = y < r.box.y ? r.box.y - y : y > r.box.y + r.box.h ? y - (r.box.y + r.box.h) : 0;
-        double dx = x < r.box.x ? r.box.x - x : x > r.box.x + r.box.w ? x - (r.box.x + r.box.w) : 0;
+        double rx = x, ry = y;
+        if (r.drawn) {
+            Affine m = r.shown;
+            if (r.layer) {
+                auto it = layers.find(r.layer);
+                if (it == layers.end()) {
+                    Affine shown;
+                    float opacity = 1;
+                    it = layers.emplace(r.layer, layer_shown(r.layer, now, shown, opacity) ? std::optional<Affine>(shown) : std::nullopt).first;
+                }
+                if (!it->second) continue;
+                m = *it->second * m;
+            }
+            Affine inverse;
+            if (!(m == Affine{})) {
+                if (!m.invert(inverse)) continue;
+                rx = inverse.apply_x(float(x), float(y));
+                ry = inverse.apply_y(float(x), float(y));
+            }
+        }
+        double dy = ry < r.box.y ? r.box.y - ry : ry > r.box.y + r.box.h ? ry - (r.box.y + r.box.h) : 0;
+        double dx = rx < r.box.x ? r.box.x - rx : rx > r.box.x + r.box.w ? rx - (r.box.x + r.box.w) : 0;
         if (!best || dy < best_dy || (dy == best_dy && dx < best_dx)) {
             best = &r;
             best_dy = dy;
             best_dx = dx;
+            best_x = rx;
         }
     }
     if (!best) return false;
     const std::string& text = best->text;
     auto inside_sequence = [&](size_t i) { return i < text.size() && (uint8_t(text[i]) & 0xC0) == 0x80; };
-    double target = x - best->box.x;
+    double target = best_x - best->box.x;
     size_t bytes = 0;
     if (text.size() > MAX_MEASURED_RUN) {
         // Evenly spread, as run_advance spreads them.
@@ -5427,28 +5472,95 @@ bool Renderer::clear_selection() {
 
 void Renderer::selection_changed() { dirty_ = touched_all_ = true; }
 
-void Renderer::paint_selection(DisplayList& list) const {
-    if (selection_.anchor == selection_.focus) return;
+bool Renderer::selectable_text() const {
+#ifdef TW_LITEHTML_TWIDGET
+    litehtml::document* doc = container_->doc();
+    std::pair<const void*, uint64_t> key{doc, doc ? doc->style_epoch() : 0};
+    if (key == selectable_key_) return selectable_;
+    selectable_key_ = key;
+    selectable_ = false;
+    std::function<void(const litehtml::element::ptr&)> visit = [&](const litehtml::element::ptr& el) {
+        if (selectable_ || el->is_text() || el->css().get_display() == litehtml::display_none) return;
+        if (el->css().get_user_select() == litehtml::user_select_text) selectable_ = true;
+        for (const auto& child : el->children()) visit(child);
+    };
+    if (doc && doc->root()) visit(doc->root());
+    return selectable_;
+#else
+    return false;
+#endif
+}
+
+void Renderer::paint_selection(DisplayList& list, int64_t layer, bool tint) const {
+    if (!selectable_text()) return;
     const auto& runs = text_runs();
+    // A run's Text command starts where its box does, in the coordinates of the groups around it.
+    std::unordered_map<long, std::vector<size_t>> rows;
+    for (size_t i = 0; i < runs.size(); i++)
+        if (runs[i].selectable && !runs[i].line_break) rows[long(std::floor(runs[i].box.y))].push_back(i);
+    if (rows.empty()) return;
+    auto run_at = [&](const Rect& drawn) -> const TextRun* {
+        long below = long(std::floor(drawn.y - 0.05f)), above = long(std::floor(drawn.y + 0.05f));
+        for (long row = below; row <= above; row++) {
+            auto it = rows.find(row);
+            if (it == rows.end()) continue;
+            for (size_t i : it->second) {
+                const TextRun& r = runs[i];
+                if (std::fabs(r.box.x - drawn.x) < 0.05f && std::fabs(r.box.y - drawn.y) < 0.05f) return &r;
+            }
+        }
+        return nullptr;
+    };
     size_t first = 0, first_offset = 0, last = 0, last_offset = 0;
-    if (!selection_range(runs, first, first_offset, last, last_offset)) return;
+    tint = tint && selection_range(runs, first, first_offset, last, last_offset);
     // Over the text, in the theme's link colour: a tint the text shows through, on every painter.
     Color color{51, 144, 236, 255};
-    for (const auto& [name, value] : theme_vars_)
-        if (name == "--tg-theme-link-color") css::parse_color(value, color);
-    color.a = uint8_t(std::lround(color.a * 0.3));
-    for (size_t i = first; i <= last; i++) {
-        const TextRun& r = runs[i];
-        size_t from = i == first ? first_offset : 0, to = i == last ? last_offset : r.text.size();
-        if (!r.selectable || r.line_break || from >= to) continue;
-        float x0 = run_advance(r, from), x1 = run_advance(r, to);
-        if (x1 <= x0) continue;
-        Command c;
-        c.kind = Cmd::FillRect;
-        c.rect = Rect{r.box.x + x0, r.box.y, x1 - x0, r.box.h};
-        c.color = color;
-        list.push_back(std::move(c));
+    if (tint) {
+        for (const auto& [name, value] : theme_vars_)
+            if (name == "--tg-theme-link-color") css::parse_color(value, color);
+        color.a = uint8_t(std::lround(color.a * 0.3));
     }
+    std::vector<Affine> frames{Affine{}};
+    std::vector<std::pair<size_t, Command>> tints;
+    std::unordered_set<const TextRun*> placed;
+    for (size_t i = 0; i < list.size(); i++) {
+        const Command& c = list[i];
+        if (c.kind == Cmd::GroupPush) {
+            frames.push_back(frames.back() * Affine{c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]});
+            continue;
+        }
+        if (c.kind == Cmd::GroupPop) {
+            if (frames.size() > 1) frames.pop_back();
+            continue;
+        }
+        if (c.kind != Cmd::Text) continue;
+        const TextRun* r = run_at(c.rect);
+        // Once: a run drawn again (a text shadow) has its tint after the first.
+        if (!r || !placed.insert(r).second) continue;
+        r->shown = frames.back();
+        r->layer = layer;
+        r->drawn = true;
+        size_t k = size_t(r - runs.data());
+        if (!tint || k < first || k > last) continue;
+        size_t from = k == first ? first_offset : 0, to = k == last ? last_offset : r->text.size();
+        if (from >= to) continue;
+        float x0 = run_advance(*r, from), x1 = run_advance(*r, to);
+        if (x1 <= x0) continue;
+        Command t;
+        t.kind = Cmd::FillRect;
+        t.rect = Rect{r->box.x + x0, r->box.y, x1 - x0, r->box.h};
+        t.color = color;
+        tints.emplace_back(i + 1, std::move(t));
+    }
+    if (tints.empty()) return;
+    DisplayList out;
+    out.reserve(list.size() + tints.size());
+    size_t next = 0;
+    for (size_t i = 0; i <= list.size(); i++) {
+        for (; next < tints.size() && tints[next].first == i; next++) out.push_back(std::move(tints[next].second));
+        if (i < list.size()) out.push_back(std::move(list[i]));
+    }
+    list = std::move(out);
 }
 
 } // namespace twlite
