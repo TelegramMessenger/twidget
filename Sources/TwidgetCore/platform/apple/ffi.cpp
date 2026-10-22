@@ -149,6 +149,29 @@ bool twl_clear_selection(twl_renderer* h) {
     return guarded<bool>(h, false, "clear_selection", [&](twlite::Renderer& r) { return r.clear_selection(); });
 }
 
+char* twl_selectable_text(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "[]", "selectable_text", [&](twlite::Renderer& r) { return r.selectable_text_json(); }));
+}
+
+char* twl_cursor(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "auto", "cursor", [&](twlite::Renderer& r) { return r.cursor(); }));
+}
+
+char* twl_master_css(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "", "master_css", [&](twlite::Renderer& r) { return r.master_css(); }));
+}
+
+char* twl_theme_variables(twl_renderer* h) {
+    return ret_string(guarded<std::string>(h, "{}", "theme_variables", [&](twlite::Renderer& r) { return r.theme_variables_json(); }));
+}
+
+void twl_set_resize_tracking(twl_renderer* h, bool enabled, bool prefers_bottom) {
+    guarded<bool>(h, false, "set_resize_tracking", [&](twlite::Renderer& r) {
+        r.set_resize_tracking(enabled, prefers_bottom);
+        return true;
+    });
+}
+
 char* twl_tick(twl_renderer* h) {
     return ret_string(guarded<std::string>(h, "[]", "tick", [&](twlite::Renderer& r) { return messages(r.tick()); }));
 }

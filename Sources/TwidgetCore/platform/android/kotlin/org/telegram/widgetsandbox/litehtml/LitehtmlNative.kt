@@ -34,6 +34,17 @@ internal object LitehtmlNative {
     external fun selectedText(handle: Long): String
     /** Drops the selection, for a press the host handles itself; true when there was one. */
     external fun clearSelection(handle: Long): Boolean
+    /** The selectable text as laid out, for the host's own touch selection: `[[block, x, y, w, h, baseline, font,
+     *  letterSpacing, wordSpacing, text, [a, b, c, d, e, f]], ...]`, the matrix mapping the box to where it shows. */
+    external fun selectableText(handle: Long): String
+    /** The document's CSS cursor where the mouse last was; "auto" when it says nothing. */
+    external fun cursor(handle: Long): String
+    /** The master CSS documents are parsed with, the profile's UA layer with the theme's values in place. */
+    external fun masterCss(handle: Long): String
+    /** The theme's variables on the root as a JSON object, name to value. */
+    external fun themeVariables(handle: Long): String
+    /** Each height change then comes with a `resize` in the size message; `prefersBottom` breaks a tie. */
+    external fun setResizeTracking(handle: Long, enabled: Boolean, prefersBottom: Boolean)
     /** One display frame (Choreographer): animations advance. Every frame while wantsTick, else after nextTickIn seconds. */
     external fun tick(handle: Long): String
     external fun wantsTick(handle: Long): Boolean
@@ -56,6 +67,10 @@ internal object LitehtmlNative {
     external fun trim(handle: Long)
     /** The last rebuild as JSON: serializeMs, parseLayoutMs, passes, htmlBytes, builds, displayOps. */
     external fun stats(handle: Long): String
+    /** The size of an image the backend decoded later; rebuilds the document. Returns renderer → host messages. */
+    external fun imageReady(handle: Long, image: Int, width: Float, height: Float): String
+    /** Diagnostics: the HTML the document was last built from. */
+    external fun html(handle: Long): String
     /** Runs a display list FilterPush's "fl" over an ARGB_8888 bitmap's pixels; `scale` is its px per CSS px. */
     external fun filterPixels(bitmap: android.graphics.Bitmap, filters: String, scale: Float)
 }

@@ -238,6 +238,26 @@ EMSCRIPTEN_KEEPALIVE int twl_clear_selection(Handle* h) {
     return h && h->renderer->clear_selection() ? 1 : 0;
 }
 
+EMSCRIPTEN_KEEPALIVE char* twl_selectable_text(Handle* h) {
+    return ret_string(h ? h->renderer->selectable_text_json() : std::string("[]"));
+}
+
+EMSCRIPTEN_KEEPALIVE char* twl_cursor(Handle* h) {
+    return ret_string(h ? h->renderer->cursor() : std::string("auto"));
+}
+
+EMSCRIPTEN_KEEPALIVE char* twl_master_css(Handle* h) {
+    return ret_string(h ? h->renderer->master_css() : std::string());
+}
+
+EMSCRIPTEN_KEEPALIVE char* twl_theme_variables(Handle* h) {
+    return ret_string(h ? h->renderer->theme_variables_json() : std::string("{}"));
+}
+
+EMSCRIPTEN_KEEPALIVE void twl_set_resize_tracking(Handle* h, int enabled, int prefers_bottom) {
+    if (h) h->renderer->set_resize_tracking(enabled != 0, prefers_bottom != 0);
+}
+
 /// One animation frame (requestAnimationFrame): animations advance. Call it every frame while twl_wants_tick
 /// holds, otherwise after twl_next_tick_in seconds.
 EMSCRIPTEN_KEEPALIVE char* twl_tick(Handle* h) {

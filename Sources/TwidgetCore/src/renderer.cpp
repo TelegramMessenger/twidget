@@ -2436,6 +2436,12 @@ bool Renderer::apply_theme(const Json& theme) {
 
 const std::string& Renderer::master_css() const { return container_->master(); }
 
+std::string Renderer::theme_variables_json() const {
+    Json out = Json::object();
+    for (const auto& [name, value] : theme_vars_) out.set(name, value);
+    return out.dump();
+}
+
 std::string Renderer::cursor() const {
     const std::string& c = container_->cursor();
     return c.empty() || frozen_ ? "auto" : css::trim(lower(c));

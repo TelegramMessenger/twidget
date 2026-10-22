@@ -101,7 +101,7 @@ elseif(APPLE)
 elseif(EMSCRIPTEN)
     set(TW_WASM_EXPORTS twl_create twl_backend_id twl_destroy twl_receive twl_set_width twl_set_max_height twl_set_theme twl_touch
         twl_image_ready twl_size twl_dirty twl_display_list twl_damage twl_trim twl_stats twl_html twl_string_free twl_alloc twl_free
-        twl_pointer twl_hover twl_wheel twl_key twl_editor twl_edit twl_end_editing twl_selected_text twl_clear_selection twl_tick twl_wants_tick twl_next_tick_in twl_set_compositing
+        twl_pointer twl_hover twl_wheel twl_key twl_editor twl_edit twl_end_editing twl_selected_text twl_clear_selection twl_selectable_text twl_cursor twl_master_css twl_theme_variables twl_set_resize_tracking twl_tick twl_wants_tick twl_next_tick_in twl_set_compositing
         twl_composition twl_clock twl_layer_content)
     list(TRANSFORM TW_WASM_EXPORTS PREPEND "_")
     list(JOIN TW_WASM_EXPORTS "," TW_WASM_EXPORT_LIST)

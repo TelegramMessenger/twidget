@@ -1,8 +1,7 @@
-// C ABI of the renderer (platform/apple/ffi.cpp, platform/web/wasm.cpp). The
-// same shape as widget-sandbox's Blitz renderer (twidget_blitz.h) with the
-// `twl_` prefix, so a host drives either engine through one table of functions.
-// One renderer per widget behind an opaque handle; every call on the main
-// thread. Strings returned by twl_* functions are released with twl_string_free.
+// C ABI of the renderer (platform/apple/ffi.cpp, platform/web/wasm.cpp; JNI in
+// platform/android/jni.cpp has the same calls, camelCased). One renderer per
+// widget behind an opaque handle; every call on the main thread. Strings
+// returned by twl_* functions are released with twl_string_free.
 #ifndef TWIDGET_LITEHTML_H
 #define TWIDGET_LITEHTML_H
 
@@ -47,6 +46,19 @@ char *twl_end_editing(twl_renderer *handle);
 char *twl_selected_text(twl_renderer *handle);
 /// Drops the selection, for a press the host handles itself; true when there was one (the renderer is dirty).
 bool twl_clear_selection(twl_renderer *handle);
+/// The text under `user-select: text` as laid out, for a host that selects with its own touch UI
+/// (Renderer::selectable_text_json): `[[block, x, y, w, h, baseline, font, letter spacing, word spacing, text,
+/// [a, b, c, d, e, f]], ...]`, the matrix mapping the box to where it shows.
+char *twl_selectable_text(twl_renderer *handle);
+/// The document's CSS cursor where the mouse last was: "pointer", "text", ...; "auto" when it says nothing.
+char *twl_cursor(twl_renderer *handle);
+/// The master CSS documents are parsed with, the profile's UA layer with the theme's values in place.
+char *twl_master_css(twl_renderer *handle);
+/// The theme's variables on the root as a JSON object: `{"--tg-theme-bg-color": "#ffffff", ...}`.
+char *twl_theme_variables(twl_renderer *handle);
+/// Each height change then comes with a `resize` in the size message: what stayed put, and which side the
+/// host keeps still (`prefers_bottom` breaks a tie towards the bottom).
+void twl_set_resize_tracking(twl_renderer *handle, bool enabled, bool prefers_bottom);
 /// One display frame: animations advance and coalesced moves go out. Call it each frame while twl_wants_tick holds,
 /// otherwise after twl_next_tick_in seconds (infinity: nothing scheduled). Returns renderer → host messages.
 char *twl_tick(twl_renderer *handle);

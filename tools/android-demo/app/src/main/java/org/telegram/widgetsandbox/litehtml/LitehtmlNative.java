@@ -57,6 +57,22 @@ public final class LitehtmlNative {
     /** Drops the selection, for a press the host handles itself; true when there was one. */
     public static native boolean clearSelection(long handle);
 
+    /** The selectable text as laid out, for the host's own touch selection: [[block, x, y, w, h, baseline, font,
+     *  letterSpacing, wordSpacing, text, [a, b, c, d, e, f]], ...], the matrix mapping the box to where it shows. */
+    public static native String selectableText(long handle);
+
+    /** The document's CSS cursor where the mouse last was; "auto" when it says nothing. */
+    public static native String cursor(long handle);
+
+    /** The master CSS documents are parsed with, the profile's UA layer with the theme's values in place. */
+    public static native String masterCss(long handle);
+
+    /** The theme's variables on the root as a JSON object, name to value. */
+    public static native String themeVariables(long handle);
+
+    /** Each height change then comes with a resize in the size message; prefersBottom breaks a tie. */
+    public static native void setResizeTracking(long handle, boolean enabled, boolean prefersBottom);
+
     /** One display frame (Choreographer): animations advance. Every frame while wantsTick, else after nextTickIn seconds. */
     public static native String tick(long handle);
 
@@ -91,6 +107,12 @@ public final class LitehtmlNative {
 
     /** The last rebuild as JSON: serializeMs, parseLayoutMs, passes, htmlBytes, builds, displayOps. */
     public static native String stats(long handle);
+
+    /** The size of an image the backend decoded later; rebuilds the document. Returns renderer → host messages. */
+    public static native String imageReady(long handle, int image, float width, float height);
+
+    /** Diagnostics: the HTML the document was last built from. */
+    public static native String html(long handle);
 
     /** Runs a display list FilterPush's "fl" over an ARGB_8888 bitmap's pixels; `scale` is its px per CSS px. */
     public static native void filterPixels(android.graphics.Bitmap bitmap, String filters, float scale);

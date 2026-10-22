@@ -435,6 +435,44 @@ JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNati
     return guarded<bool>(h, false, "clear_selection", [&](Handle& hd) { return hd.renderer->clear_selection(); });
 }
 
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_selectableText(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "selectable_text", [&](Handle& hd) { return hd.renderer->selectable_text_json(); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_cursor(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "auto", "cursor", [&](Handle& hd) { return hd.renderer->cursor(); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_masterCss(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "", "master_css", [&](Handle& hd) { return hd.renderer->master_css(); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_themeVariables(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "{}", "theme_variables", [&](Handle& hd) { return hd.renderer->theme_variables_json(); }));
+}
+
+JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setResizeTracking(JNIEnv* env, jclass, jlong h, jboolean enabled, jboolean prefersBottom) {
+    EnvScope scope(env);
+    guarded<bool>(h, false, "set_resize_tracking", [&](Handle& hd) {
+        hd.renderer->set_resize_tracking(enabled, prefersBottom);
+        return true;
+    });
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_imageReady(JNIEnv* env, jclass, jlong h, jint image, jfloat width, jfloat height) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "[]", "image_ready", [&](Handle& hd) { return messages(hd.renderer->image_ready(image, width, height)); }));
+}
+
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_html(JNIEnv* env, jclass, jlong h) {
+    EnvScope scope(env);
+    return new_string(env, guarded<std::string>(h, "", "html", [&](Handle& hd) { return hd.renderer->last_html(); }));
+}
+
 JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_dirty(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return guarded<bool>(h, false, "dirty", [&](Handle& hd) { return hd.renderer->dirty(); });

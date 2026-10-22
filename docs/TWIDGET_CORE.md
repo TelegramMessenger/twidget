@@ -76,7 +76,10 @@ The renderer is not thread-safe: one widget's calls must not overlap.
 ## Platforms
 
 Each platform's backend is in `platform/`. Apple, Android and the web reach the core through the C
-ABI in `include/twidget_litehtml.h` (input, frames, layers and paint), Windows through the C++ API.
+ABI in `include/twidget_litehtml.h` (input, frames, layers and paint), Windows and Qt through the C++ API.
+The C ABI, the wasm exports and JNI make the same calls, camelCased in Kotlin and Java; only what one
+platform alone needs differs (`twl_render`, Apple's CPU raster; `twl_backend_id`, `twl_alloc` and
+`twl_free` on the web; `filterPixels` on Android). What the `Renderer` gives a host goes into all three.
 Every platform draws the same display list commands and runs canvases:
 
 | Platform | Backend | Painter | What the build produces |

@@ -133,6 +133,8 @@ public:
     const std::string& master_css() const;
     /// The variables the theme sets on the root, from the host's `theme` message or the scheme's defaults.
     const std::vector<std::pair<std::string, std::string>>& theme_variables() const { return theme_vars_; }
+    /// The same as a JSON object, name to value, for the bindings.
+    std::string theme_variables_json() const;
     /// The text under `user-select: text` as laid out, for a host that selects it with its own UI: touch
     /// selection starts from the client's message menu and its handles (§5.10). JSON, in document order:
     /// [[block, x, y, w, h, baseline, font, letter spacing, word spacing, text, [a, b, c, d, e, f]], …] in
