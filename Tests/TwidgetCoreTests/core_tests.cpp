@@ -1482,6 +1482,34 @@ int main() {
         check(mb.measured == 2, "a 100,000-character text is measured each time, never kept (" + std::to_string(mb.measured) + " measured)");
     }
 
+    // ── image sources: what reaches the backend ──
+    {
+        struct LoadingBackend : StubBackend {
+            std::vector<std::string> loaded;
+            bool load_image(int, const std::string& url, float& w, float& h) override {
+                loaded.push_back(url);
+                w = h = 1;
+                return true;
+            }
+        } lb;
+        auto loads = [&](const std::string& ops) {
+            lb.loaded.clear();
+            Renderer l(300, 1, false, lb);
+            l.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body"},)" + ops + "]}"));
+            l.paint();
+            return lb.loaded.size();
+        };
+        auto img = [&](const std::string& src) {
+            Json attrs = Json::array();
+            attrs.push(Json::array().push("src").push(src));
+            return loads(Json::object().set("op", "el").set("id", 10).set("tag", "img").set("attrs", attrs).dump() + R"(,{"op":"ins","parent":4,"id":10,"before":null})");
+        };
+        check(img("DATA:IMAGE/SVG+XML,%3Csvg%3E%3C/svg%3E") == 0 && img(" data:image/Svg+Xml ;utf8,<svg/>") == 0, "an SVG in any spelling is the placeholder, never the backend's");
+        check(img("data:image/PNG;base64,AA==") == 1, "a profile type in capitals still loads");
+        check(img("data:image/bmp;base64,AA==") == 0 && img("data:text/html,<b>") == 0, "a type outside the profile is refused");
+    }
+
     // ── getComputedStyle ──
     {
         StubBackend sb;

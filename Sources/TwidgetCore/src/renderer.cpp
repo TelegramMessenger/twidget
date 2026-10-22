@@ -514,6 +514,25 @@ constexpr size_t MAX_WIDTH_BYTES = 1 << 20;
 /// Past this a selectable run's carets are spread evenly over its width rather than measured: a press
 /// or a move must not shape a long unbroken run once per probe.
 constexpr size_t MAX_MEASURED_RUN = 4096;
+/// The profile's image types (widget-sandbox's PROFILE_IMAGES). The validator lets no other through, but
+/// a path around it (generated content's url(), once) must not hand a backend anything else.
+constexpr std::string_view IMAGE_TYPES[] = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"};
+
+/// A data: URL's media type as widget-sandbox's checkUrl reads it: the scheme in any case, around tabs,
+/// newlines and the C0 controls and spaces at its ends; trimmed and lower-cased. Empty when not a data: URL.
+std::string data_mime(std::string_view raw) {
+    std::string url;
+    for (char c : raw)
+        if (c != '\t' && c != '\n' && c != '\r') url += c;
+    size_t from = 0, to = url.size();
+    while (from < to && uint8_t(url[from]) <= 0x20) from++;
+    while (to > from && uint8_t(url[to - 1]) <= 0x20) to--;
+    std::string_view u = std::string_view(url).substr(from, to - from);
+    if (u.size() < 5 || lower(std::string(u.substr(0, 5))) != "data:") return {};
+    size_t end = u.find_first_of(",;", 5);
+    if (end == std::string_view::npos || u.find(',', 5) == std::string_view::npos) return {};
+    return css::trim(lower(std::string(u.substr(5, end - 5))));
+}
 
 } // namespace
 
@@ -1428,12 +1447,12 @@ public:
                 img.w = float(w);
                 img.h = float(h);
             }
-        } else if (url.rfind("data:image/svg+xml", 0) == 0) {
+        } else if (std::string mime = data_mime(url); mime == "image/svg+xml") {
             // Profile 1 has no SVG images: the validator puts its 48 px placeholder, an SVG, in place of
-            // every image it refuses, so that is the only one to reach a renderer.
+            // every image it refuses. No SVG reaches a backend, whatever the spelling.
             img.placeholder = true;
             img.w = img.h = 48;
-        } else if (url.rfind("data:", 0) == 0) {
+        } else if (std::find(std::begin(IMAGE_TYPES), std::end(IMAGE_TYPES), mime) != std::end(IMAGE_TYPES)) {
             // The backend may answer the size later (`image_ready`): the id stays, the size is 0 until then.
             img.id = ++next_image_;
             if (!backend_.load_image(img.id, url, img.w, img.h)) img.id = 0;
