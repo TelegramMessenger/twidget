@@ -1313,6 +1313,20 @@ int main() {
         t.touch(2, 200, 10, 1, true, true);
         check(t.selected_text() == "Hello world" && claimed, "a mouse drag over selectable text selects it and claims the drag (got '" + t.selected_text() + "')");
 
+        // The same text for a host's own (touch) selection: the selectable runs only, with their fonts and baselines.
+        std::string runs = t.selectable_text_json();
+        auto parsed = Json::parse(runs);
+        bool shaped = parsed && !parsed->arr().empty();
+        std::string joined;
+        if (shaped) {
+            for (const Json& r : parsed->arr()) {
+                joined += r[size_t(9)].asString();
+                shaped = shaped && r.arr().size() == 10 && r[size_t(6)].asInt() > 0 && r[size_t(5)].asNumber() > r[size_t(2)].asNumber();
+            }
+        }
+        check(shaped && joined.find("Hello") != std::string::npos && joined.find("Second") != std::string::npos && joined.find("Plain") == std::string::npos,
+              "selectable_text_json lists the selectable runs with font and baseline, not the rest (got " + runs + ")");
+
         t.touch(0, 17, 10, 1, true, true);
         t.touch(1, 33, 10, 1, true, true);
         t.touch(2, 33, 10, 1, true, true);

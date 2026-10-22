@@ -1130,6 +1130,16 @@ public:
         return false;
     }
     litehtml::document* doc() const { return doc_.get(); }
+    /// What a litehtml font handle is for the backend: its font, its descent and its spacings.
+    bool font_info(uintptr_t h, int& handle, float& descent, float& letter, float& word) const {
+        auto it = fonts_.find(litehtml::uint_ptr(h));
+        if (it == fonts_.end()) return false;
+        handle = it->second.handle;
+        descent = it->second.metrics.descent;
+        letter = it->second.letter_spacing;
+        word = it->second.word_spacing;
+        return true;
+    }
     litehtml::element::ptr element(int64_t id) const {
         auto it = elements_.find(id);
         return it == elements_.end() ? nullptr : it->second;
@@ -5230,6 +5240,22 @@ std::vector<Renderer::TextRun> Renderer::text_runs() const {
     walk(doc->root(), 0, 0);
 #endif
     return runs;
+}
+
+std::string Renderer::selectable_text_json() const {
+    Json out = Json::array();
+    for (const TextRun& r : text_runs()) {
+        if (!r.selectable) continue;
+        int font = 0;
+        float descent = 0, letter = 0, word = 0;
+        if (!r.line_break && !container_->font_info(r.font, font, descent, letter, word)) continue;
+        Json run = Json::array();
+        run.push(r.block).push(r.box.x).push(r.box.y).push(r.box.w).push(r.box.h);
+        // Where the run is drawn: draw_text puts the baseline `descent` above the bottom of its box.
+        run.push(r.line_break ? 0.0f : r.box.y + r.box.h - descent).push(font).push(letter).push(word).push(r.text);
+        out.push(std::move(run));
+    }
+    return out.dump();
 }
 
 bool Renderer::locate(const TextPoint& p, const std::vector<TextRun>& runs, size_t& run, size_t& offset) const {

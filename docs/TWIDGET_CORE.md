@@ -43,7 +43,9 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   profile 1 has no text controls, so it only matters to a host that hands the renderer one.
 - **Text selection.** A mouse drag over `user-select: text` selects (widget-sandbox v0.1.1, §5.10) and the
   next paint tints it; the host copies `selected_text()` with its own command and calls `clear_selection()`
-  for a press the renderer does not get. Touch selection mode is still to do.
+  for a press the renderer does not get. For touch, a host selects with its own UI (the message menu and
+  its handles): `selectable_text_json()` lists the selectable runs with their fonts and baselines, and the
+  host lays its selection over them; the Telegram Android client does so.
 
 With `set_resize_tracking(true)`, each height change comes with `resize_diff()` (and `resize` in the
 size message): how much of the top and of the bottom stayed put, where the element pressed last went,

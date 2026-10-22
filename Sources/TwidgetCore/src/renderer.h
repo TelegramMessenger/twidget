@@ -123,6 +123,11 @@ public:
     std::string selected_text() const;
     /// Drops the selection; true when there was one, and the next paint draws no highlight.
     bool clear_selection();
+    /// The text under `user-select: text` as laid out, for a host that selects it with its own UI: touch
+    /// selection starts from the client's message menu and its handles (§5.10). JSON, in document order:
+    /// [[block, x, y, w, h, baseline, font, letter spacing, word spacing, text], …] in document CSS px, `font`
+    /// the backend's font the run is drawn with; a line break is "\n" with an empty box. "[]" when none.
+    std::string selectable_text_json() const;
     /// One display frame: coalesced move events go out and animations advance. Returns renderer → host messages.
     std::vector<twidget::Json> tick();
     /// Something waits for the next frame: a running animation or a coalesced move.
