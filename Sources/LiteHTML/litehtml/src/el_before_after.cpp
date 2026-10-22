@@ -1,4 +1,5 @@
 #include "html.h"
+#include "css_parser.h"
 #include "el_before_after.h"
 #include "el_text.h"
 #include "el_space.h"
@@ -28,58 +29,27 @@ void litehtml::el_before_after_base::add_style(const style& style)
             add_quote(idx == content_property_open_quote);
         } else if(!idx.has_value())
         {
-            std::string            fnc;
-            std::string::size_type i = 0;
-            while(i < str.length() && i != std::string::npos)
+            // The value is kept as written: read it with the tokenizer, as the sanitizer did, so that an
+            // escaped quote stays inside its string and only a url token or url() names an image.
+            for(const css_token& tok : normalize(str, f_componentize | f_remove_whitespace))
             {
-                if(str.at(i) == '"' || str.at(i) == '\'')
+                std::string url;
+                if(tok.type == STRING)
                 {
-                    auto chr = str.at(i);
-                    fnc.clear();
-                    i++;
-                    std::string::size_type pos = str.find(chr, i);
-                    std::string            txt;
-                    if(pos == std::string::npos)
-                    {
-                        txt = str.substr(i);
-                        i   = std::string::npos;
-                    } else
-                    {
-                        txt = str.substr(i, pos - i);
-                        i   = pos + 1;
-                    }
-                    add_text(txt);
-                } else if(str.at(i) == '(')
+                    add_text(tok.str(), false);
+                } else if(tok.type == IDENT)
                 {
-                    i++;
-                    litehtml::trim(fnc);
-                    litehtml::lcase(fnc);
-                    std::string::size_type pos = str.find(')', i);
-                    std::string            params;
-                    if(pos == std::string::npos)
-                    {
-                        params = str.substr(i);
-                        i      = std::string::npos;
-                    } else
-                    {
-                        params = str.substr(i, pos - i);
-                        i      = pos + 1;
-                    }
-                    add_function(fnc, params);
-                    fnc.clear();
-                } else if(isspace(static_cast<unsigned char>(str.at(i))) && is_one_of(trim(fnc), "open-quote", "close-quote"))
+                    std::string name = lowcase(tok.name());
+                    if(name == "open-quote" || name == "close-quote")
+                        add_quote(name == "open-quote");
+                } else if(parse_url(tok, url))
                 {
-                    add_quote(trim(fnc) == "open-quote");
-                    fnc.clear();
-                    i++;
-                } else
+                    add_image(url);
+                } else if(tok.type == CV_FUNCTION)
                 {
-                    fnc += str.at(i);
-                    i++;
+                    add_function(lowcase(tok.name()), get_repr(tok.value));
                 }
             }
-            if(is_one_of(trim(fnc), "open-quote", "close-quote"))
-                add_quote(trim(fnc) == "open-quote");
         }
     }
 
@@ -89,15 +59,15 @@ void litehtml::el_before_after_base::add_style(const style& style)
     }
 }
 
-void litehtml::el_before_after_base::add_text(const std::string& txt)
+void litehtml::el_before_after_base::add_text(const std::string& txt, bool escapes)
 {
     std::string word;
     std::string esc;
 
     for(auto chr : txt)
     {
-        if(chr == '\\' || (!esc.empty() && esc.length() < 5 &&
-                           ((chr >= '0' && chr <= '9') || (chr >= 'A' && chr <= 'Z') || (chr >= 'a' && chr <= 'z'))))
+        if(escapes && (chr == '\\' || (!esc.empty() && esc.length() < 5 &&
+                                      ((chr >= '0' && chr <= '9') || (chr >= 'A' && chr <= 'Z') || (chr >= 'a' && chr <= 'z')))))
         {
             if(!esc.empty() && chr == '\\')
             {
@@ -180,7 +150,7 @@ void litehtml::el_before_after_base::add_quote(bool open)
 
 void litehtml::el_before_after_base::add_function(const std::string& fnc, const std::string& params)
 {
-    constexpr auto content_function_strings = split_css_values<4>("attr;counter;counters;url");
+    constexpr auto content_function_strings = split_css_values<3>("attr;counter;counters");
 
     auto idx = css_values(content_function_strings).value_index(fnc);
     if(!idx.has_value())
@@ -201,7 +171,7 @@ void litehtml::el_before_after_base::add_function(const std::string& fnc, const 
                 const char* attr_value = el_parent->get_attr(p_name.c_str());
                 if(attr_value)
                 {
-                    add_text(attr_value);
+                    add_text(attr_value, false);
                 }
             }
         }
@@ -222,37 +192,21 @@ void litehtml::el_before_after_base::add_function(const std::string& fnc, const 
             add_text(get_counters_value(tokens));
         }
         break;
-    // url
-    case 3:
-        {
-            std::string p_url = params;
-            trim(p_url);
-            if(!p_url.empty())
-            {
-                if(p_url.at(0) == '\'' || p_url.at(0) == '\"')
-                {
-                    p_url.erase(0, 1);
-                }
-            }
-            if(!p_url.empty())
-            {
-                if(p_url.at(p_url.length() - 1) == '\'' || p_url.at(p_url.length() - 1) == '\"')
-                {
-                    p_url.erase(p_url.length() - 1, 1);
-                }
-            }
-            if(!p_url.empty())
-            {
-                element::ptr el = std::make_shared<el_image>(get_document());
-                el->set_attr("src", p_url.c_str());
-                el->set_attr("style", "display:inline-block");
-                el->set_tagName("img");
-                appendChild(el);
-                el->parse_attributes();
-            }
-        }
-        break;
     }
+}
+
+void litehtml::el_before_after_base::add_image(const std::string& url)
+{
+    if(url.empty())
+    {
+        return;
+    }
+    element::ptr el = std::make_shared<el_image>(get_document());
+    el->set_attr("src", url.c_str());
+    el->set_attr("style", "display:inline-block");
+    el->set_tagName("img");
+    appendChild(el);
+    el->parse_attributes();
 }
 
 std::string litehtml::el_before_after_base::convert_escape(const char* txt)

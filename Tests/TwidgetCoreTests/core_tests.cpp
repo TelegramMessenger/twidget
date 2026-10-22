@@ -1500,6 +1500,14 @@ int main() {
             l.paint();
             return lb.loaded.size();
         };
+        auto generated = [&](const std::string& content) {
+            Json css = Json::object().set("op", "css").set("id", 5).set("text", "p::before{content:" + content + "}");
+            return loads(R"({"op":"el","id":5,"tag":"style"},)" + css.dump() + R"(,{"op":"ins","parent":3,"id":5,"before":null},
+                {"op":"el","id":10,"tag":"p"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"text","id":11,"data":"x"},{"op":"ins","parent":10,"id":11,"before":null})");
+        };
+        check(generated(R"c("a\"url(data:image/png;base64,AA==)")c") == 0, "an escaped quote keeps a url( inside its string: generated content loads no image");
+        check(generated(R"c("a" url(data:image/png;base64,AA==))c") == 1, "generated content's own url() loads its image");
+        check(generated(R"c(url("data:image/x-icon;base64,AA=="))c") == 0, "generated content's image of a type outside the profile is refused");
         auto img = [&](const std::string& src) {
             Json attrs = Json::array();
             attrs.push(Json::array().push("src").push(src));
