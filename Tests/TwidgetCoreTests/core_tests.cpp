@@ -1387,6 +1387,32 @@ int main() {
         check(gone == 1000 && ordered, "1,000 sibling clips around their content all go, the content kept in order");
     }
 
+    // ── measured widths: long text is not kept ──
+    {
+        struct CountingBackend : StubBackend {
+            size_t measured = 0;
+            float text_width(int f, const std::string& text) override {
+                measured++;
+                return StubBackend::text_width(f, text);
+            }
+        } mb;
+        Renderer m(300, 1, false, mb);
+        m.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"}]})"));
+        auto measure = [&](const std::string& text) {
+            m.receive(parse(R"({"type":"query","qid":1,"query":{"q":"measureText","font":"12px serif","text":")" + text + R"("}})"));
+        };
+        mb.measured = 0;
+        measure("abc");
+        measure("abc");
+        check(mb.measured == 1, "a short text's width is kept (" + std::to_string(mb.measured) + " measured)");
+        std::string longer(100000, 'x');
+        mb.measured = 0;
+        measure(longer);
+        measure(longer);
+        check(mb.measured == 2, "a 100,000-character text is measured each time, never kept (" + std::to_string(mb.measured) + " measured)");
+    }
+
     // ── getComputedStyle ──
     {
         StubBackend sb;

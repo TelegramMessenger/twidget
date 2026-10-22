@@ -506,6 +506,11 @@ constexpr size_t MAX_FACES = 256;
 /// The SVG paints the container keeps for draw_cached, and the commands they hold together.
 constexpr size_t MAX_CACHED_PAINTS = 128;
 constexpr size_t MAX_CACHED_COMMANDS = 50000;
+/// Measured widths, keyed by their text: longer text is measured each time, and every face's keys
+/// together stay within the byte bound.
+constexpr size_t MAX_WIDTH_ENTRIES = 4096;
+constexpr size_t MAX_WIDTH_KEY = 256;
+constexpr size_t MAX_WIDTH_BYTES = 1 << 20;
 
 } // namespace
 
@@ -831,7 +836,7 @@ public:
                 backend_.delete_font(it->second->handle);
                 it = faces_.erase(it);
             } else {
-                it->second->widths.clear();
+                it->second->forget();
                 ++it;
             }
         }
@@ -2233,12 +2238,27 @@ private:
             size_t operator()(std::string_view s) const { return std::hash<std::string_view>{}(s); }
         };
         std::unordered_map<std::string, float, Hash, std::equal_to<>> widths;
+        size_t* pool = nullptr;  // the key bytes every face holds
+        size_t bytes = 0;        // this face's share of them
+        Face() = default;
+        Face(const Face&) = delete;
+        Face& operator=(const Face&) = delete;
+        ~Face() { forget(); }
+        void forget() {
+            widths.clear();
+            if (pool) *pool -= bytes;
+            bytes = 0;
+        }
         float width(Backend& backend, std::string_view text) {
             if (auto c = widths.find(text); c != widths.end()) return c->second;
-            // Words repeat across documents, but a widget that types a counter would grow this forever.
-            if (widths.size() > 4096) widths.clear();
             float w = backend.text_width(handle, std::string(text));
+            // Words repeat across documents, but a widget that types a counter would grow this forever.
+            if (text.size() > MAX_WIDTH_KEY) return w;
+            if (widths.size() >= MAX_WIDTH_ENTRIES || (pool && *pool + text.size() > MAX_WIDTH_BYTES)) forget();
+            if (pool && *pool + text.size() > MAX_WIDTH_BYTES) return w;  // other faces hold the budget
             widths.emplace(std::string(text), w);
+            bytes += text.size();
+            if (pool) *pool += text.size();
             return w;
         }
     };
@@ -2264,6 +2284,7 @@ private:
 #endif
             }
             auto face = std::make_unique<Face>();
+            face->pool = &width_bytes_;
             face->handle = backend_.create_font(family, size, weight, italic, features, face->metrics);
             if (!face->handle) return nullptr;
             it = faces_.emplace(std::move(key), std::move(face)).first;
@@ -2383,6 +2404,7 @@ private:
     std::tuple<const litehtml::document*, uint32_t, uint64_t> cover_key_{};
     std::tuple<const litehtml::document*, uint32_t, uint64_t> trace_key_{};
     std::unordered_map<int64_t, litehtml::element::ptr> elements_;
+    size_t width_bytes_ = 0;  // before faces_, whose destruction gives its bytes back
     std::map<FaceKey, std::unique_ptr<Face>> faces_;
     uint64_t face_clock_ = 0;
     std::unordered_map<litehtml::uint_ptr, Font> fonts_;
