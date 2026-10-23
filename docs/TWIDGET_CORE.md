@@ -17,7 +17,7 @@ magic move). Until then both exist side by side.
 | The protocol: ops into a shadow tree, queries, events, theme, freeze | `src/renderer.*` |
 | SDK v1's theme variables (palette, colour scheme, button and text tokens) and the profile's UA layer | `src/css.*`, `Renderer::apply_theme` |
 | CSS animations and transitions, Web Animations records (`anim`), the `anims` query | `src/animations.*` |
-| Pointer and hover events, trusted; moves coalesced per frame; the gesture claim | `src/renderer.cpp` |
+| Pointer and hover events, trusted; moves coalesced per frame; the gesture claim, and `dblclick` and `contextmenu` as widget-sandbox's gesture policy decides | `src/renderer.cpp` |
 | Canvas 2D: the command interpreter, resolved into `CanvasOp`s a backend draws | `src/canvas.*`, `src/canvas_ops.h` |
 | Compositor layers for transform and opacity animations | `src/compositor.*` |
 | `light-dark()`, name checks on everything written into the generated HTML | `src/css.*` |
@@ -45,6 +45,15 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   the platform to cover with its own editor, which reports back through `edit()` and `end_editing()`;
   profile 1 has no text controls, so it only matters to a host that hands the renderer one. `cursor()`
   is the document's CSS cursor where the mouse last was.
+- **Who gets a press** (widget-sandbox v0.1.2, `docs/sdk-v1.md` §5.5). Every primary pointerdown sends a
+  `gesture` message with the claim (`x`, `y`, `hold`) from `touch-action`. The host drives its own recognizers
+  over the widget (the message menu, swipe-to-reply, the list scroll, back) with widget-sandbox's
+  `twidget::GestureArbiter` on that claim, and when the arbiter gives a press to the bubble it ends it for
+  the widget with `touch` action 3. The renderer runs the same policy for what the widget gets: `dblclick`
+  after the second tap's click, and `contextmenu` for a hold or a secondary-button press (`button` 2) that
+  the claim gives the widget. A hold needs the clock: its deadline is in `next_tick_in()`. A host with no
+  recognizers of its own sends `arbitrate` with `bubble: true`, and the renderer then takes those presses
+  itself and reports each in a `bubble` message.
 - **Text selection.** A mouse drag over `user-select: text` selects (widget-sandbox v0.1.1, §5.10) and the
   next paint tints it; the host copies `selected_text()` with its own command and calls `clear_selection()`
   for a press the renderer does not get. For touch, a host selects with its own UI (the message menu and
@@ -112,7 +121,8 @@ ctest --test-dir build
 
 widget-sandbox has to be checked out next to twidget (`../widget-sandbox`), or its path given in
 `TWIDGET_WIDGET_SANDBOX`, as for `Package.swift`: TwidgetCore reads the protocol's JSON helper
-(`twidget/json.h`) from it. TwidgetCore follows release `v0.1.1`: check out that tag, never a branch,
+(`twidget/json.h`) and the gesture policy (`twidget/gesture_policy.h`, its source compiled into
+`twidget::core`) from it. TwidgetCore follows release `v0.1.2`: check out that tag, never a branch,
 and its QuickJS submodule with `git submodule update --init` (widget-sandbox's `docs/integration.md`). The
 build reads the profile's UA layer from its `packages/core/profile.json` into a generated header.
 
