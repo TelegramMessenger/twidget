@@ -16,8 +16,8 @@ internal object LitehtmlNative {
     external fun setTheme(handle: Long, theme: String): String
     /** action: 0 down, 1 move, 2 up, 3 cancel; coordinates in CSS px. Returns renderer → host messages. */
     external fun touch(handle: Long, action: Int, x: Double, y: Double, pointer: Int, primary: Boolean): String
-    /** As touch, from a mouse (no touch events) with modifiers: bit0 alt, bit1 ctrl, bit2 meta, bit3 shift. */
-    external fun pointer(handle: Long, action: Int, x: Double, y: Double, pointer: Int, primary: Boolean, mouse: Boolean, modifiers: Int): String
+    /** As touch, from a mouse (no touch events) with modifiers: bit0 alt, bit1 ctrl, bit2 meta, bit3 shift; `button` 2 is the secondary one. */
+    external fun pointer(handle: Long, action: Int, x: Double, y: Double, pointer: Int, primary: Boolean, mouse: Boolean, modifiers: Int, button: Int): String
     /** A mouse over the view with no button down (action 0), or leaving it (1). */
     external fun hover(handle: Long, action: Int, x: Double, y: Double, modifiers: Int): String
     /** mode: 0 pixels, 1 lines, 2 pages. */

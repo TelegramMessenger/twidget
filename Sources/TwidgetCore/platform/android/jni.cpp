@@ -317,9 +317,10 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
 }
 
 /// A mouse or touch pointer with modifiers (bit0 alt, bit1 ctrl, bit2 meta, bit3 shift); `mouse` sends no touch events.
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_pointer(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary, jboolean mouse, jint modifiers) {
+/// `button` 2 is a mouse's secondary button.
+JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_pointer(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary, jboolean mouse, jint modifiers, jint button) {
     EnvScope scope(env);
-    return new_string(env, guarded<std::string>(h, "[]", "pointer", [&](Handle& hd) { return messages(hd.renderer->touch(action, x, y, pointer, primary, mouse, modifiers)); }));
+    return new_string(env, guarded<std::string>(h, "[]", "pointer", [&](Handle& hd) { return messages(hd.renderer->touch(action, x, y, pointer, primary, mouse, modifiers, button)); }));
 }
 
 JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_hover(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint modifiers) {

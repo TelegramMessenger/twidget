@@ -30,8 +30,8 @@ public final class LitehtmlNative {
     /** action: 0 down, 1 move, 2 up, 3 cancel; coordinates in CSS px. Returns renderer → host messages. */
     public static native String touch(long handle, int action, double x, double y, int pointer, boolean primary);
 
-    /** As touch, from a mouse (no touch events) with modifiers: bit0 alt, bit1 ctrl, bit2 meta, bit3 shift. */
-    public static native String pointer(long handle, int action, double x, double y, int pointer, boolean primary, boolean mouse, int modifiers);
+    /** As touch, from a mouse (no touch events) with modifiers: bit0 alt, bit1 ctrl, bit2 meta, bit3 shift; `button` 2 is the secondary one. */
+    public static native String pointer(long handle, int action, double x, double y, int pointer, boolean primary, boolean mouse, int modifiers, int button);
 
     /** A mouse over the view with no button down (action 0), or leaving it (1). */
     public static native String hover(long handle, int action, double x, double y, int modifiers);

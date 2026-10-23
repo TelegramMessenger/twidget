@@ -27,7 +27,8 @@ char *twl_set_theme(twl_renderer *handle, const char *theme);
 /// A touch in CSS px. action: 0 down, 1 move, 2 up, 3 cancel. Returns renderer → host messages.
 char *twl_touch(twl_renderer *handle, int32_t action, double x, double y, int32_t pointer, bool primary);
 /// A pointer as twl_touch, from a mouse (`mouse`: no touch events) with modifiers (bit0 alt, bit1 ctrl, bit2 meta, bit3 shift).
-char *twl_pointer(twl_renderer *handle, int32_t action, double x, double y, int32_t pointer, bool primary, bool mouse, int32_t modifiers);
+/// `button` 2 is the secondary button: the widget's contextmenu when it claims holds, else the bubble's menu.
+char *twl_pointer(twl_renderer *handle, int32_t action, double x, double y, int32_t pointer, bool primary, bool mouse, int32_t modifiers, int32_t button);
 /// A mouse over the view with no button down (action 0) or leaving it (1).
 char *twl_hover(twl_renderer *handle, int32_t action, double x, double y, int32_t modifiers);
 /// A wheel or trackpad scroll in CSS px; mode 0 pixels, 1 lines, 2 pages.

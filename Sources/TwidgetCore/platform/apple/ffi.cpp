@@ -109,8 +109,8 @@ char* twl_touch(twl_renderer* h, int32_t action, double x, double y, int32_t poi
     return ret_string(guarded<std::string>(h, "[]", "touch", [&](twlite::Renderer& r) { return messages(r.touch(action, x, y, pointer, primary)); }));
 }
 
-char* twl_pointer(twl_renderer* h, int32_t action, double x, double y, int32_t pointer, bool primary, bool mouse, int32_t modifiers) {
-    return ret_string(guarded<std::string>(h, "[]", "pointer", [&](twlite::Renderer& r) { return messages(r.touch(action, x, y, pointer, primary, mouse, modifiers)); }));
+char* twl_pointer(twl_renderer* h, int32_t action, double x, double y, int32_t pointer, bool primary, bool mouse, int32_t modifiers, int32_t button) {
+    return ret_string(guarded<std::string>(h, "[]", "pointer", [&](twlite::Renderer& r) { return messages(r.touch(action, x, y, pointer, primary, mouse, modifiers, button)); }));
 }
 
 char* twl_hover(twl_renderer* h, int32_t action, double x, double y, int32_t modifiers) {

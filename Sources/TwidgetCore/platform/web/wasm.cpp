@@ -191,9 +191,9 @@ EMSCRIPTEN_KEEPALIVE char* twl_touch(Handle* h, int action, double x, double y, 
     return ret_string(messages(h->renderer->touch(action, x, y, pointer, primary != 0)));
 }
 
-EMSCRIPTEN_KEEPALIVE char* twl_pointer(Handle* h, int action, double x, double y, int pointer, int primary, int mouse, int modifiers) {
+EMSCRIPTEN_KEEPALIVE char* twl_pointer(Handle* h, int action, double x, double y, int pointer, int primary, int mouse, int modifiers, int button) {
     if (!h) return ret_string("[]");
-    return ret_string(messages(h->renderer->touch(action, x, y, pointer, primary != 0, mouse != 0, modifiers)));
+    return ret_string(messages(h->renderer->touch(action, x, y, pointer, primary != 0, mouse != 0, modifiers, button)));
 }
 
 EMSCRIPTEN_KEEPALIVE char* twl_hover(Handle* h, int action, double x, double y, int modifiers) {
