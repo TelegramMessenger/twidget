@@ -1,9 +1,9 @@
 // widget-sandbox's conformance set on TwidgetCore, following packages/conformance/CLIENTS.md: every widget
 // of the automatic set, in each of its themes, through the desktop host as a client configures it
 // (strict policy, the profile's features), drawn off screen by the Direct2D backend at DPR 2. The
-// widget's verdict is read from the validated ops; the scripted input goes through the renderer as
-// a client's view would send it; the stages are cropped from the paint. The run file is the
-// input of the set's report tool.
+// widget's verdict is read from the validated ops; the scripted input goes through a bubble that
+// arbitrates it by the shared gesture policy, as a client's does; the stages are cropped from the
+// paint. The run file is the input of the set's report tool.
 //
 //   twidget-conformance [out dir] [--width N]... [--filter text] [--sandbox <widget-sandbox>]
 #include "d2d_backend.h"
@@ -179,8 +179,16 @@ public:
         core_.reset();
     }
 
-    void touch(int action, double x, double y) {
-        run([&] { return core_->touch(action, x, y, 0, true, false, 0); });
+    /// One primary pointer; on a pointerdown, the claim the renderer reported for the press.
+    twidget::WidgetGestureClaim touch(int action, double x, double y, bool mouse = false, int button = 0) {
+        twidget::WidgetGestureClaim claim;
+        run([&] {
+            auto out = core_->touch(action, x, y, 0, true, mouse, 0, button);
+            for (const Json& m : out)
+                if (m["type"].asString() == "gesture") claim = {m["x"].asBool(), m["y"].asBool(), m["hold"].asBool()};
+            return out;
+        });
+        return claim;
     }
     void hover(int action, double x, double y) {
         run([&] { return core_->hover(action, x, y, 0); });
@@ -335,6 +343,54 @@ private:
     Verdict verdict_;
 };
 
+/// The client's bubble over the widget, which CLIENTS.md has the actions go through: its recognizers follow
+/// the shared gesture policy on the claim the renderer reports, and take a press from the widget (a cancel)
+/// when the policy gives it to the bubble. What the bubble then does (a menu, a swipe) is not drawn.
+class Bubble {
+public:
+    explicit Bubble(OffscreenRenderer& renderer) : r_(renderer) {}
+
+    void down(double x, double y, bool mouse = false, int button = 0) {
+        mouse_ = mouse;
+        taken_ = false;
+        twidget::WidgetGestureClaim claim = r_.touch(0, x, y, mouse, button);
+        act(arbiter_.down(now_ms(), x, y, claim, mouse ? twidget::PointerKind::Mouse : twidget::PointerKind::Touch, button), x, y);
+    }
+    void move(double x, double y) {
+        if (taken_) return;
+        r_.touch(1, x, y, mouse_);
+        if (auto v = arbiter_.move(now_ms(), x, y)) act(*v, x, y);
+    }
+    /// Keeps the press still for `ms`; the hold timer fires at its deadline.
+    void hold(double ms, double x, double y) {
+        double end = now_ms() + ms;
+        while (true) {
+            auto deadline = taken_ ? std::nullopt : arbiter_.holdDeadline();
+            bool due = deadline && *deadline <= end;
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(std::max(0.0, (due ? *deadline : end) - now_ms())));
+            if (!due) return;
+            if (auto v = arbiter_.tick(now_ms())) act(*v, x, y);
+        }
+    }
+    void up(double x, double y) {
+        if (taken_) return;
+        auto v = arbiter_.up(now_ms(), x, y);
+        r_.touch(v && v->cancel ? 3 : 2, x, y, mouse_);
+    }
+
+private:
+    void act(const twidget::GestureVerdict& v, double x, double y) {
+        if (!v.cancel) return;
+        r_.touch(3, x, y, mouse_);
+        taken_ = true;
+    }
+
+    OffscreenRenderer& r_;
+    twidget::GestureArbiter arbiter_;
+    bool mouse_ = false;
+    bool taken_ = false;
+};
+
 struct Point {
     double x = 0, y = 0;
 };
@@ -426,6 +482,7 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
     bool chat_focused = !renderer->editing();
 
     Json skipped = Json::array();
+    Bubble bubble(*renderer);
     if (scripted && verdict.status() == "awaiting") {
         for (size_t i = 0; i < actions.arr().size(); i++) {
             const Json& a = actions[i];
@@ -433,24 +490,30 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
             auto at = [&](const char* name) { return target(a[name], now); };
             if (a.find("tap")) {
                 if (auto p = at("tap")) {
-                    renderer->touch(0, p->x, p->y);
+                    bubble.down(p->x, p->y);
                     std::this_thread::sleep_for(60ms);
-                    renderer->touch(2, p->x, p->y);
+                    bubble.up(p->x, p->y);
                 } else skipped.push(double(i));
             } else if (a.find("dblclick")) {
                 if (auto p = at("dblclick")) {
                     for (int n = 0; n < 2; n++) {
-                        renderer->touch(0, p->x, p->y);
+                        bubble.down(p->x, p->y);
                         std::this_thread::sleep_for(40ms);
-                        renderer->touch(2, p->x, p->y);
+                        bubble.up(p->x, p->y);
                         std::this_thread::sleep_for(60ms);
                     }
                 } else skipped.push(double(i));
             } else if (a.find("press")) {
                 if (auto p = at("press")) {
-                    renderer->touch(0, p->x, p->y);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(int64_t(a["ms"].asNumber(400))));
-                    renderer->touch(2, p->x, p->y);
+                    bubble.down(p->x, p->y);
+                    bubble.hold(a["ms"].asNumber(400), p->x, p->y);
+                    bubble.up(p->x, p->y);
+                } else skipped.push(double(i));
+            } else if (a.find("rightclick")) {
+                if (auto p = at("rightclick")) {
+                    bubble.down(p->x, p->y, true, 2);
+                    std::this_thread::sleep_for(60ms);
+                    bubble.up(p->x, p->y);
                 } else skipped.push(double(i));
             } else if (a.find("drag")) {
                 auto from = at("drag");
@@ -459,13 +522,13 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
                 else to = at("to");
                 if (from && to) {
                     int steps = std::max(1, int(a["steps"].asNumber(10)));
-                    renderer->touch(0, from->x, from->y);
+                    bubble.down(from->x, from->y);
                     for (int s = 1; s <= steps; s++) {
                         std::this_thread::sleep_for(16ms);
-                        renderer->touch(1, from->x + (to->x - from->x) * s / steps, from->y + (to->y - from->y) * s / steps);
+                        bubble.move(from->x + (to->x - from->x) * s / steps, from->y + (to->y - from->y) * s / steps);
                     }
                     std::this_thread::sleep_for(16ms);
-                    renderer->touch(2, to->x, to->y);
+                    bubble.up(to->x, to->y);
                 } else skipped.push(double(i));
             } else if (a.find("hover")) {
                 if (auto p = at("hover")) renderer->hover(0, p->x, p->y);
@@ -486,7 +549,6 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
             } else if (a.find("wait")) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(int64_t(a["wait"].asNumber())));
             } else {
-                // rightclick: the renderer has no secondary button (and profile 1 forwards no contextmenu)
                 skipped.push(double(i));
             }
             std::this_thread::sleep_for(350ms);
