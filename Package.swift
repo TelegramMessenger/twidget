@@ -95,7 +95,7 @@ let package = Package(
             path: "Sources/Twidget3DSandbox"),
         .target(
             name: "TwidgetRenderer",
-            dependencies: ["LiteHTML", widgetProtocol],
+            dependencies: ["LiteHTML", widgetProtocol, .product(name: "WidgetSandbox", package: "WidgetSandbox")],
             path: "Sources/TwidgetRenderer",
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(

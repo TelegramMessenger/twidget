@@ -3,6 +3,9 @@ import IOSurface
 import CoreVideo
 import LiteHTML
 import WidgetSandboxProtocol
+import struct WidgetSandbox.GestureArbiter
+import enum WidgetSandbox.GesturePolicy
+import struct WidgetSandbox.WidgetGestureClaim
 
 public final class LiteHTMLWidgetRenderer {
     public let view: NSView
@@ -120,6 +123,7 @@ public final class LiteHTMLWidgetRenderer {
     private var pointerCaptureId = 0
     private var lastPointer: CGPoint?
     private var clickCount = 0
+    private var gestures = GestureArbiter()
     private var lastClick: (time: CFTimeInterval, point: CGPoint) = (0, .zero)
     private var observedResize: Set<Int> = []
     private let resizeDiffLock = NSLock()
@@ -2971,16 +2975,16 @@ public final class LiteHTMLWidgetRenderer {
         return (flags.contains(.option) ? 1 : 0) | (flags.contains(.control) ? 2 : 0) | (flags.contains(.command) ? 4 : 0) | (flags.contains(.shift) ? 8 : 0)
     }
 
-    private func mouseEvent(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int) -> String? {
+    private func mouseEvent(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int, button: Int = 0) -> String? {
         let box = elementBounds()[target] ?? .zero
         var movement = CGPoint.zero
         if let last = lastPointer {
             movement = CGPoint(x: point.x - last.x, y: point.y - last.y)
         }
-        return LiteHTMLWidgetRenderer.mouseEventJSON(type, target: target, point: point, offset: CGPoint(x: point.x - box.minX, y: point.y - box.minY), movement: movement, buttons: buttons, detail: type.hasSuffix("click") ? clickCount : 0, modifiers: modifiers(event.modifierFlags), defaultActions: type == "click")
+        return LiteHTMLWidgetRenderer.mouseEventJSON(type, target: target, point: point, offset: CGPoint(x: point.x - box.minX, y: point.y - box.minY), movement: movement, buttons: buttons, detail: type.hasSuffix("click") ? clickCount : 0, modifiers: modifiers(event.modifierFlags), defaultActions: type == "click", button: button)
     }
 
-    static func mouseEventJSON(_ type: String, target: Int, point: CGPoint, offset: CGPoint, movement: CGPoint, buttons: Int, detail: Int, modifiers: Int, defaultActions: Bool) -> String? {
+    static func mouseEventJSON(_ type: String, target: Int, point: CGPoint, offset: CGPoint, movement: CGPoint, buttons: Int, detail: Int, modifiers: Int, defaultActions: Bool, button: Int = 0) -> String? {
         var writer = WidgetJSONWriter(capacity: 384)
         writer.raw("{\"type\":")
         writer.string(type)
@@ -3002,7 +3006,9 @@ public final class LiteHTMLWidgetRenderer {
         guard writer.number(Double(movement.x)) else { return nil }
         writer.raw(",\"movementY\":")
         guard writer.number(Double(movement.y)) else { return nil }
-        writer.raw(",\"button\":0,\"buttons\":")
+        writer.raw(",\"button\":")
+        writer.integer(Int64(button))
+        writer.raw(",\"buttons\":")
         writer.integer(Int64(buttons))
         writer.raw(",\"detail\":")
         writer.integer(Int64(detail))
@@ -3021,7 +3027,7 @@ public final class LiteHTMLWidgetRenderer {
         return writer.string
     }
 
-    private func dispatch(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int) {
+    private func dispatch(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int, button: Int = 0) {
         noteUserInput()
         if frozen || target == 0 {
             return
@@ -3029,7 +3035,7 @@ public final class LiteHTMLWidgetRenderer {
         if !LiteHTMLWidgetRenderer.alwaysSent.contains(type) && !listened.contains(type) {
             return
         }
-        guard let payload = mouseEvent(type, target: target, point: point, event: event, buttons: buttons) else {
+        guard let payload = mouseEvent(type, target: target, point: point, event: event, buttons: buttons, button: button) else {
             return
         }
         if LiteHTMLWidgetRenderer.coalesced.contains(type) {
@@ -3253,10 +3259,9 @@ public final class LiteHTMLWidgetRenderer {
         lastClick = (now, point)
         resizeClickY = point.y
         resizePressId = id
-        if !frozen {
-            let claim = gestureClaim(id)
-            post(["type": "gesture", "wants": claim.y, "x": claim.x, "y": claim.y])
-        }
+        let claim = gestureClaim(id)
+        post(["type": "gesture", "wants": claim.y, "x": claim.x, "y": claim.y, "hold": claim.hold])
+        _ = gestures.down(at: LiteHTMLWidgetRenderer.gestureTime(), x: Double(point.x), y: Double(point.y), claim: claim, pointer: .mouse)
         if document?.mouseDown(point) == true {
             setNeedsRender()
         }
@@ -3267,6 +3272,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     func handleMouseDragged(_ point: CGPoint, event: NSEvent) {
+        _ = gestures.move(at: LiteHTMLWidgetRenderer.gestureTime(), x: Double(point.x), y: Double(point.y))
         dispatch("pointermove", target: pressId != 0 ? pointerTarget(at: point) : 0, point: point, event: event, buttons: 1)
         dispatch("mousemove", target: target(at: point), point: point, event: event, buttons: 1)
         dragRange(to: point)
@@ -3279,12 +3285,16 @@ public final class LiteHTMLWidgetRenderer {
         if document?.mouseUp(point) == true {
             setNeedsRender()
         }
+        let verdict = gestures.up(at: LiteHTMLWidgetRenderer.gestureTime(), x: Double(point.x), y: Double(point.y))
         dispatch("pointerup", target: pointerTarget(at: point), point: point, event: event, buttons: 0)
         dispatch("mouseup", target: id, point: point, event: event, buttons: 0)
         if id == pressId || isAncestor(pressId, of: id) || isAncestor(id, of: pressId) {
             let clickTarget = isAncestor(id, of: pressId) ? id : (isAncestor(pressId, of: id) ? pressId : id)
             dispatch("click", target: clickTarget, point: point, event: event, buttons: 0)
             toggleDetails(from: clickTarget)
+            if verdict?.event == .dblclick {
+                dispatch("dblclick", target: clickTarget, point: point, event: event, buttons: 0)
+            }
         }
         finishRange(at: point)
         finishEditorSelection()
@@ -3361,30 +3371,29 @@ public final class LiteHTMLWidgetRenderer {
         selectKey(type, key: key, event: event)
     }
 
-    private func gestureClaim(_ id: Int) -> (x: Bool, y: Bool) {
-        if prevented.contains("\(id):pointerdown") || prevented.contains("\(id):touchstart") {
-            return (true, true)
-        }
-        var x = false
-        var y = false
+    private func gestureClaim(_ id: Int) -> WidgetGestureClaim {
+        var touchActions: [String] = []
         var node = dom.node(id)
         while let current = node, current !== dom.html {
             let style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(dom.publicId(current))) ?? [:]
-            let tokens = (style["touch-action"] ?? "auto").lowercased().split(separator: " ").map(String.init)
-            if tokens == ["none"] {
-                return (true, true)
-            }
-            if tokens != ["auto"] && tokens != ["manipulation"] {
-                if !tokens.contains(where: { ["pan-x", "pan-left", "pan-right"].contains($0) }) {
-                    x = true
-                }
-                if !tokens.contains(where: { ["pan-y", "pan-up", "pan-down"].contains($0) }) {
-                    y = true
-                }
-            }
+            touchActions.append(style["touch-action"] ?? "auto")
             node = current.parent
         }
-        return (x, y)
+        return GesturePolicy.claimOf(touchActions, prevented: prevented.contains("\(id):pointerdown") || prevented.contains("\(id):touchstart"))
+    }
+
+    private static func gestureTime() -> Double {
+        return CACurrentMediaTime() * 1000
+    }
+
+    func handleMenuClick(_ point: CGPoint, event: NSEvent) -> Bool {
+        guard !frozen, !destroyed else { return false }
+        let id = target(at: point)
+        let verdict = gestures.down(at: LiteHTMLWidgetRenderer.gestureTime(), x: Double(point.x), y: Double(point.y), claim: gestureClaim(id), pointer: .mouse, button: 2)
+        gestures.cancel()
+        guard verdict.event == .contextmenu else { return false }
+        dispatch("contextmenu", target: id, point: point, event: event, buttons: 2, button: 2)
+        return true
     }
 
     private func isAncestor(_ ancestor: Int, of id: Int) -> Bool {
@@ -5168,6 +5177,10 @@ class WidgetDocumentView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            menuClick(event)
+            return
+        }
         let at = point(event)
         if owner?.frozen != true {
             _ = textSelection.press(at: at, clickCount: event.clickCount, document: document)
@@ -5190,6 +5203,38 @@ class WidgetDocumentView: NSView {
     override func mouseMoved(with event: NSEvent) {
         let at = point(event)
         toOwner { $0.handleMouseMoved(at, event: event) }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        menuClick(event)
+    }
+
+    private func menuClick(_ event: NSEvent) {
+        let at = point(event)
+        guard owner != nil, owner?.frozen != true else {
+            passMenuClick(event)
+            return
+        }
+        toOwner { [weak self] owner in
+            if owner.handleMenuClick(at, event: event) {
+                return
+            }
+            if Thread.isMainThread {
+                self?.passMenuClick(event)
+            } else {
+                DispatchQueue.main.async {
+                    self?.passMenuClick(event)
+                }
+            }
+        }
+    }
+
+    private func passMenuClick(_ event: NSEvent) {
+        if event.type == .rightMouseDown {
+            super.rightMouseDown(with: event)
+        } else {
+            super.mouseDown(with: event)
+        }
     }
 
     override func mouseExited(with event: NSEvent) {
