@@ -14,6 +14,7 @@
 #include "canvas.h"
 #include "compositor.h"
 #include "display_list.h"
+#include "twidget/gesture_policy.h"
 #include "twidget/json.h"
 
 #include <array>
@@ -69,8 +70,9 @@ public:
     /// The chat theme changed: `prefers-color-scheme` inside the document follows.
     void set_theme(bool dark, std::vector<twidget::Json>& out);
     /// A pointer from the host view, in CSS px. `action`: 0 down, 1 move, 2 up, 3 cancel. A mouse
-    /// sends no touch events; `modifiers` is bit0 alt, bit1 ctrl, bit2 meta, bit3 shift.
-    std::vector<twidget::Json> touch(int action, double x, double y, int pointer, bool primary, bool mouse = false, int modifiers = 0);
+    /// sends no touch events; `modifiers` is bit0 alt, bit1 ctrl, bit2 meta, bit3 shift. `button` 2 is a
+    /// mouse's secondary button: the widget's `contextmenu` when its claim takes holds, else the bubble's menu.
+    std::vector<twidget::Json> touch(int action, double x, double y, int pointer, bool primary, bool mouse = false, int modifiers = 0, int button = 0);
     /// A mouse over the view with no button down (`action` 0), or leaving it (1): hover state and
     /// the over/out/enter/leave events.
     std::vector<twidget::Json> hover(int action, double x, double y, int modifiers = 0);
@@ -230,6 +232,8 @@ private:
         int pointer;
         bool mouse;
         int modifiers;
+        int button = 0;
+        bool held = false;  // the widget took a hold: the release is no click
         int64_t capture = 0;  // setPointerCapture: pointer events go here instead
         double sent_x = x0, sent_y = y0;  // where the widget last heard the pointer was, for movementX/Y
     };
@@ -239,6 +243,7 @@ private:
         int pointer = 0;
         bool primary = true;
         bool mouse = false;
+        int button = 0;
         int buttons = 0;
         int modifiers = 0;
         int detail = 0;
@@ -285,9 +290,17 @@ private:
     twidget::Json answer(const twidget::Json& q);
     bool match_media(const std::string& query) const;
     int64_t widget_id_at(double x, double y, Rect* placement) const;
-    /// Whether the widget takes horizontal and vertical drags of a press on `target`: its `touch-action`
-    /// and its preventDefault on pointerdown or touchstart.
-    std::pair<bool, bool> gesture_claim(int64_t target) const;
+    /// What the widget claims of a press on `target`: the `touch-action` of it and its ancestors, and its
+    /// preventDefault on pointerdown or touchstart.
+    twidget::WidgetGestureClaim gesture_claim(int64_t target) const;
+    /// The arbiter's x: from the client's leading edge.
+    double arbiter_x(double x) const { return rtl_ ? width_ - x : x; }
+    std::optional<double> hold_deadline() const;
+    void check_hold(std::vector<twidget::Json>& out);
+    /// Acts on a verdict once the event that produced it has gone to the widget.
+    void settle_gesture(const twidget::GestureVerdict& v, int pointer, std::vector<twidget::Json>& out);
+    /// Playing the bubble: the press ends for the widget with pointercancel, and the host hears what the bubble does.
+    void bubble_takes(int pointer, const twidget::GestureVerdict& v, std::vector<twidget::Json>& out);
     void set_capture(Touch& t, int64_t id, std::vector<twidget::Json>& out);
     /// The border box of element `id`, empty when it is not laid out.
     Rect box_of(int64_t id) const;
@@ -552,7 +565,11 @@ private:
     int64_t hover_ = 0;
     double hover_x_ = 0, hover_y_ = 0;
     int click_count_ = 0;
-    double last_click_ms_ = -1e9, last_click_x_ = 0, last_click_y_ = 0;
+    // Who gets each primary press (widget-sandbox's gesture policy): the widget's own dblclick and contextmenu.
+    twidget::GestureArbiter arbiter_;
+    int arbiter_pointer_ = -1;
+    // `arbitrate`: the renderer plays the bubble (`bubble_`), a mouse's main button as a finger (`bubble_touch_`).
+    bool bubble_ = false, bubble_touch_ = false, rtl_ = false;
     std::vector<std::pair<std::string, twidget::Json>> pending_moves_;  // key "type:pointer", latest event
     std::vector<twidget::Json> pending_events_;
     std::map<int64_t, std::pair<float, float>> resize_watch_;  // observeResize: id → content box last reported

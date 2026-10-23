@@ -130,7 +130,7 @@ int main() {
         if (e["type"].asString() == "dblclick") dbl = true;
         if (e["type"].asString() == "click") detail = e["detail"].asInt();
     }
-    check(!dbl && detail == 2, "two quick clicks: click detail 2 and no dblclick (profile 1 leaves the double tap to the bubble)");
+    check(dbl && detail == 2 && types(second).find("click:12 dblclick:12") != std::string::npos, "two quick clicks: click detail 2, then dblclick (got " + types(second) + ")");
     check(types(second).find("touch") == std::string::npos, "a mouse sends no touch events");
     r.touch(0, 10, 10, 0, true, true, 0);
     out = r.touch(2, 150, 10, 0, true, true, 0);
@@ -2247,6 +2247,83 @@ int main() {
                     first = !op.path.points.empty() && op.path.points[0] == 1;
                 }
         check(fills == 1 && first, "past 4,096 paths the first still fills and the refused one does not (" + std::to_string(fills) + " fills)");
+    }
+
+    // ── who gets a press: widget-sandbox's gesture policy ──
+    {
+        Renderer g(300, 1, false, backend);
+        // none (30) over auto (31), 40 px in; a full-width none strip (32) for the leading edge.
+        g.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":30,"tag":"div","attrs":[["style","margin-left:40px;width:100px;height:40px;touch-action:none"]]},
+            {"op":"el","id":31,"tag":"div","attrs":[["style","margin-left:40px;width:100px;height:40px"]]},
+            {"op":"el","id":32,"tag":"div","attrs":[["style","height:40px;touch-action:none"]]},
+            {"op":"ins","parent":4,"id":30,"before":null},{"op":"ins","parent":4,"id":31,"before":null},{"op":"ins","parent":4,"id":32,"before":null}]})"));
+        g.receive(parse(R"({"type":"listen","types":["contextmenu","dblclick","pointerup","pointercancel"]})"));
+        auto claim_of = [](const std::vector<Json>& out) {
+            for (const Json& m : out)
+                if (m["type"].asString() == "gesture") return std::string(m["x"].asBool() ? "x" : "") + (m["y"].asBool() ? "y" : "") + (m["hold"].asBool() ? "h" : "");
+            return std::string("none");
+        };
+        auto held = [&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(520));
+            bool due = g.wants_tick();
+            auto ticked = g.tick();
+            return std::make_pair(due, types(ticked));
+        };
+
+        auto down = g.touch(0, 60, 20, 0, true);
+        check(claim_of(down) == "xyh", "a press on touch-action: none claims both axes and holds (got " + claim_of(down) + ")");
+        check(g.next_tick_in() > 0.4 && g.next_tick_in() <= 0.5, "the hold deadline is the next tick");
+        auto [due, ticked] = held();
+        check(due && ticked == "contextmenu:30 ", "a finger held on none gets the widget's contextmenu (got " + ticked + ")");
+        auto up = g.touch(2, 60, 20, 0, true);
+        check(types(up) == "pointerup:30 ", "and its release is no click (got " + types(up) + ")");
+
+        down = g.touch(0, 60, 60, 0, true);
+        check(claim_of(down) == "", "a press on auto claims nothing");
+        std::tie(due, ticked) = held();
+        check(ticked.empty(), "a hold on auto is the bubble's: no contextmenu (got " + ticked + ")");
+        up = g.touch(3, 60, 60, 0, true);
+        check(types(up) == "pointercancel:31 ", "the client's menu cancels it");
+
+        down = g.touch(0, 5, 100, 0, true);
+        std::tie(due, ticked) = held();
+        g.touch(3, 5, 100, 0, true);
+        check(ticked.empty(), "the leading 20 px take no claim: no contextmenu on none (got " + ticked + ")");
+
+        down = g.touch(0, 60, 60, 0, true, true, 0, 2);
+        up = g.touch(2, 60, 60, 0, true, true, 0);
+        check(types(down) + types(up) == "pointerup:31 ", "a right click on auto: no contextmenu, no click (got " + types(down) + types(up) + ")");
+        down = g.touch(0, 60, 20, 0, true, true, 0, 2);
+        up = g.touch(2, 60, 20, 0, true, true, 0);
+        auto ctx = events(down);
+        check(types(down) == "contextmenu:30 " && ctx[0]["button"].asInt() == 2 && types(up) == "pointerup:30 ", "a right click on none: the widget's contextmenu, no click (got " + types(down) + types(up) + ")");
+
+        g.touch(0, 60, 60, 0, true);
+        g.touch(2, 60, 60, 0, true);
+        g.touch(0, 62, 61, 0, true);
+        up = g.touch(2, 62, 61, 0, true);
+        check(types(up) == "pointerup:31 click:31 dblclick:31 ", "a double tap on auto is the widget's: click, then dblclick (got " + types(up) + ")");
+
+        // Playing the bubble, the renderer takes the presses the policy gives it.
+        g.receive(parse(R"({"type":"arbitrate","bubble":true})"));
+        g.touch(0, 60, 60, 0, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        auto taken = g.tick();
+        std::string action;
+        for (const Json& m : taken)
+            if (m["type"].asString() == "bubble") action = m["action"].asString() + "/" + m["gesture"].asString();
+        up = g.touch(2, 60, 60, 0, true);
+        check(types(taken) == "pointercancel:31 " && action == "menu/hold" && types(up).empty(), "as the bubble, a hold on auto ends with pointercancel and the menu, then nothing (got " + types(taken) + action + " " + types(up) + ")");
+        g.touch(0, 5, 100, 0, true);
+        auto moved = g.touch(1, 40, 100, 0, true);
+        action.clear();
+        for (const Json& m : moved)
+            if (m["type"].asString() == "bubble") action = m["action"].asString() + (m["edge"].asBool() ? "/edge" : "");
+        g.touch(2, 40, 100, 0, true);
+        check(types(moved) == "pointercancel:32 " && action == "back/edge", "as the bubble, a drag from the leading edge is back (got " + types(moved) + action + ")");
     }
 
     std::printf("%d failure(s)\n", failures);

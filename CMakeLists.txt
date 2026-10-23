@@ -26,6 +26,11 @@ set(TW_SANDBOX_INCLUDE "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/inclu
 if(NOT EXISTS "${TW_SANDBOX_INCLUDE}/twidget/json.h")
     message(FATAL_ERROR "widget-sandbox not found at ${TWIDGET_WIDGET_SANDBOX}: check it out next to twidget or set TWIDGET_WIDGET_SANDBOX to its path")
 endif()
+# Who gets a press: the gesture policy every client shares (widget-sandbox v0.1.2 or later).
+set(TW_GESTURE_POLICY "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/src/gesture_policy.cpp")
+if(NOT EXISTS "${TW_GESTURE_POLICY}")
+    message(FATAL_ERROR "widget-sandbox at ${TWIDGET_WIDGET_SANDBOX} has no gesture policy: TwidgetCore needs v0.1.2 or later")
+endif()
 
 # The profile's UA layer (tables.uaStylesheet in widget-sandbox's profile.json), read at configure time into
 # tw_ua_stylesheet.h for the renderer's master CSS, so there is no copy to keep in sync.
@@ -76,7 +81,8 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/compositor.cpp"
     "${TW_CORE}/src/encode.cpp"
     "${TW_CORE}/src/filters.cpp"
-    "${TW_CORE}/src/png.cpp")
+    "${TW_CORE}/src/png.cpp"
+    "${TW_GESTURE_POLICY}")
 add_library(twidget::core ALIAS twidget_core)
 target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" "${TW_SANDBOX_INCLUDE}" PRIVATE "${TW_GENERATED}")
 target_link_libraries(twidget_core PUBLIC litehtml)
