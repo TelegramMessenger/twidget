@@ -6,6 +6,7 @@ import WidgetSandboxProtocol
 import struct WidgetSandbox.GestureArbiter
 import enum WidgetSandbox.GesturePolicy
 import struct WidgetSandbox.WidgetGestureClaim
+import enum WidgetSandbox.WidgetResizeAnchor
 
 public final class LiteHTMLWidgetRenderer {
     public let view: NSView
@@ -135,6 +136,7 @@ public final class LiteHTMLWidgetRenderer {
     private var resizePressId = 0
     private var nextBounds: (document: LHDocument, bounds: [Int: CGRect])?
     private var resizePrefersBottom = false
+    private var requestedResizeAnchor: WidgetResizeAnchor?
 
     public var alignmentDebug: String {
         return documentView.alignmentDebug
@@ -155,6 +157,19 @@ public final class LiteHTMLWidgetRenderer {
         set {
             resizeDiffLock.lock()
             resizePrefersBottom = newValue
+            resizeDiffLock.unlock()
+        }
+    }
+
+    public var resizeAnchor: WidgetResizeAnchor? {
+        get {
+            resizeDiffLock.lock()
+            defer { resizeDiffLock.unlock() }
+            return requestedResizeAnchor
+        }
+        set {
+            resizeDiffLock.lock()
+            requestedResizeAnchor = newValue
             resizeDiffLock.unlock()
         }
     }
@@ -209,10 +224,13 @@ public final class LiteHTMLWidgetRenderer {
         resizeDiffLock.lock()
         let previousKeepsBottom = now - resizeDiffAt < LiteHTMLWidgetRenderer.resizeBurstGap ? resizeDiff?.keepsBottom : nil
         let prefersBottom = resizePrefersBottom
+        let anchor = requestedResizeAnchor
         resizeDiffLock.unlock()
         let pointer = recent ? CGPoint(x: lastClick.point.x, y: resizeClickY) : nil
         let diff: WidgetResizeDiff
-        if let keepsBottom = previousKeepsBottom, abs(newHeight - oldHeight) <= 1.5 {
+        if let anchor = anchor {
+            diff = WidgetResizeDiff(oldHeight: oldHeight, newHeight: newHeight, unchangedTop: anchor == .top ? oldHeight : 0, unchangedBottom: anchor == .bottom ? oldHeight : 0, keepsBottom: anchor == .bottom)
+        } else if let keepsBottom = previousKeepsBottom, abs(newHeight - oldHeight) <= 1.5 {
             diff = WidgetResizeDiff(oldHeight: oldHeight, newHeight: newHeight, unchangedTop: keepsBottom ? 0 : oldHeight, unchangedBottom: keepsBottom ? oldHeight : 0, keepsBottom: keepsBottom)
         } else {
             let fresh = next.idBounds()
