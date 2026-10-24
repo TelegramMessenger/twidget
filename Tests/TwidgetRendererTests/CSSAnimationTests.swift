@@ -93,7 +93,7 @@ final class CSSTransformTests: XCTestCase {
         let combined = CSSTransform.parse("translateX(10px) scale(2)", box: box)!
         XCTAssertEqual(CGPoint(x: 1, y: 0).applying(combined).x, 12, accuracy: 1e-9)
         XCTAssertNil(CSSTransform.parse("rotateX(30deg)", box: box))
-        XCTAssertNil(CSSTransform.parse("translate(calc(1px + 2px))", box: box))
+        XCTAssertEqual(CSSTransform.parse("translate(calc(1px + 2px))", box: box), CGAffineTransform(translationX: 3, y: 0))
         XCTAssertNil(CSSTransform.parse("perspective(10px)", box: box))
     }
 

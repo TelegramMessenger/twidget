@@ -63,11 +63,11 @@ enum CSSTransform {
         var result = CGAffineTransform.identity
         var rest = Substring(text)
         while let open = rest.firstIndex(of: "(") {
-            guard let close = rest[open...].firstIndex(of: ")") else {
+            guard let close = matching(text, from: rest.index(after: open)) else {
                 return nil
             }
             let name = rest[..<open].trimmingCharacters(in: .whitespaces).lowercased()
-            let args = rest[rest.index(after: open)..<close].split(whereSeparator: { $0 == "," || $0 == " " }).map(String.init)
+            let args = arguments(rest[rest.index(after: open)..<close])
             guard let function = make(name, args, box: box) else {
                 return nil
             }
@@ -80,8 +80,34 @@ enum CSSTransform {
         return result
     }
 
+    private static func arguments(_ text: Substring) -> [String] {
+        var result: [String] = []
+        var start = text.startIndex
+        var depth = 0
+        for index in text.indices {
+            let ch = text[index]
+            if ch == "(" {
+                depth += 1
+            } else if ch == ")" {
+                depth -= 1
+            } else if depth == 0 && (ch == "," || ch.isWhitespace) {
+                if start < index {
+                    result.append(String(text[start..<index]))
+                }
+                start = text.index(after: index)
+            }
+        }
+        if start < text.endIndex {
+            result.append(String(text[start...]))
+        }
+        return result
+    }
+
     private static func length(_ text: String, relative: CGFloat) -> CGFloat? {
         let t = text.lowercased()
+        if t.hasPrefix("calc("), t.hasSuffix(")"), let resolved = Calc.evaluate(String(t.dropFirst(5).dropLast()), relative: Double(relative)) {
+            return length(resolved, relative: relative)
+        }
         if t.hasSuffix("px"), let v = Double(t.dropLast(2)) {
             return CGFloat(v)
         }
@@ -191,11 +217,14 @@ enum CSSTransform {
                 return nil
             }
         }
-        while let start = text.range(of: "calc(") {
+        var position = text.startIndex
+        while let start = text.range(of: "calc(", range: position..<text.endIndex) {
             guard let close = matching(text, from: start.upperBound), let value = Calc.evaluate(String(text[start.upperBound..<close])) else {
                 return nil
             }
+            let offset = text.distance(from: text.startIndex, to: start.lowerBound)
             text.replaceSubrange(start.lowerBound...close, with: value)
+            position = text.index(text.startIndex, offsetBy: offset + value.count)
         }
         return text
     }
@@ -259,9 +288,10 @@ enum Calc {
     private struct Value {
         var number: Double
         var unit: String
+        var percentage: Double? = nil
     }
 
-    static func evaluate(_ text: String) -> String? {
+    static func evaluate(_ text: String, relative: Double? = nil) -> String? {
         var tokens: [String] = []
         var current = ""
         for ch in text {
@@ -294,6 +324,12 @@ enum Calc {
             }
             let token = tokens[index]
             index += 1
+            if token == "calc" {
+                guard index < tokens.count, tokens[index] == "(" else {
+                    return nil
+                }
+                return atom()
+            }
             if token == "(" {
                 guard let value = sum(), index < tokens.count, tokens[index] == ")" else {
                     return nil
@@ -308,6 +344,9 @@ enum Calc {
             let unit = String(token.dropFirst(numeric.count)).lowercased()
             guard ["", "px", "deg", "rad", "turn", "grad", "%"].contains(unit) else {
                 return nil
+            }
+            if unit == "%" {
+                return Value(number: 0, unit: "px", percentage: number)
             }
             return Value(number: number, unit: unit)
         }
@@ -325,12 +364,13 @@ enum Calc {
                     guard left.unit.isEmpty || right.unit.isEmpty else {
                         return nil
                     }
-                    left = Value(number: left.number * right.number, unit: left.unit.isEmpty ? right.unit : left.unit)
+                    let percentage = left.percentage.map { $0 * right.number } ?? right.percentage.map { $0 * left.number }
+                    left = Value(number: left.number * right.number, unit: left.unit.isEmpty ? right.unit : left.unit, percentage: percentage)
                 } else {
                     guard right.unit.isEmpty, right.number != 0 else {
                         return nil
                     }
-                    left = Value(number: left.number / right.number, unit: left.unit)
+                    left = Value(number: left.number / right.number, unit: left.unit, percentage: left.percentage.map { $0 / right.number })
                 }
             }
             return left
@@ -342,16 +382,32 @@ enum Calc {
             while index < tokens.count, tokens[index] == "+" || tokens[index] == "-" {
                 let op = tokens[index]
                 index += 1
-                guard let right = product(), left.unit == right.unit || left.number == 0 || right.number == 0 else {
+                guard let right = product(), left.unit == right.unit || (left.number == 0 && left.percentage == nil) || (right.number == 0 && right.percentage == nil) else {
                     return nil
                 }
                 let unit = left.unit.isEmpty ? right.unit : left.unit
-                left = Value(number: op == "+" ? left.number + right.number : left.number - right.number, unit: unit)
+                let percentage: Double? = left.percentage != nil || right.percentage != nil
+                    ? (left.percentage ?? 0) + (op == "+" ? 1 : -1) * (right.percentage ?? 0)
+                    : nil
+                left = Value(number: op == "+" ? left.number + right.number : left.number - right.number, unit: unit, percentage: percentage)
             }
             return left
         }
         guard let value = sum(), index == tokens.count, value.number.isFinite else {
             return nil
+        }
+        if let percentage = value.percentage {
+            guard value.unit == "px", percentage.isFinite else {
+                return nil
+            }
+            if let relative = relative {
+                let pixels = value.number + percentage / 100 * relative
+                return pixels.isFinite ? String(format: "%.6fpx", pixels) : nil
+            }
+            if value.number == 0 {
+                return String(format: "%.6f%%", percentage)
+            }
+            return String(format: "calc(%.6fpx %@ %.6f%%)", value.number, percentage < 0 ? "-" : "+", abs(percentage))
         }
         return String(format: "%.6f", value.number) + value.unit
     }

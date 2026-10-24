@@ -121,6 +121,49 @@ final class WidgetInteractionTests: XCTestCase {
         XCTAssertTrue(zip(actual, expected).allSatisfy { abs($0 - $1) <= 20 }, "\(actual) is not close to \(expected)", file: file, line: line)
     }
 
+    func testCorpusCarouselKeepsTheSelectedCardAfterDragging() throws {
+        let corpus = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("widget-sandbox/corpus/gestures/2-horizontal/06-card-carousel-x.html")
+        let h = try Harness(self, html: String(contentsOf: corpus, encoding: .utf8))
+        defer { h.close() }
+        pump(0.5)
+        let viewport = try h.box("vp")
+        let center = CGPoint(x: viewport.midX, y: viewport.midY)
+        let colors = [[65, 136, 153], [15, 155, 220], [177, 44, 155], [147, 109, 46], [152, 58, 46]]
+        let trips = ["Dolomites", "Lisbon", "Kyoto", "Reykjavík", "Tbilisi"]
+        var previous = 0
+        for index in [1, 2, 3, 4, 3, 2, 1, 0] {
+            let delta: CGFloat = index > previous ? -140 : 140
+            previous = index
+            h.send(.leftMouseDown, center)
+            pump(0.03)
+            for step in 1...8 {
+                h.send(.leftMouseDragged, CGPoint(x: center.x + delta * CGFloat(step) / 8, y: center.y))
+                pump(0.025)
+            }
+            h.send(.leftMouseUp, CGPoint(x: center.x + delta, y: center.y))
+            pump(0.6)
+            let selected = h.element("dots")?.children.firstIndex(where: { $0.attribute("class") == "on" })
+            XCTAssertEqual(selected, index)
+            h.send(.leftMouseDown, center)
+            pump(0.03)
+            h.send(.leftMouseUp, center)
+            pump(0.4)
+            XCTAssertEqual(h.text("pk"), "✓ " + trips[index])
+            let image = try XCTUnwrap(h.renderer.snapshot())
+            let rep = NSBitmapImageRep(cgImage: try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil)))
+            let scale = CGFloat(rep.pixelsWide) / image.size.width
+            let color = try XCTUnwrap(rep.colorAt(x: Int(center.x * scale), y: Int((viewport.maxY - 30) * scale))?.usingColorSpace(.sRGB))
+            let actual = [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
+            let nearest = colors.indices.min { a, b in
+                zip(actual, colors[a]).reduce(0) { $0 + abs($1.0 - $1.1) } < zip(actual, colors[b]).reduce(0) { $0 + abs($1.0 - $1.1) }
+            }
+            XCTAssertEqual(nearest, index, "Selected \(index), rendered color \(actual)")
+        }
+    }
+
     func testPressHoverDetailsTapAndDragReachTheWidget() throws {
         let h = try Harness(self, html: WidgetInteractionTests.html)
         defer { h.close() }

@@ -899,15 +899,16 @@ namespace litehtml
                 functions.clear();
                 return false;
             }
+            std::string name = lowcase(tok.name());
+            const bool translation = is_one_of(name, "translate", "translatex", "translatey", "translate3d");
             for(auto& arg : args)
             {
-                if(!fold_calc(arg))
+                if(!fold_calc(arg) && !translation)
                 {
                     functions.clear();
                     return false;
                 }
             }
-            std::string        name = lowcase(tok.name());
             transform_function fn;
             bool               ok = true;
             if(name == "translate" || name == "translatex" || name == "translatey" || name == "translate3d")

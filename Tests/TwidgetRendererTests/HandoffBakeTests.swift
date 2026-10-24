@@ -109,7 +109,7 @@ final class HandoffBakeTests: XCTestCase {
         XCTAssertNil(resolve("translateX(var(--missing))"))
         XCTAssertEqual(resolve("translateX(var(--missing, 4px))"), "translateX(4px)")
         XCTAssertNil(resolve("translateX(calc(10px * 2px))"))
-        XCTAssertNil(resolve("translateX(calc(10px + 5%))"))
+        XCTAssertEqual(resolve("translateX(calc(10px + 5%))"), "translateX(calc(10.000000px + 5.000000%))")
         XCTAssertNil(resolve("translateX(calc(1px / 0))"))
         XCTAssertNil(CSSTransform.resolve("var(--x)") { _ in "var(--x)" })
     }
