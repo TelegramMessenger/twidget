@@ -899,14 +899,10 @@ namespace litehtml
                 functions.clear();
                 return false;
             }
+            // Math that mixes % and px does not fold: it stays a calc length, which layout resolves
+            // against the box (css_length::from_token), and fails there if it is no length.
             for(auto& arg : args)
-            {
-                if(!fold_calc(arg))
-                {
-                    functions.clear();
-                    return false;
-                }
-            }
+                fold_calc(arg);
             std::string        name = lowcase(tok.name());
             transform_function fn;
             bool               ok = true;

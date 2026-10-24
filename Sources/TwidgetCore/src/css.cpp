@@ -138,14 +138,17 @@ void rgba_string(const double c[4], std::string& out) {
 
 uint8_t channel(double v) { return uint8_t(std::lround(std::clamp(v, 0.0, 255.0))); }
 
-// calc() of times, as twidget's CSSTime: + and - of like quantities, * and / by numbers.
+// calc() of times (as twidget's CSSTime) or of lengths in px and %, with the % resolved against
+// `percent_of`: + and - of like quantities, * and / by numbers.
 struct Quantity {
     double value;
-    bool time;
+    bool unit;
 };
 
-struct TimeScanner {
+struct MathScanner {
     std::string_view s;
+    bool lengths = false;
+    double percent_of = 0;
     size_t i = 0;
 
     void skip() { while (i < s.size() && space(s[i])) i++; }
@@ -163,11 +166,11 @@ struct TimeScanner {
         for (;;) {
             if (take('+')) {
                 auto right = product(depth);
-                if (!right || right->time != left->time) return std::nullopt;
+                if (!right || right->unit != left->unit) return std::nullopt;
                 left->value += right->value;
             } else if (take('-')) {
                 auto right = product(depth);
-                if (!right || right->time != left->time) return std::nullopt;
+                if (!right || right->unit != left->unit) return std::nullopt;
                 left->value -= right->value;
             } else return left;
         }
@@ -178,11 +181,11 @@ struct TimeScanner {
         for (;;) {
             if (take('*')) {
                 auto right = factor(depth);
-                if (!right || (left->time && right->time)) return std::nullopt;
-                left = Quantity{left->value * right->value, left->time || right->time};
+                if (!right || (left->unit && right->unit)) return std::nullopt;
+                left = Quantity{left->value * right->value, left->unit || right->unit};
             } else if (take('/')) {
                 auto right = factor(depth);
-                if (!right || right->time || right->value == 0) return std::nullopt;
+                if (!right || right->unit || right->value == 0) return std::nullopt;
                 left->value /= right->value;
             } else return left;
         }
@@ -201,8 +204,13 @@ struct TimeScanner {
         if (i == start) return std::nullopt;
         auto v = number(s.substr(start, i - start));
         if (!v) return std::nullopt;
-        if (s.substr(i, 2) == "ms") { i += 2; return Quantity{*v / 1000, true}; }
-        if (i < s.size() && s[i] == 's') { i++; return Quantity{*v, true}; }
+        if (lengths) {
+            if (s.substr(i, 2) == "px") { i += 2; return Quantity{*v, true}; }
+            if (i < s.size() && s[i] == '%') { i++; return Quantity{*v * percent_of / 100, true}; }
+        } else {
+            if (s.substr(i, 2) == "ms") { i += 2; return Quantity{*v / 1000, true}; }
+            if (i < s.size() && s[i] == 's') { i++; return Quantity{*v, true}; }
+        }
         return Quantity{*v, false};
     }
 };
@@ -382,9 +390,9 @@ std::optional<double> parse_time(std::string_view text) {
     std::string t = lower(trim(text));
     if (starts_with(t, "calc(")) {
         if (t.size() > 512) return std::nullopt;
-        TimeScanner scanner{t};
+        MathScanner scanner{t};
         auto q = scanner.sum(0);
-        if (!q || !scanner.at_end() || !q->time || !std::isfinite(q->value)) return std::nullopt;
+        if (!q || !scanner.at_end() || !q->unit || !std::isfinite(q->value)) return std::nullopt;
         return q->value;
     }
     if (ends_with(t, "ms")) {
@@ -577,6 +585,15 @@ std::optional<std::pair<double, std::string>> dimension(std::string_view text) {
 }
 
 std::optional<double> length(std::string_view text, double percent_of) {
+    std::string t = lower(trim(text));
+    if (starts_with(t, "calc(")) {
+        if (t.size() > 512) return std::nullopt;
+        MathScanner scanner{t, true, percent_of};
+        auto q = scanner.sum(0);
+        // A bare 0 is a length; any other unitless result is not.
+        if (!q || !scanner.at_end() || (!q->unit && q->value != 0) || !std::isfinite(q->value)) return std::nullopt;
+        return q->value;
+    }
     auto d = dimension(text);
     if (!d) return std::nullopt;
     if (d->second == "px" || (d->second.empty() && d->first == 0)) return d->first;
@@ -607,8 +624,11 @@ std::vector<std::string> arguments(std::string_view inner) {
     std::vector<std::string> out;
     for (const std::string& part : split_top_level(inner, ',')) {
         std::string token;
+        int depth = 0;
         for (char c : part) {
-            if (space(c)) {
+            if (c == '(') depth++;
+            else if (c == ')' && depth > 0) depth--;
+            if (space(c) && depth == 0) {
                 if (!token.empty()) out.push_back(std::move(token));
                 token.clear();
             } else token.push_back(c);
@@ -689,8 +709,12 @@ std::optional<Affine> parse_transform(std::string_view text, float w, float h) {
         if (pos == t.size()) break;
         size_t open = t.find('(', pos);
         if (open == std::string::npos) return std::nullopt;
-        size_t close = t.find(')', open);
-        if (close == std::string::npos) return std::nullopt;
+        size_t close = open + 1;
+        for (int depth = 1; close < t.size(); close++) {
+            if (t[close] == '(') depth++;
+            else if (t[close] == ')' && --depth == 0) break;
+        }
+        if (close == t.size()) return std::nullopt;
         std::string name = lower(trim(std::string_view(t).substr(pos, open - pos)));
         auto args = arguments(std::string_view(t).substr(open + 1, close - open - 1));
         auto m = function(name, args, w, h);

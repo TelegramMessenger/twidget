@@ -66,7 +66,7 @@ struct Font {
 Font parse_font(std::string_view font);
 
 /// A `transform` list as one matrix for a box of `w` × `h` (percentages), about the box's top left.
-/// Only 2D functions in px, % and angle units; nullopt for anything else (3D, em, var(), calc()).
+/// Only 2D functions in px, % and angle units, and calc() of px and %; nullopt for anything else (3D, em, var()).
 std::optional<Affine> parse_transform(std::string_view text, float w, float h);
 /// The individual `translate`, `rotate` and `scale` properties, likewise.
 std::optional<Affine> parse_translate(std::string_view text, float w, float h);

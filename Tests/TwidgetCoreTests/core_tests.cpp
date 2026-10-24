@@ -1792,6 +1792,11 @@ int main() {
         };
         std::string transform = ask(Json::object().set("q", "cs").set("id", 10))["transform"].asString();
         check(transform == "matrix(1, 0, 0, 1, 10, 0)", "a paused animation's frame is the computed transform (got " + transform + ")");
+        d.receive(parse(R"J({"type":"ops","ops":[{"op":"style","id":11,"name":"transform","value":"translateX(calc(50% - 1 * (100% + 10px) + 50px)) translateY(calc(100% + 1px))"}]})J"));
+        transform = ask(Json::object().set("q", "cs").set("id", 11))["transform"].asString();
+        check(transform == "matrix(1, 0, 0, 1, -10, 21)", "calc() of % and px inside translate functions resolves against the box (got " + transform + ")");
+        double left = ask(Json::object().set("q", "rect").set("id", 11))["x"].asNumber();
+        check(std::fabs(left + 10) < 0.01, "and the document moves the box by it (got " + std::to_string(left) + ")");
 
         auto resized = [](const std::vector<Json>& out) {
             for (const Json& m : out)
