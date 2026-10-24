@@ -66,8 +66,11 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
 
 With `set_resize_tracking(true)`, each height change comes with `resize_diff()` (and `resize` in the
 size message): how much of the top and of the bottom stayed put, where the element pressed last went,
-and which side to keep still, as the Swift renderer's `WidgetResizeDiff` decides it. A host anchors the
-bubble on that side, and shows the frame of the new height in the same frame as the bubble's new size.
+and which side to keep still, as the Swift renderer's `WidgetResizeDiff` decides it. Which edge of the
+bubble stays put is the widget's choice since widget-sandbox v0.1.3 (`setResizeAnchor`, reported by the host
+as `WidgetDiagnostics.resizeAnchor`, `top` by default): a host keeps that edge still and shows the frame of
+the new height in the same frame as the bubble's new size. The diff's side is a guess from the content, for
+a host that has no anchor to follow.
 
 With `set_compositing(true)`, the platform also plays `composition()`: a list of layers, each an
 element's own display list with a track of linear keys (a 2D matrix and an opacity per key) that the
@@ -122,7 +125,7 @@ ctest --test-dir build
 widget-sandbox has to be checked out next to twidget (`../widget-sandbox`), or its path given in
 `TWIDGET_WIDGET_SANDBOX`, as for `Package.swift`: TwidgetCore reads the protocol's JSON helper
 (`twidget/json.h`) and the gesture policy (`twidget/gesture_policy.h`, its source compiled into
-`twidget::core`) from it. TwidgetCore follows release `v0.1.2`: check out that tag, never a branch,
+`twidget::core`) from it. TwidgetCore follows release `v0.1.3`: check out that tag, never a branch,
 and its QuickJS submodule with `git submodule update --init` (widget-sandbox's `docs/integration.md`). The
 build reads the profile's UA layer from its `packages/core/profile.json` into a generated header.
 

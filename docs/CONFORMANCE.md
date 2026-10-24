@@ -1,9 +1,9 @@
-# Conformance with widget-sandbox v0.1.2
+# Conformance with widget-sandbox v0.1.3
 
 widget-sandbox v0.1.0 froze widget profile 1, v0.1.1 settles its defaults (the renderer's UA layer, text
-tokens, the bubble as the canvas, opt-in selection), and v0.1.2 decides who gets a press (one gesture policy
-on every client). Each ships a conformance set that every client runs on its
-renderer (`packages/conformance/CLIENTS.md` there). This page tracks TwidgetCore against it: what the
+tokens, the bubble as the canvas, opt-in selection), v0.1.2 decides who gets a press (one gesture policy
+on every client), and v0.1.3 gives vertical drags to the chat and the resize anchor to the widget. Each
+ships a conformance set that every client runs on its renderer (`packages/conformance/CLIENTS.md` there). This page tracks TwidgetCore against it: what the
 contract asks of the renderer, and what the set reports, item by item.
 
 Measured with `tools/conformance` (Windows, the Direct2D painter on WARP, 390 CSS px, DPR 2) and the
@@ -27,12 +27,14 @@ each platform's painter needs its own run.
 | 2026-10-20 | widget-sandbox main 7654e69 (live collections, Web Animations state before a query); Intl on the system's ICU (`IcuIntl`) | 162 / 1 / 0 / 10 | 80 / 0 / 0 |
 | 2026-10-21 | v0.1.1 (selection moves into the profile): the profile's UA layer, text tokens, `user-select`, relative offsets on inline elements | 163 / 1 / 0 / 10 | 79 / 0 / 0 |
 | 2026-10-23 | v0.1.2 (`dblclick` and `contextmenu` move into the profile): 163 / 2 / 2 / 9 before; the gesture policy in the renderer, the runner's presses through a bubble | 166 / 1 / 0 / 9 | 78 / 0 / 0 |
+| 2026-10-24 | v0.1.3 (vertical drags are the chat's, `setResizeAnchor`, transforms in % and `calc()`): 165 / 3 / 0 / 10 before; `calc()` of % and px inside a transform | 167 / 1 / 0 / 10 | 78 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 
-The 9 untested features are the host's (limits, restart, storage, message edits, size hints): the automatic
-set does not reach them, and each client checks them in its own host. The gesture claim is tested since
-v0.1.2: the runner's presses go through a bubble that follows the shared policy, as CLIENTS.md asks.
+The 10 untested features are the host's (limits, restart, storage, message edits, size hints, the resize
+anchor): the automatic set does not reach them, and each client checks them in its own host. The gesture
+claim is tested since v0.1.2: the runner's presses go through a bubble that follows the shared policy, as
+CLIENTS.md asks.
 
 For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
 66 / 41 / 52 in widget-sandbox's own results.
@@ -50,7 +52,7 @@ For comparison, the old litehtml renderer copy in widget-sandbox (web build, ups
 | `user-select` and `-webkit-user-select` computed (`none`, `text`, `auto`) | the fork's `css_properties::get_user_select` |
 | Text selection (`docs/sdk-v1.md` §5.10): a mouse drag that starts on `user-select: text`, unless the widget prevents the press, selects it and claims the drag; the host copies `selected_text()` and calls `clear_selection()` on a press of its own. Touch selection starts from the client's message menu and is the host's: `selectable_text_json()` lists the runs, each with the transform it shows under | `Renderer::touch`, `text_runs`, `paint_selection`, `selectable_text_json` |
 | `position: relative` on an inline element moves its text and its line boxes | the fork's `line_box::finish` |
-| `gesture` claims with `x`, `y` and `hold`, from the target and its ancestors up to `<html>` | `Renderer::gesture_claim` |
+| `gesture` claims with `x` and `hold` (never `y` since v0.1.3: vertical drags are the chat's), from the target and its ancestors up to `<html>` | `Renderer::gesture_claim` |
 | The shared height bounds, 50 to 600 CSS px | `MIN_HEIGHT`, `max_height_` |
 | `getComputedStyle` answered for every property the fork computes, as Chromium writes it | `computed_style.cpp` |
 | An inline element's rect is its line boxes, with a rect per line | `inline_boxes_of` |
