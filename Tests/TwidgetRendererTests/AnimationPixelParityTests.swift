@@ -79,6 +79,18 @@ final class AnimationPixelParityTests: XCTestCase {
         }
     }
 
+    func testCalcTranslationPixelsMatchDuringNativeAnimation() throws {
+        for (from, to) in [
+            ("translateX(0px)", "translateX(calc(100% + 10px))"),
+            ("none", "translateX(calc(100% + 10px))"),
+            ("translateX(calc(50% - 1 * (100% + 10px) + 50px))", "translateX(20px)")
+        ] {
+            for timing in ["linear", "ease-in-out"] {
+                try check("transform 1s \(timing)", from: ["transform": from], to: ["transform": to], geometryTolerance: 0.01, channelTolerance: 4)
+            }
+        }
+    }
+
     func testCombinedTranslationAndOpacityPixelsMatchSoftware() throws {
         let from = ["transform": "translateX(0px)", "opacity": "0.2"]
         let to = ["transform": "translateX(60px)", "opacity": "1"]

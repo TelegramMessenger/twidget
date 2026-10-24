@@ -295,6 +295,10 @@ enum Calc {
         var tokens: [String] = []
         var current = ""
         for ch in text {
+            if (ch == "+" || ch == "-"), let last = current.last, last == "e" || last == "E", Double(current.dropLast()) != nil {
+                current.append(ch)
+                continue
+            }
             if "+-*/() ".contains(ch) {
                 if !current.isEmpty {
                     tokens.append(current)
@@ -324,7 +328,7 @@ enum Calc {
             }
             let token = tokens[index]
             index += 1
-            if token == "calc" {
+            if token.lowercased() == "calc" {
                 guard index < tokens.count, tokens[index] == "(" else {
                     return nil
                 }

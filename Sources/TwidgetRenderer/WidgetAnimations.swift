@@ -551,8 +551,11 @@ enum CSSInterpolate {
         if t == 1 {
             return b
         }
+        if (a.range(of: "calc(", options: .caseInsensitive) != nil || b.range(of: "calc(", options: .caseInsensitive) != nil), let value = translations(a, b, t, quantized: quantized) {
+            return value
+        }
         guard let (left, right) = pair(a, b) else {
-            return t < 0.5 ? a : b
+            return translations(a, b, t, quantized: quantized) ?? (t < 0.5 ? a : b)
         }
         var out = ""
         for (x, y) in zip(left, right) {
@@ -569,23 +572,109 @@ enum CSSInterpolate {
         return out
     }
 
-    private static let translationList = try! NSRegularExpression(pattern: "^\\s*(translate[xy]?\\([^()]*\\)\\s*)+$", options: [.caseInsensitive])
-
     private static func translations(_ a: String, _ b: String, _ t: Double, quantized: Bool) -> String? {
-        for text in [a, b] where translationList.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) == nil {
+        func scaled(_ text: String, _ factor: Double) -> String? {
+            let functions = functionList(text)
+            guard !functions.isEmpty else {
+                return nil
+            }
+            var result: [String] = []
+            for function in functions {
+                guard let open = function.firstIndex(of: "(") else {
+                    return nil
+                }
+                let name = String(function[..<open])
+                guard ["translate", "translatex", "translatey"].contains(name.lowercased()) else {
+                    return nil
+                }
+                let args = arguments(function[function.index(after: open)..<function.index(before: function.endIndex)])
+                guard !args.isEmpty, args.count <= (name.lowercased() == "translate" ? 2 : 1) else {
+                    return nil
+                }
+                let values = args.map { arg -> String in
+                    if arg.contains("(") {
+                        let weight = quantized ? format(factor) : String(factor)
+                        return "calc((\(arg)) * \(weight))"
+                    }
+                    return tokenize(arg).map { token -> String in
+                        switch token {
+                        case let .number(value, unit):
+                            return (quantized ? format(value * factor) : String(value * factor)) + unit
+                        case let .text(text):
+                            return text
+                        }
+                    }.joined()
+                }
+                result.append(name + "(" + values.joined(separator: ", ") + ")")
+            }
+            return result.joined(separator: " ")
+        }
+        let from = a.trimmingCharacters(in: .whitespaces).lowercased() == "none" ? identity(of: b) : a
+        let to = b.trimmingCharacters(in: .whitespaces).lowercased() == "none" ? identity(of: a) : b
+        guard let left = scaled(from, 1 - t), let right = scaled(to, t) else {
             return nil
         }
-        func scaled(_ text: String, _ factor: Double) -> String {
-            return tokenize(text).map { token -> String in
-                switch token {
-                case let .number(value, unit):
-                    return (quantized ? format(value * factor) : String(value * factor)) + unit
-                case let .text(text):
-                    return text
+        let combined = left + " " + right
+        if combined.contains("calc(") {
+            var x: [String] = []
+            var y: [String] = []
+            for function in functionList(combined) {
+                guard let open = function.firstIndex(of: "(") else {
+                    return combined
                 }
-            }.joined()
+                let name = function[..<open].lowercased()
+                let args = arguments(function[function.index(after: open)..<function.index(before: function.endIndex)])
+                if name == "translatey" {
+                    y.append("(\(args[0]))")
+                } else {
+                    x.append("(\(args[0]))")
+                    if args.count > 1 {
+                        y.append("(\(args[1]))")
+                    }
+                }
+            }
+            if let x = Calc.evaluate(x.isEmpty ? "0px" : x.joined(separator: " + ")), let y = Calc.evaluate(y.isEmpty ? "0px" : y.joined(separator: " + ")) {
+                return "translate(\(x), \(y))"
+            }
         }
-        return scaled(a.trimmingCharacters(in: .whitespaces), 1 - t) + " " + scaled(b.trimmingCharacters(in: .whitespaces), t)
+        return combined
+    }
+
+    private static func closing(_ text: Substring, open: String.Index) -> String.Index? {
+        var depth = 0
+        for index in text[open...].indices {
+            if text[index] == "(" {
+                depth += 1
+            } else if text[index] == ")" {
+                depth -= 1
+                if depth == 0 {
+                    return index
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func arguments(_ text: Substring) -> [String] {
+        var result: [String] = []
+        var start = text.startIndex
+        var depth = 0
+        for index in text.indices {
+            if text[index] == "(" {
+                depth += 1
+            } else if text[index] == ")" {
+                depth -= 1
+            } else if depth == 0 && (text[index] == "," || text[index].isWhitespace) {
+                if start < index {
+                    result.append(String(text[start..<index]))
+                }
+                start = text.index(after: index)
+            }
+        }
+        if start < text.endIndex {
+            result.append(String(text[start...]))
+        }
+        return result
     }
 
     private enum Token {
@@ -703,9 +792,9 @@ enum CSSInterpolate {
     private static func primitive(_ transform: String) -> String? {
         var out: [String] = []
         var rest = Substring(transform)
-        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+        while let open = rest.firstIndex(of: "("), let close = closing(rest, open: open) {
             let name = rest[..<open].trimmingCharacters(in: .whitespaces).lowercased()
-            let args = WidgetNode.splitTopLevel(String(rest[rest.index(after: open)..<close]), separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let args = arguments(rest[rest.index(after: open)..<close])
             let one = args.count == 1 ? args[0] : nil
             switch (name, one) {
             case let ("translatex", a?):
@@ -737,7 +826,7 @@ enum CSSInterpolate {
     private static func functionNames(_ transform: String) -> [String] {
         var names: [String] = []
         var rest = Substring(transform)
-        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+        while let open = rest.firstIndex(of: "("), let close = closing(rest, open: open) {
             names.append(rest[..<open].trimmingCharacters(in: .whitespaces).lowercased())
             rest = rest[rest.index(after: close)...]
         }
@@ -747,11 +836,11 @@ enum CSSInterpolate {
     private static func functionList(_ transform: String) -> [String] {
         var items: [String] = []
         var rest = Substring(transform)
-        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+        while let open = rest.firstIndex(of: "("), let close = closing(rest, open: open) {
             items.append(rest[..<rest.index(after: close)].trimmingCharacters(in: .whitespaces))
             rest = rest[rest.index(after: close)...]
         }
-        return items
+        return rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? items : []
     }
 
     private static func padded(_ a: String, _ b: String) -> (String, String)? {
@@ -767,13 +856,16 @@ enum CSSInterpolate {
     private static func identity(of transform: String) -> String {
         var out = ""
         var rest = Substring(transform)
-        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+        while let open = rest.firstIndex(of: "("), let close = closing(rest, open: open) {
             let name = rest[..<open].trimmingCharacters(in: .whitespaces)
             let args = WidgetNode.splitTopLevel(String(rest[rest.index(after: open)..<close]), separator: ",")
             let identity = args.map { arg -> String in
                 let lead = arg.prefix { $0 == " " || $0 == "\t" }
                 if let value = identityValues[name.lowercased()] {
                     return lead + value
+                }
+                if arg.contains("(") {
+                    return lead + "0"
                 }
                 let unit = arg.trimmingCharacters(in: .whitespaces).drop { "0123456789.-+".contains($0) }
                 return lead + "0" + unit

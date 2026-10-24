@@ -85,16 +85,26 @@ final class GestureClaimTests: XCTestCase {
         }
     }
 
-    private static let html = #"<style>body{margin:0}#none{touch-action:none;height:80px}#auto{height:80px}#pan{touch-action:pan-y;height:80px}</style><div id="none">none</div><div id="auto">auto</div><div id="pan">pan</div><script>function mark(id){var i=document.createElement('i');i.id=id;document.body.appendChild(i)}var n=document.getElementById('none'),a=document.getElementById('auto');n.addEventListener('dblclick',function(e){mark('dbl-none-'+e.detail)});a.addEventListener('dblclick',function(e){mark('dbl-auto-'+e.detail)});n.addEventListener('contextmenu',function(e){e.preventDefault();mark('ctx-none-'+e.button)});a.addEventListener('contextmenu',function(){mark('ctx-auto')});mark('done')</script>"#
+    private static let html = #"<style>body{margin:0}#none{touch-action:none;height:80px}#auto{height:80px}#pan{touch-action:pan-y;height:80px}#panx{touch-action:pan-x;height:80px}</style><div id="none">none</div><div id="auto">auto</div><div id="pan">pan</div><div id="panx">pan-x</div><script>function mark(id){var i=document.createElement('i');i.id=id;document.body.appendChild(i)}var n=document.getElementById('none'),a=document.getElementById('auto');n.addEventListener('dblclick',function(e){mark('dbl-none-'+e.detail)});a.addEventListener('dblclick',function(e){mark('dbl-auto-'+e.detail)});n.addEventListener('contextmenu',function(e){e.preventDefault();mark('ctx-none-'+e.button)});a.addEventListener('contextmenu',function(){mark('ctx-auto')});mark('done')</script>"#
 
-    func testTheClaimCarriesHoldOnlyFromTouchActionNone() throws {
+    func testClaimsKeepVerticalTouchDragsWithTheChat() throws {
         let h = try Harness(self)
         defer { h.close() }
-        for (id, expected) in [("none", WidgetGestureClaim(x: true, y: true, hold: true)), ("auto", WidgetGestureClaim(x: false, y: false, hold: false)), ("pan", WidgetGestureClaim(x: true, y: false, hold: false))] {
+        for (id, expected) in [("none", WidgetGestureClaim(x: true, y: false, hold: true)), ("auto", WidgetGestureClaim(x: false, y: false, hold: false)), ("pan", WidgetGestureClaim(x: true, y: false, hold: false)), ("panx", WidgetGestureClaim(x: false, y: false, hold: false))] {
             let count = h.claims.count
             h.click(try h.center(id))
             pump(1, until: { h.claims.count > count })
             XCTAssertEqual(h.claims.last, expected, id)
+            let claim = try XCTUnwrap(h.claims.last)
+            var touch = GestureArbiter()
+            _ = touch.down(at: 0, x: 60, y: 40, claim: claim, pointer: .touch)
+            let vertical = try XCTUnwrap(touch.move(at: 100, x: 60, y: 100))
+            XCTAssertEqual(vertical.owner, .bubble, id)
+            XCTAssertEqual(vertical.action, .scroll, id)
+            XCTAssertTrue(vertical.cancel, id)
+            var mouse = GestureArbiter()
+            _ = mouse.down(at: 0, x: 60, y: 40, claim: claim, pointer: .mouse)
+            XCTAssertEqual(mouse.move(at: 100, x: 60, y: 100)?.owner, .widget, id)
             pump(0.4)
         }
     }

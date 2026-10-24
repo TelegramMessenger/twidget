@@ -65,6 +65,16 @@ final class TransitionHandoffTests: XCTestCase {
         XCTAssertEqual(animator.endTime(7) ?? 0, 11.4, accuracy: 1e-9)
     }
 
+    func testCalcTransitionReversalKeepsTheCurrentPosition() throws {
+        let animator = animator("transform 1s linear", to: "translateX(calc(100% + 10px))")
+        animator.update(declarations: [7: ["transition": "transform 1s linear", "transform": "translateX(0px)"]], now: 10.25)
+        let reversed = try XCTUnwrap(animator.bakeable(7))
+        let size = CGSize(width: 100, height: 20)
+        XCTAssertEqual(CSSTransform.parse(reversed.value(0).transform, box: size)?.tx ?? -1, 27.5, accuracy: 0.001)
+        XCTAssertEqual(CSSTransform.parse(reversed.value(0.5).transform, box: size)?.tx ?? -1, 13.75, accuracy: 0.001)
+        XCTAssertEqual(CSSTransform.parse(reversed.value(1).transform, box: size)?.tx ?? -1, 0, accuracy: 0.001)
+    }
+
     func testReplayWithoutTransitionCancelsNativeTrack() {
         let animator = animator("transform 1s linear")
         animator.update(declarations: [7: ["transition": "none", "transform": "translateX(0px)"]], now: 10.3)
