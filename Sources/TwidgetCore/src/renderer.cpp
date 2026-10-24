@@ -5054,8 +5054,8 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         }
         std::optional<twidget::GestureVerdict> verdict;
         if (primary) {
-            // A drag that selects is the widget's in both directions.
-            twidget::WidgetGestureClaim claim = selecting ? twidget::WidgetGestureClaim{true, true, false} : gesture_claim(t.target);
+            // A drag that selects claims what a claim can: horizontal drags (a mouse never pans the chat anyway).
+            twidget::WidgetGestureClaim claim = selecting ? twidget::WidgetGestureClaim{true, false, false} : gesture_claim(t.target);
             out.push_back(Json::object().set("type", "gesture").set("wants", claim.y).set("x", claim.x).set("y", claim.y).set("hold", claim.hold));
             arbiter_pointer_ = pointer;
             verdict = arbiter_.down(now_ms(), arbiter_x(x), y, claim, t.mouse ? twidget::PointerKind::Mouse : twidget::PointerKind::Touch, button);

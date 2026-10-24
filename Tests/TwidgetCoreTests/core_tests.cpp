@@ -1200,10 +1200,11 @@ int main() {
             return std::string("none");
         };
         std::string pan_y = claim(20), none = claim(60), plain = claim(100), prevented = claim(140);
-        check(pan_y == "x-", "touch-action: pan-y claims horizontal drags only (got " + pan_y + ")");
-        check(none == "xy", "touch-action: none claims both (got " + none + ")");
+        // Vertical drags are always the chat's (v0.1.3): nothing claims `y`.
+        check(pan_y == "x-", "touch-action: pan-y claims horizontal drags (got " + pan_y + ")");
+        check(none == "x-", "touch-action: none claims horizontal drags, not vertical ones (got " + none + ")");
         check(plain == "--", "no touch-action leaves the touch to the chat (got " + plain + ")");
-        check(prevented == "xy", "a prevented pointerdown claims both (got " + prevented + ")");
+        check(prevented == "x-", "a prevented pointerdown claims horizontal drags (got " + prevented + ")");
     }
     {
         StubBackend tb;
@@ -1316,7 +1317,7 @@ int main() {
             {"op":"el","id":14,"tag":"p"},{"op":"ins","parent":4,"id":14,"before":null},{"op":"text","id":15,"data":"Plain"},{"op":"ins","parent":14,"id":15,"before":null}]})"));
         auto wants = [](const std::vector<Json>& out) {
             for (const Json& m : out)
-                if (m["type"].asString() == "gesture") return m["wants"].asBool() && m["x"].asBool();
+                if (m["type"].asString() == "gesture") return m["x"].asBool();
             return false;
         };
         bool claimed = wants(t.touch(0, 1, 10, 1, true, true));
@@ -2279,7 +2280,7 @@ int main() {
         };
 
         auto down = g.touch(0, 60, 20, 0, true);
-        check(claim_of(down) == "xyh", "a press on touch-action: none claims both axes and holds (got " + claim_of(down) + ")");
+        check(claim_of(down) == "xh", "a press on touch-action: none claims horizontal drags and holds (got " + claim_of(down) + ")");
         check(g.next_tick_in() > 0.4 && g.next_tick_in() <= 0.5, "the hold deadline is the next tick");
         auto [due, ticked] = held();
         check(due && ticked == "contextmenu:30 ", "a finger held on none gets the widget's contextmenu (got " + ticked + ")");
@@ -2329,6 +2330,16 @@ int main() {
             if (m["type"].asString() == "bubble") action = m["action"].asString() + (m["edge"].asBool() ? "/edge" : "");
         g.touch(2, 40, 100, 0, true);
         check(types(moved) == "pointercancel:32 " && action == "back/edge", "as the bubble, a drag from the leading edge is back (got " + types(moved) + action + ")");
+        // A vertical drag is always the chat's, even on none and after the widget took the hold.
+        g.touch(0, 60, 20, 0, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        ticked = types(g.tick());
+        moved = g.touch(1, 62, 60, 0, true);
+        action.clear();
+        for (const Json& m : moved)
+            if (m["type"].asString() == "bubble") action = m["action"].asString();
+        g.touch(2, 62, 60, 0, true);
+        check(ticked == "contextmenu:30 " && types(moved) == "pointercancel:30 " && action == "scroll", "as the bubble, a vertical drag after a hold on none scrolls the chat (got " + ticked + types(moved) + action + ")");
     }
 
     std::printf("%d failure(s)\n", failures);
