@@ -170,8 +170,13 @@ std::vector<std::pair<std::string, std::string>> functions(std::string_view tran
     for (;;) {
         size_t open = transform.find('(', pos);
         if (open == std::string_view::npos) break;
-        size_t close = transform.find(')', open);
-        if (close == std::string_view::npos) break;
+        // The matching parenthesis: an argument may hold calc() and its own parentheses.
+        size_t close = open + 1;
+        for (int depth = 1; close < transform.size(); close++) {
+            if (transform[close] == '(') depth++;
+            else if (transform[close] == ')' && --depth == 0) break;
+        }
+        if (close == transform.size()) break;
         out.emplace_back(css::lower(css::trim(transform.substr(pos, open - pos))), css::trim(transform.substr(pos, close + 1 - pos)));
         pos = close + 1;
     }
@@ -235,6 +240,7 @@ std::string identity(std::string_view transform) {
             while (lead < arg.size() && (arg[lead] == ' ' || arg[lead] == '\t')) lead++;
             std::string value;
             if (ones.count(name)) value = "1";
+            else if (arg.find('(') != std::string::npos) value = "0";
             else {
                 std::string t = css::trim(arg);
                 size_t u = 0;
@@ -269,17 +275,29 @@ bool translation_list(std::string_view text) {
     std::string rest;
     auto list = functions(t, &rest);
     if (list.empty() || !css::trim(rest).empty()) return false;
-    for (const auto& [name, whole] : list) {
+    for (const auto& [name, whole] : list)
         if (name != "translate" && name != "translatex" && name != "translatey") return false;
-        size_t open = whole.find('(');
-        if (whole.find('(', open + 1) != std::string::npos) return false;
-    }
     return true;
 }
 
 std::string scaled_tokens(std::string_view text, double factor) {
     std::string out;
     for (const Token& t : tokenize(text)) out += t.number ? css::format_number(t.value * factor) + t.text : t.text;
+    return out;
+}
+
+/// A translation list `factor` times as long: a length has its number scaled, math is scaled inside a
+/// calc() (scaling its numbers would scale a `*` operand too).
+std::string scaled_translations(std::string_view text, double factor) {
+    std::string out;
+    for (const auto& [name, whole] : functions(text)) {
+        std::string args;
+        for (const std::string& arg : arguments(whole)) {
+            std::string scaled = arg.find('(') == std::string::npos ? scaled_tokens(arg, factor) : "calc((" + arg + ") * " + css::format_number(factor) + ")";
+            args += (args.empty() ? "" : ", ") + scaled;
+        }
+        out += (out.empty() ? "" : " ") + whole.substr(0, whole.find('(')) + "(" + args + ")";
+    }
     return out;
 }
 
@@ -804,8 +822,14 @@ std::string interpolate(const std::string& a, const std::string& b, double t) {
     if (t == 0 || !std::isfinite(t)) return a;
     if (t == 1) return b;
     auto flip = [&] { return t < 0.5 ? a : b; };
+    // Mixed units, or math on one side only: two translation lists still compose by weight.
+    auto weighted = [&] {
+        std::string from = css::iequals(css::trim(a), "none") ? identity(b) : a, to = css::iequals(css::trim(b), "none") ? identity(a) : b;
+        if (!translation_list(from) || !translation_list(to)) return flip();
+        return scaled_translations(css::trim(from), 1 - t) + " " + scaled_translations(css::trim(to), t);
+    };
     auto pair = pair_tokens(a, b);
-    if (!pair) return flip();
+    if (!pair) return weighted();
     std::string out;
     const auto& [left, right] = *pair;
     for (size_t i = 0; i < left.size(); i++) {
@@ -816,9 +840,7 @@ std::string interpolate(const std::string& a, const std::string& b, double t) {
         } else if (!x.number && !y.number && x.text == y.text) {
             out += x.text;
         } else {
-            // Mixed units or different functions: two translation lists still compose by weight.
-            if (translation_list(a) && translation_list(b)) return scaled_tokens(css::trim(a), 1 - t) + " " + scaled_tokens(css::trim(b), t);
-            return flip();
+            return weighted();
         }
     }
     return out;

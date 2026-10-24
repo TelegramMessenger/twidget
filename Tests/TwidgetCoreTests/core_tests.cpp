@@ -1798,6 +1798,19 @@ int main() {
         check(transform == "matrix(1, 0, 0, 1, -10, 21)", "calc() of % and px inside translate functions resolves against the box (got " + transform + ")");
         double left = ask(Json::object().set("q", "rect").set("id", 11))["x"].asNumber();
         check(std::fabs(left + 10) < 0.01, "and the document moves the box by it (got " + std::to_string(left) + ")");
+        // Math on one side only still interpolates (Chromium does), as a sum of the two translations by weight.
+        auto tx = [](const std::string& value) {
+            auto m = css::parse_transform(value, 100, 20);
+            return m ? double(m->e) : -1e9;
+        };
+        std::string quarter = interpolate("translateX(0px)", "translateX(calc(100% + 10px))", 0.25);
+        std::string from_none = interpolate("none", "translateX(calc(100% + 10px))", 0.25);
+        std::string back = interpolate("translateX(calc(50% - 1 * (100% + 10px) + 50px))", "translateX(20px)", 0.5);
+        check(std::fabs(tx(quarter) - 27.5) < 0.01 && std::fabs(tx(from_none) - 27.5) < 0.01 && std::fabs(tx(back) - 5) < 0.01,
+              "a transition into or out of calc() moves, not flips (got " + quarter + " | " + from_none + " | " + back + ")");
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":11,"name":"transform","value":")" + quarter + R"("}]})"));
+        left = ask(Json::object().set("q", "rect").set("id", 11))["x"].asNumber();
+        check(std::fabs(left - 27.5) < 0.01, "and the document draws the weighted sum (got " + std::to_string(left) + ")");
 
         auto resized = [](const std::vector<Json>& out) {
             for (const Json& m : out)
