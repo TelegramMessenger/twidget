@@ -6,6 +6,7 @@ import WidgetSandboxProtocol
 import struct WidgetSandbox.GestureArbiter
 import enum WidgetSandbox.GesturePolicy
 import struct WidgetSandbox.WidgetGestureClaim
+import enum WidgetSandbox.WidgetResizeAnchor
 
 public final class LiteHTMLWidgetRenderer {
     public let view: NSView
@@ -135,6 +136,20 @@ public final class LiteHTMLWidgetRenderer {
     private var resizePressId = 0
     private var nextBounds: (document: LHDocument, bounds: [Int: CGRect])?
     private var resizePrefersBottom = false
+    private var resizeAnchorOverride: WidgetResizeAnchor?
+
+    public var resizeAnchor: WidgetResizeAnchor? {
+        get {
+            resizeDiffLock.lock()
+            defer { resizeDiffLock.unlock() }
+            return resizeAnchorOverride
+        }
+        set {
+            resizeDiffLock.lock()
+            resizeAnchorOverride = newValue
+            resizeDiffLock.unlock()
+        }
+    }
 
     public var alignmentDebug: String {
         return documentView.alignmentDebug
@@ -209,15 +224,19 @@ public final class LiteHTMLWidgetRenderer {
         resizeDiffLock.lock()
         let previousKeepsBottom = now - resizeDiffAt < LiteHTMLWidgetRenderer.resizeBurstGap ? resizeDiff?.keepsBottom : nil
         let prefersBottom = resizePrefersBottom
+        let anchor = resizeAnchorOverride
         resizeDiffLock.unlock()
         let pointer = recent ? CGPoint(x: lastClick.point.x, y: resizeClickY) : nil
-        let diff: WidgetResizeDiff
+        var diff: WidgetResizeDiff
         if let keepsBottom = previousKeepsBottom, abs(newHeight - oldHeight) <= 1.5 {
             diff = WidgetResizeDiff(oldHeight: oldHeight, newHeight: newHeight, unchangedTop: keepsBottom ? 0 : oldHeight, unchangedBottom: keepsBottom ? oldHeight : 0, keepsBottom: keepsBottom)
         } else {
             let fresh = next.idBounds()
             diff = WidgetResizeDiff.compute(old: oldBounds(), new: fresh, oldHeight: oldHeight, newHeight: newHeight, exactOldHeight: previous.size.height, exactNewHeight: next.size.height, pointer: pointer, pointerTarget: recent ? resizePressId : nil, prefersBottom: prefersBottom, previousKeepsBottom: previousKeepsBottom)
             nextBounds = (next, fresh)
+        }
+        if let anchor = anchor {
+            diff = WidgetResizeDiff(oldHeight: diff.oldHeight, newHeight: diff.newHeight, unchangedTop: diff.unchangedTop, unchangedBottom: diff.unchangedBottom, pointerFrom: diff.pointerFrom, pointerTo: diff.pointerTo, keepsBottom: anchor == .bottom)
         }
         if diff.keepsBottom {
             resizeClickY += next.size.height - previous.size.height
@@ -227,7 +246,9 @@ public final class LiteHTMLWidgetRenderer {
         resizeDiffAt = now
         resizeDiffLock.unlock()
         let shift: CGFloat
-        if let from = diff.pointerFrom, let to = diff.pointerTo {
+        if let anchor = anchor {
+            shift = anchor == .bottom ? newHeight - oldHeight : 0
+        } else if let from = diff.pointerFrom, let to = diff.pointerTo {
             shift = to - from
         } else {
             shift = diff.keepsBottom ? newHeight - oldHeight : 0
