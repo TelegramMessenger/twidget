@@ -606,6 +606,7 @@ void litehtml::render_item_table::draw_children(uint_ptr hdc, pixel_t x, pixel_t
     pos.y        += y;
     document*      doc        = src_el()->doc_ptr();
     const bool     cull       = clip && doc->culls_paint();
+    const bool     collapsed  = css().get_border_collapse() == border_collapse_collapse;
     const uint32_t generation = doc->paint_generation();
     for(auto& caption : m_grid->captions())
     {
@@ -643,9 +644,40 @@ void litehtml::render_item_table::draw_children(uint_ptr hdc, pixel_t x, pixel_t
                 if(flag == draw_block)
                 {
                     if(g_paint_trace) g_paint_trace->push_back(cell->el.get());
+                    const bool deferred = cell->el->defer_borders;
+                    cell->el->defer_borders = collapsed;
                     cell->el->src_el()->draw(hdc, pos.x, pos.y, clip, cell->el);
+                    cell->el->defer_borders = deferred;
                 }
                 cell->el->draw_children(hdc, pos.x, pos.y, clip, flag, zindex);
+            }
+        }
+    }
+    if(collapsed && flag == draw_block)
+    {
+        position table_box = pos;
+        table_box += get_paddings();
+        table_box += get_borders();
+        if(table_box.does_intersect(clip))
+        {
+            draw_borders(hdc, table_box);
+        }
+        for(int row = 0; row < m_grid->rows_count(); row++)
+        {
+            if(!m_grid->row(row).el_row->is_visible()) continue;
+            for(int col = 0; col < m_grid->cols_count(); col++)
+            {
+                table_cell* cell = m_grid->cell(col, row);
+                if(!cell->el || !cell->el->is_visible()) continue;
+                position box = cell->el->pos();
+                box.x += pos.x;
+                box.y += pos.y;
+                box += cell->el->get_paddings();
+                box += cell->el->get_borders();
+                if(box.does_intersect(clip))
+                {
+                    cell->el->draw_borders(hdc, box);
+                }
             }
         }
     }

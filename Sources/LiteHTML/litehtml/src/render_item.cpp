@@ -10,6 +10,21 @@
 
 thread_local std::vector<const litehtml::render_item*>* litehtml::g_paint_trace = nullptr;
 
+void litehtml::render_item::draw_borders(uint_ptr hdc, position border_box) const
+{
+    borders bdr = src_el()->css().get_borders();
+    if(collapse_skip & 1) bdr.left.style = border_style_none;
+    if(collapse_skip & 2) bdr.top.style = border_style_none;
+    if(collapse_skip & 4) bdr.right.style = border_style_none;
+    if(collapse_skip & 8) bdr.bottom.style = border_style_none;
+    if(bdr.is_visible())
+    {
+        border_box.round();
+        bdr.radius = src_el()->css().get_borders().radius.calc_percents(border_box.width, border_box.height);
+        src_el()->doc_ptr()->container()->draw_borders(hdc, bdr, border_box, src_el()->is_root());
+    }
+}
+
 litehtml::render_item::render_item(std::shared_ptr<element> _src_el) :
     m_element(std::move(_src_el))
 {

@@ -133,6 +133,7 @@ namespace litehtml
         /// Sides a collapsed-border table cell leaves to its neighbour or the table, which win the
         /// conflict (CSS 2.1 17.6.2.1): 1 left, 2 top, 4 right, 8 bottom.
         uint8_t collapse_skip = 0;
+        bool defer_borders = false;
 
         explicit render_item(std::shared_ptr<element> src_el);
 
@@ -618,6 +619,7 @@ namespace litehtml
         virtual void clear_inline_boxes() {};
         const paint_ink& ink(uint32_t generation, bool drawn);
         void             add_self_ink(paint_ink& ink, float dx, float dy) const;
+        void draw_borders(uint_ptr hdc, position border_box) const;
         void draw_stacking_context(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool with_positioned);
         void draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                         const std::shared_ptr<render_item>& el);

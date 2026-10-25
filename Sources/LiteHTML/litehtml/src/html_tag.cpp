@@ -1617,20 +1617,11 @@ namespace litehtml
                     }
                 }
 
-                borders bdr = m_css.get_borders();
-                if(ri->collapse_skip)
+                const bool collapsed_table = (m_css.get_display() == display_table || m_css.get_display() == display_inline_table) &&
+                                             m_css.get_border_collapse() == border_collapse_collapse;
+                if(!ri->defer_borders && !collapsed_table)
                 {
-                    // A collapsed table border its neighbour or the table draws instead.
-                    if(ri->collapse_skip & 1) bdr.left.style = border_style_none;
-                    if(ri->collapse_skip & 2) bdr.top.style = border_style_none;
-                    if(ri->collapse_skip & 4) bdr.right.style = border_style_none;
-                    if(ri->collapse_skip & 8) bdr.bottom.style = border_style_none;
-                }
-                if(bdr.is_visible())
-                {
-                    border_box.round();
-                    bdr.radius = m_css.get_borders().radius.calc_percents(border_box.width, border_box.height);
-                    doc_ptr()->container()->draw_borders(hdc, bdr, border_box, is_root());
+                    ri->draw_borders(hdc, border_box);
                 }
 
                 const css_border& outline = m_css.get_outline();
