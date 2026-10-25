@@ -613,15 +613,15 @@ It never counts ticks. It stores <code>startedAt</code> and computes <code>perfo
 
 --- pixel 10:12 bare
 <style>
-  .sw { width: 300px; max-width: 100%; }
+  .sw { width: 100%; box-sizing: border-box; }
   .sw .ring { width: 128px; height: 128px; border-radius: 75px; margin: 12px auto 10px auto; padding: 11px; }
   .sw .face { width: 128px; height: 128px; border-radius: 64px; background-color: #ffffff; text-align: center; }
   .lc-dark .sw .face { background-color: #1c1c1e; }
   .sw .big { font-size: 28px; font-weight: 700; font-family: ui-monospace; padding-top: 30px; line-height: 32px; }
   .sw .cs { font-size: 15px; color: #8e8e93; font-family: ui-monospace; }
   .sw .now { font-size: 11px; font-family: ui-monospace; margin-top: 3px; }
-  .sw .btns { text-align: center; }
-  .sw .btns button { margin: 0 4px; width: 76px; }
+  .sw .btns { display: flex; justify-content: center; gap: 8px; }
+  .sw .btns button { flex: 1; min-width: 0; max-width: 104px; padding: 5px 10px; white-space: nowrap; }
   .sw .tabs { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
   .sw .tab { display: inline-block; padding: 2px 9px; margin-right: 3px; border-radius: 7px; font-size: 12px; font-weight: 600; }
   .sw .tab:hover { background-color: rgba(127,127,127,0.16); }
@@ -632,7 +632,7 @@ It never counts ticks. It stores <code>startedAt</code> and computes <code>perfo
   .sw .bars { margin-top: 6px; }
   .sw .br { display: flex; align-items: center; height: 18px; font-size: 11px; font-family: ui-monospace; }
   .sw .br .n { width: 30px; } .sw .br .v { width: 64px; text-align: right; }
-  .sw .br .track { width: 178px; height: 10px; }
+  .sw .br .track { flex: 1; min-width: 0; height: 10px; }
   .sw .br .fill { height: 10px; border-radius: 3px; }
 </style>
 <div class="card pad sw"><b>⏱ Stopwatch</b></div>
@@ -693,7 +693,7 @@ function lapChart(best, worst) {
   return `<div class="bars">${shown.map((l, k) => {
     const i = offset + k, c = i === best ? '#34c759' : i === worst ? '#ff3b30' : '#ff9500';
     const d = clamp(grow.k * 1.6 - k * 0.08, 0, 1);
-    return `<div class="br"><span class="n muted">L${i + 1}</span><div class="track"><div class="fill" style="width: ${Math.max(2, 178 * l.t / max * ease.outCubic(d)).toFixed(1)}px; background-color: ${c}"></div></div><span class="v">${full(l.t)}</span></div>`;
+    return `<div class="br"><span class="n muted">L${i + 1}</span><div class="track"><div class="fill" style="width: ${Math.max(2, 100 * l.t / max * ease.outCubic(d)).toFixed(1)}%; background-color: ${c}"></div></div><span class="v">${full(l.t)}</span></div>`;
   }).join('')}</div>`;
 }
 
