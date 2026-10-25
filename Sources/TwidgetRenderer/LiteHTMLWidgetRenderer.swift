@@ -7,8 +7,9 @@ import struct WidgetSandbox.GestureArbiter
 import enum WidgetSandbox.GesturePolicy
 import struct WidgetSandbox.WidgetGestureClaim
 import enum WidgetSandbox.WidgetResizeAnchor
+import protocol WidgetSandbox.TaskRenderer
 
-public final class LiteHTMLWidgetRenderer {
+public final class LiteHTMLWidgetRenderer: TaskRenderer {
     public let view: NSView
     public var onMessage: ((String) -> Void)? {
         didSet {
@@ -190,7 +191,11 @@ public final class LiteHTMLWidgetRenderer {
     private var probePending = false
 
     private func noteResize(to next: LHDocument) {
-        if let base = probeBase {
+        if let base = taskResizeBase {
+            taskResizeBase = nil
+            probeBase = nil
+            noteResize(from: base.document, oldBounds: { base.bounds }, to: next)
+        } else if let base = probeBase {
             probeBase = nil
             noteResize(from: base.document, oldBounds: { base.bounds ?? base.document.idBounds() }, to: next)
         } else if let previous = document {
@@ -524,6 +529,7 @@ public final class LiteHTMLWidgetRenderer {
             retired.append(displayList)
         }
         document = nil
+        taskResizeBase = nil
         displayList = nil
         dom.reset()
         held.removeAll()
@@ -833,6 +839,17 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private var answeringQuery = false
+    private(set) var taskDepth = 0
+    private var taskNeedsRender = false
+    private var taskResizeBase: (document: LHDocument, bounds: [Int: CGRect])?
+
+    public func beginTask() {
+        send("{\"type\":\"beginTask\"}")
+    }
+
+    public func endTask() {
+        send("{\"type\":\"endTask\"}")
+    }
 
     public func send(_ json: String) {
         if !destroyed, !flushingHeld, !documentView.preparing, !held.isEmpty, json.hasPrefix("{\"type\":\"query\"") {
@@ -884,6 +901,22 @@ public final class LiteHTMLWidgetRenderer {
             print(String(format: "MSG %.4f %@", CACurrentMediaTime(), type))
         }
         switch type {
+        case "beginTask":
+            taskDepth += 1
+        case "endTask":
+            guard taskDepth > 0 else { return }
+            taskDepth -= 1
+            if taskDepth == 0, taskNeedsRender || needsRender || renderAtTick || silentPending {
+                taskNeedsRender = false
+                silentPending = false
+                if !frozen {
+                    render()
+                } else {
+                    needsRender = false
+                    renderAtTick = false
+                    taskResizeBase = nil
+                }
+            }
         case "ops":
             let ops = ((message["ops"] as? [Any]) ?? []).compactMap { ($0 as? [String: Any]).map(WidgetOp.init) }
             if !flushingHeld, !answersInput, throttled {
@@ -992,6 +1025,9 @@ public final class LiteHTMLWidgetRenderer {
         needsRender = false
         renderAtTick = false
         let before = document
+        if taskDepth > 0, taskResizeBase == nil, let document = document {
+            taskResizeBase = (document, elementBounds())
+        }
         silentRendering = true
         metered { renderBody() }
         silentRendering = false
@@ -1297,6 +1333,12 @@ public final class LiteHTMLWidgetRenderer {
 
     private func render() {
         guard !destroyed else {
+            return
+        }
+        if taskDepth > 0 {
+            taskNeedsRender = true
+            needsRender = true
+            renderAtTick = false
             return
         }
         if frameHoldStart != nil && !destroyed && !frozen {
@@ -1636,6 +1678,10 @@ public final class LiteHTMLWidgetRenderer {
     public private(set) var handoffOffsets: [Double] = []
 
     private func renderAnimationFrame() {
+        if taskDepth > 0 {
+            taskNeedsRender = true
+            return
+        }
         if frameHoldStart != nil {
             frameHoldRender = true
             return
@@ -2020,7 +2066,9 @@ public final class LiteHTMLWidgetRenderer {
         if silentDebt.count > 32 {
             silentDebt = [silentDebt.reduce(CGRect.null) { $0.union($1) }]
         }
-        noteResize(to: next)
+        if taskDepth == 0 {
+            noteResize(to: next)
+        }
         document = next
         boundsValid = false
         adoptNextBounds(next)
@@ -2302,7 +2350,7 @@ public final class LiteHTMLWidgetRenderer {
     private var reportedHeight = 0.0
 
     private func reportSize() {
-        guard let document = document else {
+        guard taskDepth == 0, let document = document else {
             return
         }
         var message: [String: Any] = [
@@ -2434,7 +2482,7 @@ public final class LiteHTMLWidgetRenderer {
     }
 
     private func reportResize() {
-        guard !observedResize.isEmpty else {
+        guard taskDepth == 0, !observedResize.isEmpty else {
             return
         }
         let boxes = elementBounds()

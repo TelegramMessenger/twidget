@@ -4,7 +4,7 @@ import WidgetSandbox
 import WidgetSandboxProtocol
 @testable import TwidgetRenderer
 
-final class ConformanceProbe: Renderer, ScheduledRenderer {
+final class ConformanceProbe: Renderer, ScheduledRenderer, TaskRenderer {
     let inner: LiteHTMLWidgetRenderer
     private let lock = NSLock()
     private var htmlId: Int?
@@ -122,6 +122,14 @@ final class ConformanceProbe: Renderer, ScheduledRenderer {
 
     func load() {
         inner.load()
+    }
+
+    func beginTask() {
+        inner.beginTask()
+    }
+
+    func endTask() {
+        inner.endTask()
     }
 
     func send(_ json: String) {
