@@ -1,4 +1,5 @@
 import Foundation
+import WidgetSandboxProtocol
 
 struct CSSKeyframe {
     let offset: Double
@@ -1175,6 +1176,7 @@ final class WidgetAnimator {
     private(set) var transitions: [Int: [String: Transition]] = [:]
     var cssOverrides: [Int: [String: CSSOverride]] = [:]
     private var bases: [Int: [String: String]] = [:]
+    private var configuredTransitions: [Int: [CSSTransitionSpec]] = [:]
     private(set) var lastOverrides: [Int: [(String, String)]] = [:]
     var onEvent: ((String, Int, String, Double) -> Void)?
 
@@ -1199,6 +1201,7 @@ final class WidgetAnimator {
         transitions.removeAll()
         cssOverrides.removeAll()
         bases.removeAll()
+        configuredTransitions.removeAll()
         lastOverrides.removeAll()
         web.removeAll()
     }
@@ -1232,6 +1235,7 @@ final class WidgetAnimator {
                 }
             }
             let transitionSpecs = CSSTransitionSpec.list(values)
+            configuredTransitions[id] = transitionSpecs.isEmpty ? nil : transitionSpecs
             var base = bases[id] ?? [:]
             for property in WidgetAnimator.watched where !property.hasPrefix("animation") && !property.hasPrefix("transition") {
                 let newValue = values[property]
@@ -1258,9 +1262,20 @@ final class WidgetAnimator {
         for id in bases.keys where declarations[id] == nil {
             bases[id] = nil
             transitions[id] = nil
+            configuredTransitions[id] = nil
         }
         running = nextRunning
         pruneCSSOverrides()
+    }
+
+    func transitions(_ id: Int, property: String) -> Bool {
+        return configuredTransitions[id]?.contains { $0.property == property || $0.property == "all" } == true
+    }
+
+    func recordScriptedValues(_ ops: [WidgetOp]) {
+        for op in ops {
+            bases[op.id, default: [:]][op.name.lowercased()] = op.value.isEmpty ? nil : op.value
+        }
     }
 
     private func currentTransitionValue(_ id: Int, _ property: String, _ now: CFTimeInterval) -> String? {

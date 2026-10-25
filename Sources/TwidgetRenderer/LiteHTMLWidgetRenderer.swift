@@ -999,7 +999,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     }
 
     static let presamples = ProcessInfo.processInfo.environment["TW_NO_PRESAMPLE"] == nil
-    static let declarationGates = WidgetAnimator.entryProperties + ["backdrop-filter", "filter", "box-shadow"]
+    static let declarationGates = WidgetAnimator.entryProperties + ["transform", "opacity", "backdrop-filter", "filter", "box-shadow"]
     static let coalescesHeld = ProcessInfo.processInfo.environment["TW_HELD_RENDER_NOW"] == nil
     private var deferringRender = false
 
@@ -1130,6 +1130,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             for op in ops {
                 dom.apply(op)
             }
+            animator.recordScriptedValues(ops)
             stageMilliseconds["scripted-fast", default: 0] += 1
             if compositor.applyScripted(touched, dom: dom, document: document) {
                 if !animator.isActive {
@@ -2100,7 +2101,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         }
         var touched: Set<Int> = []
         for op in ops {
-            guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()), promoted.contains(op.id) else {
+            guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()), promoted.contains(op.id), !animator.transitions(op.id, property: op.name.lowercased()) else {
                 return nil
             }
             touched.insert(op.id)
