@@ -2365,7 +2365,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         ]
         let key = "\(message["height"]!)|\(message["width"]!)|\(message["innerHeight"]!)|\(message["dpr"]!)|\(message["painted"]!)"
         let height = Double(ceil(document.size.height))
-        if documentView.detached, height > reportedHeight, !documentView.tilesDrawn {
+        if documentView.detached, height != reportedHeight, !documentView.hasPresented(height: CGFloat(height)) {
             return
         }
         if key != lastSize {
@@ -3530,6 +3530,7 @@ class WidgetDocumentView: NSView {
     private var presentedAnchor: CGFloat = 0
     private var presentedHeight: CGFloat = 0
     private var resizeInstallsUntil: CFTimeInterval = 0
+    private var retiredGridLayers: [CALayer] = []
 
     var contentLayer: CALayer? {
         return content
@@ -3645,11 +3646,21 @@ class WidgetDocumentView: NSView {
         return String(format: "view %.0f presented %.0f origin %.0f pres %.0f", size.height, presentedHeight, content.frame.origin.y, content.presentation()?.frame.origin.y ?? -999)
     }
 
+    func hasPresented(height: CGFloat) -> Bool {
+        alignmentLock.lock()
+        defer { alignmentLock.unlock() }
+        return abs(presentedHeight - height) < 0.5
+    }
+
     func presentAlignment(for document: LHDocument) {
         presentAlignment(height: ceil(document.size.height))
     }
 
     func presentAlignment(height: CGFloat) {
+        for layer in retiredGridLayers {
+            layer.twRemoveFromSuperlayer()
+        }
+        retiredGridLayers.removeAll()
         alignmentLock.lock()
         presentedHeight = height
         presentedAnchor = anchor(forHeight: height) ?? anchorTotal
@@ -3928,7 +3939,7 @@ class WidgetDocumentView: NSView {
                 }
                 self.preparing = false
                 self.preparedMilliseconds += spent
-                if lifetime.isActive && self.document === document && ((detached && self.detached) || (self.invalidations == epoch && self.syncInvalidations == syncEpoch)) && !self.tilesTrimmed && self.tileScale == scale {
+                if made.count == jobs.count && lifetime.isActive && self.document === document && ((detached && self.detached) || (self.invalidations == epoch && self.syncInvalidations == syncEpoch)) && !self.tilesTrimmed && self.tileScale == scale {
                     let explicit = WidgetDocumentView.beginInstallTransaction()
                     for item in made where item.index < self.tiles.count {
                         let tile = self.tiles[item.index]
@@ -4819,6 +4830,10 @@ class WidgetDocumentView: NSView {
 
     private func removeTiles() {
         syncInvalidations += 1
+        for layer in retiredGridLayers {
+            layer.twRemoveFromSuperlayer()
+        }
+        retiredGridLayers.removeAll()
         for tile in tiles {
             dropSpare(tile)
             tile.layer.twRemoveFromSuperlayer()
@@ -4873,7 +4888,12 @@ class WidgetDocumentView: NSView {
         let count = columns * Int(ceil(height / tileSize))
         while tiles.count > count {
             dropSpare(tiles[tiles.count - 1])
-            tiles.removeLast().layer.twRemoveFromSuperlayer()
+            let layer = tiles.removeLast().layer
+            if detached, layer.contents != nil {
+                retiredGridLayers.append(layer)
+            } else {
+                layer.twRemoveFromSuperlayer()
+            }
         }
         while tiles.count < count {
             let tile = Tile()
