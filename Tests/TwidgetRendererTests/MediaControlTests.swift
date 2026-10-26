@@ -18,7 +18,14 @@ final class MediaControlTests: XCTestCase {
         for width in [320.0, 420.0] {
             for scheme in [WidgetTheme.ColorScheme.light, .dark] {
                 let renderer = LiteHTMLWidgetRenderer(theme: scheme == .light ? "light" : "dark", width: width)
-                let host = try WidgetHost(html: html, theme: WidgetTheme(colorScheme: scheme), width: width, rendererFactory: { _, _, _ in renderer })
+                var options = WidgetHost.Options()
+                options.asyncValidation = true
+                options.sharedValidatorThread = true
+                options.startBeforeRendererReady = true
+                options.pools = true
+                options.features = ["binaryOps", "canvasWords", "webAnimations", "morphUpdates"]
+                EnginePool.shared.features = options.features
+                let host = try WidgetHost(html: html, theme: WidgetTheme(colorScheme: scheme), width: width, options: options, rendererFactory: { _, _, _ in renderer })
                 defer { host.destroy() }
                 host.view.frame = CGRect(x: 0, y: 0, width: width, height: 700)
                 pump(10) { host.diagnostics.rendered && renderer.document != nil }
