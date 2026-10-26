@@ -3,7 +3,9 @@
 #include "css.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <unordered_map>
 #include <string_view>
 
@@ -249,6 +251,36 @@ bool near_stroke(const Geometry& g, double x, double y, double half) {
     return false;
 }
 
+/// `String(n)` in JS (Number::toString): the shortest digits that read back as `n`, written out in full from
+/// 1e-6 up to 1e21 and in exponent form outside it.
+std::string js_number(double n) {
+    if (std::isnan(n)) return "NaN";
+    if (std::isinf(n)) return n < 0 ? "-Infinity" : "Infinity";
+    if (n == 0) return "0";
+    char buf[64];
+    auto r = std::to_chars(buf, buf + sizeof buf, n, std::chars_format::scientific);
+    std::string_view sci(buf, size_t(r.ptr - buf));
+    bool negative = sci.front() == '-';
+    if (negative) sci.remove_prefix(1);
+    size_t e = sci.find('e');
+    std::string digits;
+    for (char c : sci.substr(0, e))
+        if (c != '.') digits.push_back(c);
+    int exponent = std::atoi(std::string(sci.substr(e + 1)).c_str());
+    int k = int(digits.size()), point = exponent + 1;  // the decimal point sits after `point` digits
+    std::string out = negative ? "-" : "";
+    if (k <= point && point <= 21) out += digits + std::string(size_t(point - k), '0');
+    else if (0 < point && point <= 21) out += digits.substr(0, size_t(point)) + "." + digits.substr(size_t(point));
+    else if (-6 < point && point <= 0) out += "0." + std::string(size_t(-point), '0') + digits;
+    else {
+        out += digits.substr(0, 1);
+        if (k > 1) out += "." + digits.substr(1);
+        out += exponent < 0 ? "e-" : "e+";
+        out += std::to_string(std::abs(exponent));
+    }
+    return out;
+}
+
 } // namespace
 
 bool geometry_contains(const Geometry& g, double x, double y, bool evenodd) { return contains(g, x, y, evenodd); }
@@ -256,6 +288,7 @@ bool geometry_contains(const Geometry& g, double x, double y, bool evenodd) { re
 struct Canvas::Value {
     enum Kind { Null, Number, String, List, Gradient, PathRef, Node, Pixels } kind = Null;
     double number = 0;
+    bool boolean = false;  // a Number that was true or false, which text converts back
     std::string string;
     std::vector<float> list;
     int64_t ref = 0;
@@ -265,7 +298,7 @@ struct Canvas::Value {
     static Value of(const Json& j) {
         Value v;
         if (j.isNumber()) { v.kind = Number; v.number = j.asNumber(); }
-        else if (j.isBool()) { v.kind = Number; v.number = j.asBool() ? 1 : 0; }
+        else if (j.isBool()) { v.kind = Number; v.number = j.asBool() ? 1 : 0; v.boolean = true; }
         else if (j.isString()) { v.kind = String; v.string = j.asString(); }
         else if (j.isArray()) {
             v.kind = List;
@@ -691,7 +724,12 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
         clips->push_back(std::move(clip));
         s.clips = std::move(clips);
     } else if (m == Method::fillText || m == Method::strokeText) {
-        if (!a.empty() && a[0].kind == Value::String) text(a[0].string, n(1), n(2), a.size() > 3 ? &a[3] : nullptr, m == Method::strokeText, out);
+        // The text is converted as JS converts it: fillText(4) draws "4", fillText(true) "true".
+        if (!a.empty()) {
+            const Value& t = a[0];
+            std::string s = t.kind == Value::String ? t.string : t.kind == Value::Null ? "null" : t.boolean ? (t.number ? "true" : "false") : js_number(t.number);
+            if (t.kind == Value::String || t.kind == Value::Null || t.kind == Value::Number) text(s, n(1), n(2), a.size() > 3 ? &a[3] : nullptr, m == Method::strokeText, out);
+        }
     } else if (m == Method::setLineDash) {
         if (!a.empty() && a[0].kind == Value::List && a[0].list.size() <= 64) {
             const auto& v = a[0].list;
