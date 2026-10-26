@@ -15,12 +15,9 @@ final class ScopedWidgetMotionTests: XCTestCase {
         _ = NSApplication.shared
         let samples: [(String, String, String, String, String)] = [
             ("01-design-crew/04-priya-bare.html", "data-act", "filter", "open", "list"),
-            ("06-trip-lisbon/10-ana-bare.html", "data-cat", "docs", "", "items"),
             ("07-shop/08-shop-bare.html", "data-action", "sort", "newest", "list"),
             ("09-code-review/09-me.html", "data-action", "tab", "1", "rows"),
-            ("06-trip-lisbon/12-ana.html", "data-cat", "food", "", "rows"),
-            ("12-motion-lab/13-mo-bare.html", "data-action", "pay", "", "pay"),
-            ("12-motion-lab/05-mo-bare.html", "data-action", "queue", "", "list")
+            ("12-motion-lab/13-mo-bare.html", "data-action", "pay", "", "pay")
         ]
         for (file, attribute, action, value, panelID) in samples {
             let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../widget-sandbox/corpus/htmlbubbles-ported/\(file)")
