@@ -617,17 +617,14 @@ final class ScrollLayerTests: XCTestCase {
         XCTAssertEqual(Array(data.prefix(3)), [255, 255, 255])
     }
 
-    func testRubberBandingResistsAndSettles() {
+    func testScrollGeometryClampsOffsets() {
         let geometry = WidgetScrollGeometry(viewport: CGRect(x: 0, y: 0, width: 100, height: 200), content: CGSize(width: 100, height: 1000), radii: [CGFloat](repeating: 0, count: 8))
         XCTAssertEqual(geometry.maxOffset, CGPoint(x: 0, y: 800))
         XCTAssertEqual(geometry.clamp(CGPoint(x: 5, y: -20)), .zero)
-        let pulled = geometry.banded(CGPoint(x: 0, y: -100))
-        XCTAssertLessThan(pulled.y, 0)
-        XCTAssertGreaterThan(pulled.y, -100)
-        XCTAssertLessThan(abs(geometry.banded(CGPoint(x: 0, y: -10_000)).y), 200)
-        XCTAssertEqual(geometry.banded(CGPoint(x: 0, y: 400)).y, 400)
-        XCTAssertGreaterThan(geometry.banded(CGPoint(x: 0, y: 900)).y, 800)
+        XCTAssertEqual(geometry.clamp(CGPoint(x: 0, y: 400)).y, 400)
+        XCTAssertEqual(geometry.clamp(CGPoint(x: 0, y: 900)).y, 800)
     }
+
     private func pump(_ seconds: TimeInterval, until done: () -> Bool = { false }) {
         let deadline = Date().addingTimeInterval(seconds)
         while !done() && Date() < deadline {
@@ -643,7 +640,7 @@ final class ScrollLayerTests: XCTestCase {
         return NSEvent(cgEvent: cg)!
     }
 
-    func testTrackpadGesturesScrollRubberBandAndSettle() throws {
+    func testTrackpadGesturesClampAtEdgesWithoutBounce() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -689,15 +686,15 @@ final class ScrollLayerTests: XCTestCase {
             _ = renderer.handleScroll(point, event: wheel(-60, phase: 2))
         }
         XCTAssertEqual(renderer.scrolling.offset(3).y, 900)
-        XCTAssertGreaterThan(layer.offset.y, 900)
-        XCTAssertLessThan(layer.offset.y, 1000)
+        XCTAssertEqual(layer.offset.y, 900)
         XCTAssertTrue(renderer.handleScroll(point, event: wheel(0, phase: 4)))
         XCTAssertEqual(layer.offset.y, 900)
-        XCTAssertNotNil(layer.content.animation(forKey: "tw.settle"))
+        XCTAssertNil(layer.content.animationKeys())
         XCTAssertTrue(renderer.handleScroll(point, event: wheel(-20, momentum: 1)))
         XCTAssertTrue(renderer.handleScroll(point, event: wheel(-10, momentum: 2)))
         XCTAssertTrue(renderer.handleScroll(point, event: wheel(0, momentum: 3)))
         XCTAssertEqual(layer.offset.y, 900)
+        XCTAssertNil(layer.content.animationKeys())
         pump(0.3, until: { messages.contains { $0.contains("\"scroll\"") } })
         XCTAssertTrue(messages.contains { $0.contains("\"scroll\"") && $0.contains("\"targetId\":3") })
         renderer.destroy()

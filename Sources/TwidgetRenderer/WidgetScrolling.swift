@@ -35,19 +35,6 @@ struct WidgetScrollGeometry: Equatable {
         let limit = maxOffset
         return CGPoint(x: min(max(0, offset.x), limit.x), y: min(max(0, offset.y), limit.y))
     }
-
-    static func rubberBand(_ overshoot: CGFloat, dimension: CGFloat) -> CGFloat {
-        guard dimension > 0 else {
-            return 0
-        }
-        let magnitude = (1 - 1 / (abs(overshoot) * 0.55 / dimension + 1)) * dimension
-        return overshoot < 0 ? -magnitude : magnitude
-    }
-
-    func banded(_ raw: CGPoint) -> CGPoint {
-        let clamped = clamp(raw)
-        return CGPoint(x: clamped.x + WidgetScrollGeometry.rubberBand(raw.x - clamped.x, dimension: viewport.width), y: clamped.y + WidgetScrollGeometry.rubberBand(raw.y - clamped.y, dimension: viewport.height))
-    }
 }
 
 final class WidgetScrollLayer {
@@ -145,15 +132,8 @@ final class WidgetScrollLayer {
         }
         let inset: CGFloat = 2
         let track = viewport.height - inset * 2
-        var length = max(24, track * viewport.height / total)
-        var position = inset + (track - length) * min(1, max(0, offset.y / geometry.maxOffset.y))
-        if offset.y < 0 {
-            length = max(8, length + offset.y)
-            position = inset
-        } else if offset.y > geometry.maxOffset.y {
-            length = max(8, length - (offset.y - geometry.maxOffset.y))
-            position = viewport.height - inset - length
-        }
+        let length = max(24, track * viewport.height / total)
+        let position = inset + (track - length) * min(1, max(0, offset.y / geometry.maxOffset.y))
         thumb.frame = CGRect(x: viewport.width - 6 - inset, y: position, width: 6, height: length)
         thumb.removeAnimation(forKey: "tw.fade")
         thumb.opacity = 1
@@ -165,22 +145,6 @@ final class WidgetScrollLayer {
         fade.fillMode = .forwards
         fade.isRemovedOnCompletion = false
         thumb.add(fade, forKey: "tw.fade")
-    }
-
-    func settle(to target: CGPoint) {
-        let from = content.presentation()?.bounds.origin ?? content.bounds.origin
-        content.bounds.origin = target
-        guard from != target else {
-            return
-        }
-        let animation = CASpringAnimation(keyPath: "bounds.origin")
-        animation.fromValue = NSValue(point: from)
-        animation.toValue = NSValue(point: target)
-        animation.mass = 1
-        animation.stiffness = 210
-        animation.damping = 29
-        animation.duration = animation.settlingDuration
-        content.add(animation, forKey: "tw.settle")
     }
 
     func invalidate() {
@@ -394,7 +358,6 @@ final class WidgetScrolling {
     struct Gesture {
         var id: Int?
         var decided = false
-        var raw = CGPoint.zero
     }
 
     private var gesture: Gesture?
@@ -422,7 +385,7 @@ final class WidgetScrolling {
             guard let node = dom.node(id) else {
                 continue
             }
-            if !allowsCompositorTakeover || interactive.contains(id) || layers[id]?.content.animation(forKey: "tw.settle") != nil {
+            if !allowsCompositorTakeover || interactive.contains(id) {
                 var pending = node.children
                 while let child = pending.popLast() {
                     blocked.insert(dom.publicId(child))
@@ -562,9 +525,7 @@ final class WidgetScrolling {
             layer.clipsRasterToViewport = clipsUnscrolledRasters && hits[id] == nil && offsets[id] == nil && allowsViewportRaster(dom.node(id))
             layer.thumb.isHidden = hits[id] == nil
             layer.update(signature: WidgetCompositor.contentSignature(id, dom: dom, box: CGRect(origin: .zero, size: geometry.content), scale: scale, styleKey: styleKey) ?? 0)
-            if layer.content.animation(forKey: "tw.settle") == nil && gesture?.id != id {
-                layer.show(offsets[id] ?? .zero)
-            }
+            layer.show(offsets[id] ?? .zero)
             layer.ensureTiles(document: document, scale: scale, attribute: WidgetDOM.idAttribute)
         }
         CATransaction.commit()
@@ -708,7 +669,6 @@ final class WidgetScrolling {
                 let target = scroller(at: point, delta: delta)
                 gesture?.decided = true
                 gesture?.id = target
-                gesture?.raw = target.flatMap { offsets[$0] } ?? .zero
             }
             guard let locked = gesture?.id else {
                 return .ignored
@@ -725,37 +685,15 @@ final class WidgetScrolling {
             return .ignored
         }
         let current = offsets[id] ?? .zero
-        let promoted = layers[id] != nil
-        var raw: CGPoint
-        if phased && precise {
-            raw = CGPoint(x: (gesture?.raw.x ?? current.x) - delta.x, y: (gesture?.raw.y ?? current.y) - delta.y)
-            if geometry.maxOffset.x <= 0.5 {
-                raw.x = 0
-            }
-            if geometry.maxOffset.y <= 0.5 {
-                raw.y = 0
-            }
-            if !promoted {
-                raw = geometry.clamp(raw)
-            }
-            gesture?.raw = raw
-        } else {
-            raw = geometry.clamp(CGPoint(x: current.x - delta.x, y: current.y - delta.y))
-        }
-        let clamped = geometry.clamp(raw)
-        let released = (phase.contains(.ended) || phase.contains(.cancelled)) && momentum.isEmpty || finished
+        let clamped = geometry.clamp(CGPoint(x: current.x - delta.x, y: current.y - delta.y))
         offsets[id] = document?.setScrollOffset(clamped, attribute: attribute, value: String(id)) ?? clamped
         if let layer = layers[id] {
+            let shown = offsets[id] ?? clamped
             layer.clipsRasterToViewport = false
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer.content.removeAnimation(forKey: "tw.settle")
-            layer.show(geometry.banded(raw))
-            layer.flashIndicator(geometry.banded(raw))
-            if released {
-                gesture?.raw = clamped
-                layer.settle(to: clamped)
-            }
+            layer.show(shown)
+            layer.flashIndicator(shown)
             CATransaction.commit()
             if let document = document {
                 layer.ensureTiles(document: document, scale: scale, attribute: attribute, velocity: -delta.y * 8)
@@ -784,7 +722,6 @@ final class WidgetScrolling {
             layer.clipsRasterToViewport = false
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer.content.removeAnimation(forKey: "tw.settle")
             layer.show(offsets[id] ?? clamped)
             layer.flashIndicator(offsets[id] ?? clamped)
             CATransaction.commit()
