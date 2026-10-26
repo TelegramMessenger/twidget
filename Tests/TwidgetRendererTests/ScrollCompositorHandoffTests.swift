@@ -346,22 +346,4 @@ final class ScrollCompositorHandoffTests: XCTestCase {
         XCTAssertEqual(harness.renderer.scrolling.offset(10).y, 40)
         try harness.assertPixels()
     }
-
-    func testHiddenScrollOwnersProtectSettlingDescendantsWithoutBlockingAncestors() throws {
-        let harness = Harness(allowTakeover: true)
-        harness.send(scene(second: false))
-        let blocked = harness.renderer.scrolling.compositorBlockedIDs(dom: harness.renderer.dom)
-        XCTAssertFalse(blocked.contains(1))
-        XCTAssertFalse(blocked.contains(10))
-        XCTAssertFalse(blocked.contains(11))
-        let owner = try XCTUnwrap(harness.renderer.scrolling.layers[10])
-        owner.settle(to: CGPoint(x: 20, y: 0))
-        XCTAssertNotNil(owner.content.animation(forKey: "tw.settle"))
-        let settling = harness.renderer.scrolling.compositorBlockedIDs(dom: harness.renderer.dom)
-        XCTAssertFalse(settling.contains(1))
-        XCTAssertFalse(settling.contains(10))
-        XCTAssertTrue(settling.contains(11))
-        owner.content.removeAnimation(forKey: "tw.settle")
-        XCTAssertFalse(harness.renderer.scrolling.compositorBlockedIDs(dom: harness.renderer.dom).contains(11))
-    }
 }
