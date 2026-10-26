@@ -2277,6 +2277,37 @@ int main() {
         check(fills == 1 && first, "past 4,096 paths the first still fills and the refused one does not (" + std::to_string(fills) + " fills)");
     }
 
+    // ── grid shorthands ──
+    {
+        StubBackend gb;
+        auto grid = [&](const std::string& style) {
+            Renderer g(300, 1, false, gb);
+            g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"i","attrs":[["style","display:block"]]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"i","attrs":[["style","display:block"]]},{"op":"ins","parent":10,"id":12,"before":null},
+                {"op":"el","id":13,"tag":"i","attrs":[["style","display:block"]]},{"op":"ins","parent":10,"id":13,"before":null}]})"));
+            std::string out;
+            for (int id : {11, 12, 13}) {
+                Json r = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+                out += css::format_number(r["x"].asNumber(), 1) + "," + css::format_number(r["y"].asNumber(), 1) + " " + css::format_number(r["width"].asNumber(), 1) + "x" +
+                       css::format_number(r["height"].asNumber(), 1) + ";";
+            }
+            return out;
+        };
+        std::string t = grid("display:grid;grid-template:10px 20px / 30px 40px");
+        check(t == "0,0 30x10;30,0 40x10;0,10 30x20;", "grid-template: rows / columns places a 2×2 grid (got " + t + ")");
+        t = grid("display:grid;grid:15px / 50px 50px");
+        check(t == "0,0 50x15;50,0 50x15;0,15 50x0;", "grid: rows / columns, the third item in an auto row (got " + t + ")");
+        t = grid("display:grid;grid:auto-flow 12px / 40px 40px");
+        check(t == "0,0 40x12;40,0 40x12;0,12 40x12;", "grid: auto-flow sizes the implicit rows (got " + t + ")");
+        t = grid("display:grid;grid-template-columns:50px 50px;grid-template:none");
+        check(t == "0,0 300x0;0,0 300x0;0,0 300x0;", "grid-template: none resets the columns (got " + t + ")");
+        t = grid("display:grid;grid-template:var(--t);--t:10px / 30px 30px");
+        check(t == "0,0 30x10;30,0 30x10;0,10 30x0;", "grid-template from var() (got " + t + ")");
+    }
+
     // ── who gets a press: widget-sandbox's gesture policy ──
     {
         Renderer g(300, 1, false, backend);

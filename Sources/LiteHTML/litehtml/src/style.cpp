@@ -921,6 +921,11 @@ namespace litehtml
             parse_align_self(name, value, important);
             break;
 
+        case _grid_:
+        case _grid_template_:
+            parse_grid_shorthand(name, value, important);
+            break;
+
         case _place_items_:
         case _place_self_:
             if(value.size() == 1 || value.size() == 2)
@@ -2362,6 +2367,51 @@ namespace litehtml
             if(from != patch.m_properties.end())
                 add_parsed_property(name, std::move(from->second));
         }
+    }
+
+    // grid-template: none | <rows> / <columns>; grid also takes auto-flow <auto rows>? / <columns>. The forms with
+    // named areas, column flow or dense packing need what the grid layout lacks, so those declarations are dropped.
+    void style::parse_grid_shorthand(string_id name, const css_token_vector& tokens, bool important)
+    {
+        css_token_vector rows, columns;
+        bool             slash = false;
+        for(const auto& tok : tokens)
+        {
+            if(tok.type == STRING)
+                return;
+            if(tok.ch == '/')
+            {
+                if(slash)
+                    return;
+                slash = true;
+                continue;
+            }
+            (slash ? columns : rows).push_back(tok);
+        }
+        const css_token_vector none = {css_token(IDENT, "none")};
+        css_token_vector       auto_rows = {css_token(IDENT, "auto")};
+        if(!slash)
+        {
+            if(rows.size() != 1 || rows[0].ident() != "none")
+                return;
+            columns = none;
+        } else if(name == _grid_ && !rows.empty() && rows[0].ident() == "auto-flow")
+        {
+            if(rows.size() > 1 && rows[1].ident() == "dense")
+                return;
+            if(rows.size() > 1)
+                auto_rows.assign(rows.begin() + 1, rows.end());
+            rows = none;
+        }
+        if(rows.empty() || columns.empty())
+            return;
+        for(const auto& tok : columns)
+            if(tok.ident() == "auto-flow")
+                return;
+        add_parsed_property(_grid_template_rows_, property_value(rows, important));
+        add_parsed_property(_grid_template_columns_, property_value(columns, important));
+        if(name == _grid_)
+            add_parsed_property(_grid_auto_rows_, property_value(auto_rows, important));
     }
 
     void style::add_parsed_property(string_id name, property_value propval)
