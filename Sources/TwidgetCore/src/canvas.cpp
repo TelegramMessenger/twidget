@@ -6,6 +6,8 @@
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
+#include <locale>
+#include <sstream>
 #include <unordered_map>
 #include <string_view>
 
@@ -257,9 +259,29 @@ std::string js_number(double n) {
     if (std::isnan(n)) return "NaN";
     if (std::isinf(n)) return n < 0 ? "-Infinity" : "Infinity";
     if (n == 0) return "0";
+#if TWIDGET_JSON_TO_CHARS_DOUBLE
     char buf[64];
     auto r = std::to_chars(buf, buf + sizeof buf, n, std::chars_format::scientific);
     std::string_view sci(buf, size_t(r.ptr - buf));
+#else
+    // Floating-point to_chars needs macOS 13.3 (twidget/json.h): the shortest of 15, 16, 17 significant
+    // digits that reads back as `n`, in the same scientific form, trailing zeros of the mantissa dropped.
+    // A subnormal starts from one digit: fewer than 15 can already read back as it.
+    std::string shortest;
+    for (int precision = std::fpclassify(n) == FP_SUBNORMAL ? 0 : 14; precision <= 16; precision++) {
+        std::ostringstream stream;
+        stream.imbue(std::locale::classic());
+        stream.precision(precision);
+        stream << std::scientific << n;
+        shortest = stream.str();
+        size_t e = shortest.find('e');
+        size_t end = shortest.find_last_not_of('0', e - 1) + 1;
+        if (shortest[end - 1] == '.') end--;
+        shortest.erase(end, e - end);
+        if (Json::parseDouble(shortest.c_str()) == n) break;
+    }
+    std::string_view sci(shortest);
+#endif
     bool negative = sci.front() == '-';
     if (negative) sci.remove_prefix(1);
     size_t e = sci.find('e');
