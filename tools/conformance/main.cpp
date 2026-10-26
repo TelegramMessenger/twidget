@@ -416,6 +416,39 @@ std::string key_code(const std::string& key) {
 
 constexpr double VISUAL_HEIGHT = 2400;
 
+/// The server's flags for a kind of message and the chat it is in (WIDGET_MESSAGE_KINDS in widget-sandbox's
+/// sdk-policy.ts); false for a kind it does not list.
+bool message_context(const std::string& kind, twidget::WidgetContext& out) {
+    struct Kind {
+        const char* name;
+        bool copy, query, background, preview;
+    };
+    static const Kind kinds[] = {
+        {"private", false, true, true, false}, {"group", false, true, false, false}, {"via-bot", false, true, false, false},
+        {"no-queries", false, false, false, false}, {"live-copy", true, true, false, false}, {"copy", true, false, false, false},
+        {"preview", false, false, false, true},
+    };
+    for (const Kind& k : kinds) {
+        if (kind != k.name) continue;
+        out.isCopy = k.copy;
+        out.canQuery = k.query;
+        out.backgroundQuery = k.background;
+        out.preview = k.preview;
+        out.chatType = kind == "group" ? "group" : "private";
+        return true;
+    }
+    return false;
+}
+
+/// The account a client passes as the viewer where requests are allowed.
+twidget::WidgetViewer test_viewer() {
+    twidget::WidgetViewer v;
+    v.id = 777000001;
+    v.firstName = "Conformance";
+    v.username = "conformance_runner";
+    return v;
+}
+
 struct Options {
     fs::path sandbox = TW_SANDBOX;
     fs::path out = "conformance-run";
@@ -437,6 +470,15 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
     host_options.devicePixelRatio = DPR;
     host_options.features = {"webAnimations"};
     host_options.storage = options.storage;
+    // A test with a message runs as that kind of message with the bot's state; the others in no message context.
+    const Json& message = test["message"];
+    if (message.isArray() && !message.arr().empty()) {
+        const Json& spec = message[size_t(0)];
+        message_context(spec["kind"].asString(), host_options.context);
+        if (spec["chat_data"].isString() && !spec["chat_data"].asString().empty()) host_options.data.chatData = spec["chat_data"].asString();
+        if (spec["public_data"].isString() && !spec["public_data"].asString().empty()) host_options.data.publicData = spec["public_data"].asString();
+        if (host_options.context.canQuery) host_options.context.viewer = test_viewer();
+    }
     OffscreenRenderer* renderer = nullptr;
     auto factory = [&](std::shared_ptr<twidget::SandboxResources>, const std::string& scheme, double w) -> std::unique_ptr<twidget::Renderer> {
         // A visual widget is a column of stages taller than a bubble: it is drawn whole, as the Swift
@@ -474,6 +516,26 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
         std::lock_guard l(bridge_mutex);
         commits.push(Json::object().set("area", area).set("values", std::move(o)));
     };
+    // The runner plays the test bot: each request gets the result the manifest gives for its data.
+    const Json& bot = test["bot"];
+    std::map<std::string, int> asked;
+    host.onRequest = [&](const twidget::WidgetRequest& request, std::function<void(const twidget::WidgetRequestOutcome&)> respond) {
+        twidget::WidgetRequestOutcome outcome;
+        const Json& answer = bot[request.data];
+        if (!answer.isObject()) {
+            outcome.failure = twidget::WidgetRequestFailure::Failed;
+        } else if (answer["result"].isString()) {
+            std::string result = answer["result"].asString();
+            auto fill = [&](const std::string& name, const std::string& value) {
+                for (size_t at = result.find(name); at != std::string::npos; at = result.find(name, at + value.size())) result.replace(at, name.size(), value);
+            };
+            fill("{n}", std::to_string(++asked[request.data]));
+            fill("{from}", "Conformance");
+            fill("{time}", "12:00");
+            outcome.answer.result = std::move(result);
+        }
+        respond(outcome);
+    };
     host.start();
 
     const Json& actions = test["actions"];
@@ -488,6 +550,11 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
             const Json& a = actions[i];
             Verdict now = renderer->verdict();
             auto at = [&](const char* name) { return target(a[name], now); };
+            // A preview takes no input: a tap on it picks the inline result.
+            if (host_options.context.preview && !a.find("theme") && !a.find("visible") && !a.find("wait")) {
+                skipped.push(double(i));
+                continue;
+            }
             if (a.find("tap")) {
                 if (auto p = at("tap")) {
                     bubble.down(p->x, p->y);
