@@ -52,10 +52,12 @@ final class WidgetTaskPresentationTests: XCTestCase {
 
     private func pump(until done: () -> Bool) {
         let end = Date().addingTimeInterval(5)
-        while !done() && Date() < end {
+        var ready = done()
+        while !ready && Date() < end {
             RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+            ready = done()
         }
-        XCTAssertTrue(done())
+        XCTAssertTrue(ready)
     }
 
     func testSupportThreadDoesNotPublishHeightsFromItsFittingLoop() throws {
