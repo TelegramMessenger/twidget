@@ -1461,7 +1461,7 @@ function render() {
 </script>
 
 --- sam 20:30 bare
-<style>
+<style>[hidden]{display:none!important}
   .sdk { width: 300px; max-width: 100%; }
   .sdk .hd { display: flex; align-items: center; margin-bottom: 8px; }
   .sdk .su { border-collapse: collapse; border: 2px solid #1c1c1e; background-color: #ffffff; }

@@ -383,7 +383,7 @@ function render() {
 </script>
 
 --- tom 08:20 bare
-<style>
+<style>[hidden]{display:none!important}
   .wx { width: 420px; max-width: 100%; }
   .wx .seg { display: inline-block; padding: 2px; border-radius: 8px; background-color: rgba(127,127,127,0.14); }
   .wx .seg span { display: inline-block; padding: 2px 9px; border-radius: 6px; font-size: 12px; font-weight: 700; }

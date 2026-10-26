@@ -5,7 +5,7 @@
 @participant fuzz | Fuzzer | #ff9500
 
 --- fuzz 11:00
-<style>
+<style>[hidden]{display:none!important}
   .ty { width: 360px; max-width: 100%; }
   .ty .tabs { display: flex; margin: 8px 0 8px 0; padding: 2px; border-radius: 9px; background-color: rgba(127,127,127,0.12); }
   .ty .tab { display: block; flex-grow: 1; text-align: center; padding: 3px 0; border-radius: 7px; font-size: 12px; font-weight: 600; color: #8e8e93; }

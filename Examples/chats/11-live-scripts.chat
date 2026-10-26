@@ -120,7 +120,7 @@ function render() {
 Where should the offsite be? Vote, and click again to take it back 👇
 
 --- theo 10:03 bare
-<style>
+<style>[hidden]{display:none!important}
   .poll { width: 380px; max-width: 100%; }
   .poll .bar2 { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
   .poll .tab { display: inline-block; padding: 2px 10px; margin-right: 4px; border-radius: 8px; font-size: 12px; font-weight: 700; }
@@ -284,7 +284,7 @@ function render() {
 Tic-tac-toe against Pixel. Pick Easy or Hard (Hard is a full minimax, it never loses) and who starts. The bot thinks for a moment (a <code>setTimeout</code>), pieces spring in with <code>tween()</code>, the winning line pulses, and the result card arrives with <code>transition('pop')</code>.
 
 --- nora 10:06 bare
-<style>
+<style>[hidden]{display:none!important}
   .ttt { width: 300px; max-width: 100%; }
   .ttt .opts { display: flex; justify-content: space-between; margin-top: 8px; }
   .ttt .seg span { display: inline-block; padding: 2px 9px; margin-right: 3px; border-radius: 7px; font-size: 12px; font-weight: 600; background-color: rgba(127,127,127,0.12); }
@@ -447,7 +447,7 @@ function render() {
 </script>
 
 --- theo 10:09 bare
-<style>
+<style>[hidden]{display:none!important}
   .wam { width: 330px; max-width: 100%; }
   .wam .timer { height: 6px; border-radius: 3px; background-color: rgba(127,127,127,0.2); margin-top: 8px; }
   .wam .timer div { height: 6px; border-radius: 3px; }
