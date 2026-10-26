@@ -63,6 +63,19 @@ final class MediaControlTests: XCTestCase {
             click(try XCTUnwrap(repeatControl.children.first?.children.first))
             pump(1) { repeatControl.attribute("aria-pressed") == "true" }
             XCTAssertEqual(repeatControl.attribute("aria-pressed"), "true")
+            let queueLink = try XCTUnwrap(renderer.dom.nodes.values.first { $0.attribute("data-action") == "queue" })
+            let queue = try XCTUnwrap(renderer.dom.nodes.values.first { $0.attribute("id") == "list" })
+            click(queueLink)
+            pump(1) { queue.attribute("hidden") == nil }
+            XCTAssertNil(queue.attribute("hidden"))
+            click(queueLink)
+            pump(1) { queue.attribute("hidden") != nil }
+            XCTAssertNotNil(queue.attribute("hidden"))
+            let next = try XCTUnwrap(controls.first { $0.attribute("data-action") == "next" })
+            let art = try XCTUnwrap(renderer.dom.nodes.values.first { $0.attribute("id") == "art" })
+            click(next)
+            pump(1) { art.attribute("class")?.contains("tr-slide-left") == true }
+            XCTAssertTrue(art.attribute("class")?.contains("tr-slide-left") == true)
             XCTAssertNotNil(renderer.snapshot())
             try save("paused-toggles")
         }
