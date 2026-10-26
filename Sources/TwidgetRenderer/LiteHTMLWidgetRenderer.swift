@@ -1458,7 +1458,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             compositor.update(document: document, animator: animator, dom: dom, declarations: declarations, scale: documentView.scale, space: documentView.windowState.colorSpace ?? WidgetDocumentView.lastWindowSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!, extraExclusions: magic.excluded, blockedIDs: scrolling.compositorBlockedIDs(dom: dom, scrollers: scrollers))
             scrolling.attach(documentView.contentLayer)
             scrollersChanged = scrolling.update(document: document, dom: dom, animated: animator.animatedIDs(), promoted: compositor.ids.union(magic.excluded), styleKey: compositor.styleKey, scale: documentView.scale, scrollers: scrollers) || svgAdded
-            documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+            publishScrollRegions()
             statsLock.lock()
             publishedComposited = compositor.ids.count
             statsLock.unlock()
@@ -3142,10 +3142,28 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         }
     }
 
+    public func containsHorizontalScrollRegion(at point: CGPoint) -> Bool {
+        return documentView.windowState.horizontalScrollRegions.contains { $0.contains(point) }
+    }
+
+    public func containsVerticalScrollRegion(at point: CGPoint) -> Bool {
+        return documentView.windowState.verticalScrollRegions.contains { $0.contains(point) }
+    }
+
+    private func publishScrollRegions() {
+        let horizontal = scrolling.hitViewports.compactMap { id, rect in
+            scrolling.horizontalWheelIDs.contains(id) && scrolling.geometries[id].map { $0.maxOffset.x > 0.5 } == true ? rect : nil
+        }
+        let vertical = scrolling.hitViewports.compactMap { id, rect in
+            scrolling.verticalWheelIDs.contains(id) && scrolling.geometries[id].map { $0.maxOffset.y > 0.5 } == true ? rect : nil
+        }
+        documentView.publishScrollRegions(Array(scrolling.hitViewports.values), horizontal: horizontal, vertical: vertical)
+    }
+
     func scrolled(_ id: Int) {
         boundsValid = false
         if let document = document, scrolling.didScroll(id, dom: dom, document: document, scale: documentView.scale) {
-            documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+            publishScrollRegions()
         }
         if compositor.invalidateScroll(id, dom: dom) {
             setNeedsRender()
@@ -3200,13 +3218,13 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         scrolling.beginScrollUpdates()
         defer {
             if scrolling.endScrollUpdates(dom: dom, document: document) {
-                documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+                publishScrollRegions()
             }
         }
         for request in requests {
             if case .reveal = request {
                 if scrolling.endScrollUpdates(dom: dom, document: document) {
-                    documentView.publishScrollRegions(Array(scrolling.hitViewports.values))
+                    publishScrollRegions()
                 }
                 applyScrollRequest(request)
                 scrolling.beginScrollUpdates()
@@ -5086,6 +5104,8 @@ class WidgetDocumentView: NSView {
         var colorSpace: CGColorSpace?
         var size = CGSize.zero
         var scrollRegions: [CGRect] = []
+        var horizontalScrollRegions: [CGRect] = []
+        var verticalScrollRegions: [CGRect] = []
     }
 
     private let windowStateLock = NSLock()
@@ -5137,6 +5157,8 @@ class WidgetDocumentView: NSView {
         windowStateLock.lock()
         state.size = lockedWindowState.size
         state.scrollRegions = lockedWindowState.scrollRegions
+        state.horizontalScrollRegions = lockedWindowState.horizontalScrollRegions
+        state.verticalScrollRegions = lockedWindowState.verticalScrollRegions
         lockedWindowState = state
         windowStateLock.unlock()
     }
@@ -5153,9 +5175,11 @@ class WidgetDocumentView: NSView {
         windowStateLock.unlock()
     }
 
-    func publishScrollRegions(_ regions: [CGRect]) {
+    func publishScrollRegions(_ regions: [CGRect], horizontal: [CGRect], vertical: [CGRect]) {
         windowStateLock.lock()
         lockedWindowState.scrollRegions = regions
+        lockedWindowState.horizontalScrollRegions = horizontal
+        lockedWindowState.verticalScrollRegions = vertical
         windowStateLock.unlock()
     }
 

@@ -1796,7 +1796,9 @@ static std::string MasterWithCSS(NSString *css)
             if(CGRectIsNull(hitViewport))
                 hitViewport = CGRectZero;
             result[@(v)] = @{
-                @"wheel": @(css.get_overflow() != lh::overflow_hidden || ri->src_el()->tag() == lh::_textarea_),
+                @"wheel": @(css.get_overflow_x() == lh::overflow_auto || css.get_overflow_x() == lh::overflow_scroll || css.get_overflow_y() == lh::overflow_auto || css.get_overflow_y() == lh::overflow_scroll || ri->src_el()->tag() == lh::_textarea_),
+                @"wheelX": @(css.get_overflow_x() == lh::overflow_auto || css.get_overflow_x() == lh::overflow_scroll || ri->src_el()->tag() == lh::_textarea_),
+                @"wheelY": @(css.get_overflow_y() == lh::overflow_auto || css.get_overflow_y() == lh::overflow_scroll || ri->src_el()->tag() == lh::_textarea_),
                 @"hitViewport": [NSValue valueWithRect:hitViewport],
                 @"viewport": [NSValue valueWithRect:NSMakeRect(placement.x.value(), placement.y.value(), placement.width.value(), placement.height.value())],
                 @"content": [NSValue valueWithSize:NSMakeSize(content.width.value(), content.height.value())],

@@ -382,6 +382,8 @@ final class WidgetScrolling {
     private var scrollUpdateDepth = 0
     private var deferredGeometryRoots = Set<Int>()
     private(set) var hitViewports: [Int: CGRect] = [:]
+    private(set) var horizontalWheelIDs: Set<Int> = []
+    private(set) var verticalWheelIDs: Set<Int> = []
     private weak var host: CALayer?
     static let enabled = ProcessInfo.processInfo.environment["TW_NO_SCROLL_LAYERS"] == nil
     static let resizeAwareClips = ProcessInfo.processInfo.environment["TW_NO_RESIZE_AWARE_CLIPS"] == nil
@@ -465,11 +467,15 @@ final class WidgetScrolling {
     func update(document: LHDocument, dom: WidgetDOM, animated: Set<Int>, promoted: Set<Int>, styleKey: Int, scale: CGFloat, scrollers: [String: [String: Any]]? = nil) -> Bool {
         var found: [Int: WidgetScrollGeometry] = [:]
         var hits: [Int: CGRect] = [:]
+        var horizontal: Set<Int> = []
+        var vertical: Set<Int> = []
         var sticky = Set<Int>()
         for (key, info) in scrollers ?? document.scrollers(byAttribute: WidgetDOM.idAttribute) {
             guard let id = Int(key), let viewport = (info["viewport"] as? NSValue)?.rectValue, let content = (info["content"] as? NSValue)?.sizeValue else {
                 continue
             }
+            if (info["wheelX"] as? NSNumber)?.boolValue ?? ((info["wheel"] as? NSNumber)?.boolValue != false) { horizontal.insert(id) }
+            if (info["wheelY"] as? NSNumber)?.boolValue ?? ((info["wheel"] as? NSNumber)?.boolValue != false) { vertical.insert(id) }
             if (info["wheel"] as? NSNumber)?.boolValue != false {
                 hits[id] = (info["hitViewport"] as? NSValue)?.rectValue ?? viewport
             }
@@ -487,6 +493,8 @@ final class WidgetScrolling {
         }
         geometries = found
         hitViewports = hits
+        horizontalWheelIDs = horizontal
+        verticalWheelIDs = vertical
         depths.removeAll(keepingCapacity: true)
         for id in found.keys {
             var depth = 0
@@ -613,6 +621,9 @@ final class WidgetScrolling {
         for descendant in descendants {
             if let viewport = (info[String(descendant)]?["viewport"] as? NSValue)?.rectValue {
                 geometries[descendant]?.viewport = viewport
+                let values = info[String(descendant)] ?? [:]
+                if (values["wheelX"] as? NSNumber)?.boolValue ?? ((values["wheel"] as? NSNumber)?.boolValue != false) { horizontalWheelIDs.insert(descendant) } else { horizontalWheelIDs.remove(descendant) }
+                if (values["wheelY"] as? NSNumber)?.boolValue ?? ((values["wheel"] as? NSNumber)?.boolValue != false) { verticalWheelIDs.insert(descendant) } else { verticalWheelIDs.remove(descendant) }
                 if (info[String(descendant)]?["wheel"] as? NSNumber)?.boolValue != false {
                     hitViewports[descendant] = (info[String(descendant)]?["hitViewport"] as? NSValue)?.rectValue ?? viewport
                 } else {
@@ -645,6 +656,7 @@ final class WidgetScrolling {
         }) {
             let offset = offsets[id] ?? .zero
             let vertical = abs(delta.y) >= abs(delta.x)
+            if vertical && !verticalWheelIDs.contains(id) || !vertical && !horizontalWheelIDs.contains(id) { continue }
             if vertical {
                 if delta.y > 0 && offset.y > 0.5 || delta.y < 0 && offset.y < geometry.maxOffset.y - 0.5 {
                     return id
