@@ -66,7 +66,7 @@ On the ported corpus, every widget lays out to WebKit's height within 4 pt, and 
 
 **Known gaps:**
 - Form controls render as static content.
-- No scroll containers.
+- Native hosts can enable scroll containers with `WidgetHost.Options.nativeScrolling`; the shared widget profile clips them by default.
 - Fallback fonts for symbols such as ✕ can differ from WebKit's choice.
 - WebGL is not part of the twidget protocol.
 
