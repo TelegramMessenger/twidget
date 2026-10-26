@@ -1,10 +1,11 @@
-# Conformance with widget-sandbox v0.1.3
+# Conformance with widget-sandbox v0.2.1
 
 widget-sandbox v0.1.0 froze widget profile 1, v0.1.1 settles its defaults (the renderer's UA layer, text
 tokens, the bubble as the canvas, opt-in selection), v0.1.2 decides who gets a press (one gesture policy
-on every client), and v0.1.3 gives vertical drags to the chat and the resize anchor to the widget. Each
-ships a conformance set that every client runs on its renderer (`packages/conformance/CLIENTS.md` there). This page tracks TwidgetCore against it: what the
-contract asks of the renderer, and what the set reports, item by item.
+on every client), v0.1.3 gives vertical drags to the chat and the resize anchor to the widget, and v0.2
+gives the widget the bot's state and requests to the bot. Each ships a conformance set that every client
+runs on its renderer (`packages/conformance/CLIENTS.md` there). This page tracks TwidgetCore against it:
+what the contract asks of the renderer, and what the set reports, item by item.
 
 Measured with `tools/conformance` (Windows, the Direct2D painter on WARP, 390 CSS px, DPR 2) and the
 set's `tools/report.mjs`. The verdicts that come from the widgets' own checks (layout, computed style,
@@ -28,13 +29,16 @@ each platform's painter needs its own run.
 | 2026-10-21 | v0.1.1 (selection moves into the profile): the profile's UA layer, text tokens, `user-select`, relative offsets on inline elements | 163 / 1 / 0 / 10 | 79 / 0 / 0 |
 | 2026-10-23 | v0.1.2 (`dblclick` and `contextmenu` move into the profile): 163 / 2 / 2 / 9 before; the gesture policy in the renderer, the runner's presses through a bubble | 166 / 1 / 0 / 9 | 78 / 0 / 0 |
 | 2026-10-24 | v0.1.3 (vertical drags are the chat's, `setResizeAnchor`, transforms in % and `calc()`): 165 / 3 / 0 / 10 before; `calc()` of % and px inside a transform | 167 / 1 / 0 / 10 | 78 / 0 / 0 |
+| 2026-10-26 | v0.2.1 (the bot's state, requests, the message context; nothing new for the renderer): 170 / 4 / 0 / 14 before; the runner creates the host as the test's kind of message and answers as the test bot | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 
-The 10 untested features are the host's (limits, restart, storage, message edits, size hints, the resize
-anchor): the automatic set does not reach them, and each client checks them in its own host. The gesture
-claim is tested since v0.1.2: the runner's presses go through a bubble that follows the shared policy, as
-CLIENTS.md asks.
+The 14 untested features are the host's (limits, restart, storage, message and state edits, forwarded
+copies, previews, the network marker, size hints, the resize anchor): the automatic set does not reach them,
+and each client checks them in its own host. The gesture claim is tested since v0.1.2: the runner's presses
+go through a bubble that follows the shared policy, as CLIENTS.md asks. Since v0.2.1 a test with a
+`message` runs as that kind of message (the server's flags, the bot's state and a viewer where requests are
+allowed), and the runner answers its requests from the manifest's `bot` table, as the test bot would.
 
 For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
 66 / 41 / 52 in widget-sandbox's own results.
