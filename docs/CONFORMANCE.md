@@ -1,4 +1,4 @@
-# Conformance with widget-sandbox v0.2.2
+# Conformance with widget-sandbox v0.2.3
 
 widget-sandbox v0.1.0 froze widget profile 1, v0.1.1 settles its defaults (the renderer's UA layer, text
 tokens, the bubble as the canvas, opt-in selection), v0.1.2 decides who gets a press (one gesture policy
@@ -31,6 +31,7 @@ each platform's painter needs its own run.
 | 2026-10-24 | v0.1.3 (vertical drags are the chat's, `setResizeAnchor`, transforms in % and `calc()`): 165 / 3 / 0 / 10 before; `calc()` of % and px inside a transform | 167 / 1 / 0 / 10 | 78 / 0 / 0 |
 | 2026-10-26 | v0.2.1 (the bot's state, requests, the message context; nothing new for the renderer): 170 / 4 / 0 / 14 before; the runner creates the host as the test's kind of message and answers as the test bot | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
 | 2026-10-26 | v0.2.2 (haptics need a touch: host glue only) | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
+| 2026-10-27 | v0.2.3 (the shim converts canvas arguments and loads images a script creates; pictures follow profile 1) | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 
