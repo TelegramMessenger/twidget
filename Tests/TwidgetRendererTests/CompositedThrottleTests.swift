@@ -4,6 +4,63 @@ import WidgetSandboxProtocol
 @testable import TwidgetRenderer
 
 final class CompositedThrottleTests: XCTestCase {
+    func testFirstScriptedTransformPromotesWithoutSoftwareWarmupFrames() {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 160), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        defer { renderer.destroy() }
+        renderer.view.frame = window.contentView!.bounds
+        window.contentView?.addSubview(renderer.view)
+        renderer.load()
+        renderer.send(ops: [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [["style", "height:160px"]], "adopt": "body"],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "position:absolute;width:22px;height:22px;background:red"]]],
+            ["op": "ins", "id": 3, "parent": 1]
+        ].map(WidgetOp.init))
+        renderer.send(ops: [["op": "style", "id": 3, "name": "transform", "value": "translate(20px,20px) rotate(30deg)"]].map(WidgetOp.init))
+        let deadline = Date().addingTimeInterval(2)
+        while renderer.compositedCount == 0 && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(renderer.compositedCount, 1)
+    }
+
+    func testInteractiveFramesStayWithinBudgetWhileSlowPassesAreHeld() {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        defer { renderer.destroy() }
+        renderer.load()
+        renderer.send(ops: [["op": "el", "id": 1, "tag": "body", "adopt": "body"]].map(WidgetOp.init))
+        Thread.sleep(forTimeInterval: 1.1)
+        for frame in 0..<10 {
+            renderer.charge(0.09)
+            renderer.send(ops: [["op": "attr", "id": 1, "name": "title", "value": "frame-\(frame)"]].map(WidgetOp.init))
+            XCTAssertEqual(renderer.heldOpBatches, 0)
+        }
+        renderer.charge(0.2)
+        renderer.send(ops: [["op": "attr", "id": 1, "name": "title", "value": "slow"]].map(WidgetOp.init))
+        XCTAssertEqual(renderer.heldOpBatches, 1)
+    }
+
+    func testWaitingInAPassDoesNotSpendCPUBudget() {
+        _ = NSApplication.shared
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 240)
+        defer { renderer.destroy() }
+        renderer.load()
+        renderer.send(ops: [
+            ["op": "el", "id": 1, "tag": "body", "attrs": [["style", "height:160px"]], "adopt": "body"]
+        ].map(WidgetOp.init))
+        Thread.sleep(forTimeInterval: 1.1)
+        renderer.onSerialized = { _, _ in Thread.sleep(forTimeInterval: 0.2) }
+        renderer.send(ops: [["op": "attr", "id": 1, "name": "title", "value": "wait"]].map(WidgetOp.init))
+        renderer.send(ops: [["op": "attr", "id": 1, "name": "title", "value": "resume"]].map(WidgetOp.init))
+        XCTAssertEqual(renderer.heldOpBatches, 0)
+        XCTAssertEqual(renderer.throttledUpdates, 0)
+    }
+
     func testRequestedFramesWaitForHeldPaintAndResumeWithoutAnotherRequest() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 160), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -22,7 +79,7 @@ final class CompositedThrottleTests: XCTestCase {
         ].map(WidgetOp.init))
         RunLoop.main.run(until: Date().addingTimeInterval(1.1))
         XCTAssertFalse(renderer.isPreparingTiles)
-        renderer.charge(0.2)
+        for _ in 0..<10 { renderer.charge(0.2) }
         renderer.send(ops: [["op": "style", "id": 3, "name": "width", "value": "40px"]].map(WidgetOp.init))
         XCTAssertEqual(renderer.heldOpBatches, 1)
         var frames = 0
@@ -30,10 +87,10 @@ final class CompositedThrottleTests: XCTestCase {
             if json.hasPrefix("{\"type\":\"frame\"") { frames += 1 }
         }
         renderer.send("{\"type\":\"requestFrame\"}")
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
         XCTAssertEqual(frames, 0)
         XCTAssertEqual(renderer.heldOpBatches, 1)
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(0.5)
         while frames == 0 && Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }

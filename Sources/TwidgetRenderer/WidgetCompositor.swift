@@ -1184,9 +1184,7 @@ final class WidgetCompositor {
             }
             let origin = CSSTransform.origin(scriptedOrigins.values[String(id)]?["transform-origin"] ?? style["transform-origin"], box: box.size)
             let current = CGRect(origin: .zero, size: box.size).applying(WidgetCompositor.anchored(transform, box: box, origin: origin))
-            let rotated = abs(transform.b) > 0.0001 || abs(transform.c) > 0.0001
-            let translating = transform.a == 1 && transform.b == 0 && transform.c == 0 && transform.d == 1
-            let scale: CGFloat = translating ? 1 : min(3, max(rotated ? 2 : 1, sqrt(abs(transform.a * transform.d - transform.b * transform.c)) * 1.25))
+            let scale = WidgetCompositor.scriptedRasterMagnification(transform)
             wanted[id] = (box, origin, scale)
             reaches[id] = [max(48, max(box.width, box.height) / 2), 16, 2].map { current.insetBy(dx: -$0, dy: -$0) }
             scriptedBases[id] = current
@@ -1408,6 +1406,10 @@ final class WidgetCompositor {
             }
             return cached.space == spaceGeneration && cached.key == key
         }
+        var measuredRasterBounds: [Int: CGRect] = [:]
+        for id in wanted.keys {
+            measuredRasterBounds[id] = document.rasterBoundsOfElement(attribute: WidgetDOM.idAttribute, value: String(id), bareShadows: effectOwners[id] != nil)
+        }
         var accepted = wanted
         var chosenReach: [Int: CGRect] = [:]
         var paintRank: [Int: Int]?
@@ -1435,7 +1437,9 @@ final class WidgetCompositor {
                     return cached.pixels
                 }
                 let factor = WidgetCompositor.rasterScale(scale, want.maxScale)
-                return Int(((want.box.width + 96) * factor).rounded(.up) * ((want.box.height + 96) * factor).rounded(.up))
+                let bounds = measuredRasterBounds[id] ?? want.box.insetBy(dx: -48, dy: -48)
+                guard !bounds.isNull, bounds.width.isFinite, bounds.height.isFinite, bounds.width * factor <= 8192, bounds.height * factor <= 8192 else { return WidgetCompositor.maxPixels + 1 }
+                return Int((bounds.width * factor).rounded(.up) * (bounds.height * factor).rounded(.up))
             }
             var admitted: [Int: (box: CGRect, origin: CGPoint, maxScale: CGFloat)] = [:]
             if next.count <= WidgetCompositor.maxLayers && next.reduce(0, { $0 + pixels($1.key, $1.value) }) <= WidgetCompositor.maxPixels {
@@ -1698,6 +1702,17 @@ final class WidgetCompositor {
         for child in children.enumerated().sorted(by: { (order($0.element), $0.offset) < (order($1.element), $1.offset) }).map({ $0.element }) {
             parent.twAddSublayer(child)
         }
+    }
+
+    static func scriptedRasterMagnification(_ transform: CGAffineTransform) -> CGFloat {
+        if transform.a == 1 && transform.b == 0 && transform.c == 0 && transform.d == 1 {
+            return 1
+        }
+        let x = transform.a * transform.a + transform.b * transform.b
+        let y = transform.c * transform.c + transform.d * transform.d
+        let cross = transform.a * transform.c + transform.b * transform.d
+        let stretch = sqrt((x + y + hypot(x - y, 2 * cross)) / 2)
+        return min(3, max(1, stretch * 1.25))
     }
 
     static func rasterScale(_ display: CGFloat, _ magnification: CGFloat) -> CGFloat {

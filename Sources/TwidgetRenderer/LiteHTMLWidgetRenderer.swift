@@ -571,7 +571,8 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     static let sustainedLimit: CFTimeInterval = 0.1
     static let heavyPassSeconds: CFTimeInterval = 0.05
     static let loadGraceSeconds: CFTimeInterval = 1
-    static let throttleFreeSeconds: CFTimeInterval = 0.016
+    static let throttleFreeSeconds: CFTimeInterval = 0.1
+    static let maxThrottleDelay: CFTimeInterval = 0.1
     private let throttleLock = NSLock()
     private var chargeWindow: [(at: CFTimeInterval, spent: CFTimeInterval)] = []
     private var firstChargeAt: CFTimeInterval?
@@ -581,13 +582,13 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
 
     private func metered<T>(_ body: () -> T) -> T {
         meterDepth += 1
-        let start = CACurrentMediaTime()
         let cpuStart = LiteHTMLWidgetRenderer.threadCPUSeconds()
         defer {
             meterDepth -= 1
             if meterDepth == 0 {
-                charge(CACurrentMediaTime() - start)
-                passMaxCPUMilliseconds = max(passMaxCPUMilliseconds, (LiteHTMLWidgetRenderer.threadCPUSeconds() - cpuStart) * 1000)
+                let spent = LiteHTMLWidgetRenderer.threadCPUSeconds() - cpuStart
+                charge(spent)
+                passMaxCPUMilliseconds = max(passMaxCPUMilliseconds, spent * 1000)
             }
         }
         return body()
@@ -635,7 +636,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         guard factor > 0 else {
             return
         }
-        throttledUntil = max(throttledUntil, now) + spent * factor
+        throttledUntil = min(now + LiteHTMLWidgetRenderer.maxThrottleDelay, max(throttledUntil, now) + spent * factor)
     }
 
     private func throttleRemaining(_ now: CFTimeInterval) -> CFTimeInterval {
@@ -1226,6 +1227,9 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     func noteUserInput() {
         lastInputAt = CACurrentMediaTime()
         inputAwaitingAnswer = true
+        if frameRequested {
+            holdForFrameIfAnswering()
+        }
     }
 
     var rendersAtTick: Bool {
@@ -1281,7 +1285,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
 
     private func holdForFrameIfAnswering() {
         let now = CACurrentMediaTime()
-        guard frameHoldStart == nil, answersInput, isOnScreen, now - lastFramePost > 0.1 else {
+        guard frameHoldStart == nil, answersInput, isOnScreen else {
             return
         }
         frameHoldStart = now
@@ -2132,7 +2136,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             let continues = hit.map { opsBatch - $0.batch <= LiteHTMLWidgetRenderer.scriptedStreakBatches || now - $0.at <= LiteHTMLWidgetRenderer.scriptedStreakGap } ?? false
             let count = continues ? hit!.count + 1 : 1
             scriptedHits[id] = (count, opsBatch, now)
-            if count >= 3 && LiteHTMLWidgetRenderer.scriptedPromotion && !compositor.scriptedCandidates.contains(id) && compositor.scriptedCandidates.count < WidgetCompositor.maxLayers {
+            if (count >= 3 || op.name.lowercased() == "transform") && LiteHTMLWidgetRenderer.scriptedPromotion && !compositor.scriptedCandidates.contains(id) && compositor.scriptedCandidates.count < WidgetCompositor.maxLayers {
                 compositor.scriptedCandidates.insert(id)
             }
         }

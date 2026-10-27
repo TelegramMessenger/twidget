@@ -64,6 +64,51 @@ final class CompositorClipTests: XCTestCase {
         XCTAssertEqual(pixels[offset + 2], 0)
     }
 
+    func testScriptedRasterDensityTracksStretchInsteadOfRotation() {
+        for angle in [0.1, 0.5, 1.0, 2.5, 4.0] {
+            let transform = CGAffineTransform(rotationAngle: angle).translatedBy(x: 100, y: 20)
+            XCTAssertEqual(WidgetCompositor.scriptedRasterMagnification(transform), 1.25, accuracy: 0.000001)
+            XCTAssertEqual(WidgetCompositor.rasterScale(2, WidgetCompositor.scriptedRasterMagnification(transform)), 2.5)
+        }
+        XCTAssertEqual(WidgetCompositor.scriptedRasterMagnification(CGAffineTransform(translationX: 100, y: 20)), 1)
+        XCTAssertEqual(WidgetCompositor.scriptedRasterMagnification(CGAffineTransform(scaleX: 2, y: 0.5)), 2.5)
+        XCTAssertEqual(WidgetCompositor.scriptedRasterMagnification(CGAffineTransform(a: 1, b: 0, c: 1, d: 1, tx: 0, ty: 0)), 1.25 * (1 + sqrt(5)) / 2, accuracy: 0.000001)
+    }
+
+    func testCompactRasterMatchesConservativeCapture() throws {
+        for contents in ["<span>88</span>", "<span style='font-style:italic;text-shadow:2px 1px 3px black'>Wj</span>", "<span style='position:absolute;left:-12px;top:25px'>wide</span>"] {
+            func capture(_ tag: String) throws -> (CGRect, [UInt8]) {
+                let style = "position:absolute;left:60px;top:60px;width:22px;height:22px;border:1px solid white;border-radius:6px;background:linear-gradient(135deg,red,blue);box-shadow:0 1px 3px #666;font:8px/22px sans-serif"
+                let document = LHDocument(html: "<\(tag) id='cell' style='\(style)'>\(contents)</\(tag)>", css: nil)
+                _ = document.layout(maxWidth: 200, preferredWidth: 200)
+                var ink = CGRect.zero, box = CGRect.zero
+                let image = try XCTUnwrap(document.copyImageOfElement(attribute: "id", value: "cell", scale: 4, inkBounds: &ink, borderBox: &box))
+                let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+                let data = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+                return (ink, Array(UnsafeBufferPointer(start: data, count: image.width * image.height * 4)))
+            }
+            let compact = try capture("div"), conservative = try capture("section")
+            XCTAssertEqual(compact.0, conservative.0)
+            XCTAssertEqual(compact.1.count, conservative.1.count)
+            XCTAssertLessThanOrEqual(zip(compact.1, conservative.1).map { abs(Int($0) - Int($1)) }.max() ?? 0, 1)
+        }
+    }
+
+    func testSmallCellRasterBudgetIncludesTextAndShadows() throws {
+        let document = LHDocument(html: "<div id='cell' style='width:22px;height:22px;border:1px solid white;border-radius:6px;background:linear-gradient(135deg,red,blue);box-shadow:0 1px 3px #666;font:8px/22px sans-serif'><span>88</span></div>", css: nil)
+        _ = document.layout(maxWidth: 200, preferredWidth: 200)
+        let reserved = document.rasterBoundsOfElement(attribute: "id", value: "cell", bareShadows: false)
+        var ink = CGRect.zero, box = CGRect.zero
+        let image = try XCTUnwrap(document.copyImageOfElement(attribute: "id", value: "cell", scale: 4, inkBounds: &ink, borderBox: &box))
+        XCTAssertTrue(reserved.contains(ink))
+        XCTAssertTrue(ink.contains(box))
+        XCTAssertGreaterThan(ink.width, box.width)
+        XCTAssertLessThan(reserved.width, box.width + 40)
+        XCTAssertLessThanOrEqual(Int(ceil(reserved.width * 4) * ceil(reserved.height * 4)) * 250, WidgetCompositor.maxPixels)
+        XCTAssertEqual(CGFloat(image.width), ink.width * 4)
+    }
+
     func testFractionalScaleCropsOnWholePixels() throws {
         let (image, ink, box) = try XCTUnwrap(snapshot("background:#3390ec", scale: 2.5))
         XCTAssertTrue(ink.contains(box))

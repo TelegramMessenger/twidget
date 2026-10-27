@@ -55,12 +55,14 @@ How the protocol maps onto native code:
 | DOM operations | A mirror document laid out by litehtml. Frames that change styles, text, classes, attributes or child lists patch the live document instead of parsing it again; animation-only frames skip serialization entirely. |
 | `light-dark()`, theme | Resolved for the current theme, re-rendered on `setTheme` |
 | `@keyframes`, `animation`, `transition` | A native animation engine: timing functions, `steps()`, iterations, direction, fill modes, and interpolation of numbers, colors and transforms (through their CSS primitives, across units). Transform and opacity animations are baked into Core Animation keyframes and run on the render server with no per-frame CPU work; everything else writes into an animation layer that litehtml keeps out of the cascade it reports back. Animations stop under `display: none` and restart when shown, as in browsers. |
-| Script-driven motion | Elements whose `transform` or `opacity` a script sets frame after frame are promoted to their own layers and updated without layout or drawing |
+| Script-driven motion | Scripted transforms are considered for promotion on their first update; repeated opacity updates are also promoted. Layer and pixel budgets still apply. Transform-only updates then avoid layout and drawing. |
 | Canvas 2D | CoreGraphics on a native BGRA backing: paths, Path2D, gradients, text, transforms, clipping, shadows, compositing, `getImageData` and `putImageData`. The canvas takes its CSS size like any replaced element. |
 | Layout queries | `rect`, `box`, `cs`, `measureText`, `elementFromPoint`, `matchMedia`, `viewport` and canvas calls, answered synchronously |
 | Events | Pointer, mouse, click, double-click, hover, key and animation events, with per-frame coalescing of moves like the WebView renderer |
 
 Both renderers render the ported demo corpus and Chart.js and D3 widgets. `tools/perflab/TwidgetLab` in the Telegram for macOS repository compares them side by side.
+
+Input changes join an already requested animation frame before painting, including widgets with a continuous frame loop. Rendering passes are charged by thread CPU time. Passes up to 100 ms remain interactive; more expensive passes accrue throttle debt capped at 100 ms, so transient overload cannot stack multi-second pauses. Script and DOM quotas remain independent of this rendering threshold. Simple element rasters reserve space for their text and shadows, and compositor admission uses the same bounds. Rotation retains sampling headroom without being treated as a 2× enlargement.
 
 On the ported corpus, every widget lays out to WebKit's height within 4 pt, and the remaining pixel differences come from glyph antialiasing. Box edges snap to device pixels as in WebKit. A frozen-animation suite (keyframes paused at fixed times, across transform functions, origins, opacity, colors, sizes, easings, `steps()`, directions and fill modes) renders with no geometric difference from WebKit.
 

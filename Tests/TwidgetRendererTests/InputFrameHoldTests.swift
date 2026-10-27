@@ -15,6 +15,35 @@ final class InputFrameHoldTests: XCTestCase {
         renderer.send(String(data: data, encoding: .utf8)!)
     }
 
+    func testInputJoinsAnAlreadyRequestedAnimationFrame() {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 160), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 200)
+        defer { renderer.destroy() }
+        renderer.view.frame = window.contentView!.bounds
+        window.contentView?.addSubview(renderer.view)
+        renderer.load()
+        send(renderer, [["op": "el", "id": 1, "tag": "body", "adopt": "body"]])
+        pump(2, until: { !renderer.isPreparingTiles && renderer.layoutCount > 0 })
+        var posted = false
+        renderer.onMessage = { if $0.hasPrefix("{\"type\":\"frame\"") { posted = true } }
+        renderer.send("{\"type\":\"requestFrame\"}")
+        pump(1, until: { posted })
+        XCTAssertTrue(posted)
+        renderer.send("{\"type\":\"requestFrame\"}")
+        renderer.noteUserInput()
+        XCTAssertTrue(renderer.holdsForFrame)
+        let before = renderer.layoutCount
+        send(renderer, [["op": "el", "id": 3, "tag": "div", "attrs": [["style", "width:22px;height:22px;background:red"]]], ["op": "ins", "id": 3, "parent": 1]])
+        XCTAssertEqual(renderer.layoutCount, before)
+        pump(0.2, until: { !renderer.holdsForFrame })
+        XCTAssertFalse(renderer.holdsForFrame)
+        XCTAssertGreaterThan(renderer.layoutCount, before)
+    }
+
     func testClickOpsWaitForTheRequestedFrameAnswer() {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 240), styleMask: [.borderless], backing: .buffered, defer: false)

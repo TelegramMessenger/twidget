@@ -2199,6 +2199,58 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     return CGRectMake(x0, y0, x1 - x0, y1 - y0);
 }
 
+static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root, bool bareShadows)
+{
+    const CGRect box = BorderBox(root);
+    const auto placement = root->get_placement();
+    lh::position redraw(static_cast<float>(box.origin.x), static_cast<float>(box.origin.y), static_cast<float>(box.size.width), static_cast<float>(box.size.height));
+    root->get_redraw_box(redraw, placement.x - root->pos().x, placement.y - root->pos().y);
+    CGFloat slack = 4;
+    size_t visited = 0;
+    std::vector<std::shared_ptr<lh::render_item>> pending{root};
+    while(!pending.empty())
+    {
+        auto item = std::move(pending.back());
+        pending.pop_back();
+        const auto &css = item->css();
+        const auto el = item->src_el();
+        if(++visited > 512 || !css.get_filter().empty() || !css.get_backdrop_filter().empty() ||
+           !css.get_clip_path().empty() || (item != root && !css.get_transform().empty()) ||
+           (css.get_outline().style != lh::border_style_none && css.get_outline().style != lh::border_style_hidden) ||
+           (!el->is_text() && std::string_view(el->get_tagName()) != "div" && std::string_view(el->get_tagName()) != "span"))
+        {
+            slack = std::max<CGFloat>(slack, 48);
+            break;
+        }
+        if(el->is_text())
+            slack = std::max(slack, std::ceil(BorderBox(item).size.height) / 2 + 2);
+        auto shadows = [&](const lh::box_shadow_vector &values) {
+            for(const auto &shadow : values)
+            {
+                if(shadow.inset)
+                    continue;
+                const CGFloat x = shadow.x.calc_percent(0).value(), y = shadow.y.calc_percent(0).value();
+                const CGFloat blur = shadow.blur.calc_percent(0).value(), spread = shadow.spread.calc_percent(0).value();
+                slack = std::max(slack, blur * 2 + std::fabs(spread) + std::max(std::fabs(x), std::fabs(y)) + 4);
+            }
+        };
+        if(item != root || !bareShadows)
+            shadows(css.get_box_shadows());
+        shadows(css.get_text_shadows());
+        for(const auto &child : item->children())
+            pending.push_back(child);
+    }
+    return CGRectIntegral(CGRectInset(CGRectUnion(box, CGRectMake(redraw.x.value(), redraw.y.value(), redraw.width.value(), redraw.height.value())), -slack, -slack));
+}
+
+- (CGRect)rasterBoundsOfElementWithAttribute:(NSString *)attribute value:(NSString *)value bareShadows:(BOOL)bareShadows
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    auto ri = [self renderItemLockedWithAttribute:attribute value:value];
+    return ri ? LHElementRasterBounds(ri, bareShadows) : CGRectNull;
+}
+
 - (CGImageRef)copyImageOfElementWithAttribute:(NSString *)attribute value:(NSString *)value scale:(CGFloat)scale inkBounds:(CGRect *)inkOut borderBox:(CGRect *)boxOut
 {
     return [self copyImageOfElementWithAttribute:attribute value:value scale:scale inkBounds:inkOut borderBox:boxOut radii:nullptr];
@@ -2220,9 +2272,7 @@ static CGRect TightInk(CGContextRef ctx, CGRect ink, CGRect box, CGFloat scale)
     const lh::position placement = ri->get_placement();
     const lh::pixel_t  x         = placement.x - ri->pos().x;
     const lh::pixel_t  y         = placement.y - ri->pos().y;
-    lh::position       redraw(static_cast<float>(box.origin.x), static_cast<float>(box.origin.y), static_cast<float>(box.size.width), static_cast<float>(box.size.height));
-    ri->get_redraw_box(redraw, x, y);
-    CGRect ink = CGRectIntegral(CGRectInset(CGRectUnion(box, CGRectMake(redraw.x.value(), redraw.y.value(), redraw.width.value(), redraw.height.value())), -48, -48));
+    CGRect ink = LHElementRasterBounds(ri, bareShadows);
     const size_t pw = (size_t)std::ceil(ink.size.width * scale), ph = (size_t)std::ceil(ink.size.height * scale);
     if(pw == 0 || ph == 0 || pw > 8192 || ph > 8192 || pw * ph > 16u * 1024u * 1024u)
         return nullptr;
