@@ -45,6 +45,34 @@ allowed), and the runner answers its requests from the manifest's `bot` table, a
 For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
 66 / 41 / 52 in widget-sandbox's own results.
 
+## Swift renderer on macOS
+
+`ConformanceRunnerTests.testAutomaticSet` runs the same automatic widgets through Swift's
+`WidgetHost` and `LiteHTMLWidgetRenderer`, with native mouse input and renderer snapshots.
+The runner configures each test's first `message` spec with its flags, chat state, shared state and
+viewer, and answers requests from the manifest's `bot` table. This lets the context widgets exercise
+originals, copies and previews with their actual permissions. Tests without a `message` use the
+private-chat context, as `CLIENTS.md` requires. Unknown message kinds stop the run.
+
+From this repository:
+
+```sh
+TW_CONFORMANCE=1 TW_CONFORMANCE_OUT=/tmp/twidget-conformance \
+  swift test --scratch-path /tmp/twidget-tests --disable-sandbox \
+  --enable-xctest --disable-swift-testing \
+  -Xlinker -framework -Xlinker QuartzCore \
+  --filter ConformanceRunnerTests.testAutomaticSet
+node ../widget-sandbox/packages/conformance/tools/report.mjs \
+  --out /tmp/twidget-conformance/report --fail-on in \
+  /tmp/twidget-conformance/macos-twidget-litehtml.run.json
+```
+
+Always judge the run file: XCTest records the widget checks without turning their failures into
+XCTest assertions. `TW_CONFORMANCE_ONLY` accepts comma-separated manifest IDs for a focused run;
+leave it unset for the whole set. `TW_CONFORMANCE_FEATURES` selects the host's feature set, with
+`webAnimations` as the default. The test needs a logged-in macOS graphical session. Telegram's
+message-list integration and live bot delivery need their own checks.
+
 ## Done
 
 | What the contract asks | Where |

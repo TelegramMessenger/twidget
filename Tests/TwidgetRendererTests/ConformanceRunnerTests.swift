@@ -538,7 +538,12 @@ final class ConformanceRunnerTests: XCTestCase {
         let file = test["file"] as? String ?? ""
         let actions = (test["actions"] as? [[String: Any]]) ?? []
         let html = try String(contentsOf: root.appendingPathComponent(file), encoding: .utf8)
-        let session = try Session(html: html, theme: theme, features: features)
+        let message = try Self.messageOptions(test)
+        let session = try Session(html: html, theme: theme, features: features, configure: {
+            $0.context = message.context
+            $0.data = message.data
+        })
+        session.host.onRequest = Self.requestHandler(test)
         defer { session.close() }
         let idle: (TimeInterval) -> Void = { [unowned self] seconds in self.pump(seconds) }
         let host = session.host
@@ -586,6 +591,52 @@ final class ConformanceRunnerTests: XCTestCase {
             "observed": ["bridge": bridge, "height": Double(state.height), "chatFocused": chatFocused, "focusHolder": focusHolder, "syntheticInput": false] as [String: Any],
             "skippedActions": skipped, "errors": errors,
         ]
+    }
+
+    private static let messageContexts: [String: WidgetContext] = [
+        "private": WidgetContext(canQuery: true, backgroundQuery: true, chatType: .private),
+        "group": WidgetContext(canQuery: true, chatType: .group),
+        "via-bot": WidgetContext(canQuery: true, chatType: .private),
+        "no-queries": WidgetContext(chatType: .private),
+        "copy": WidgetContext(isCopy: true, chatType: .private),
+        "live-copy": WidgetContext(isCopy: true, canQuery: true, chatType: .private),
+        "preview": WidgetContext(chatType: .private, preview: true),
+    ]
+
+    private static func messageOptions(_ test: [String: Any]) throws -> WidgetHost.Options {
+        var options = WidgetHost.Options()
+        let message = (test["message"] as? [[String: Any]])?.first
+        let kind: String
+        if let message {
+            kind = try XCTUnwrap(message["kind"] as? String)
+        } else {
+            kind = "private"
+        }
+        options.context = try XCTUnwrap(messageContexts[kind], "Unknown widget message kind: \(kind)")
+        if options.context.canQuery {
+            options.context.viewer = WidgetViewer(id: 777000001, firstName: "Conformance", username: "conformance_runner")
+        }
+        options.data = WidgetData(chatData: message?["chat_data"] as? String, publicData: message?["public_data"] as? String)
+        return options
+    }
+
+    private static func requestHandler(_ test: [String: Any]) -> (WidgetRequest, @escaping (Result<WidgetRequestAnswer, WidgetRequestFailure>) -> Void) -> Void {
+        let bot = (test["bot"] as? [String: [String: Any]]) ?? [:]
+        var counts: [String: Int] = [:]
+        return { request, complete in
+            guard let answer = bot[request.data] else {
+                complete(.failure(.failed))
+                return
+            }
+            var result = answer["result"] as? String
+            if result != nil {
+                counts[request.data, default: 0] += 1
+                for (token, value) in [("{n}", String(counts[request.data] ?? 0)), ("{from}", "Conformance"), ("{time}", "12:00")] {
+                    result = result?.replacingOccurrences(of: token, with: value)
+                }
+            }
+            complete(.success(WidgetRequestAnswer(result: result)))
+        }
     }
 
     func testAutomaticSet() throws {
