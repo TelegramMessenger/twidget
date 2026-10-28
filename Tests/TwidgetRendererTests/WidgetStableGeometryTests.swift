@@ -13,7 +13,14 @@ final class WidgetStableGeometryTests: XCTestCase {
 
     private func payload(_ name: String) throws -> String {
         let root = ProcessInfo.processInfo.environment["TW_STABLE_WIDGET_DIR"].map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../../tools/perflab/widget-glitches/repaired")
-        return try String(contentsOf: root.appendingPathComponent(name + ".html"), encoding: .utf8)
+        return try String(contentsOf: root.appendingPathComponent(name + ".html"), encoding: .utf8) + "<script>document.documentElement.setAttribute('data-stable-ready','1')</script>"
+    }
+
+    private func waitForFixtureInitialization(_ host: WidgetHost, renderer: LiteHTMLWidgetRenderer) {
+        let marker = "data-stable-ready=\"1\""
+        pump(5) { host.diagnostics.rendered && renderer.document?.html.contains(marker) == true }
+        XCTAssertTrue(host.diagnostics.rendered)
+        XCTAssertTrue(renderer.document?.html.contains(marker) == true, "Fixture initialization has not reached the rendered document")
     }
 
     private func node(_ renderer: LiteHTMLWidgetRenderer, _ attributes: [String: String]) throws -> WidgetNode {
@@ -71,8 +78,7 @@ final class WidgetStableGeometryTests: XCTestCase {
                 }
             }
             host.view.frame = CGRect(x: 0, y: 0, width: width, height: 600)
-            pump(5) { host.diagnostics.rendered && renderer.document != nil }
-            XCTAssertTrue(host.diagnostics.rendered)
+            waitForFixtureInitialization(host, renderer: renderer)
             let reference = try XCTUnwrap(renderer.document).bounds(matching: "[data-id='1'] .box")
             let referencePixels = try greenPixels(renderer, rect: reference)
             XCTAssertGreaterThan(referencePixels, 100)
@@ -116,8 +122,7 @@ final class WidgetStableGeometryTests: XCTestCase {
                 }
             }
             host.view.frame = CGRect(x: 0, y: 0, width: width, height: 600)
-            pump(5) { host.diagnostics.rendered && renderer.document != nil }
-            XCTAssertTrue(host.diagnostics.rendered)
+            waitForFixtureInitialization(host, renderer: renderer)
             try click(renderer, ["data-row": "0"])
             for category in ["1", "0", "2", "0", "3", "0", "1", "0"] {
                 try click(renderer, ["data-cat": category])
