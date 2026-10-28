@@ -145,6 +145,27 @@ final class WidgetInteractionTests: XCTestCase {
         }
     }
 
+    func testCoalescedPointerAndMouseMovesKeepTheirDispatchOrder() throws {
+        let html = #"""
+        <style>body{margin:0}#drag{height:200px;touch-action:none}</style><div id="drag"></div><span id="result"></span>
+        <script>
+        var seen=[],d=document.getElementById('drag');
+        d.addEventListener('pointerdown',function(){seen=[]});
+        ['pointermove','mousemove'].forEach(function(type){d.addEventListener(type,function(){seen.push(type)})});
+        d.addEventListener('pointerup',function(){document.getElementById('result').textContent=seen.join(',')});
+        </script>
+        """#
+        for _ in 0..<12 {
+            let h = try Harness(self, html: html)
+            defer { h.close() }
+            h.send(.leftMouseDown, CGPoint(x: 30, y: 30))
+            h.send(.leftMouseDragged, CGPoint(x: 40, y: 40))
+            h.send(.leftMouseUp, CGPoint(x: 40, y: 40))
+            pump(1, until: { !h.text("result").isEmpty })
+            XCTAssertEqual(h.text("result"), "pointermove,mousemove")
+        }
+    }
+
     func testPressHoverDetailsTapAndDragReachTheWidget() throws {
         let h = try Harness(self, html: WidgetInteractionTests.html)
         defer { h.close() }

@@ -117,7 +117,27 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         let movement: CGPoint
     }
 
-    private var pendingMoves: [String: PendingMove] = [:]
+    private struct PendingMoveQueue {
+        private var entries: [String: PendingMove] = [:]
+        private var keys: [String] = []
+
+        var isEmpty: Bool { entries.isEmpty }
+        var values: [PendingMove] { keys.compactMap { entries[$0] } }
+
+        subscript(key: String) -> PendingMove? { entries[key] }
+
+        mutating func set(_ move: PendingMove, for key: String) {
+            if entries[key] == nil { keys.append(key) }
+            entries[key] = move
+        }
+
+        mutating func removeAll() {
+            entries.removeAll()
+            keys.removeAll()
+        }
+    }
+
+    private var pendingMoves = PendingMoveQueue()
     private var bounds: [Int: CGRect] = [:]
     private var scannedDeclarations: (generation: UInt64, values: [Int: [String: String]]) = (0, [:])
     private var visualBounds: [Int: CGRect]?
@@ -3121,7 +3141,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             return
         }
         if coalesced {
-            pendingMoves[key] = PendingMove(event: payload, movement: movement)
+            pendingMoves.set(PendingMove(event: payload, movement: movement), for: key)
             startClock()
             return
         }
@@ -3187,7 +3207,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             documentView.invalidate(geometry.viewport.insetBy(dx: -1, dy: -1))
         }
         if listened.contains("scroll") && !frozen {
-            pendingMoves["scroll:\(id)"] = PendingMove(event: "{\"type\":\"scroll\",\"targetId\":\(id),\"bubbles\":false}", movement: .zero)
+            pendingMoves.set(PendingMove(event: "{\"type\":\"scroll\",\"targetId\":\(id),\"bubbles\":false}", movement: .zero), for: "scroll:\(id)")
             startClock()
         }
     }
