@@ -54,6 +54,40 @@ viewer, and answers requests from the manifest's `bot` table. This lets the cont
 originals, copies and previews with their actual permissions. Tests without a `message` use the
 private-chat context, as `CLIENTS.md` requires. Unknown message kinds stop the run.
 
+The macOS renderer corrections checked on 28 October 2026 restore existing behavior:
+
+- Include `<html>` in the `touch-action` ancestor walk, as the shared gesture policy requires.
+- Accumulate `movementX` and `movementY` across coalesced moves while retaining the latest position.
+- Deliver pending moves in insertion order, including `pointermove` before its compatibility `mousemove`.
+- Preserve native click counts and give the shared arbiter's `dblclick` a count of at least two, without changing gesture thresholds.
+
+The ancestor walk and move accumulation/order match the existing portable C++ renderer. These are
+native renderer corrections; the profile, protocol, host-glue policies and runtime quotas are unchanged.
+
+Before the rebase, recorded on macOS 27.0.1: all 25 affected native tests pass. All 53 automatic runs complete with 609
+passing checks. One hover fixture check skips because its capability query returns false; native
+hover events and rendering pass separate interaction tests. One touch-event check skips because
+the native runner sends mouse input. The upstream report has 174 in-profile
+features passing, zero partial/failing features and 14 host features untested. TwidgetLab's 12 gates
+verify 1,146 fresh-render frames, 289 fresh-parse patches and 108 replay frames (97 patched), with zero
+differences. These scoped results do not replace the recorded full-suite timing diagnostics or the
+host, manual client and bot checks.
+
+After rebasing the nine local commits onto `538e420` on 28 October 2026, the production and test patches are equivalent;
+the incoming change only removes duplicate text conversion in the portable canvas. The pinned
+widget-sandbox v0.2.3 shim already converts those arguments. The portable Release build passes all
+329 assertions. Rebuilt TwidgetLab passes all 12 gates: 1,142 fresh-render frames, 285 fresh-parse
+patches and 108 replay frames (98 patched), with zero differences.
+
+The fresh native checks are not fully green: 24 of 25 cases pass; the packing in-flight case records
+13 px of checkbox ink against its unchanged 18 px requirement. An isolated run passes the pixel
+assertions, but one sample arrives 30.4 ms after its target, exceeding the unchanged 25 ms allowance. Its
+post-click sampling assertions are unchanged by these commits. The fresh automatic set completes
+53 runs without runtime errors, but judges 173 in-profile features passing and one partial:
+`tw.theme-params` observes the new palette with an old CSS background inside `themeChanged`.
+The theme paths are unchanged by the local patches and rebase; the cause of that ordering failure
+remains open. The earlier passing records do not establish a clean result for this latest run.
+
 From this repository:
 
 ```sh
