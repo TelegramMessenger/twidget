@@ -16,11 +16,20 @@ final class WidgetStableGeometryTests: XCTestCase {
         return try String(contentsOf: root.appendingPathComponent(name + ".html"), encoding: .utf8) + "<script>document.documentElement.setAttribute('data-stable-ready','1')</script>"
     }
 
-    private func waitForFixtureInitialization(_ host: WidgetHost, renderer: LiteHTMLWidgetRenderer) {
+    private func waitForFixturePresentation(_ host: WidgetHost, renderer: LiteHTMLWidgetRenderer) {
         let marker = "data-stable-ready=\"1\""
-        pump(5) { host.diagnostics.rendered && renderer.document?.html.contains(marker) == true }
+        pump(5) {
+            guard host.diagnostics.rendered, let document = renderer.document, document.html.contains(marker) else { return false }
+            let height = min(600, max(50, ceil(document.size.height)))
+            return abs(host.diagnostics.height - height) < 0.5 && abs(renderer.documentView.size.height - height) < 0.5
+        }
         XCTAssertTrue(host.diagnostics.rendered)
         XCTAssertTrue(renderer.document?.html.contains(marker) == true, "Fixture initialization has not reached the rendered document")
+        if let document = renderer.document {
+            let height = min(600, max(50, ceil(document.size.height)))
+            XCTAssertEqual(host.diagnostics.height, height, accuracy: 0.5)
+            XCTAssertEqual(renderer.documentView.size.height, height, accuracy: 0.5)
+        }
     }
 
     private func node(_ renderer: LiteHTMLWidgetRenderer, _ attributes: [String: String]) throws -> WidgetNode {
@@ -78,7 +87,7 @@ final class WidgetStableGeometryTests: XCTestCase {
                 }
             }
             host.view.frame = CGRect(x: 0, y: 0, width: width, height: 600)
-            waitForFixtureInitialization(host, renderer: renderer)
+            waitForFixturePresentation(host, renderer: renderer)
             let reference = try XCTUnwrap(renderer.document).bounds(matching: "[data-id='1'] .box")
             let referencePixels = try greenPixels(renderer, rect: reference)
             XCTAssertGreaterThan(referencePixels, 100)
@@ -122,7 +131,7 @@ final class WidgetStableGeometryTests: XCTestCase {
                 }
             }
             host.view.frame = CGRect(x: 0, y: 0, width: width, height: 600)
-            waitForFixtureInitialization(host, renderer: renderer)
+            waitForFixturePresentation(host, renderer: renderer)
             try click(renderer, ["data-row": "0"])
             for category in ["1", "0", "2", "0", "3", "0", "1", "0"] {
                 try click(renderer, ["data-cat": category])

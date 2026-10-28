@@ -64,7 +64,12 @@ final class WidgetInFlightPresentationTests: XCTestCase {
     private func waitForInitialFrame(_ session: Session) {
         let end = Date().addingTimeInterval(5)
         while Date() < end {
-            if session.host.diagnostics.rendered && session.queue.sync(execute: { session.renderer.isPrepared && session.renderer.documentView.tilesDrawn }) { return }
+            let state = session.host.diagnostics
+            if state.rendered && session.queue.sync(execute: {
+                guard let document = session.renderer.document else { return false }
+                let height = min(600, max(50, ceil(document.size.height)))
+                return session.renderer.isPrepared && session.renderer.documentView.tilesDrawn && abs(state.height - height) < 0.5 && abs(session.renderer.documentView.size.height - height) < 0.5
+            }) { return }
             pump(0.005)
         }
         XCTFail("No initial prepared frame for \(session.name)")
