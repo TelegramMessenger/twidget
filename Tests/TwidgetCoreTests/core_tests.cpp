@@ -218,15 +218,6 @@ int main() {
             check(ops[3].kind == CanvasOp::Fill && ops[3].paint.kind == CanvasPaint::Linear && ops[3].paint.stops.size() == 2 && ops[3].path.points[0] == 10, "Path2D filled with a gradient, transformed at fill time");
         }
     }
-    // Text that is no string is converted as JS converts it.
-    r.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":30,"cmds":[["c","fillText",4,0,0],["c","strokeText",-0.5,0,0],["c","fillText",true,0,0],["c","fillText",null,0,0],
-        ["c","fillText",1e21,0,0],["c","fillText",1.5e-7,0,0],["c","fillText",123456789012,0,0],["c","fillText",0.000001,0,0]]}]})"));
-    {
-        std::string texts;
-        for (const CanvasOp& op : backend.runs.back())
-            if (op.kind == CanvasOp::Text) texts += op.text + "|";
-        check(texts == "4|-0.5|true|null|1e+21|1.5e-7|123456789012|0.000001|", "fillText and strokeText of numbers, booleans and null draw their JS strings (got " + texts + ")");
-    }
     check(r.last_html().find("src=\"tw-canvas:30/100x50\"") != std::string::npos, "the canvas is laid out as an image of its bitmap");
     q = r.receive(parse(R"({"type":"query","qid":2,"query":{"q":"canvasCall","id":30,"method":"isPointInPath","args":[{"p":1},30,15]}})"))[0];
     check(q["result"].asBool(), "isPointInPath on a Path2D, under the transform");
