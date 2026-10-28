@@ -195,7 +195,7 @@ final class ScrollCompositorHandoffTests: XCTestCase {
         }
     }
 
-    func testHiddenTracksTakeOverAfterTheirStreakAndDemoteWithoutLosingSiblings() throws {
+    func testHiddenTracksTakeOverOnTheirFirstTransformAndDemoteWithoutLosingSiblings() throws {
         let harness = Harness(allowTakeover: true)
         harness.send(scene())
         XCTAssertEqual(harness.renderer.scrolling.promotedIDs, [10, 20])
@@ -203,12 +203,8 @@ final class ScrollCompositorHandoffTests: XCTestCase {
         try harness.assertPixels()
         for step in 1...4 {
             harness.send(motion([11, 21], step: step))
-            if step < 3 {
-                XCTAssertTrue(harness.renderer.compositedElementIDs.isEmpty)
-            } else {
-                harness.assertPromoted([11, 21], overlaps: [15, 25])
-                XCTAssertTrue(harness.renderer.scrolling.promotedIDs.isEmpty)
-            }
+            harness.assertPromoted([11, 21], overlaps: [15, 25])
+            XCTAssertTrue(harness.renderer.scrolling.promotedIDs.isEmpty, "Remaining scroll rasters: \(harness.renderer.scrolling.promotedIDs)")
             try harness.assertPixels()
         }
         harness.send([
