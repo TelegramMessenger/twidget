@@ -3466,7 +3466,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     private func gestureClaim(_ id: Int) -> WidgetGestureClaim {
         var touchActions: [String] = []
         var node = dom.node(id)
-        while let current = node, current !== dom.html {
+        while let current = node {
             let style = document?.computedStyle(attribute: WidgetDOM.idAttribute, value: String(dom.publicId(current))) ?? [:]
             touchActions.append(style["touch-action"] ?? "auto")
             node = current.parent

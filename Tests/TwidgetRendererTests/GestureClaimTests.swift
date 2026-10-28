@@ -33,7 +33,7 @@ final class GestureClaimTests: XCTestCase {
         let renderer: LiteHTMLWidgetRenderer
         var claims: [WidgetGestureClaim] = []
 
-        init(_ test: GestureClaimTests) throws {
+        init(_ test: GestureClaimTests, html: String = GestureClaimTests.html) throws {
             _ = NSApplication.shared
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -41,7 +41,7 @@ final class GestureClaimTests: XCTestCase {
             bubble = BubbleView(frame: NSRect(x: 0, y: 0, width: 320, height: 400))
             window.contentView?.addSubview(bubble)
             var made: LiteHTMLWidgetRenderer?
-            host = try WidgetHost(html: GestureClaimTests.html, theme: WidgetTheme(colorScheme: .light), width: 320, rendererFactory: { _, theme, width in
+            host = try WidgetHost(html: html, theme: WidgetTheme(colorScheme: .light), width: 320, rendererFactory: { _, theme, width in
                 let renderer = LiteHTMLWidgetRenderer(theme: theme, width: width)
                 made = renderer
                 return renderer
@@ -90,12 +90,26 @@ final class GestureClaimTests: XCTestCase {
     func testTheClaimCarriesHoldOnlyFromTouchActionNone() throws {
         let h = try Harness(self)
         defer { h.close() }
-        for (id, expected) in [("none", WidgetGestureClaim(x: true, y: true, hold: true)), ("auto", WidgetGestureClaim(x: false, y: false, hold: false)), ("pan", WidgetGestureClaim(x: true, y: false, hold: false))] {
+        for (id, expected) in [("none", WidgetGestureClaim(x: true, y: false, hold: true)), ("auto", WidgetGestureClaim(x: false, y: false, hold: false)), ("pan", WidgetGestureClaim(x: true, y: false, hold: false))] {
             let count = h.claims.count
             h.click(try h.center(id))
             pump(1, until: { h.claims.count > count })
             XCTAssertEqual(h.claims.last, expected, id)
             pump(0.4)
+        }
+    }
+
+    func testRootTouchActionClaimsDescendantPressesAndContextMenus() throws {
+        for (action, expected) in [("none", WidgetGestureClaim(x: true, y: false, hold: true)), ("pan-y", WidgetGestureClaim(x: true, y: false, hold: false)), ("pan-x", WidgetGestureClaim(x: false, y: false, hold: false))] {
+            let h = try Harness(self, html: "<style>html{touch-action:\(action)}</style>" + Self.html)
+            defer { h.close() }
+            h.click(try h.center("auto"))
+            pump(1, until: { !h.claims.isEmpty })
+            XCTAssertEqual(h.claims.last, expected, action)
+            h.send(.rightMouseDown, try h.center("auto"))
+            pump(1, until: { h.has("ctx-auto") || h.bubble.menuClicks > 0 })
+            XCTAssertEqual(h.has("ctx-auto"), expected.hold, action)
+            XCTAssertEqual(h.bubble.menuClicks, expected.hold ? 0 : 1, action)
         }
     }
 
