@@ -3,7 +3,9 @@
 `solar-system.html` is an 11,176-byte standalone HTMLScript example rendered by
 HTML3D's bundled THREE-to-Metal adapter. It is not a widget-profile-1 message:
 WebGL, CSS 3D transforms and native 3D channels remain excluded from that profile.
-The `app:three` script names the native host's existing trusted library; no
+Its zlib-compressed size is 4,337 bytes, above the 4,096-byte message limit;
+even a smaller version would require this standalone native host, so do not
+send it to a widget bot. The `app:three` script names the native host's existing trusted library; no
 network script, image, texture or shader source is loaded from the document.
 
 The scene has smooth sphere meshes with procedural vertex colors, a point light

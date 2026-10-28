@@ -7,6 +7,10 @@ func require(_ condition: Bool, _ message: String) {
     if !condition { fputs("FAIL: \(message)\n", stderr); exit(1) }
 }
 func settle(_ seconds: Double = 0.65) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+func awaitState(_ predicate: () -> Bool) {
+    let deadline = Date().addingTimeInterval(3)
+    while !predicate() && Date() < deadline { settle(0.05) }
+}
 func save(_ pixels: [UInt8], _ path: URL) throws {
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 720, pixelsHigh: 480, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 720 * 4, bitsPerPixel: 32)!
     for i in stride(from: 0, to: pixels.count, by: 4) {
@@ -37,8 +41,8 @@ session.attach(layer, size: CGSize(width: 720, height: 480), scale: 1)
 script.setVisible(true)
 settle(0.4)
 script.performAction("pause", value: nil)
-settle()
-require(script.currentHTML.contains(">Play</button>"), "pause label did not update")
+awaitState { script.errorText != nil || script.currentHTML.contains(">Play</button>") }
+require(script.currentHTML.contains(">Play</button>"), "pause label did not update: \(script.errorText ?? "no script error") \(script.currentHTML)")
 func pixels() -> [UInt8] {
     require(script.errorText == nil, script.errorText ?? "script error")
     require(session.stopReason == nil, session.stopReason ?? "native renderer stopped")
@@ -57,10 +61,11 @@ for action in ["left", "up", "near", "view"] {
     previous = next
 }
 script.performAction("next", value: nil)
-settle()
+awaitState { script.errorText != nil || script.currentHTML.contains("Uranus") }
 require(script.currentHTML.contains("Uranus"), "next planet did not select Uranus")
 _ = pixels()
 script.performAction("reset", value: nil)
+awaitState { script.errorText != nil || script.currentHTML.contains(">Pause</button>") }
 settle()
 require(script.currentHTML.contains("Saturn") && script.currentHTML.contains(">Pause</button>"), "reset did not restore Saturn and playback")
 _ = pixels()
