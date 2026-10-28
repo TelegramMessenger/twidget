@@ -112,7 +112,12 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             hiddenSince = CACurrentMediaTime()
         }
     }
-    private var pendingMoves: [String: String] = [:]
+    private struct PendingMove {
+        let event: String
+        let movement: CGPoint
+    }
+
+    private var pendingMoves: [String: PendingMove] = [:]
     private var bounds: [Int: CGRect] = [:]
     private var scannedDeclarations: (generation: UInt64, values: [Int: [String: String]]) = (0, [:])
     private var visualBounds: [Int: CGRect]?
@@ -3005,7 +3010,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             let moves = pendingMoves.values
             pendingMoves.removeAll()
             for event in moves {
-                postEvent(event)
+                postEvent(event.event)
             }
         }
         if renderAtTick && !frozen {
@@ -3049,12 +3054,8 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         return (flags.contains(.option) ? 1 : 0) | (flags.contains(.control) ? 2 : 0) | (flags.contains(.command) ? 4 : 0) | (flags.contains(.shift) ? 8 : 0)
     }
 
-    private func mouseEvent(_ type: String, target: Int, point: CGPoint, event: NSEvent, buttons: Int, button: Int = 0) -> String? {
+    private func mouseEvent(_ type: String, target: Int, point: CGPoint, movement: CGPoint, event: NSEvent, buttons: Int, button: Int = 0) -> String? {
         let box = elementBounds()[target] ?? .zero
-        var movement = CGPoint.zero
-        if let last = lastPointer {
-            movement = CGPoint(x: point.x - last.x, y: point.y - last.y)
-        }
         return LiteHTMLWidgetRenderer.mouseEventJSON(type, target: target, point: point, offset: CGPoint(x: point.x - box.minX, y: point.y - box.minY), movement: movement, buttons: buttons, detail: type.hasSuffix("click") ? clickCount : 0, modifiers: modifiers(event.modifierFlags), defaultActions: type == "click", button: button)
     }
 
@@ -3109,11 +3110,18 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         if !LiteHTMLWidgetRenderer.alwaysSent.contains(type) && !listened.contains(type) {
             return
         }
-        guard let payload = mouseEvent(type, target: target, point: point, event: event, buttons: buttons, button: button) else {
+        let coalesced = LiteHTMLWidgetRenderer.coalesced.contains(type)
+        let key = type + ":1"
+        var movement = lastPointer.map { CGPoint(x: point.x - $0.x, y: point.y - $0.y) } ?? .zero
+        if coalesced, let pending = pendingMoves[key] {
+            movement.x += pending.movement.x
+            movement.y += pending.movement.y
+        }
+        guard let payload = mouseEvent(type, target: target, point: point, movement: movement, event: event, buttons: buttons, button: button) else {
             return
         }
-        if LiteHTMLWidgetRenderer.coalesced.contains(type) {
-            pendingMoves[type + ":1"] = payload
+        if coalesced {
+            pendingMoves[key] = PendingMove(event: payload, movement: movement)
             startClock()
             return
         }
@@ -3121,7 +3129,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             let moves = pendingMoves.values
             pendingMoves.removeAll()
             for move in moves {
-                postEvent(move)
+                postEvent(move.event)
             }
         }
         postEvent(payload)
@@ -3179,7 +3187,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             documentView.invalidate(geometry.viewport.insetBy(dx: -1, dy: -1))
         }
         if listened.contains("scroll") && !frozen {
-            pendingMoves["scroll:\(id)"] = "{\"type\":\"scroll\",\"targetId\":\(id),\"bubbles\":false}"
+            pendingMoves["scroll:\(id)"] = PendingMove(event: "{\"type\":\"scroll\",\"targetId\":\(id),\"bubbles\":false}", movement: .zero)
             startClock()
         }
     }

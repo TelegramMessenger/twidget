@@ -121,6 +121,30 @@ final class WidgetInteractionTests: XCTestCase {
         XCTAssertTrue(zip(actual, expected).allSatisfy { abs($0 - $1) <= 20 }, "\(actual) is not close to \(expected)", file: file, line: line)
     }
 
+    func testCoalescedDragKeepsEveryMovementDeltaAndResetsAfterDelivery() throws {
+        let html = #"""
+        <style>body{margin:0}#drag{height:200px;touch-action:none}</style><div id="drag"></div><span id="result"></span>
+        <script>
+        var p=[0,0],m=[0,0],n=[0,0],d=document.getElementById('drag');
+        d.addEventListener('pointerdown',function(){p=[0,0];m=[0,0];n=[0,0]});
+        d.addEventListener('pointermove',function(e){p[0]+=e.movementX;p[1]+=e.movementY;n[0]++});
+        d.addEventListener('mousemove',function(e){m[0]+=e.movementX;m[1]+=e.movementY;n[1]++});
+        d.addEventListener('pointerup',function(){document.getElementById('result').textContent=p.concat(m,n).join(',')});
+        </script>
+        """#
+        let h = try Harness(self, html: html)
+        defer { h.close() }
+        for (from, delta, expected) in [(CGPoint(x: 30, y: 30), CGPoint(x: 20, y: 10), "60,30,60,30,1,1"), (CGPoint(x: 120, y: 80), CGPoint(x: -10, y: -5), "-30,-15,-30,-15,1,1")] {
+            h.send(.leftMouseDown, from)
+            for step in 1...3 {
+                h.send(.leftMouseDragged, CGPoint(x: from.x + delta.x * CGFloat(step), y: from.y + delta.y * CGFloat(step)))
+            }
+            h.send(.leftMouseUp, CGPoint(x: from.x + delta.x * 3, y: from.y + delta.y * 3))
+            pump(2, until: { h.text("result") == expected })
+            XCTAssertEqual(h.text("result"), expected)
+        }
+    }
+
     func testPressHoverDetailsTapAndDragReachTheWidget() throws {
         let h = try Harness(self, html: WidgetInteractionTests.html)
         defer { h.close() }
