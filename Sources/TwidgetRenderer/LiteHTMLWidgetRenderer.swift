@@ -3350,13 +3350,8 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         setPointerCapture(0)
         let id = target(at: point)
         pressId = id
-        let now = CACurrentMediaTime()
-        if now - lastClick.time < NSEvent.doubleClickInterval, hypot(point.x - lastClick.point.x, point.y - lastClick.point.y) < 5 {
-            clickCount += 1
-        } else {
-            clickCount = 1
-        }
-        lastClick = (now, point)
+        clickCount = max(1, event.clickCount)
+        lastClick = (CACurrentMediaTime(), point)
         resizeClickY = point.y
         resizePressId = id
         let claim = gestureClaim(id)
@@ -3386,6 +3381,9 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             setNeedsRender()
         }
         let verdict = gestures.up(at: LiteHTMLWidgetRenderer.gestureTime(), x: Double(point.x), y: Double(point.y))
+        if verdict?.event == .dblclick {
+            clickCount = max(2, clickCount)
+        }
         dispatch("pointerup", target: pointerTarget(at: point), point: point, event: event, buttons: 0)
         dispatch("mouseup", target: id, point: point, event: event, buttons: 0)
         if id == pressId || isAncestor(pressId, of: id) || isAncestor(id, of: pressId) {

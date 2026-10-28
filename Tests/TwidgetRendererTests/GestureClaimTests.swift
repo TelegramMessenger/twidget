@@ -121,7 +121,7 @@ final class GestureClaimTests: XCTestCase {
             h.click(point, clicks: 1)
             h.click(point, clicks: 2)
             pump(2, until: { h.has("dbl-\(id)-2") })
-            XCTAssertTrue(h.has("dbl-\(id)-2"), id)
+            XCTAssertTrue(h.has("dbl-\(id)-2"), "\(id): \(h.renderer.dom.nodes.values.compactMap { $0.attribute("id") })")
             pump(0.4)
         }
     }
@@ -135,6 +135,16 @@ final class GestureClaimTests: XCTestCase {
         h.click(point)
         pump(0.6)
         XCTAssertFalse(h.renderer.dom.nodes.values.contains { ($0.attribute("id") ?? "").hasPrefix("dbl-auto") })
+    }
+
+    func testDoubleClickHasTwoClicksWhenNativeCountIsOne() throws {
+        let h = try Harness(self)
+        defer { h.close() }
+        let point = try h.center("auto")
+        h.click(point)
+        h.click(CGPoint(x: point.x + 20, y: point.y))
+        pump(2, until: { h.has("dbl-auto-2") })
+        XCTAssertTrue(h.has("dbl-auto-2"))
     }
 
     func testARightClickOnNoneIsTheWidgetsContextMenu() throws {
