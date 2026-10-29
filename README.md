@@ -295,3 +295,9 @@ swift build -c release
 ## License
 
 BSD 3-Clause, see `LICENSE`. Bundled third-party code (litehtml, Gumbo, QuickJS-ng, three.js and Phosphor Icons) keeps its own license, listed in `THIRD_PARTY_NOTICES.md`.
+
+### Native stress kit harness
+
+`StressRunnerTests/testStressKit` runs the widget-sandbox stress kit with the Swift host and Apple litehtml renderer in a stand-in bubble. Enable it with `TW_STRESS=1`, `TWIDGET_WIDGET_SANDBOX` set to the sandbox path, and `TW_STRESS_OUT` to a fresh output folder. It writes one upstream-compatible run file per pass (measure and production), checkpointed after every widget. Defaults follow the manifest; `TW_STRESS_WARMUP_MS`, `TW_STRESS_MEASURE_MS` and `TW_STRESS_COOLDOWN_MS` permit smoke runs. Short windows are marked `smoke` in the run files. The macOS 14 display link records host frame intervals; unavailable render work, refresh rate and dropped-frame measurements remain null. Debug smoke results are integration evidence, not optimized-device benchmark results. In Telegram macOS, `tools/tests/widgets/run.py --suite stress --stress-smoke` runs it and produces the upstream summary.
+
+The v0.3.0 client alignment adds four `V030LayoutTests`: constrained aspect-ratio and equal SVG grid cells, percentage fills spanning grid tracks, SVG fill-box origins after geometry moves, and quadratic-curve extrema. Grid intrinsic minimums resolve percentage descendants against an indefinite width; definite fractional rows share the existing track-sizing algorithm. Percentage image heights use the intrinsic ratio when their containing height is indefinite. SVG shape CSS transforms share fill bounds between painting and geometry queries. No widget quotas or upstream conformance fixtures are changed.

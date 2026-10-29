@@ -1099,6 +1099,7 @@ namespace litehtml
         case _translate_:
         case _rotate_:
         case _scale_:
+        case _transform_box_:
         case _transform_origin_:
         case _clip_path_:
         case _grid_template_columns_:

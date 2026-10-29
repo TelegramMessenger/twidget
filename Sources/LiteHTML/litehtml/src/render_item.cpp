@@ -2360,7 +2360,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
             }
             if(height != nullptr)
             {
-                calc_cb_length(*height, cb_context.height, ret.height);
+                if((height->units() == css_units_percentage || height->units() == css_units_calc) &&
+                   (cb_context.height.type == containing_block_context::cbc_value_type_auto ||
+                    cb_context.height.type == containing_block_context::cbc_value_type_none))
+                {
+                    ret.height = containing_block_context::typed_pixel(0_px, containing_block_context::cbc_value_type_auto);
+                } else
+                {
+                    calc_cb_length(*height, cb_context.height, ret.height);
+                }
             }
         }
         if(ret.width.type != containing_block_context::cbc_value_type_auto &&

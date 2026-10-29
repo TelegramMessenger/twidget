@@ -612,10 +612,12 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
             cell.max_content = cell.min_content = cell.el->width();
         } else
         {
+            auto minimum =
+                cell.el->render(0_px, 0_px, self_size.new_width(0_px, containing_block_context::size_mode_content), fmt_ctx);
+            cell.min_content = minimum.min_width;
             auto measured =
                 cell.el->render(0_px, 0_px, self_size.new_width(available, containing_block_context::size_mode_content), fmt_ctx);
             cell.max_content = measured.natural_width;
-            cell.min_content = measured.min_width;
         }
         const auto& minimum = cell.el->css().get_min_width();
         if(!minimum.is_predefined())
@@ -628,6 +630,7 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
     bool stretch_auto = justify == flex_justify_content_normal || justify == flex_justify_content_stretch ||
                         justify == flex_justify_content_flex_start;
     size_columns(columns, cells, available, column_gap, stretch_auto);
+
 
     rendered_width ret;
     {
@@ -780,27 +783,17 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
     }
     if(definite_height && row_count > 0)
     {
-        pixel_t used   = row_gap * pixel_t(row_count - 1);
-        float   sum_fr = 0;
-        for(const auto& row : rows)
+        std::vector<grid_cell> row_cells;
+        row_cells.reserve(cells.size());
+        for(const auto& cell : cells)
         {
-            used += row.base;
-            if(row.size.max_type == grid_track_size::fraction)
-            {
-                sum_fr += row.size.fr;
-            }
+            grid_cell row_cell = cell;
+            row_cell.col = cell.row;
+            row_cell.col_span = cell.row_span;
+            row_cell.min_content = row_cell.max_content = cell.height;
+            row_cells.push_back(row_cell);
         }
-        pixel_t free = container_height - used;
-        if(free > 0_px && sum_fr > 0)
-        {
-            for(auto& row : rows)
-            {
-                if(row.size.max_type == grid_track_size::fraction)
-                {
-                    row.base += free * pixel_t(row.size.fr) / pixel_t(std::max(sum_fr, 1.f));
-                }
-            }
-        }
+        size_columns(rows, row_cells, container_height, row_gap, false);
     }
 
     pixel_t row_start   = 0_px;

@@ -23,7 +23,9 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
 
     src_el()->css_w().line_height_w().computed_value = height();
 
-    if(src_el()->css().get_height().is_predefined() && src_el()->css().get_width().is_predefined())
+    const bool auto_height = src_el()->css().get_height().is_predefined() ||
+        self_size.height.type == containing_block_context::cbc_value_type_auto;
+    if(auto_height && src_el()->css().get_width().is_predefined())
     {
         m_pos.height = sz.height;
         m_pos.width  = sz.width;
@@ -61,7 +63,7 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
                 m_pos.width = sz.width;
             }
         }
-    } else if(!src_el()->css().get_height().is_predefined() && src_el()->css().get_width().is_predefined())
+    } else if(!auto_height && src_el()->css().get_width().is_predefined())
     {
         if(self_size.height.type != containing_block_context::cbc_value_type_auto && self_size.height.value > 0_px)
         {
@@ -85,7 +87,7 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
         {
             m_pos.width = sz.width;
         }
-    } else if(src_el()->css().get_height().is_predefined() && !src_el()->css().get_width().is_predefined())
+    } else if(auto_height && !src_el()->css().get_width().is_predefined())
     {
         m_pos.width = src_el()->css().get_width().calc_percent(parent_width);
 

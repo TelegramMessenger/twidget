@@ -428,11 +428,79 @@ namespace litehtml
             }
         };
 
-        static litehtml::transform_matrix svg_css_transform(const element::ptr& el, const litehtml::position& border_box)
+        bool svg_fill_bounds(const element::ptr& el, position& box)
+        {
+            vector_path path;
+            if(!svg_geometry(el, path)) return false;
+            float min_x = INFINITY, min_y = INFINITY, max_x = -INFINITY, max_y = -INFINITY;
+            auto include = [&](float x, float y) {
+                min_x = std::min(min_x, x); min_y = std::min(min_y, y);
+                max_x = std::max(max_x, x); max_y = std::max(max_y, y);
+            };
+            float x = 0, y = 0, sx = 0, sy = 0;
+            size_t index = 0;
+            for(auto op : path.ops)
+            {
+                if(op == vector_path::close) { x = sx; y = sy; continue; }
+                int count = op == vector_path::cubic ? 6 : op == vector_path::quad ? 4 : 2;
+                if(index + count > path.points.size()) return false;
+                const float* v = path.points.data() + index;
+                float ex = v[count - 2], ey = v[count - 1];
+                include(ex, ey);
+                if(op == vector_path::move) { sx = ex; sy = ey; }
+                if(op == vector_path::quad || op == vector_path::cubic)
+                {
+                    auto at = [&](float t) {
+                        if(t <= 0 || t >= 1 || !std::isfinite(t)) return;
+                        float u = 1 - t;
+                        if(op == vector_path::quad)
+                            include(u*u*x + 2*u*t*v[0] + t*t*ex, u*u*y + 2*u*t*v[1] + t*t*ey);
+                        else
+                            include(u*u*u*x + 3*u*u*t*v[0] + 3*u*t*t*v[2] + t*t*t*ex,
+                                    u*u*u*y + 3*u*u*t*v[1] + 3*u*t*t*v[3] + t*t*t*ey);
+                    };
+                    for(int axis = 0; axis < 2; axis++)
+                    {
+                        float p0 = axis ? y : x, p1 = v[axis];
+                        if(op == vector_path::quad)
+                        {
+                            float p2 = v[axis + 2], denominator = p0 - 2*p1 + p2;
+                            if(denominator != 0) at((p0 - p1) / denominator);
+                        } else
+                        {
+                            float p2 = v[axis + 2], p3 = v[axis + 4];
+                            float a = -p0 + 3*p1 - 3*p2 + p3, b = 2*(p0 - 2*p1 + p2), c = p1 - p0;
+                            if(std::abs(a) < 1e-7f) { if(b != 0) at(-c / b); }
+                            else
+                            {
+                                float d = b*b - 4*a*c;
+                                if(d >= 0) { float root = std::sqrt(d); at((-b + root)/(2*a)); at((-b - root)/(2*a)); }
+                            }
+                        }
+                    }
+                }
+                x = ex; y = ey; index += count;
+            }
+            if(!std::isfinite(min_x) || !std::isfinite(min_y) ||
+               !std::isfinite(max_x - min_x) || !std::isfinite(max_y - min_y)) return false;
+            box = position(pixel_t(min_x), pixel_t(min_y), pixel_t(max_x - min_x), pixel_t(max_y - min_y));
+            return true;
+        }
+
+        static litehtml::transform_matrix svg_css_transform(const element::ptr& el, litehtml::position border_box)
         {
             using namespace litehtml;
             const auto& el_css = el->css();
             const auto tag = std::dynamic_pointer_cast<html_tag>(el);
+            if(tag)
+            {
+                const auto* value = tag->get_token_property(_transform_box_);
+                if(value && !value->empty() && (*value)[0].ident() == "fill-box")
+                {
+                    position fill_box;
+                    if(svg_fill_bounds(el, fill_box)) border_box = fill_box;
+                }
+            }
             const bool has_origin = tag && tag->has_own_property(_transform_origin_);
             pixel_t ox = has_origin ? border_box.x + el_css.get_transform_origin_x().calc_percent(border_box.width) : 0_px;
             pixel_t oy = has_origin ? border_box.y + el_css.get_transform_origin_y().calc_percent(border_box.height) : 0_px;

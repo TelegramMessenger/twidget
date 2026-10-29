@@ -9,6 +9,9 @@ final class ConformanceProbe: Renderer, ScheduledRenderer, TaskRenderer {
     private let lock = NSLock()
     private var htmlId: Int?
     private var latest: String?
+    var publicationAttribute = "data-conformance"
+    private(set) var opCount = 0
+    private(set) var maxBatchOps = 0
 
     init(_ inner: LiteHTMLWidgetRenderer) {
         self.inner = inner
@@ -30,14 +33,14 @@ final class ConformanceProbe: Renderer, ScheduledRenderer, TaskRenderer {
         }
         lock.lock()
         htmlId = id
-        for attribute in attributes where attribute.name == "data-conformance" {
+        for attribute in attributes where attribute.name == publicationAttribute {
             latest = attribute.value
         }
         lock.unlock()
     }
 
     private func observe(attribute id: Int, name: String, value: String) {
-        guard name == "data-conformance" else {
+        guard name == publicationAttribute else {
             return
         }
         lock.lock()
@@ -51,6 +54,8 @@ final class ConformanceProbe: Renderer, ScheduledRenderer, TaskRenderer {
         guard json.hasPrefix("{\"type\":\"ops\""), let message = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any], let ops = message["ops"] as? [[String: Any]] else {
             return
         }
+        opCount += ops.count
+        maxBatchOps = max(maxBatchOps, ops.count)
         for op in ops {
             let id = (op["id"] as? NSNumber)?.intValue ?? -1
             switch op["op"] as? String {
@@ -71,6 +76,8 @@ final class ConformanceProbe: Renderer, ScheduledRenderer, TaskRenderer {
     }
 
     private func observe(ops: [WidgetOp]) {
+        opCount += ops.count
+        maxBatchOps = max(maxBatchOps, ops.count)
         for op in ops {
             switch op.kind {
             case .element:
@@ -204,7 +211,7 @@ final class ConformanceRunnerTests: XCTestCase {
         }
     }
 
-    private final class Session {
+    final class Session {
         let window: NSWindow
         let field: NSTextField
         let host: WidgetHost
@@ -476,7 +483,7 @@ final class ConformanceRunnerTests: XCTestCase {
         return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static var machine: String {
+    static var machine: String {
         var size = 0
         sysctlbyname("hw.model", nil, &size, nil, 0)
         var model = [CChar](repeating: 0, count: max(size, 1))
