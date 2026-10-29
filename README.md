@@ -278,7 +278,10 @@ All work happens in the Lab, and every optimization is checked against a fresh r
 | `EngineLab` | Compares JavaScriptCore with QuickJS |
 | `PresentLab` | Experiments with presentation paths |
 
-Sample chats live in `Examples/chats`.
+Sample chats live in `Examples/chats`. The [native solar-system example](Examples/native-3d/README.md)
+uses smooth meshes, native lighting and depth through the existing HTML3D path;
+its offscreen checker exercises QuickJS and JavaScriptCore. It is standalone
+HTMLScript content, outside widget profile 1.
 
 ```sh
 cd Lab
