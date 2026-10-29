@@ -1,4 +1,5 @@
 #include "html.h"
+#include "html_microsyntaxes.h"
 #include "el_image.h"
 #include "render_image.h"
 #include "document_container.h"
@@ -13,6 +14,16 @@ litehtml::el_image::el_image(const document::ptr& doc) :
 
 void litehtml::el_image::get_content_size(size& sz, pixel_t /*max_width*/)
 {
+    if(tag() == _canvas_)
+    {
+        int width = 300;
+        int height = 150;
+        html_parse_non_negative_integer(get_attr("width", ""), width);
+        html_parse_non_negative_integer(get_attr("height", ""), height);
+        sz.width = pixel_t(width);
+        sz.height = pixel_t(height);
+        return;
+    }
     get_document()->container()->get_image_size(m_src.c_str(), nullptr, sz);
 }
 
@@ -31,6 +42,11 @@ void litehtml::el_image::parse_attributes()
 {
     m_src    = get_attr("src", "");
     m_loaded = false;
+
+    if(tag() == _canvas_)
+    {
+        return;
+    }
 
     // https://html.spec.whatwg.org/multipage/rendering.html#attributes-for-embedded-content-and-images:the-img-element-5
     const char* str = get_attr("width");
