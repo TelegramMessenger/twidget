@@ -60,14 +60,17 @@ enum WidgetThemeStyle {
 
     static let variableNames: Set<String> = Set(keys.map(variableName) + ["--tg-color-scheme"] + buttonVariables.map { $0.name } + textVariables.map { $0.name })
 
-    static func masterCSS(_ variables: [(name: String, value: String)]) -> String {
-        let key = variables.map { $0.name + ":" + $0.value }.joined(separator: ";")
+    static func masterCSS(_ variables: [(name: String, value: String)], selectsTextByDefault: Bool = false) -> String {
+        let key = "\(selectsTextByDefault)|" + variables.map { $0.name + ":" + $0.value }.joined(separator: ";")
         masterLock.lock()
         defer { masterLock.unlock() }
         if let cached = masterCache[key] {
             return cached
         }
-        let css = substitute(unwrappedUAStylesheet, variables)
+        var css = substitute(unwrappedUAStylesheet, variables)
+        if selectsTextByDefault {
+            css += "html{-webkit-user-select:text;user-select:text}button,input,textarea,select,option,summary,[role=button],[role=slider],[draggable=true]{-webkit-user-select:none;user-select:none}"
+        }
         if masterCache.count >= 16 {
             masterCache.removeAll()
         }

@@ -75,6 +75,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     private var theme: String
     private(set) var document: LHDocument?
     private var masterCSS = WidgetThemeStyle.uaStylesheet
+    private let selectsTextByDefault: Bool
     private var buffered: [String] = []
     var listened: Set<String> = []
     var prevented: Set<String> = []
@@ -392,7 +393,9 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     private static let alwaysSent: Set<String> = ["click", "input", "change", "submit", "reset", "load", "error", "toggle", "animationstart", "animationend", "transitionend"]
     private static let coalesced: Set<String> = ["pointermove", "mousemove", "touchmove", "wheel", "scroll"]
 
-    public init(theme: String, width: CGFloat) {
+    public init(theme: String, width: CGFloat, selectsTextByDefault: Bool = false) {
+        self.selectsTextByDefault = selectsTextByDefault
+        self.masterCSS = WidgetThemeStyle.masterCSS(WidgetThemeStyle.variables(nil), selectsTextByDefault: selectsTextByDefault)
         self.theme = theme
         documentView = WidgetDocumentView.backingStore ? WidgetBackingStoreDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300)) : WidgetDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300))
         view = documentView
@@ -973,7 +976,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
         case "theme":
             let variables = WidgetThemeStyle.variables(message["theme"])
-            let css = WidgetThemeStyle.masterCSS(variables)
+            let css = WidgetThemeStyle.masterCSS(variables, selectsTextByDefault: selectsTextByDefault)
             let restyled = css != masterCSS
             masterCSS = css
             if dom.setRootVariables(variables) || restyled {
@@ -3395,7 +3398,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         lastPointer = point
     }
 
-    func handleMouseUp(_ point: CGPoint, event: NSEvent) {
+    func handleMouseUp(_ point: CGPoint, event: NSEvent, suppressClick: Bool = false) {
         let id = target(at: point)
         if document?.mouseUp(point) == true {
             setNeedsRender()
@@ -3406,7 +3409,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         }
         dispatch("pointerup", target: pointerTarget(at: point), point: point, event: event, buttons: 0)
         dispatch("mouseup", target: id, point: point, event: event, buttons: 0)
-        if id == pressId || isAncestor(pressId, of: id) || isAncestor(id, of: pressId) {
+        if !suppressClick && (id == pressId || isAncestor(pressId, of: id) || isAncestor(id, of: pressId)) {
             let clickTarget = isAncestor(id, of: pressId) ? id : (isAncestor(pressId, of: id) ? pressId : id)
             dispatch("click", target: clickTarget, point: point, event: event, buttons: 0)
             toggleDetails(from: clickTarget)
@@ -5340,8 +5343,9 @@ class WidgetDocumentView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         let at = point(event)
+        let suppressClick = textSelection.hasSelection
         textSelection.release()
-        toOwner { $0.handleMouseUp(at, event: event) }
+        toOwner { $0.handleMouseUp(at, event: event, suppressClick: suppressClick) }
     }
 
     override func mouseMoved(with event: NSEvent) {
