@@ -540,6 +540,11 @@ final class ConformanceRunnerTests: XCTestCase {
         return skipped
     }
 
+    private static func contentSafeArea(_ test: [String: Any]) -> WidgetContentSafeArea {
+        let area = test["safeArea"] as? [String: Double] ?? [:]
+        return WidgetContentSafeArea(top: area["top"] ?? 0, right: area["right"] ?? 0, bottom: area["bottom"] ?? 0, left: area["left"] ?? 0, cornerLeft: area["cornerLeft"] ?? 0, cornerRight: area["cornerRight"] ?? 0)
+    }
+
     private func run(_ test: [String: Any], theme: String, root: URL, out: URL, features: Set<String>) throws -> [String: Any] {
         let id = test["id"] as? String ?? ""
         let file = test["file"] as? String ?? ""
@@ -549,6 +554,7 @@ final class ConformanceRunnerTests: XCTestCase {
         let session = try Session(html: html, theme: theme, features: features, configure: {
             $0.context = message.context
             $0.data = message.data
+            $0.contentSafeArea = Self.contentSafeArea(test)
         })
         session.host.onRequest = Self.requestHandler(test)
         defer { session.close() }
@@ -828,6 +834,7 @@ final class ConformanceRunnerTests: XCTestCase {
         let configure: (inout WidgetHost.Options) -> Void = { options in
             options.locale = "en-US"
             options.storage = storage.areas[id] ?? WidgetStorage()
+            options.contentSafeArea = Self.contentSafeArea(test)
         }
         let recorder = Recorder()
         var session: Session? = try Session(html: html, theme: theme, features: features, width: width, maximumHeight: cap, themeFor: themeFor, configure: configure)

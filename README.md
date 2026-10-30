@@ -32,6 +32,8 @@ repository root: see [docs/TWIDGET_CORE.md](docs/TWIDGET_CORE.md).
 - **Host → renderer:** `ops`, `query`, `listen`, `preventDefault`, `requestFrame` and `frozen`.
 - **Renderer → host:** `ready`, `size`, `event`, `gesture`, `result`, `frame`, `resize`, `media` and `violation`.
 
+The host also sends `safeArea` with the content inset and covered corner. The Swift renderer sets the six protected `--tg-content-safe-area-*` root variables, adds the bottom band to unstyled body padding, and retains the values across theme changes. Hosts supply the area before boot and update it when caption or timestamp layout changes; all values default to zero.
+
 A host adapter is a few lines:
 
 ```swift

@@ -74,7 +74,9 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     let dom = WidgetDOM()
     private var theme: String
     private(set) var document: LHDocument?
-    private var masterCSS = WidgetThemeStyle.uaStylesheet
+    private var themeVariables = WidgetThemeStyle.variables(nil)
+    private var safeAreaVariables = WidgetThemeStyle.contentSafeArea(nil)
+    private var masterCSS = WidgetThemeStyle.masterCSS(WidgetThemeStyle.variables(nil) + WidgetThemeStyle.contentSafeArea(nil))
     private let selectsTextByDefault: Bool
     private var buffered: [String] = []
     var listened: Set<String> = []
@@ -395,7 +397,8 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
 
     public init(theme: String, width: CGFloat, selectsTextByDefault: Bool = false) {
         self.selectsTextByDefault = selectsTextByDefault
-        self.masterCSS = WidgetThemeStyle.masterCSS(WidgetThemeStyle.variables(nil), selectsTextByDefault: selectsTextByDefault)
+        self.masterCSS = WidgetThemeStyle.masterCSS(themeVariables + safeAreaVariables, selectsTextByDefault: selectsTextByDefault)
+        _ = dom.setRootVariables(themeVariables + safeAreaVariables)
         self.theme = theme
         documentView = WidgetDocumentView.backingStore ? WidgetBackingStoreDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300)) : WidgetDocumentView(frame: CGRect(x: 0, y: 0, width: width, height: 300))
         view = documentView
@@ -974,8 +977,13 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             startClock()
         case "frozen":
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
-        case "theme":
-            let variables = WidgetThemeStyle.variables(message["theme"])
+        case "theme", "safeArea":
+            if message["type"] as? String == "theme" {
+                themeVariables = WidgetThemeStyle.variables(message["theme"])
+            } else {
+                safeAreaVariables = WidgetThemeStyle.contentSafeArea(message["inset"])
+            }
+            let variables = themeVariables + safeAreaVariables
             let css = WidgetThemeStyle.masterCSS(variables, selectsTextByDefault: selectsTextByDefault)
             let restyled = css != masterCSS
             masterCSS = css

@@ -101,7 +101,7 @@ final class WidgetDefaultsTests: XCTestCase {
     func testMasterCSSCarriesTheThemeValues() {
         let css = WidgetThemeStyle.masterCSS(WidgetThemeStyle.variables(["colorScheme": "dark", "params": ["text_color": "#102030"], "text": ["fontSize": 18, "padding": "5px"]]))
         XCTAssertTrue(css.contains("html{color:#102030;font:18px/1.35 system-ui,sans-serif;"), css)
-        XCTAssertTrue(css.contains("body{margin:5px;padding:0}"), css)
+        XCTAssertTrue(css.contains("body{margin:5px;padding:0;padding-bottom:0px}"), css)
         XCTAssertTrue(css.contains("button{appearance:none;"), css)
         XCTAssertFalse(css.contains(":where("), css)
         XCTAssertFalse(css.contains("var(--tg-text-"), css)

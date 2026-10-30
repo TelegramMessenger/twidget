@@ -133,7 +133,8 @@ document.body.appendChild(done);
         XCTAssertEqual(dark["--tg-color-scheme"], "dark")
         XCTAssertEqual(WidgetThemeStyle.variables(nil).count, 19)
         XCTAssertEqual(WidgetThemeStyle.variables(["colorScheme": "sepia"])[15].value, "light")
-        XCTAssertEqual(WidgetThemeStyle.variableNames.count, 27)
+        XCTAssertEqual(WidgetThemeStyle.variableNames.count, 33)
+        XCTAssertTrue(Set(WidgetThemeStyle.contentSafeArea(nil).map { $0.name }).isSubset(of: WidgetThemeStyle.variableNames))
     }
 
     func testInvalidTokensAreDropped() {
