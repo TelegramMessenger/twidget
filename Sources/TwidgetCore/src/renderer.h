@@ -133,7 +133,8 @@ public:
     /// The master CSS documents are parsed with: litehtml's, the renderer's own rules, and the profile's UA
     /// layer with the theme's values in place, for a host or a tool that lays the document out elsewhere.
     const std::string& master_css() const;
-    /// The variables the theme sets on the root, from the host's `theme` message or the scheme's defaults.
+    /// The variables the host sets on the root: the theme's, from its `theme` message or the scheme's defaults, and
+    /// the content safe area's, from its `safeArea` message (0px until one).
     const std::vector<std::pair<std::string, std::string>>& theme_variables() const { return theme_vars_; }
     /// The same as a JSON object, name to value, for the bindings.
     std::string theme_variables_json() const;
@@ -236,6 +237,7 @@ private:
         bool held = false;  // the widget took a hold: the release is no click
         int64_t capture = 0;  // setPointerCapture: pointer events go here instead
         double sent_x = x0, sent_y = y0;  // where the widget last heard the pointer was, for movementX/Y
+        bool finger = false;  // a real finger or pen, not a mouse playing one: the chat may still scroll its press
     };
     /// What an input event carries besides its type and target.
     struct Input {
@@ -311,8 +313,8 @@ private:
     /// `load` (with naturalWidth/Height) or `error` for each <img> whose src changed.
     void load_images(std::vector<twidget::Json>& out);
     void image_event(const char* type, int64_t id, float w, float h, std::vector<twidget::Json>& out);
-    static twidget::Json event_message(twidget::Json ev);
-    void dispatch(twidget::Json ev, std::vector<twidget::Json>& out);
+    static twidget::Json event_message(twidget::Json ev, bool trusted = true);
+    void dispatch(twidget::Json ev, std::vector<twidget::Json>& out, bool trusted = true);
     void flush_moves(std::vector<twidget::Json>& out);
     void flush_pending(std::vector<twidget::Json>& out);
     /// `resize` for the ResizeObserver targets whose content box changed since the last one.
@@ -491,6 +493,9 @@ private:
     /// The host's theme: the root's variables, and the master CSS's UA layer with their values. False when
     /// neither changed.
     bool apply_theme(const twidget::Json& theme);
+    bool apply_safe_area(const twidget::Json& inset);
+    /// The root's variables (`theme_vars_`) and the UA layer from the theme's and the safe area's.
+    void apply_root_variables();
 
     std::unique_ptr<Container> container_;
     Backend& backend_;
@@ -545,7 +550,8 @@ private:
     std::unordered_map<int, std::vector<int64_t>> waiting_images_;
     std::unordered_set<std::string> interest_;
     /// From the host's `theme` message (the scheme's defaults before one), set on the root after the widget's own style.
-    std::vector<std::pair<std::string, std::string>> theme_vars_;
+    std::vector<std::pair<std::string, std::string>> host_theme_vars_, safe_area_vars_;
+    std::vector<std::pair<std::string, std::string>> theme_vars_;  // both, as set on the root
     bool theme_received_ = false;
     struct {
         TextPoint anchor, focus;

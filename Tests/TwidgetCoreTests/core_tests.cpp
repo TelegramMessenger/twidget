@@ -1180,6 +1180,44 @@ int main() {
             if (m["type"].asString() == "event" && m["ev"]["type"].asString() == "click") trusted = m["trusted"].asBool();
         check(trusted, "a click is trusted, as the hosts require before they count a gesture");
     }
+
+    // ── widget-sandbox v0.3.0: a finger's press counts from its release; a widget's canvas pixels together ──
+    {
+        StubBackend fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(PAGE));
+        f.receive(parse(R"({"type":"listen","types":["pointerdown","mousedown","pointerup","click"]})"));
+        auto trust = [](const std::vector<Json>& out) {
+            std::string s;
+            for (const Json& m : out)
+                if (m["type"].asString() == "event") s += m["ev"]["type"].asString() + (m["trusted"].asBool() ? "+ " : "- ");
+            return s;
+        };
+        std::string finger = trust(f.touch(0, 10, 10, 0, true, false, 0));
+        finger += trust(f.touch(2, 10, 10, 0, true, false, 0));
+        std::string mouse = trust(f.touch(0, 10, 10, 0, true, true, 0));
+        mouse += trust(f.touch(2, 10, 10, 0, true, true, 0));
+        check(finger == "pointerdown- mousedown- pointerup+ click+ ", "a finger's press is no gesture, its release and click are (got " + finger + ")");
+        check(mouse == "pointerdown+ mousedown+ pointerup+ click+ ", "a mouse's press is a gesture (got " + mouse + ")");
+    }
+    {
+        struct Pixels : CanvasHost {
+            int64_t others = 0;
+            int canvas_font(const std::string&, FontMetrics&) override { return 0; }
+            float canvas_text_width(int, const std::string&) override { return 0; }
+            bool canvas_source(int64_t, int&, int&, float&, float&) override { return false; }
+            int64_t canvas_allowance(int) override { return Canvas::MAX_PIXELS - others; }
+        } host;
+        host.others = Canvas::MAX_PIXELS - 2000 * 2000;
+        Canvas c(1, 2000, 2000, host);
+        std::vector<CanvasOp> ops;
+        c.resize(2000, 2400, ops);
+        check(c.width() == 2000 && c.height() == 2000 && !ops.empty() && ops.back().kind == CanvasOp::Reset,
+              "a size past the widget's canvas pixels keeps the canvas's own, cleared");
+        host.others = Canvas::MAX_PIXELS;
+        Canvas fresh(2, 300, 150, host);
+        check(fresh.width() == 0 && fresh.height() == 0, "a new canvas past them is 0 x 0");
+    }
     {
         StubBackend gb;
         Renderer g(300, 1, false, gb);
@@ -1303,6 +1341,36 @@ int main() {
               "text is not selectable by default; user-select: text opts in and a child follows with auto");
         double base = ask(Json::object().set("q", "rect").set("id", 15))["y"].asNumber(), sup = ask(Json::object().set("q", "rect").set("id", 17))["y"].asNumber();
         check(sup < base, "a sup is raised by its relative offset, with its text (sup " + std::to_string(sup) + ", base " + std::to_string(base) + ")");
+    }
+
+    // ── v0.4.0: the client's time over the widget's corner (docs/sdk-v1.md §2.17) ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":"#own{padding-bottom:var(--tg-content-safe-area-inset-bottom,9px)}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","own"],["style","height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        auto ask = [&](Json query) {
+            for (const Json& m : s.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) {
+            Json q = Json::object().set("q", "cs").set("id", id);
+            return prop[0] == '-' ? ask(q.set("prop", prop)).asString() : ask(q)[prop].asString();
+        };
+        check(cs(2, "--tg-content-safe-area-inset-bottom") == "0px" && cs(4, "padding-bottom") == "0px" && cs(10, "padding-bottom") == "0px",
+              "before the host says otherwise the safe area is 0px, set on the root (got " + cs(2, "--tg-content-safe-area-inset-bottom") + ")");
+        std::vector<Json> out = s.receive(parse(R"({"type":"safeArea","inset":{"top":0,"right":0,"bottom":24.567,"left":0,"cornerLeft":0,"cornerRight":300}})"));
+        bool sized = false;
+        for (const Json& m : out) sized = sized || m["type"].asString() == "size";
+        check(cs(2, "--tg-content-safe-area-inset-bottom") == "24.57px" && cs(2, "--tg-content-safe-area-corner-right") == "0px",
+              "an inset is rounded to two decimals, a corner past 200 is 0 (got " + cs(2, "--tg-content-safe-area-inset-bottom") + ", " + cs(2, "--tg-content-safe-area-corner-right") + ")");
+        check(cs(4, "padding-bottom") == "24.57px" && cs(10, "padding-bottom") == "24.57px" && sized,
+              "the UA layer pads the body by the band, a widget's var() reads it, and the height is reported again (got " + cs(4, "padding-bottom") + ")");
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":2,"name":"--tg-content-safe-area-inset-bottom","value":"1px"}]})"));
+        check(cs(2, "--tg-content-safe-area-inset-bottom") == "24.57px", "the widget cannot set the safe area on the root");
     }
 
     // ── text selection: a mouse drag over user-select: text, its text, its highlight ──
