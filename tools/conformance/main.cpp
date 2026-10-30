@@ -479,6 +479,17 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
         if (spec["public_data"].isString() && !spec["public_data"].asString().empty()) host_options.data.publicData = spec["public_data"].asString();
         if (host_options.context.canQuery) host_options.context.viewer = test_viewer();
     }
+    // A test with the client's time over its corner gets the band and corner its reference picture was drawn with.
+    const Json& safe_area = test["safeArea"];
+    if (safe_area.isObject()) {
+        twidget::WidgetContentSafeArea& area = host_options.contentSafeArea;
+        area.top = safe_area["top"].asNumber();
+        area.right = safe_area["right"].asNumber();
+        area.bottom = safe_area["bottom"].asNumber();
+        area.left = safe_area["left"].asNumber();
+        area.cornerLeft = safe_area["cornerLeft"].asNumber();
+        area.cornerRight = safe_area["cornerRight"].asNumber();
+    }
     OffscreenRenderer* renderer = nullptr;
     auto factory = [&](std::shared_ptr<twidget::SandboxResources>, const std::string& scheme, double w) -> std::unique_ptr<twidget::Renderer> {
         // A visual widget is a column of stages taller than a bubble: it is drawn whole, as the Swift

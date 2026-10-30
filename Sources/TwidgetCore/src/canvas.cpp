@@ -332,10 +332,14 @@ Canvas::Canvas(int id, int width, int height, CanvasHost& host) : id_(id), width
 }
 
 void Canvas::resize(int width, int height, std::vector<CanvasOp>& out) {
-    width_ = std::clamp(width, 0, MAX_SIDE);
-    height_ = std::clamp(height, 0, MAX_SIDE);
-    int64_t budget = std::min<int64_t>(MAX_PIXELS, host_.canvas_allowance(id_));
-    if (int64_t(width_) * height_ > budget) width_ = height_ = 0;
+    width = std::clamp(width, 0, MAX_SIDE);
+    height = std::clamp(height, 0, MAX_SIDE);
+    // A size past the widget's canvas pixels is not applied but still clears the bitmap: the canvas keeps the size it
+    // had, a new one stays 0 × 0 (widget-sandbox v0.3.0).
+    if (int64_t(width) * height <= std::min<int64_t>(MAX_PIXELS, host_.canvas_allowance(id_))) {
+        width_ = width;
+        height_ = height;
+    }
     state_ = State();
     stack_.clear();
     path_ = Builder();

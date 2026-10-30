@@ -2417,19 +2417,34 @@ Renderer::Renderer(double width, double dpr, bool dark, Backend& backend)
     head_node_->parent = html_node_.get();
     body_node_->parent = html_node_.get();
     html_node_->children = {head_node_.get(), body_node_.get()};
+    safe_area_vars_ = css::content_safe_area_variables(Json());
     apply_theme(Json::object().set("colorScheme", dark ? "dark" : "light"));
     rebuild();
 }
 
 bool Renderer::apply_theme(const Json& theme) {
     auto vars = css::theme_variables(theme);
-    if (vars == theme_vars_) return false;
-    theme_vars_ = std::move(vars);
+    if (vars == host_theme_vars_) return false;
+    host_theme_vars_ = std::move(vars);
+    apply_root_variables();
+    return true;
+}
+
+bool Renderer::apply_safe_area(const Json& inset) {
+    auto vars = css::content_safe_area_variables(inset);
+    if (vars == safe_area_vars_) return false;
+    safe_area_vars_ = std::move(vars);
+    apply_root_variables();
+    return true;
+}
+
+void Renderer::apply_root_variables() {
+    theme_vars_ = host_theme_vars_;
+    theme_vars_.insert(theme_vars_.end(), safe_area_vars_.begin(), safe_area_vars_.end());
     // The layer with the theme's values in place of its var(), since the fork applies a var() in a shorthand
     // after the cascade (`margin: var(…)` from the master CSS would beat the widget's own `margin: 0`), and
     // without :where() (css.h, unwrap_where).
     container_->set_master(std::string(litehtml::master_css) + UA_EXTRA + css::unwrap_where(css::substitute_variables(TW_UA_STYLESHEET, theme_vars_)));
-    return true;
 }
 
 const std::string& Renderer::master_css() const { return container_->master(); }
@@ -2518,6 +2533,12 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     } else if (type == "theme") {
         theme_received_ = true;
         if (apply_theme(msg["theme"])) {
+            rebuild();
+            report_size(out);
+        }
+    } else if (type == "safeArea") {
+        // The client's time over the widget (docs/sdk-v1.md §2.17): the UA layer pads the body by its band.
+        if (apply_safe_area(msg["inset"])) {
             rebuild();
             report_size(out);
         }
@@ -4774,13 +4795,13 @@ Json Renderer::event_json(const char* type, int64_t target, const Rect& target_r
     return ev;
 }
 
-Json Renderer::event_message(Json ev) {
+Json Renderer::event_message(Json ev, bool trusted) {
     // Every event comes from real input (no script runs in this document): trusted, like the WebView
-    // renderer's isTrusted, which the hosts require before they count a user gesture.
-    return Json::object().set("type", "event").set("ev", std::move(ev)).set("trusted", true);
+    // renderer's isTrusted, which the hosts require before they count a user gesture; a finger's press is not.
+    return Json::object().set("type", "event").set("ev", std::move(ev)).set("trusted", trusted);
 }
 
-void Renderer::dispatch(Json ev, std::vector<Json>& out) {
+void Renderer::dispatch(Json ev, std::vector<Json>& out, bool trusted) {
     if (frozen_) return;
     const std::string& type = ev["type"].asString();
     if (!listened(type.c_str())) return;
@@ -4804,7 +4825,7 @@ void Renderer::dispatch(Json ev, std::vector<Json>& out) {
     }
     // Anything else keeps its order relative to the moves before it.
     flush_moves(out);
-    out.push_back(event_message(std::move(ev)));
+    out.push_back(event_message(std::move(ev), trusted));
 }
 
 void Renderer::flush_moves(std::vector<Json>& out) {
@@ -4993,7 +5014,10 @@ void Renderer::emit_event(const char* type, int64_t target, const Rect& target_r
         in.movement_x = t.x - t.sent_x;
         in.movement_y = t.y - t.sent_y;
     }
-    dispatch(event_json(type, target, target_rect, in), out);
+    // A finger's or a pen's press may still become the chat's scroll, which ends it in pointercancel: its press is no
+    // gesture, its release is (widget-sandbox v0.3.0, a finger's press counts from its release).
+    bool trusted = !(t.finger && (std::strcmp(type, "pointerdown") == 0 || std::strcmp(type, "mousedown") == 0));
+    dispatch(event_json(type, target, target_rect, in), out, trusted);
 }
 
 Rect Renderer::box_of(int64_t id) const {
@@ -5034,6 +5058,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         bool finger = !mouse || (bubble_touch_ && button != 2);
         Touch t{x, y, x, y, 0, Rect{}, false, primary, pointer, !finger, modifiers};
         t.button = button;
+        t.finger = !mouse;
         t.target = widget_id_at(x, y, &t.target_rect);
         touches_[pointer] = t;
         bool selecting = false;

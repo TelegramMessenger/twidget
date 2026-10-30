@@ -997,8 +997,36 @@ std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::
     return vars;
 }
 
+namespace {
+
+constexpr const char* SAFE_AREA_VARS[][2] = {
+    {"top", "--tg-content-safe-area-inset-top"},
+    {"right", "--tg-content-safe-area-inset-right"},
+    {"bottom", "--tg-content-safe-area-inset-bottom"},
+    {"left", "--tg-content-safe-area-inset-left"},
+    {"cornerLeft", "--tg-content-safe-area-corner-left"},
+    {"cornerRight", "--tg-content-safe-area-corner-right"},
+};
+
+} // namespace
+
+std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset) {
+    std::vector<std::pair<std::string, std::string>> vars;
+    vars.reserve(std::size(SAFE_AREA_VARS));
+    for (const auto& [field, name] : SAFE_AREA_VARS) {
+        const twidget::Json& value = inset[field];
+        double max = std::string_view(field).rfind("corner", 0) == 0 ? 200 : 64;
+        double n = value.isNumber() ? value.asNumber() : 0;
+        if (!std::isfinite(n) || n < 0 || n > max) n = 0;
+        vars.emplace_back(name, twidget::Json::number(std::round(n * 100) / 100) + "px");
+    }
+    return vars;
+}
+
 bool is_theme_variable(std::string_view name) {
     if (name == "--tg-color-scheme") return true;
+    for (const auto& [field, var] : SAFE_AREA_VARS)
+        if (name == var) return true;
     for (const auto& [field, var] : BUTTON_VARS)
         if (name == var) return true;
     for (const auto& [field, var, fallback] : TEXT_VARS)
