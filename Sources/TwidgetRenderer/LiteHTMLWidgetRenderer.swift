@@ -4900,6 +4900,19 @@ class WidgetDocumentView: NSView {
         tiles.removeAll()
     }
 
+    private func retireTilesForResize() {
+        syncInvalidations += 1
+        for tile in tiles {
+            dropSpare(tile)
+            if tile.layer.contents != nil {
+                retiredGridLayers.append(tile.layer)
+            } else {
+                tile.layer.twRemoveFromSuperlayer()
+            }
+        }
+        tiles.removeAll()
+    }
+
     private(set) var tilesTrimmed = false
 
     static let trimsDetached = ProcessInfo.processInfo.environment["TW_TRIM_DETACHED"] != nil
@@ -4938,7 +4951,11 @@ class WidgetDocumentView: NSView {
             return nil
         }
         if surfaceSpace.map({ $0 != space }) ?? true || surfaceWidth != pixelWidth {
-            removeTiles()
+            if detached, surfaceSpace == space, !tilesTrimmed {
+                retireTilesForResize()
+            } else {
+                removeTiles()
+            }
             surfaceSpace = space
             surfaceWidth = pixelWidth
         }

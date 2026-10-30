@@ -66,6 +66,41 @@ final class ResizeRasterPresentationTests: XCTestCase {
         }
     }
 
+    func testWidthResizeKeepsThePaintedTilesUntilTheNewRasterIsInstalled() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let renderer = LiteHTMLWidgetRenderer(theme: "light", width: 300)
+        renderer.executorIsMain = { false }
+        renderer.preparesOffscreen = true
+        renderer.view.frame = CGRect(x: 0, y: 0, width: 300, height: 360)
+        window.contentView?.addSubview(renderer.view)
+        renderer.load()
+        defer { renderer.destroy() }
+        try send(renderer, [
+            ["op": "el", "id": 1, "tag": "body", "adopt": "body", "attrs": [["style", "margin:0"]]],
+            ["op": "el", "id": 3, "tag": "div", "attrs": [["style", "height:360px;background:red"]]],
+            ["op": "ins", "id": 3, "parent": 1],
+        ])
+        pump { renderer.isPrepared && renderer.documentView.hasPresented(height: 360) }
+        let content = try XCTUnwrap(renderer.documentView.contentLayer)
+        let painted = { (content.sublayers ?? []).filter { $0.contents != nil }.count }
+        for width in [280, 250, 310, 340] as [CGFloat] {
+            XCTAssertGreaterThan(painted(), 0)
+            let gate = DispatchSemaphore(value: 0)
+            WidgetDocumentView.prepareQueue.async(flags: .barrier) { gate.wait() }
+            renderer.view.setFrameSize(CGSize(width: width, height: 360))
+            for _ in 0..<5 {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+                XCTAssertGreaterThan(painted(), 0, "The old pixels must stay on screen while the new width is drawn")
+            }
+            gate.signal()
+            pump { renderer.isPrepared && content.sublayers?.count == renderer.tileLayerCount && painted() == renderer.tileLayerCount }
+            XCTAssertEqual(content.sublayers?.count, renderer.tileLayerCount, "Retired tiles are removed once the new raster is installed")
+        }
+    }
+
     func testFailedResizeRasterKeepsTheLastPaintedFrame() throws {
         _ = NSApplication.shared
         let owner = LiteHTMLWidgetRenderer(theme: "light", width: 300)
