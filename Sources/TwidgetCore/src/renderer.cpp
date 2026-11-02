@@ -488,6 +488,9 @@ constexpr double MAX_SCRIPTED_AREA = 2e6;
 constexpr float LAYER_MARGIN = 48;
 /// After user input, ops batches build at once: they likely answer it.
 constexpr double INPUT_IMMEDIATE_S = 0.25;
+/// The sandbox hands a long flush over in parts of this many ops (widget-sandbox v0.6.0, capture.ts PARTIAL_BATCH_OPS);
+/// only the last part of a task is shorter.
+constexpr size_t PARTIAL_BATCH_OPS = 1000;
 /// The render throttle (the Swift renderer's): a pass costlier than a frame holds the next one back
 /// for THROTTLE_FACTOR times its cost, 25 % of the thread at most; under sustained load, more than
 /// SUSTAINED_LIMIT of SUSTAINED_WINDOW with two passes over HEAVY_PASS_S, 5 %. Nothing is charged in
@@ -2034,7 +2037,7 @@ public:
         return out;
     }
     void draw_filtered(litehtml::uint_ptr hdc, const litehtml::filter_paint& f, const std::function<void(litehtml::uint_ptr)>& paint) override {
-        auto filters = litehtml::g_paint_trace ? nullptr : filters_of(f);
+        auto filters = litehtml::g_paint_trace || no_effects_ ? nullptr : filters_of(f);
         if (!filters) {
             paint(hdc);
             return;
@@ -2050,7 +2053,7 @@ public:
         list_.push_back(std::move(pop));
     }
     void draw_backdrop(litehtml::uint_ptr, const litehtml::filter_paint& f) override {
-        if (litehtml::g_paint_trace) return;
+        if (litehtml::g_paint_trace || no_effects_) return;
         auto filters = filters_of(f);
         if (!filters) return;
         Command c;
@@ -2062,7 +2065,7 @@ public:
     }
     void draw_box_shadow(litehtml::uint_ptr, const litehtml::position& box, const litehtml::border_radiuses& radius, const litehtml::shadow_paint& shadow) override {
         if (litehtml::g_paint_trace) return;
-        if (shadow.color.alpha == 0) return;
+        if (shadow.color.alpha == 0 || (no_effects_ && float(shadow.blur) > 0)) return;
         Command c;
         c.kind = Cmd::Shadow;
         c.rect = rect_of(box);
@@ -2087,6 +2090,11 @@ public:
         std::copy(std::begin(values), std::end(values), c.matrix);
         c.opacity = group.opacity;
         c.hidden = group.backface_hidden && total.a * total.d - total.b * total.c < 0;
+        if (no_effects_ && c.opacity < 1) {
+            // A box that was invisible stays so, without a group to blend; a disabled button keeps its dimming.
+            if (c.opacity <= 0) c.hidden = true;
+            else if (!(group.owner && group.owner->tag() == litehtml::_button_ && group.owner->get_attr("disabled"))) c.opacity = 1;
+        }
         c.rect = rect_of(group.bounds);
         list_.push_back(std::move(c));
     }
@@ -2400,6 +2408,20 @@ private:
     size_t cached_commands_ = 0;
     uint64_t cached_clock_ = 0;
 #endif
+    bool no_effects_ = false;
+
+public:
+    /// A widget stopped past the paint limit (paint_policy.h) is drawn without blurred shadows, filters,
+    /// backdrop-filter or transparency, so its frozen frame costs nothing to scroll.
+    void set_no_effects() {
+        if (no_effects_) return;
+        no_effects_ = true;
+#ifdef TW_LITEHTML_TWIDGET
+        cached_.clear();
+        cached_commands_ = 0;
+        if (doc_) doc_->invalidate_paint();
+#endif
+    }
 };
 
 // ───────────────────────── Renderer ─────────────────────────
@@ -2475,12 +2497,16 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
+        // Past the paint limit the host stops the widget: what its task still sent is not drawn.
+        if (paint_stopped_) return out;
         const auto& ops = msg["ops"].arr();
         std::vector<int64_t> scripted;
         bool fast = scripted_only(ops, scripted);
         // Ticking already (something animates), or held back by the throttle, a batch waits for the
-        // frame: a script sending several a frame builds once. Input wants its answer now.
-        bool coalesce = (frame_due() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S;
+        // frame: a script sending several a frame builds once. Input wants its answer now. A part of a long
+        // flush always waits: the rest of the task follows at once, and its last part builds them all.
+        bool partial = ops.size() >= PARTIAL_BATCH_OPS;
+        bool coalesce = partial || ((frame_due() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S);
         document_changed_ = false;
         apply_ops(ops, out);
         load_images(out);
@@ -2488,6 +2514,8 @@ std::vector<Json> Renderer::receive(const Json& msg) {
             document_changed_ = false;
             scripted_pending_ = true;
             stats_.scripted++;
+            // The document takes these at its next build; their opacity counts now.
+            recount_boxes(scripted);
         } else {
             // Moved past what its layer allows, a scripted layer is planned again where it is now.
             if (fast) composition_key_ = 0;
@@ -2497,7 +2525,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
             // repaint (run_canvas marks the paint dirty) without a build.
             if (document_changed_ && coalesce) {
                 stale_ = true;
-            } else if (document_changed_ || stale_) {
+            } else if (document_changed_ || (stale_ && !partial)) {
                 rebuild(true);
                 report_size(out);
             }
@@ -2517,7 +2545,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         out.push_back(std::move(res));
     } else if (type == "anim") {
         settle(out);
-        if (!frozen_) {
+        if (!still()) {
             // `now` is the sandbox clock when the batch was sent: it maps the records' start times onto ours.
             double now = now_ms();
             animator_.apply_web(msg, now - msg["now"].asNumber(now));
@@ -2545,6 +2573,17 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     } else if (type == "frozen") {
         freeze(msg["reason"].asString(), msg["fatal"].asBool());
         rebuild();
+    } else if (type == "policy") {
+        // Heavy boxes are counted unless the host says compat (also before this message, and for anything else).
+        bool on = msg["policy"].asString() != "compat";
+        paint_reports_ = msg["paintReports"].asBool();
+        paint_reported_ = {-1, -1};
+        if (on && !paint_on_) {
+            paint_scan_ = true;
+            motion_stale_ = true;
+        }
+        paint_on_ = on;
+        count_paint();
     } else if (type == "arbitrate") {
         bubble_ = msg["bubble"].asBool();
         bubble_touch_ = bubble_ && msg["touch"].asBool();
@@ -3087,6 +3126,7 @@ void Renderer::rebuild(bool patch) {
     // Scripted layers follow what the build declares, which the composition key does not cover.
     if (!scripted_candidates_.empty()) composition_key_ = 0;
     build_document(patch);
+    paint_scan_ = true;
     animate();
 }
 
@@ -3263,7 +3303,7 @@ bool Renderer::patch_document() {
 
 void Renderer::animate() {
 #ifdef TW_LITEHTML_TWIDGET
-    if (animating_ || frozen_) return;
+    if (animating_ || still()) return;
     animating_ = true;
     double now = now_s();
     // The sheets' raw text decides: they are resolved for the theme only when it changed.
@@ -3322,6 +3362,7 @@ void Renderer::animate() {
     // patch cannot take builds again.
     apply_overrides(std::move(sampled));
     animating_ = false;
+    count_paint();
 #endif
 }
 
@@ -3396,12 +3437,13 @@ std::vector<Json> Renderer::tick() {
     settle(out);
     flush_moves(out);
     double now = now_s();
-    if (!frozen_ && (animator_.active(now) || now >= wake_at_)) {
+    if (!still() && (animator_.active(now) || now >= wake_at_)) {
         update_composition(now);
         auto sampled = animator_.sample(now);
         strip_layers(sampled);
         queue_animation_events();
         apply_overrides(std::move(sampled));
+        count_paint();
         report_size(out);
     }
     flush_pending(out);
@@ -3413,11 +3455,11 @@ bool Renderer::wants_tick() const {
     return !pending_events_.empty() || !pending_violations_.empty() || frame_due() || (hold && now_ms() >= *hold);
 }
 
-bool Renderer::frame_due() const { return !frozen_ && (stale_ || !pending_moves_.empty() || animator_.active(now_s(), layer_ids_)); }
+bool Renderer::frame_due() const { return !still() && (stale_ || !pending_moves_.empty() || animator_.active(now_s(), layer_ids_)); }
 
 double Renderer::next_tick_in() const {
     if (!pending_events_.empty() || !pending_violations_.empty()) return 0;
-    if (frozen_) return std::numeric_limits<double>::infinity();
+    if (still()) return std::numeric_limits<double>::infinity();
     double hold = std::numeric_limits<double>::infinity();
     if (auto at = hold_deadline()) hold = std::max(0.0, (*at - now_ms()) / 1000);
     if (stale_) return std::min(hold, std::max(0.0, throttled_until_ - now_s()));
@@ -3454,7 +3496,7 @@ void Renderer::update_composition(double now) {
         dirty_ = true;
     };
 #ifdef TW_LITEHTML_TWIDGET
-    if (!compositing_ || frozen_) return drop_all();
+    if (!compositing_ || still()) return drop_all();
     struct Want {
         litehtml::element::ptr el;
         Animator::Plan plan;
@@ -4242,7 +4284,7 @@ bool Renderer::reuse_paint() const {
 }
 
 bool Renderer::scripted_only(const Json::Array& ops, std::vector<int64_t>& touched) const {
-    if (frozen_ || ops.empty() || promoted_.empty()) return false;
+    if (still() || ops.empty() || promoted_.empty()) return false;
     for (const Json& op : ops) {
         if (op["op"].asString() != "style" || op["important"].asBool()) return false;
         // Taking a property away goes back to what the document declares, which only a build knows.
@@ -4565,7 +4607,7 @@ Json Renderer::answer(const Json& q) {
         // From the animator rather than overrides_: a compositor layer's values never reach those.
         StyleValues animated;
 #ifdef TW_LITEHTML_TWIDGET
-        if (shadow && !frozen_) animated = animator_.peek(shadow->id, now_s());
+        if (shadow && !still()) animated = animator_.peek(shadow->id, now_s());
 #endif
         extras.animated = &animated;
         return computed_style(el, q["pseudo"].asString(), extras);
@@ -5314,6 +5356,135 @@ void Renderer::freeze(const std::string& reason, bool fatal) {
     hover_ = 0;
 }
 
+// ───────────────────────── heavy boxes ─────────────────────────
+
+namespace {
+
+/// What a box adds (paint_policy.h, rules 1 to 4), from litehtml's computed values; `opacity` the element's when a
+/// scripted layer holds a newer one than the document.
+paint::BoxPaint box_paint_of(const litehtml::element& el, bool pseudo, std::optional<float> opacity) {
+    const auto& css = el.css();
+    paint::BoxPaint out;
+    out.backdrop = !css.get_backdrop_filter().empty();
+    bool blurred = false;
+    for (const auto& shadow : css.get_box_shadows()) {
+        if (!(shadow.blur.val() <= 0)) {
+            blurred = true;
+            break;
+        }
+    }
+    // A disabled or pressed <button>'s opacity is its own dimming, the UA layer's or the author's.
+    bool dimmed = !pseudo && el.tag() == litehtml::_button_ && (el.get_attr("disabled") || el.has_pseudo_class(litehtml::_active_));
+    out.heavy = out.backdrop || !css.get_filter().empty() || blurred || (!dimmed && opacity.value_or(css.get_opacity()) < 1);
+    return out;
+}
+
+} // namespace
+
+std::optional<float> Renderer::layer_opacity(int64_t id) const {
+    auto p = promoted_.find(id);
+    if (p == promoted_.end() || !p->second.scripted || p->second.track.keys.size() != 1) return std::nullopt;
+    return p->second.track.keys[0].opacity;
+}
+
+void Renderer::scan_boxes() {
+#ifdef TW_LITEHTML_TWIDGET
+    litehtml::document* doc = container_->doc();
+    paint_.begin_scan();
+    // The widget's elements carry their id; the renderer's own (the stopped badge) build no box of the widget's.
+    auto visit = [&](auto& self, const litehtml::element::ptr& el, int64_t parent) -> void {
+        if (el->is_text() || el->is_comment()) return;
+        litehtml::string_id tag = el->tag();
+        if (tag == litehtml::__tag_before_ || tag == litehtml::__tag_after_) {
+            if (parent && el->css().get_display() != litehtml::display_none)
+                paint_.set_box(parent * 4 + (tag == litehtml::__tag_before_ ? 1 : 2), box_paint_of(*el, true, std::nullopt));
+            return;
+        }
+        if (el->css().get_display() == litehtml::display_none) return;
+        const char* twid = el->get_attr("data-twid");
+        int64_t id = twid ? std::strtoll(twid, nullptr, 10) : 0;
+        if (id) paint_.set_box(id * 4, box_paint_of(*el, false, layer_opacity(id)));
+        for (const auto& child : el->children()) self(self, child, id);
+    };
+    if (doc && doc->root()) visit(visit, doc->root(), 0);
+    if (paint_.end_scan()) motion_stale_ = true;
+#endif
+}
+
+void Renderer::recount_boxes(const std::vector<int64_t>& ids) {
+#ifdef TW_LITEHTML_TWIDGET
+    if (!paint_on_ || paint_stopped_) return;
+    for (int64_t id : ids) {
+        // Only a box the last count found: one under display: none stays out.
+        auto el = container_->element(id);
+        if (el && paint_.has_box(id * 4)) paint_.set_box(id * 4, box_paint_of(*el, false, layer_opacity(id)));
+    }
+    count_paint();
+#else
+    (void)ids;
+#endif
+}
+
+bool Renderer::sync_motion(double now) {
+    uint64_t hash = animator_.heavy_motion(now, nullptr);
+    if (!motion_stale_ && hash == motion_hash_) return false;
+    motion_stale_ = false;
+    motion_hash_ = hash;
+    animator_.heavy_motion(now, &motions_);
+    std::vector<CountedMotion> running;
+    running.reserve(motions_.size());
+    for (const Animator::Motion& m : motions_) {
+        std::string id(1, m.kind);
+        id += ':';
+        if (m.kind == 'w') id += std::to_string(m.aid);
+        else id += m.name;
+        running.push_back({m.id * 4, std::move(id), m.paint});
+    }
+    bool ended = false;
+    for (const CountedMotion& c : motion_counted_) {
+        if (std::any_of(running.begin(), running.end(), [&](const CountedMotion& r) { return r.key == c.key && r.id == c.id; })) continue;
+        paint_.end_animation(c.key, c.id);
+        ended = true;
+    }
+    for (const CountedMotion& r : running)
+        if (!paint_.animating(r.key, r.id)) paint_.start_animation(r.key, r.id, r.paint);
+    motion_counted_ = std::move(running);
+    return ended;
+}
+
+void Renderer::count_paint() {
+    if (!paint_on_ || still()) return;
+    double now = now_s();
+    // An animation that ended leaves its box's own values, last read while it applied: every box is read again.
+    if (sync_motion(now)) paint_scan_ = true;
+    if (paint_scan_) {
+        paint_scan_ = false;
+        scan_boxes();
+        // A box that went took its animations; those that still run come back with it.
+        sync_motion(now);
+    }
+    if (paint_reports_ && paint_reported_ != std::make_pair(paint_.heavy(), paint_.backdrop())) {
+        paint_reported_ = {paint_.heavy(), paint_.backdrop()};
+        pending_events_.push_back(Json::object().set("type", "paint").set("heavy", paint_.heavy()).set("backdrop", paint_.backdrop()));
+    }
+    if (auto verdict = paint_.check()) stop_paint(*verdict);
+}
+
+void Renderer::stop_paint(const paint::Verdict& verdict) {
+    // Reported before the frame is drawn; the host stops the widget and freezes the renderer with its own label.
+    paint_stopped_ = true;
+    pending_events_.push_back(Json::object().set("type", "limit").set("code", twidget::paintLimitCode(verdict.code)).set("count", verdict.count));
+    // From this frame on: no blurred shadows, filters, backdrop-filter or transparency, animations stopped where they
+    // are and the layers back in the document, so the stopped widget costs nothing to scroll.
+    container_->set_no_effects();
+    update_composition(now_s());
+    stale_ = false;
+    pending_moves_.clear();
+    dirty_ = touched_all_ = true;
+    composition_only_ = false;
+    painted_valid_ = false;
+}
+
 // ───────────────────────── text selection ─────────────────────────
 
 const std::vector<Renderer::TextRun>& Renderer::text_runs() const {
@@ -5586,7 +5757,7 @@ void Renderer::selection_changed() { dirty_ = touched_all_ = true; }
 
 void Renderer::restyled_by_input() {
     // :hover and :active restyle without a message: the transitions they start begin now, not with the next batch.
-    dirty_ = touched_all_ = true;
+    dirty_ = touched_all_ = paint_scan_ = true;
     animate();
 }
 
