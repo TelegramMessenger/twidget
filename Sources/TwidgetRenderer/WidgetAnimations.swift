@@ -1030,6 +1030,40 @@ final class WidgetAnimator {
         return false
     }
 
+    func paintAnimations(_ id: Int, now: CFTimeInterval, includeCSS: Bool = true) -> [WidgetBoxPaint] {
+        var result: [WidgetBoxPaint] = []
+        if includeCSS {
+            for item in running[id] ?? [] where !item.ended {
+                let override = cssOverrides[id]?["animation:" + item.spec.name]
+                if override?.cancelled == true || (override?.local(now) ?? item.localTime(now)) < item.spec.delay { continue }
+                guard let frames = keyframes[item.spec.name] else { continue }
+                let values: [[String: Any]] = frames.map { frame in
+                    var values: [String: Any] = ["offset": frame.offset]
+                    for declaration in frame.declarations { values[declaration.name] = declaration.value }
+                    return values
+                }
+                if let paint = WidgetPaintPolicy.animation(values) { result.append(paint) }
+            }
+            for (property, transition) in transitions[id] ?? [:] {
+                let override = cssOverrides[id]?["transition:" + property]
+                let local = override?.local(now) ?? (now - transition.start)
+                if override?.cancelled == true || local < transition.spec.delay || local >= transition.spec.delay + transition.spec.duration { continue }
+                if let paint = WidgetPaintPolicy.animation([["offset": 0, property: transition.from], ["offset": 1, property: transition.to]]) { result.append(paint) }
+            }
+        }
+        for animation in web.animations(id) where animation.isRunning {
+            guard let phase = animation.computed(now)?.phase,
+                  animation.rate >= 0 ? phase != .after : phase != .before else { continue }
+            let frames: [[String: Any]] = animation.keyframes.map { frame in
+                var values: [String: Any] = ["offset": frame.offset]
+                for declaration in frame.values { values[declaration.name] = declaration.value }
+                return values
+            }
+            if let paint = WidgetPaintPolicy.animation(frames) { result.append(paint) }
+        }
+        return result
+    }
+
     struct Baked {
         let spec: CSSAnimationSpec
         let start: CFTimeInterval

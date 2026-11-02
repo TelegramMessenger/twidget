@@ -32,6 +32,7 @@ each platform's painter needs its own run.
 | 2026-10-26 | v0.2.1 (the bot's state, requests, the message context; nothing new for the renderer): 170 / 4 / 0 / 14 before; the runner creates the host as the test's kind of message and answers as the test bot | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
 | 2026-10-26 | v0.2.2 (haptics need a touch: host glue only) | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
 | 2026-10-27 | v0.2.3 (the shim converts canvas arguments and loads images a script creates; pictures follow profile 1) | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
+| 2026-11-02 | v0.6.0 (the renderer counts heavy boxes, a long flush comes in parts, 4000 canvas commands): 175 / 6 / 1 / 16 at v0.4.0; the paint count, the stopped paint, and the runner waits for the stop of a `stops` test | 179 / 6 / 0 / 16 | 77 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 

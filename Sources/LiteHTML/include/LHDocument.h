@@ -170,6 +170,9 @@ typedef struct LHKeyedRect {
 /// Skips elements that are not rendered (display: none on them or an ancestor): CSS animations and transitions do not
 /// run there, and restart when the element is displayed again.
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute NS_SWIFT_NAME(declarations(_:byAttribute:));
+- (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)paintBoxesWithAttribute:(NSString *)attribute declarations:(NSArray<NSString *> *)names NS_SWIFT_NAME(paintBoxes(attribute:declarations:));
+- (void)suppressPaintEffects;
+- (void)setDarkColorScheme:(BOOL)dark;
 - (NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required NS_SWIFT_NAME(declarations(_:byAttribute:requiringAny:));
 - (nullable NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)declarations:(NSArray<NSString *> *)names byAttribute:(NSString *)attribute requiringAny:(NSArray<NSString *> *)required changedSince:(uint64_t)known generation:(uint64_t *)generation NS_SWIFT_NAME(declarations(_:byAttribute:requiringAny:changedSince:generation:));
 

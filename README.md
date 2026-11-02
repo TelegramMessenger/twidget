@@ -34,6 +34,8 @@ repository root: see [docs/TWIDGET_CORE.md](docs/TWIDGET_CORE.md).
 
 The host also sends `safeArea` with the content inset and covered corner. The Swift renderer sets the six protected `--tg-content-safe-area-*` root variables, adds the bottom band to unstyled body padding, and retains the values across theme changes. Hosts supply the area before boot and update it when caption or timestamp layout changes; all values default to zero.
 
+With widget-sandbox v0.6.0, the Swift renderer enforces the strict paint policy before presenting a frame: at most 16 heavy boxes, including pseudo-elements and running effect animations, and at most 2 with backdrop-filter. Disabled and pressed buttons retain their static opacity exemption. Theme, width, safe-area and pointer changes are checked through the computed cascade; `prefers-color-scheme` follows the chat theme. A limit is reported once through the renderer seam. Stopped frames have no blurred box shadows, filters, backdrop filters or transparency, and zero-opacity subtrees stay hidden. Under `compat`, paint limits are not counted. Split operation batches are applied in order and presented at the task boundary.
+
 A host adapter is a few lines:
 
 ```swift

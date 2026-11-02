@@ -1508,6 +1508,7 @@ void litehtml::render_item::draw_group(uint_ptr hdc, pixel_t x, pixel_t y, const
     paint_group group;
     group.opacity         = el_css.get_opacity();
     group.backface_hidden = el_css.get_backface_hidden();
+    group.owner           = el->src_el().get();
     group.bounds          = border_box;
     el->get_redraw_box(group.bounds, x, y);
     if(group.opacity < 1)

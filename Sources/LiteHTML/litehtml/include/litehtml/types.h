@@ -627,6 +627,7 @@ namespace litehtml
 
     struct media_features
     {
+        bool dark_color_scheme = false;
         media_type type;
         pixel_t    width; // (pixels) For continuous media, this is the width of the viewport including the size of a
                           // rendered scroll bar (if any). For paged media, this is the width of the page box.

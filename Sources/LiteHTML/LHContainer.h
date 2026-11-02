@@ -82,6 +82,8 @@ class LHContainer : public litehtml::document_container
     ~LHContainer() override;
 
     void set_viewport(const litehtml::position& vp) { m_viewport = vp; }
+    bool dark_color_scheme() const { return m_dark_color_scheme; }
+    void set_dark_color_scheme(bool dark) { m_dark_color_scheme = dark; }
     void set_default_font_size(float px) { m_default_font_size = px; }
     void set_text_runs(std::vector<LHTextRun>* runs) { m_runs = runs; }
     void set_draw_ops(std::vector<LHDrawOp>* ops) { m_ops = ops; }
@@ -299,5 +301,6 @@ class LHContainer : public litehtml::document_container
     CGColorSpaceRef          m_device_colors_space = nullptr;
     bool                     m_clip_culling = true;
     litehtml::position m_viewport;
+    bool m_dark_color_scheme = false;
     float              m_default_font_size = 16.0f;
 };

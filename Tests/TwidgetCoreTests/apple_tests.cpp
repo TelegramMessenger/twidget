@@ -154,7 +154,9 @@ static void test_tap_events() {
     r.receive(parse(R"({"type":"preventDefault","keys":["7:pointerdown"]})"));
     auto down2 = r.touch(0, 10, 10, 0, true);
     gesture = find_type(down2, "gesture");
-    CHECK(gesture && gesture->operator[]("wants").asBool() == true);
+    CHECK(gesture && gesture->operator[]("wants").asBool() == false);
+    CHECK(gesture && gesture->operator[]("y").asBool() == false);
+    CHECK(gesture && gesture->operator[]("x").asBool() == true);
     r.touch(3, 10, 10, 0, true);
 }
 

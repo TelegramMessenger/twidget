@@ -439,6 +439,20 @@ private:
     bool canvas_source(int64_t node, int& image, int& canvas, float& w, float& h) override;
     int64_t canvas_allowance(int id) override;
     void freeze(const std::string& reason, bool fatal);
+    /// Frozen, or stopped past the paint limit: nothing animates.
+    bool still() const { return frozen_ || paint_stopped_; }
+
+    // Heavy boxes (paint_policy.h): counted before a frame is drawn, after a build, a restyle by the pointer, a batch
+    // that moved scripted layers, and an animation of one starting or ending. Past a limit, `limit` goes to the host.
+    void count_paint();
+    /// Every box the document builds, from its computed values.
+    void scan_boxes();
+    /// The boxes of scripted layers, whose opacity the document has not taken yet.
+    void recount_boxes(const std::vector<int64_t>& ids);
+    std::optional<float> layer_opacity(int64_t id) const;
+    /// Rule 5: the running animations into the ledger; true when one that was counted ended.
+    bool sync_motion(double now);
+    void stop_paint(const paint::Verdict& verdict);
 
     /// A place in the text: an element (its `data-twid`) and a byte offset into the text of the runs it owns,
     /// those whose nearest element with an id it is. It outlives a patch or a layout that keeps the element.
@@ -564,6 +578,22 @@ private:
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
     std::string frozen_reason_;
+    /// Counted unless the host's `policy` is compat; `paintReports` (tooling): a `paint` message when the counts change.
+    bool paint_on_ = true;
+    bool paint_reports_ = false;
+    std::pair<int, int> paint_reported_{-1, -1};
+    bool paint_scan_ = true;
+    bool paint_stopped_ = false;
+    paint::PaintCounter<int64_t> paint_;
+    uint64_t motion_hash_ = 0;
+    bool motion_stale_ = true;
+    std::vector<Animator::Motion> motions_;
+    struct CountedMotion {
+        int64_t key = 0;
+        std::string id;
+        paint::BoxPaint paint;
+    };
+    std::vector<CountedMotion> motion_counted_;
     bool frozen_fatal_ = false;
     std::array<double, 4> last_size_{};  // width, document height, viewport height, dpr as last reported
     uint64_t declared_generation_ = 0;

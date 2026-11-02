@@ -53,6 +53,8 @@ namespace litehtml
 
     bool media_feature::check(const media_features& feat) const
     {
+        if(name == "prefers-color-scheme")
+            return compare(feat.dark_color_scheme ? _dark_ : _light_);
         switch(_id(name))
         {
         case _width_:
@@ -452,6 +454,7 @@ namespace litehtml
     };
 
     std::map<std::string, mf_info> supported_media_features = {
+        {"prefers-color-scheme", {_discrete_, _keyword_, {_light_, _dark_}}},
         ////////////////////////////////////////////////
         // 4. Viewport/Page Dimensions Media Features
         ////////////////////////////////////////////////
