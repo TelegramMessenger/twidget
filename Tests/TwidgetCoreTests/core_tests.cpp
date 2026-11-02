@@ -219,6 +219,9 @@ int main() {
         }
     }
     check(r.last_html().find("src=\"tw-canvas:30/100x50\"") != std::string::npos, "the canvas is laid out as an image of its bitmap");
+    // On the fork's image they would be its style: with a CSS width alone the height would stay at the attribute.
+    check(r.last_html().find("width=\"100\"") == std::string::npos && r.last_html().find("height=\"50\"") == std::string::npos,
+          "a drawn canvas's width and height are its natural size, not attributes of the image");
     q = r.receive(parse(R"({"type":"query","qid":2,"query":{"q":"canvasCall","id":30,"method":"isPointInPath","args":[{"p":1},30,15]}})"))[0];
     check(q["result"].asBool(), "isPointInPath on a Path2D, under the transform");
     q = r.receive(parse(R"({"type":"query","qid":3,"query":{"q":"canvasCall","id":30,"method":"getTransform","args":[]}})"))[0];

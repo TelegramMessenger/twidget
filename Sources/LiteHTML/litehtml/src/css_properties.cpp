@@ -999,6 +999,18 @@ void litehtml::css_properties::compute_effects(const html_tag* el, const documen
             doc->cvt_units(m_transform_origin_y, m_font_metrics, 0_px);
         }
     }
+    // transform-box: fill-box or stroke-box, whose centre is the same: the SVG shape's own box (el_svg).
+    m_transform_fill_box = false;
+    if(const auto* tokens = el->get_token_property(_transform_box_))
+    {
+        for(const auto& token : *tokens)
+        {
+            if(token.type == IDENT && (token.ident() == "fill-box" || token.ident() == "stroke-box"))
+            {
+                m_transform_fill_box = true;
+            }
+        }
+    }
 }
 
 // https://www.w3.org/TR/css-values-4/#snap-a-length-as-a-border-width

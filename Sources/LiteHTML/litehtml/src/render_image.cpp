@@ -113,6 +113,10 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
         if(self_size.height.type != containing_block_context::cbc_value_type_auto && self_size.height.value > 0_px)
         {
             m_pos.height = self_size.height;
+        } else if(src_el()->css().get_height().units() == css_units_percentage && sz.width != 0_px)
+        {
+            // A % height with no height to resolve against is auto: the ratio's.
+            m_pos.height = m_pos.width * sz.height / sz.width;
         }
 
         // check for max-height

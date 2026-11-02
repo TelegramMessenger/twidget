@@ -29,6 +29,7 @@ namespace
         int                          row_span = 1;
         pixel_t                      min_content;
         pixel_t                      max_content;
+        bool                         auto_min = true; // min-width: auto
         pixel_t                      width;
         pixel_t                      height;
     };
@@ -314,12 +315,27 @@ namespace
             {
                 continue;
             }
+            // Across a flexible track an item's automatic minimum is zero (css-grid 6.6), and a minimum of its own
+            // grows the flexible tracks only (css-grid 12.5).
+            bool spans_flexible = false;
+            for(int c = cell.col; c < cell.col + cell.col_span; c++)
+            {
+                spans_flexible = spans_flexible || (tracks[c].size.max_type == grid_track_size::fraction && !tracks[c].collapsed);
+            }
+            if(spans_flexible && cell.auto_min)
+            {
+                continue;
+            }
+            auto grows = [&](const grid_track& track) {
+                return track.size.min_type != grid_track_size::length && !track.collapsed &&
+                       (!spans_flexible || track.size.max_type == grid_track_size::fraction);
+            };
             pixel_t spanned   = gap * pixel_t(cell.col_span - 1);
             int     intrinsic = 0;
             for(int c = cell.col; c < cell.col + cell.col_span; c++)
             {
                 spanned += tracks[c].base;
-                if(tracks[c].size.min_type != grid_track_size::length && !tracks[c].collapsed)
+                if(grows(tracks[c]))
                 {
                     intrinsic++;
                 }
@@ -329,7 +345,7 @@ namespace
                 pixel_t share = (cell.min_content - spanned) / pixel_t(intrinsic);
                 for(int c = cell.col; c < cell.col + cell.col_span; c++)
                 {
-                    if(tracks[c].size.min_type != grid_track_size::length && !tracks[c].collapsed)
+                    if(grows(tracks[c]))
                     {
                         tracks[c].base += share;
                     }
@@ -546,6 +562,12 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
         self_size.height.type == containing_block_context::cbc_value_type_absolute && self_size.height.value > 0_px;
     pixel_t container_height = definite_height ? pixel_t(self_size.height.value) - box_sizing_height() : 0_px;
     pixel_t row_gap          = resolve_gap(css().get_row_gap(), container_height);
+    // A % height of an item resolves against this grid's height only when it has one: not an ancestor's.
+    containing_block_context item_size = self_size;
+    if(self_size.height.type == containing_block_context::cbc_value_type_auto)
+    {
+        item_size.height = containing_block_context::typed_pixel(0_px, containing_block_context::cbc_value_type_auto);
+    }
 
     std::vector<grid_track> columns = make_tracks(css().get_grid_template_columns(), available, column_gap);
     int explicit_columns            = static_cast<int>(columns.size());
@@ -608,16 +630,18 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
         const auto& width = cell.el->src_el()->css().get_width();
         if(!width.is_predefined() && width.units() != css_units_percentage && width.units() != css_units_calc)
         {
-            cell.el->render(0_px, 0_px, self_size.new_width(available), fmt_ctx);
+            cell.el->render(0_px, 0_px, item_size.new_width(available), fmt_ctx);
             cell.max_content = cell.min_content = cell.el->width();
         } else
         {
             auto measured =
-                cell.el->render(0_px, 0_px, self_size.new_width(available, containing_block_context::size_mode_content), fmt_ctx);
+                cell.el->render(0_px, 0_px, item_size.new_width(available, containing_block_context::size_mode_content), fmt_ctx);
             cell.max_content = measured.natural_width;
-            cell.min_content = measured.min_width;
+            // A replaced element with a % width compresses to nothing (css-sizing 5.2.2): its % is of the area.
+            cell.min_content = cell.el->src_el()->is_replaced() && !width.is_predefined() ? 0_px : measured.min_width;
         }
         const auto& minimum = cell.el->css().get_min_width();
+        cell.auto_min = minimum.is_predefined();
         if(!minimum.is_predefined())
         {
             cell.min_content = std::max(0_px, minimum.calc_percent(available) - cell.el->box_sizing_width()) + cell.el->content_offset_width();
@@ -700,12 +724,12 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
         pixel_t area = area_width(cell);
         if(!item_css.get_width().is_predefined())
         {
-            cell.el->render(0_px, 0_px, self_size.new_width(area), fmt_ctx);
+            cell.el->render(0_px, 0_px, item_size.new_width(area), fmt_ctx);
         } else
         {
             pixel_t outer = is_stretch(justify_self) ? area : std::min(area, cell.max_content);
             cell.el->render(0_px, 0_px,
-                            self_size.new_width(outer - cell.el->render_offset_width(),
+                            item_size.new_width(outer - cell.el->render_offset_width(),
                                                 containing_block_context::size_mode_exact_width),
                             fmt_ctx);
         }
@@ -780,25 +804,43 @@ litehtml::rendered_width litehtml::render_item_grid::_render_content(pixel_t x, 
     }
     if(definite_height && row_count > 0)
     {
-        pixel_t used   = row_gap * pixel_t(row_count - 1);
-        float   sum_fr = 0;
-        for(const auto& row : rows)
+        // As the flexible columns: a share per fr, and a row whose content is more than its share keeps its content.
+        std::vector<bool> frozen(rows.size(), false);
+        pixel_t           fr_size = 0_px;
+        for(int guard = 0; guard < 16; guard++)
         {
-            used += row.base;
-            if(row.size.max_type == grid_track_size::fraction)
+            pixel_t rest   = container_height - row_gap * pixel_t(row_count - 1);
+            float   sum_fr = 0;
+            for(size_t r = 0; r < rows.size(); r++)
             {
-                sum_fr += row.size.fr;
+                if(rows[r].size.max_type != grid_track_size::fraction || frozen[r])
+                {
+                    rest -= rows[r].base;
+                } else
+                {
+                    sum_fr += rows[r].size.fr;
+                }
+            }
+            fr_size      = sum_fr > 1 ? rest / pixel_t(sum_fr) : rest;
+            bool changed = false;
+            for(size_t r = 0; r < rows.size(); r++)
+            {
+                if(rows[r].size.max_type == grid_track_size::fraction && !frozen[r] && fr_size * pixel_t(rows[r].size.fr) < rows[r].base)
+                {
+                    frozen[r] = true;
+                    changed   = true;
+                }
+            }
+            if(!changed)
+            {
+                break;
             }
         }
-        pixel_t free = container_height - used;
-        if(free > 0_px && sum_fr > 0)
+        for(size_t r = 0; r < rows.size(); r++)
         {
-            for(auto& row : rows)
+            if(rows[r].size.max_type == grid_track_size::fraction && !frozen[r])
             {
-                if(row.size.max_type == grid_track_size::fraction)
-                {
-                    row.base += free * pixel_t(row.size.fr) / pixel_t(std::max(sum_fr, 1.f));
-                }
+                rows[r].base = std::max(rows[r].base, fr_size * pixel_t(rows[r].size.fr));
             }
         }
     }

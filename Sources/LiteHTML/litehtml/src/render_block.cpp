@@ -202,8 +202,18 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
     if(css().get_aspect_ratio() > 0 && self_size.height.type == containing_block_context::cbc_value_type_auto &&
        (containing_block_size.size_mode & containing_block_context::size_mode_content) == 0)
     {
+        // From the width it gets: max-width and min-width apply first.
+        pixel_t ratio_width = self_size.render_width;
+        if(self_size.max_width.type != containing_block_context::cbc_value_type_none)
+        {
+            ratio_width = std::min<pixel_t>(ratio_width, self_size.max_width);
+        }
+        if(self_size.min_width.type != containing_block_context::cbc_value_type_none)
+        {
+            ratio_width = std::max<pixel_t>(ratio_width, self_size.min_width);
+        }
         pixel_t ratio_height =
-            (pixel_t(self_size.render_width) + box_sizing_width()) / pixel_t(css().get_aspect_ratio()) - box_sizing_height();
+            (ratio_width + box_sizing_width()) / pixel_t(css().get_aspect_ratio()) - box_sizing_height();
         if(self_size.min_height.type == containing_block_context::cbc_value_type_none ||
            self_size.min_height.value < ratio_height)
         {

@@ -2995,7 +2995,8 @@ void Renderer::serialize_node(const Node* n, std::string& out) const {
     bool styled = !n->styles.empty() || overrides_.count(n->id) || edited;
     for (const auto& [name, value] : n->attrs) {
         if (name == "style") { styled = true; continue; }
-        if ((canvas && name == "src") || !css::is_attribute_name(name)) continue;
+        // A canvas's width and height are its natural size, which `src` names: on the fork's image they would be its style.
+        if ((canvas && (name == "src" || name == "width" || name == "height")) || !css::is_attribute_name(name)) continue;
         // The platform's editor shows the placeholder of the control being edited.
         if (edited && name == "placeholder") continue;
         out.push_back(' ');

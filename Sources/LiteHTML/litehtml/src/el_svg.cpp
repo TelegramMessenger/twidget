@@ -434,8 +434,25 @@ namespace litehtml
             const auto& el_css = el->css();
             const auto tag = std::dynamic_pointer_cast<html_tag>(el);
             const bool has_origin = tag && tag->has_own_property(_transform_origin_);
-            pixel_t ox = has_origin ? border_box.x + el_css.get_transform_origin_x().calc_percent(border_box.width) : 0_px;
-            pixel_t oy = has_origin ? border_box.y + el_css.get_transform_origin_y().calc_percent(border_box.height) : 0_px;
+            // transform-box: fill-box: the shape's own box in place of the view box, and its corner the default origin.
+            position box = border_box;
+            bool     fill_box = false;
+            vector_path geometry;
+            if(el_css.get_transform_fill_box() && svg_geometry(el, geometry) && geometry.points.size() >= 2)
+            {
+                float x0 = geometry.points[0], y0 = geometry.points[1], x1 = x0, y1 = y0;
+                for(size_t i = 0; i + 1 < geometry.points.size(); i += 2)
+                {
+                    x0 = std::min(x0, geometry.points[i]);
+                    x1 = std::max(x1, geometry.points[i]);
+                    y0 = std::min(y0, geometry.points[i + 1]);
+                    y1 = std::max(y1, geometry.points[i + 1]);
+                }
+                box      = position(pixel_t(x0), pixel_t(y0), pixel_t(x1 - x0), pixel_t(y1 - y0));
+                fill_box = true;
+            }
+            pixel_t ox = has_origin ? box.x + el_css.get_transform_origin_x().calc_percent(box.width) : fill_box ? box.x : 0_px;
+            pixel_t oy = has_origin ? box.y + el_css.get_transform_origin_y().calc_percent(box.height) : fill_box ? box.y : 0_px;
             transform_matrix m{1, 0, 0, 1, -ox.value(), -oy.value()};
             const auto&      functions = el_css.get_transform();
             for(auto it = functions.rbegin(); it != functions.rend(); ++it)
@@ -444,8 +461,8 @@ namespace litehtml
                 switch(it->kind)
                 {
                 case transform_function::translate:
-                    f.tx = it->x.calc_percent(border_box.width).value();
-                    f.ty = it->y.calc_percent(border_box.height).value();
+                    f.tx = it->x.calc_percent(box.width).value();
+                    f.ty = it->y.calc_percent(box.height).value();
                     break;
                 case transform_function::scale:
                     f.a = it->v[0];
