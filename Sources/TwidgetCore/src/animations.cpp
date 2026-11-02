@@ -965,6 +965,7 @@ void Animator::set_style_sheets(const std::vector<std::string>& texts) {
     KeyframeRules rules;
     for (const std::string& text : texts) parse_keyframes(text, rules);
     keyframes_ = std::move(rules);
+    keyframes_paint_.clear();
 }
 
 bool Animator::declares_motion(int64_t id) const {
@@ -1044,7 +1045,13 @@ void Animator::update(const std::unordered_map<int64_t, Declared>& declarations,
                     if (auto t = transitions_.find(id); t != transitions_.end()) t->second.erase(property);
                 } else {
                     std::string current = transition_value(id, property, now).value_or(*old_value);
-                    transitions_[id][property] = Transition{std::move(current), *new_value, now, *spec};
+                    // Its keyframes are its two ends.
+                    paint::AnimationPaint heavy;
+                    heavy.keyframe(0);
+                    heavy.property(property, current);
+                    heavy.keyframe(1);
+                    heavy.property(property, *new_value);
+                    transitions_[id][property] = Transition{std::move(current), *new_value, now, *spec, heavy.result()};
                 }
             } else if (!new_value) {
                 if (auto t = transitions_.find(id); t != transitions_.end()) t->second.erase(property);
@@ -1521,8 +1528,74 @@ void Animator::apply_web(const Json& message, double clock_offset_ms) {
             continue;
         }
         if (!web_.count(key) && web_.size() >= MAX_ANIMATIONS) continue;
+        paint::AnimationPaint heavy;
+        for (const WebAnimation::Frame& frame : animation->frames) {
+            heavy.keyframe(frame.offset);
+            for (const auto& [property, value] : frame.values) heavy.property(property, value);
+        }
+        animation->heavy = heavy.result();
         web_[key] = std::move(*animation);
     }
+}
+
+uint64_t Animator::heavy_motion(double now, std::vector<Motion>* out) const {
+    if (out) out->clear();
+    uint64_t hash = 0;
+    auto add = [&](int64_t id, char kind, std::string_view name, int64_t aid, paint::BoxPaint p) {
+        // A sum of mixed members: the same set in any order hashes the same.
+        uint64_t h = std::hash<std::string_view>{}(name) ^ (uint64_t(id) * 0x9E3779B97F4A7C15ull) ^ (uint64_t(aid) * 0xC2B2AE3D27D4EB4Full);
+        h ^= uint64_t(kind) << 56 ^ uint64_t(p.backdrop) << 48;
+        h *= 0xFF51AFD7ED558CCDull;
+        hash += h ^ (h >> 33);
+        if (out) out->push_back({id, kind, name, aid, p});
+    };
+    for (const auto& [id, list] : running_) {
+        for (const Running& r : list) {
+            if (r.ended) continue;
+            auto cached = keyframes_paint_.find(r.spec.name);
+            if (cached == keyframes_paint_.end()) {
+                std::optional<paint::BoxPaint> heavy;
+                if (auto frames = keyframes_.find(r.spec.name); frames != keyframes_.end()) {
+                    paint::AnimationPaint scan;
+                    for (const Keyframe& frame : frames->second) {
+                        scan.keyframe(frame.offset);
+                        for (const auto& [property, value] : frame.declarations) scan.property(property, value);
+                    }
+                    heavy = scan.result();
+                }
+                cached = keyframes_paint_.emplace(r.spec.name, heavy).first;
+            }
+            if (!cached->second) continue;
+            double local = r.local_time(now);
+            if (const Override* o = overrides_.empty() ? nullptr : override_of(id, "animation:" + r.spec.name)) {
+                if (o->cancelled) continue;
+                local = o->local(now);
+            }
+            local -= r.spec.delay;
+            if (local < 0 || local >= r.spec.iterations * std::max(r.spec.duration, 0.0001)) continue;
+            add(id, 'a', r.spec.name, 0, *cached->second);
+        }
+    }
+    for (const auto& [id, list] : transitions_) {
+        for (const auto& [property, t] : list) {
+            if (!t.heavy) continue;
+            double elapsed = now - t.start;
+            if (const Override* o = overrides_.empty() ? nullptr : override_of(id, "transition:" + property)) {
+                if (o->cancelled) continue;
+                elapsed = o->local(now);
+            }
+            elapsed -= t.spec.delay;
+            if (elapsed < 0 || elapsed >= t.spec.duration) continue;
+            add(id, 't', property, 0, *t.heavy);
+        }
+    }
+    for (const auto& [aid, a] : web_) {
+        if (!a.heavy || !a.running()) continue;
+        auto state = compute(a, local_time(a, now), a.rate >= 0);
+        if (!state || (a.rate > 0 ? state->after : state->before)) continue;
+        add(a.target, 'w', {}, aid, *a.heavy);
+    }
+    return hash;
 }
 
 std::vector<int64_t> Animator::web_targets() const {

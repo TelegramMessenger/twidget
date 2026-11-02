@@ -20,6 +20,7 @@ magic move). Until then both exist side by side.
 | Pointer and hover events, trusted; moves coalesced per frame; the gesture claim, and `dblclick` and `contextmenu` as widget-sandbox's gesture policy decides | `src/renderer.cpp` |
 | Canvas 2D: the command interpreter, resolved into `CanvasOp`s a backend draws | `src/canvas.*`, `src/canvas_ops.h` |
 | Compositor layers for transform and opacity animations | `src/compositor.*` |
+| Heavy boxes (widget-sandbox v0.6.0): the count before every frame, the `limit` message, the stopped paint | `src/paint_policy.*`, `Renderer::count_paint` |
 | `light-dark()`, name checks on everything written into the generated HTML | `src/css.*` |
 
 A batch of ops is serialised to HTML, which the fork patches into the live document where it can
@@ -61,6 +62,12 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   host lays its selection over them; the Telegram Android client does so. Each run carries the matrix it
   shows under (CSS transforms as last painted, its layer's track as of the call), so a host asks again
   after a paint or while a layer moves.
+- **The paint limit** (widget-sandbox v0.6.0, `paint-policy.ts`). Before every frame the renderer counts the
+  boxes whose computed style blurs a shadow, filters, has a backdrop-filter or opacity below 1, or runs an
+  animation of one; past 16 (2 with backdrop-filter) it sends `limit` with the code and the count, once, and
+  paints from then on without blur, filters, backdrop or transparency, its animations stopped. A host passes
+  that to `twidget::Renderer::limitExceeded`; widget-sandbox's `WidgetHost` does so and stops the widget.
+  `{"type":"policy","policy":"compat"}` turns the count off.
 - **Tools that lay the document out elsewhere** read `master_css()` (litehtml's, the renderer's own rules
   and the UA layer with the theme's values) and `theme_variables()`.
 
@@ -125,7 +132,7 @@ ctest --test-dir build
 widget-sandbox has to be checked out next to twidget (`../widget-sandbox`), or its path given in
 `TWIDGET_WIDGET_SANDBOX`, as for `Package.swift`: TwidgetCore reads the protocol's JSON helper
 (`twidget/json.h`) and the gesture policy (`twidget/gesture_policy.h`, its source compiled into
-`twidget::core`) from it. TwidgetCore follows release `v0.2.3`: check out that tag, never a branch,
+`twidget::core`) from it. TwidgetCore follows release `v0.6.0`: check out that tag, never a branch,
 and its QuickJS submodule with `git submodule update --init` (widget-sandbox's `docs/integration.md`). The
 build reads the profile's UA layer from its `packages/core/profile.json` into a generated header.
 

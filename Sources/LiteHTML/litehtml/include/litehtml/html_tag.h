@@ -123,6 +123,10 @@ namespace litehtml
         bool on_lbutton_up(bool is_click) override;
         void on_click() override;
         bool set_pseudo_class(string_id cls, bool add) override;
+        bool has_pseudo_class(string_id cls) const override
+        {
+            return std::find(m_pseudo_classes.begin(), m_pseudo_classes.end(), cls) != m_pseudo_classes.end();
+        }
         bool set_class(const char* pclass, bool add) override;
         bool is_replaced() const override;
         void compute_styles(bool recursive = true) override;

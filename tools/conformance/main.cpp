@@ -551,7 +551,15 @@ Json run_one(Device& device, const std::shared_ptr<twidget::SandboxResources>& r
 
     const Json& actions = test["actions"];
     bool scripted = !actions.arr().empty();
-    Verdict verdict = renderer->wait_for(scripted ? std::initializer_list<const char*>{"done", "awaiting"} : std::initializer_list<const char*>{"done"}, 20s);
+    Verdict verdict;
+    if (test["stops"].isString()) {
+        // The stop is the result, and a renderer's paint limit reaches the host a frame after the batch that may also
+        // publish `done`: wait for the death instead (CLIENTS.md, step 4).
+        host.waitUntil([](const twidget::WidgetDiagnostics& d) { return d.dead.has_value(); }, 20);
+        verdict = renderer->verdict();
+    } else {
+        verdict = renderer->wait_for(scripted ? std::initializer_list<const char*>{"done", "awaiting"} : std::initializer_list<const char*>{"done"}, 20s);
+    }
     bool chat_focused = !renderer->editing();
 
     Json skipped = Json::array();

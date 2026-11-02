@@ -81,6 +81,7 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/compositor.cpp"
     "${TW_CORE}/src/encode.cpp"
     "${TW_CORE}/src/filters.cpp"
+    "${TW_CORE}/src/paint_policy.cpp"
     "${TW_CORE}/src/png.cpp"
     "${TW_GESTURE_POLICY}")
 add_library(twidget::core ALIAS twidget_core)
@@ -160,6 +161,15 @@ if(TWIDGET_BUILD_TESTS)
         target_compile_options(twidget_paint_exclusion_rules_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_core COMMAND twidget_core_tests)
+    # The heavy-box rule against widget-sandbox's shared fixture, the one every client's renderer implements.
+    add_executable(twidget_paint_policy_tests "${CMAKE_CURRENT_SOURCE_DIR}/Tests/TwidgetCoreTests/paint_policy_tests.cpp")
+    target_link_libraries(twidget_paint_policy_tests PRIVATE twidget::core)
+    target_compile_definitions(twidget_paint_policy_tests PRIVATE
+        TW_PAINT_POLICY_FIXTURE="${TWIDGET_WIDGET_SANDBOX}/packages/core/tests/fixtures/paint-policy.json")
+    if(MSVC)
+        target_compile_options(twidget_paint_policy_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_paint_policy COMMAND twidget_paint_policy_tests)
     # The Swift renderer's FrameCostBenchTests scenarios against the core; run by hand, not by ctest.
     add_executable(twidget_core_bench "${CMAKE_CURRENT_SOURCE_DIR}/Tests/TwidgetCoreTests/bench.cpp")
     target_link_libraries(twidget_core_bench PRIVATE twidget::core)

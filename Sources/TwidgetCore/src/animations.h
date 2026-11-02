@@ -6,6 +6,7 @@
 // the renderer's clock unless a name says milliseconds.
 #pragma once
 
+#include "paint_policy.h"
 #include "twidget/json.h"
 
 #include <cstdint>
@@ -100,6 +101,8 @@ struct WebAnimation {
     std::optional<double> start_ms, hold_ms;
     double rate = 1;
     std::vector<std::string> properties;
+    /// What it adds to its box while it runs (paint_policy.h, rule 5).
+    std::optional<paint::BoxPaint> heavy;
 
     bool running() const { return !hold_ms && start_ms && rate != 0; }
     /// Validated like twidget's WebAnimation.parse; nullopt drops the record.
@@ -174,6 +177,20 @@ public:
     /// Drops Web Animations whose target left the document.
     void prune(const std::function<bool(int64_t)>& alive);
 
+    /// Rule 5 of the heavy-box count (paint_policy.h): an animation that runs on element `id` and changes what makes a
+    /// box heavy. `kind` 'a' is a CSS animation, from the end of its delay to its end, paused or not; 't' a transition
+    /// likewise; 'w' a Web Animation while it runs, neither held nor finished. `name` the animation's or the
+    /// transition's property, or the Web Animation's aid; it views the Animator's own strings until the next change.
+    struct Motion {
+        int64_t id = 0;
+        char kind = 'a';
+        std::string_view name;
+        int64_t aid = 0;
+        paint::BoxPaint paint;
+    };
+    /// The motions at `now` into `out` when it is given, and a hash of the set either way: equal sets hash equal.
+    uint64_t heavy_motion(double now, std::vector<Motion>* out) const;
+
     /// The value an element has without animations, for Web Animations that add to it or leave a
     /// keyframe open. The renderer sets it before `sample`.
     std::unordered_map<int64_t, Declared> underlying;
@@ -194,6 +211,7 @@ private:
         std::string from, to;
         double start = 0;
         TransitionSpec spec;
+        std::optional<paint::BoxPaint> heavy;
     };
     struct Override {
         double origin = 0;
@@ -214,6 +232,8 @@ private:
     const Override* override_of(int64_t id, const std::string& key) const;
 
     KeyframeRules keyframes_;
+    /// Rule 5 for each @keyframes name, read once per set of style sheets.
+    mutable std::unordered_map<std::string, std::optional<paint::BoxPaint>> keyframes_paint_;
     std::unordered_map<int64_t, std::vector<Running>> running_;
     std::unordered_map<int64_t, std::map<std::string, Transition>> transitions_;
     std::unordered_map<int64_t, Declared> bases_;

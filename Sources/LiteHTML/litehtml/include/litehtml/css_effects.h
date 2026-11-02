@@ -10,6 +10,7 @@
 namespace litehtml
 {
     class document_container;
+    class element;
 
     struct box_shadow
     {
@@ -116,6 +117,8 @@ namespace litehtml
         bool             backface_hidden = false;
         position         bounds;
         bool             exact_bounds = false;
+        /// The element whose group this is; null for an SVG painter's own groups.
+        const element*   owner = nullptr;
     };
 
     struct svg_gradient

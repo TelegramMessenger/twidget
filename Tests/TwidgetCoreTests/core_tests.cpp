@@ -2454,6 +2454,137 @@ int main() {
         check(ticked == "contextmenu:30 " && types(moved) == "pointercancel:30 " && action == "scroll", "as the bubble, a vertical drag after a hold on none scrolls the chat (got " + ticked + types(moved) + action + ")");
     }
 
+    // ── heavy boxes ──
+    {
+        // A body of boxes, one per style, and an optional style sheet.
+        auto page = [](const std::vector<std::string>& styles, const std::string& css = "", const std::string& attrs = "", const char* tag = "div") {
+            std::string ops = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},)"
+                              R"({"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]})";
+            if (!css.empty())
+                ops += R"(,{"op":"el","id":20,"tag":"style"},{"op":"css","id":20,"text":")" + css + R"("},{"op":"ins","parent":3,"id":20,"before":null})";
+            for (size_t i = 0; i < styles.size(); i++) {
+                std::string id = std::to_string(30 + i);
+                ops += R"(,{"op":"el","id":)" + id + R"(,"tag":")" + tag + R"(","attrs":[["style","width:10px;height:10px;)" + styles[i] + "\"]" + attrs +
+                       R"(]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+            }
+            return parse(ops + "]}");
+        };
+        auto run = [](Renderer& r, const Json& msg) {
+            auto out = r.receive(msg);
+            auto ticked = r.tick();
+            out.insert(out.end(), ticked.begin(), ticked.end());
+            std::string limit;
+            for (const Json& m : out)
+                if (m["type"].asString() == "limit") limit = m["code"].asString() + " " + std::to_string(m["count"].asInt());
+            return limit;
+        };
+        std::vector<std::string> shadows(16, "box-shadow:0 2px 4px red");
+
+        StubBackend hb;
+        Renderer h(300, 1, false, hb);
+        check(run(h, page(shadows)).empty(), "16 boxes with a blurred shadow run");
+        StubBackend hb17;
+        Renderer h17(300, 1, false, hb17);
+        auto many = shadows;
+        many.push_back("filter:brightness(1)");
+        std::string stopped = run(h17, page(many));
+        check(stopped == "paint-limit 17", "a 17th heavy box reports the limit (got '" + stopped + "')");
+
+        StubBackend cb3;
+        Renderer c(300, 1, false, cb3);
+        c.receive(parse(R"({"type":"policy","policy":"compat"})"));
+        check(run(c, page(many)).empty(), "under compat nothing is counted");
+
+        StubBackend bb;
+        Renderer b(300, 1, false, bb);
+        std::vector<std::string> dimmed(20, "opacity:0.5");
+        check(run(b, page(dimmed, "", R"(,["disabled",""])", "button")).empty(), "a disabled button's own opacity is not heavy");
+        std::string more = R"({"type":"ops","ops":[)";
+        for (int i = 0; i < 17; i++)
+            more += std::string(i ? "," : "") + R"({"op":"el","id":)" + std::to_string(60 + i) + R"(,"tag":"div","attrs":[["style","opacity:0.5"]]},{"op":"ins","parent":4,"id":)" +
+                    std::to_string(60 + i) + R"(,"before":null})";
+        check(run(b, parse(more + "]}")) == "paint-limit 17", "while a box's opacity is");
+
+        StubBackend db2;
+        Renderer d(300, 1, false, db2);
+        stopped = run(d, page({"backdrop-filter:blur(4px)", "backdrop-filter:blur(4px)", "-webkit-backdrop-filter:blur(4px)"}));
+        check(stopped == "backdrop-limit 3", "a third backdrop-filter reports its own limit (got '" + stopped + "')");
+
+        // Rule 5: an animation of opacity makes its box heavy while it runs, not during its delay.
+        const char* fade = "@keyframes fade{from{opacity:1}to{opacity:1}} .late{animation:fade 1s linear 10s} .now{animation:fade 1s linear infinite}";
+        StubBackend ab;
+        Renderer a(300, 1, false, ab);
+        auto waiting = shadows;
+        waiting.push_back("");
+        check(run(a, page(waiting, fade)).empty(), "a plain 17th box is not heavy");
+        check(run(a, parse(R"({"type":"ops","ops":[{"op":"attr","id":46,"name":"class","value":"late"}]})")).empty(), "nor while its animation waits out the delay");
+        stopped = run(a, parse(R"({"type":"ops","ops":[{"op":"attr","id":46,"name":"class","value":"now"}]})"));
+        check(stopped == "paint-limit 17", "but it is once the animation runs (got '" + stopped + "')");
+
+        StubBackend wb;
+        Renderer w(300, 1, false, wb);
+        check(run(w, page(waiting)).empty(), "a page of 16 heavy boxes runs");
+        const char* held = R"({"type":"anim","now":0,"anims":[{"aid":1,"target":46,"keyframes":[{"offset":0,"values":{"opacity":"1"}},{"offset":1,"values":{"opacity":"1"}}],"timing":{"duration":1000,"fill":"forwards"},"startTime":-5000}]})";
+        check(run(w, parse(held)).empty(), "a finished Web Animation that holds its end is not counted");
+        const char* running = R"({"type":"anim","now":0,"anims":[{"aid":2,"target":46,"keyframes":[{"offset":0,"values":{"opacity":"1"}},{"offset":1,"values":{"opacity":"1"}}],"timing":{"duration":1000,"iterations":null},"startTime":0}]})";
+        stopped = run(w, parse(running));
+        check(stopped == "paint-limit 17", "a running one is (got '" + stopped + "')");
+
+        // As the conformance set writes them: a class on the 17th box, after the page ran.
+        auto restyle = [&](const char* css, const char* cls, const char* what) {
+            StubBackend xb;
+            Renderer x(300, 1, false, xb);
+            std::string all = std::string(".h{box-shadow:0 2px 6px rgba(0,0,0,.4)} ") + css;
+            check(run(x, page(shadows, all, R"(,["class","h"])")).empty() && run(x, page(waiting, all)).empty(), std::string(what) + ": runs before");
+            stopped = run(x, parse(std::string(R"({"type":"ops","ops":[{"op":"attr","id":46,"name":"class","value":")") + cls + R"("}]})"));
+            check(!stopped.empty(), std::string(what) + ": stops (got '" + stopped + "')");
+        };
+        restyle("@keyframes p{to{opacity:.55}} .a{animation:p 1.2s ease-in-out infinite alternate}", "a", "an animation with a to frame only");
+        restyle(".p::before{content:\\\"\\\";display:block;width:6px;height:6px;filter:blur(1px)}", "p", "a ::before with a filter");
+        restyle(".g{-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}", "g", "a backdrop-filter");
+
+        // The stopped widget: no blur, filters, backdrop or transparency, and a transparent box hidden.
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        auto heavy = shadows;
+        heavy[0] = "box-shadow:0 2px 4px red, 1px 1px 0 blue";
+        heavy[1] = "filter:blur(2px)";
+        heavy[2] = "backdrop-filter:blur(4px)";
+        heavy[3] = "opacity:0.5";
+        heavy[4] = "opacity:0";
+        heavy.push_back("opacity:0.25");
+        check(run(s, page(heavy)) == "paint-limit 17", "a mixed page stops");
+        int blurred = 0, effects = 0, translucent = 0, hidden = 0, sharp = 0;
+        for (const Command& cmd : s.paint()) {
+            if (cmd.kind == Cmd::Shadow) (cmd.bx > 0 ? blurred : sharp)++;
+            if (cmd.kind == Cmd::FilterPush || cmd.kind == Cmd::Backdrop) effects++;
+            if (cmd.kind == Cmd::GroupPush && cmd.hidden) hidden++;
+            else if (cmd.kind == Cmd::GroupPush && cmd.opacity < 1) translucent++;
+        }
+        check(!blurred && sharp == 1 && !effects && !translucent && hidden == 1,
+              "the stopped paint keeps sharp shadows only, opaque, the transparent box hidden (blurred " + std::to_string(blurred) + ", sharp " + std::to_string(sharp) +
+                  ", effects " + std::to_string(effects) + ", translucent " + std::to_string(translucent) + ", hidden " + std::to_string(hidden) + ")");
+        check(!s.wants_tick() && run(s, page(heavy)).empty(), "and takes no more ops or frames");
+    }
+
+    // ── a long flush in parts ──
+    {
+        StubBackend pb;
+        Renderer p(300, 1, false, pb);
+        p.receive(parse(PAGE));
+        std::string part = R"({"type":"ops","ops":[)";
+        for (int i = 0; i < 1000; i++) part += std::string(i ? "," : "") + R"({"op":"style","id":10,"name":"width","value":")" + std::to_string(i % 90 + 1) + R"(px"})";
+        int builds = p.stats().builds;
+        p.receive(parse(part + "]}"));
+        check(p.stats().builds == builds, "a part of 1000 ops waits for the rest of its task");
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"width","value":"70px"}]})"));
+        check(p.stats().builds == builds && p.wants_tick(), "and so does the last, to the frame");
+        p.tick();
+        int built = p.stats().builds - builds;
+        double width = p.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
+        check(built == 1 && width == 70, "which builds the task once (" + std::to_string(built) + " builds)");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
