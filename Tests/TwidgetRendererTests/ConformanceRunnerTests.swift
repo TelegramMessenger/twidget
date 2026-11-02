@@ -577,6 +577,9 @@ final class ConformanceRunnerTests: XCTestCase {
         var stages: [[String: Any]] = []
         let crops = out.appendingPathComponent("crops")
         try FileManager.default.createDirectory(at: crops, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["TW_CONFORMANCE_SNAPSHOTS"] == "1" {
+            _ = session.saveSnapshot(into: out.appendingPathComponent("\(stem).\(theme).png"))
+        }
         for stage in (test["stages"] as? [[String: Any]]) ?? [] {
             guard let name = stage["name"] as? String, ((stage["themes"] as? [String]) ?? []).contains(theme) else {
                 continue

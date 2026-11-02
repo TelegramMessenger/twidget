@@ -2193,6 +2193,7 @@ public:
     }
     litehtml::element::ptr create_element(const char*, const litehtml::string_map&, const std::shared_ptr<litehtml::document>&) override { return nullptr; }
     void get_media_features(litehtml::media_features& m) const override {
+        m.dark_color_scheme = r_.dark_;
         m.type = litehtml::media_type_screen;
         m.width = litehtml::pixel_t(float(r_.width_));
         m.height = litehtml::pixel_t(float(vp_height_));

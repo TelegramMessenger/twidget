@@ -4756,6 +4756,7 @@ void LHContainer::get_viewport(lh::position& viewport) const
 
 void LHContainer::get_media_features(lh::media_features& media) const
 {
+    media.dark_color_scheme = m_dark_color_scheme;
     media.type          = lh::media_type_screen;
     media.width         = m_viewport.width;
     media.height        = m_viewport.height;

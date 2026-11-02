@@ -328,6 +328,16 @@ namespace litehtml
         const grid_placement&    get_grid_column() const { return m_grid_column; }
         const grid_placement&    get_grid_row() const { return m_grid_row; }
         float                    get_opacity() const { return m_opacity; }
+        void                     suppress_paint_effects(bool hidden)
+        {
+            if(hidden) m_visibility = visibility_hidden;
+            m_opacity = 1;
+            m_filter.clear();
+            m_backdrop_filter.clear();
+            m_box_shadows.erase(std::remove_if(m_box_shadows.begin(), m_box_shadows.end(), [](const box_shadow& shadow) {
+                return shadow.blur.val() > 0 || shadow.blur.units() == css_units_calc;
+            }), m_box_shadows.end());
+        }
         float                    get_aspect_ratio() const { return m_aspect_ratio; }
         bool                     get_center_content() const { return m_center_content; }
         void                     set_center_content(bool center) { m_center_content = center; }

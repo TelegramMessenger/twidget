@@ -8,6 +8,7 @@ import enum WidgetSandbox.GesturePolicy
 import struct WidgetSandbox.WidgetGestureClaim
 import enum WidgetSandbox.WidgetResizeAnchor
 import protocol WidgetSandbox.TaskRenderer
+import enum WidgetSandbox.WidgetPaintLimit
 
 public final class LiteHTMLWidgetRenderer: TaskRenderer {
     public let view: NSView
@@ -84,6 +85,65 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     private var lastSize = ""
     private var sizeTransition = false
     var frozen = false
+    private var strictPaintPolicy = true
+    private var paintStopped = false
+    private let paintAnimator = WidgetAnimator()
+    private var paintStyleSheetKey = ""
+    private static let paintDeclarations = WidgetAnimator.watched.filter { $0.hasPrefix("animation") || $0.hasPrefix("transition") || ["opacity", "filter", "backdrop-filter", "box-shadow"].contains($0) }
+    private(set) var paintCounts = (heavy: 0, backdrop: 0)
+
+    public func limitExceeded(_ code: WidgetPaintLimit, count: Int) {
+        post(["type": "limit", "code": code.rawValue, "count": max(0, count)])
+    }
+
+    private func checkPaint(_ next: LHDocument) {
+        guard strictPaintPolicy, !frozen, !paintStopped, !silentRendering else { return }
+        let boxes = next.paintBoxes(attribute: WidgetDOM.idAttribute, declarations: Self.paintDeclarations)
+        var declarations: [Int: [String: String]] = [:]
+        func animationID(_ key: String) -> Int? {
+            let parts = key.components(separatedBy: "::")
+            guard let id = Int(parts[0]) else { return nil }
+            return id * 4 + (parts.count == 1 ? 0 : parts[1] == "before" ? 1 : 2)
+        }
+        for (key, box) in boxes {
+            if let id = animationID(key) { declarations[id] = box["declarations"] as? [String: String] ?? [:] }
+        }
+        let now = animationNow
+        let sheets = dom.styleSheets()
+        let sheetKey = theme + "\u{1}" + sheets.joined(separator: "\u{1}")
+        if sheetKey != paintStyleSheetKey {
+            paintStyleSheetKey = sheetKey
+            paintAnimator.setStyleSheets(sheets.map { LiteHTMLWidgetRenderer.resolvedSheet($0, theme: theme) })
+        }
+        paintAnimator.update(declarations: declarations, now: now)
+        _ = paintAnimator.sample(now: now)
+        let counter = WidgetPaintCounter()
+        for (key, box) in boxes {
+            counter.set(key, WidgetBoxPaint(heavy: (box["heavy"] as? NSNumber)?.boolValue ?? false, backdrop: (box["backdrop"] as? NSNumber)?.boolValue ?? false))
+            var animations = animationID(key).map { paintAnimator.paintAnimations($0, now: now) } ?? []
+            if let id = Int(key) { animations += animator.paintAnimations(id, now: now, includeCSS: false) }
+            for (index, paint) in animations.enumerated() { counter.start(key, id: String(index), paint: paint) }
+        }
+        paintCounts = counter.counts
+        if let verdict = counter.check() {
+            paintStopped = true
+            stopPaintEffects()
+            limitExceeded(verdict.code, count: verdict.count)
+        }
+    }
+
+    private func stopPaintEffects() {
+        animator.reset()
+        paintAnimator.reset()
+        compositor.reset()
+        scrolling.reset()
+        svgLayers.reset()
+        shimmers.reset()
+        magic.cancel()
+        overrides.removeAll()
+        lastLayoutOverrides = nil
+        displayList = nil
+    }
     var destroyed = false
     private var needsRender = false
     private var frameRequested = false
@@ -933,6 +993,8 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             print(String(format: "MSG %.4f %@", CACurrentMediaTime(), type))
         }
         switch type {
+        case "policy":
+            strictPaintPolicy = (message["policy"] as? String) != "compat"
         case "beginTask":
             taskDepth += 1
         case "endTask":
@@ -997,6 +1059,11 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             animator.web.apply(message)
             for item in (message["anims"] as? [[String: Any]]) ?? [] where item["css"] != nil {
                 animator.applyCSSOverride(item, offset: hiddenTotal)
+                if let target = (item["target"] as? NSNumber)?.intValue {
+                    var mapped = item
+                    mapped["target"] = target * 4
+                    paintAnimator.applyCSSOverride(mapped, offset: hiddenTotal)
+                }
             }
             if !frozen {
                 render()
@@ -1439,6 +1506,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         layout(overrides)
         probing = false
         defer { finishProbe() }
+        if frozen || paintStopped { return }
         let scanStart = CACurrentMediaTime()
         var generation: UInt64 = 0
         let scanned = document?.declarations(WidgetAnimator.watched, byAttribute: WidgetDOM.idAttribute, requiringAny: LiteHTMLWidgetRenderer.declarationGates, changedSince: scannedDeclarations.generation, generation: &generation)
@@ -1730,6 +1798,13 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         if holdsSilentState {
             return
         }
+        if let document = document {
+            checkPaint(document)
+            if paintStopped || frozen {
+                render()
+                return
+            }
+        }
         let sampled = animator.sample(now: animationNow)
         if WidgetDocumentView.verify && !compositor.drivenIDs.isEmpty {
             let error = compositor.handoffError(animator: animator, now: animationNow)
@@ -1897,6 +1972,9 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         stage("serialize")
         let next = fast ?? LHDocument(html: html, css: masterCSS, previous: document, viewportSize: layoutViewport)
         next.controlsActive = controlsActive
+        next.setDarkColorScheme(theme == "dark")
+        checkPaint(next)
+        if frozen || paintStopped { next.suppressPaintEffects() }
         dom.resetPatchLog()
         if fast != nil {
             stageMilliseconds["style-fast", default: 0] += 1
@@ -2141,6 +2219,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         }
         var touched: Set<Int> = []
         for op in ops {
+            if strictPaintPolicy && op.name.lowercased() == "opacity" { return nil }
             guard op.kind == .style, LiteHTMLWidgetRenderer.scriptedProperties.contains(op.name.lowercased()), promoted.contains(op.id), !animator.transitions(op.id, property: op.name.lowercased()) else {
                 return nil
             }
@@ -2826,6 +2905,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             return
         }
         frozen = true
+        stopPaintEffects()
         smoothScrolls.removeAll()
         pendingScrollRequests.removeAll()
         pointerCaptureId = 0
@@ -2851,6 +2931,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             }
         }
         placeSurfaces()
+        setNeedsRender()
     }
 
     func keyChanged() {

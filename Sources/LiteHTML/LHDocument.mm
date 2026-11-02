@@ -3024,6 +3024,90 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     return entry.value;
 }
 
+- (NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)paintBoxesWithAttribute:(NSString *)attribute declarations:(NSArray<NSString *> *)names
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    if(!_doc || !_doc->root()) return result;
+    std::vector<std::pair<lh::string_id, NSString *>> keys;
+    for(NSString *name in names)
+    {
+        auto raw = lh::raw_declaration_id(lh::_id(name.UTF8String));
+        if(raw != lh::empty_id) keys.emplace_back(raw, name);
+    }
+    std::vector<const lh::element *> pending{_doc->root().get()};
+    while(!pending.empty())
+    {
+        const auto *el = pending.back();
+        pending.pop_back();
+        if(el->css().get_display() == lh::display_none) continue;
+        auto tag = dynamic_cast<const lh::html_tag *>(el);
+        bool before = dynamic_cast<const lh::el_before *>(el) != nullptr;
+        bool after = dynamic_cast<const lh::el_after *>(el) != nullptr;
+        auto owner = before || after ? el->parent().get() : el;
+        const char *value = owner ? owner->get_attr(attribute.UTF8String) : nullptr;
+        if(tag && value && !el->is_text())
+        {
+            NSString *key = [@(value) stringByAppendingString:before ? @"::before" : after ? @"::after" : @""];
+            const auto& css = el->css();
+            bool dimmed = !before && !after && !strcmp(el->get_tagName(), "button") &&
+                (el->get_attr("disabled") || const_cast<lh::html_tag *>(tag)->select("button:active"));
+            bool backdrop = !css.get_backdrop_filter().empty();
+            bool blurred = std::any_of(css.get_box_shadows().begin(), css.get_box_shadows().end(), [](const lh::box_shadow& shadow) {
+                return shadow.blur.val() > 0 || shadow.blur.units() == lh::css_units_calc;
+            });
+            NSMutableDictionary *declarations = [NSMutableDictionary dictionary];
+            for(const auto& entry : keys)
+                if(const auto *tokens = tag->get_token_property(entry.first))
+                {
+                    auto raw = lh::get_repr(*tokens, 0, -1, true);
+                    if(!raw.empty()) declarations[entry.second] = @(raw.c_str());
+                }
+            result[key] = @{@"heavy": @(backdrop || blurred || !css.get_filter().empty() || (!dimmed && css.get_opacity() < 1)),
+                            @"backdrop": @(backdrop), @"declarations": declarations};
+        }
+        for(const auto& child : el->children()) pending.push_back(child.get());
+    }
+    return result;
+}
+
+- (void)setDarkColorScheme:(BOOL)dark
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || _container->dark_color_scheme() == bool(dark)) return;
+    _container->set_dark_color_scheme(dark);
+    if(_doc->media_changed())
+    {
+        _doc->note_style_change();
+        _doc->invalidate_layout_cache();
+        _lastMaxWidth = -1;
+        _paintOnly = NO;
+        _paintTraceValid = NO;
+        _itemIndexValid = NO;
+    }
+}
+
+- (void)suppressPaintEffects
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    [self restoreLocked];
+    if(!_doc || !_doc->root()) return;
+    std::vector<std::pair<const lh::element *, bool>> pending{{_doc->root().get(), false}};
+    while(!pending.empty())
+    {
+        const auto item = pending.back();
+        pending.pop_back();
+        const auto *el = item.first;
+        const bool hidden = item.second || el->css().get_opacity() == 0;
+        const_cast<lh::css_properties&>(el->css()).suppress_paint_effects(hidden);
+        for(const auto& child : el->children()) pending.emplace_back(child.get(), hidden);
+    }
+    _doc->note_style_change();
+    _doc->invalidate_layout_cache();
+}
+
 - (nullable NSDictionary<NSString *, NSNumber *> *)svgGeometry:(NSString *)method at:(double)distance attribute:(NSString *)attribute value:(NSString *)value
 {
     std::lock_guard<std::mutex> guard(_lock);
@@ -3387,8 +3471,12 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     out[@"background-repeat"]   = repeats.count ? [repeats componentsJoinedByString:@", "] : @"repeat";
     out[@"cursor"]              = css.get_cursor().empty() ? @"auto" : @(css.get_cursor().c_str());
     out[@"touch-action"]        = raw("touch-action", @"auto");
-    out[@"filter"]              = raw("filter", @"none");
-    out[@"backdrop-filter"]     = raw("backdrop-filter", @"none");
+    out[@"filter"]              = css.get_filter().empty() ? @"none" : raw("filter", @"none");
+    out[@"backdrop-filter"]     = css.get_backdrop_filter().empty() ? @"none" : raw("backdrop-filter", @"none");
+    NSMutableArray<NSString *> *shadows = [NSMutableArray array];
+    for(const auto& shadow : css.get_box_shadows())
+        [shadows addObject:[NSString stringWithFormat:@"%@ %@ %@ %@ %@%@", rgb(shadow.color), length(shadow.x), length(shadow.y), length(shadow.blur), length(shadow.spread), shadow.inset ? @" inset" : @""]];
+    out[@"box-shadow"] = shadows.count ? [shadows componentsJoinedByString:@", "] : @"none";
     lh::web_color paint;
     out[@"fill"]                = lh::svg_paint_color(el, true, paint, _container.get()) ? rgb(paint) : @"none";
     out[@"stroke"]              = lh::svg_paint_color(el, false, paint, _container.get()) ? rgb(paint) : @"none";
