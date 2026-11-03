@@ -78,6 +78,23 @@ final class SurfaceTests: XCTestCase {
         XCTAssertGreaterThan(badge?.zPosition ?? 0, container?.zPosition ?? 0)
     }
 
+    func testAWidgetStoppedWithoutALabelKeepsItsLastFrameWithoutBadgeOrDimming() {
+        let (renderer, window, provider) = makeRenderer(height: 300, ops: "{\"op\":\"el\",\"id\":9,\"tag\":\"div\",\"attrs\":[[\"style\",\"height:200px\"],[\"data-tw3d\",\"1\"]]},{\"op\":\"ins\",\"parent\":7,\"id\":9,\"before\":null}")
+        defer { renderer.destroy(); window.orderOut(nil) }
+        pump(3, until: { provider.layers["1"]?.superlayer != nil })
+        renderer.send("{\"type\":\"frozen\",\"reason\":\"\",\"fatal\":true}")
+        XCTAssertTrue(renderer.frozen)
+        XCTAssertEqual(provider.layouts.last?.active, false)
+        func all(_ layer: CALayer?) -> [CALayer] {
+            guard let layer else { return [] }
+            return [layer] + (layer.sublayers ?? []).flatMap(all)
+        }
+        let layers = all(renderer.view.layer)
+        XCTAssertNil(layers.first { $0 is CATextLayer }, "no Widget stopped badge")
+        let dimming = NSColor(white: 0.5, alpha: 0.25).cgColor
+        XCTAssertNil(layers.first { $0.backgroundColor == dimming }, "no grey overlay over the last frame")
+    }
+
     func testDestroyReleasesSurfaces() {
         let (renderer, window, provider) = makeRenderer(height: 300, ops: "{\"op\":\"el\",\"id\":9,\"tag\":\"div\",\"attrs\":[[\"style\",\"height:200px\"],[\"data-tw3d\",\"1\"]]},{\"op\":\"ins\",\"parent\":7,\"id\":9,\"before\":null}")
         defer { window.orderOut(nil) }

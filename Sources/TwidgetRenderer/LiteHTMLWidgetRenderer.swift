@@ -5211,6 +5211,11 @@ class WidgetDocumentView: NSView {
         guard let layer = contentLayer else {
             return
         }
+        guard !text.isEmpty else {
+            badgeLayer?.removeFromSuperlayer()
+            badgeLayer = nil
+            return
+        }
         if fatal {
             layer.backgroundColor = NSColor(white: 0.5, alpha: 0.25).cgColor
         }
