@@ -1,11 +1,9 @@
-# Conformance with widget-sandbox v0.2.3
+# Conformance with widget-sandbox v0.6.0
 
-widget-sandbox v0.1.0 froze widget profile 1, v0.1.1 settles its defaults (the renderer's UA layer, text
-tokens, the bubble as the canvas, opt-in selection), v0.1.2 decides who gets a press (one gesture policy
-on every client), v0.1.3 gives vertical drags to the chat and the resize anchor to the widget, and v0.2
-gives the widget the bot's state and requests to the bot. Each ships a conformance set that every client
-runs on its renderer (`packages/conformance/CLIENTS.md` there). This page tracks TwidgetCore against it:
-what the contract asks of the renderer, and what the set reports, item by item.
+widget-sandbox froze widget profile 1 in v0.1.0, and every release since ships a conformance set that
+every client runs on its renderer (`packages/conformance/CLIENTS.md` there; what each release changed is
+in its `docs/changes.md`). This page tracks TwidgetCore against it: what the contract asks of the
+renderer, and what the set reports, item by item.
 
 Measured with `tools/conformance` (Windows, the Direct2D painter on WARP, 390 CSS px, DPR 2) and the
 set's `tools/report.mjs`. The verdicts that come from the widgets' own checks (layout, computed style,
@@ -33,18 +31,20 @@ each platform's painter needs its own run.
 | 2026-10-26 | v0.2.2 (haptics need a touch: host glue only) | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
 | 2026-10-27 | v0.2.3 (the shim converts canvas arguments and loads images a script creates; pictures follow profile 1) | 173 / 1 / 0 / 14 | 78 / 0 / 0 |
 | 2026-11-02 | v0.6.0 (the renderer counts heavy boxes, a long flush comes in parts, 4000 canvas commands): 175 / 6 / 1 / 16 at v0.4.0; the paint count, the stopped paint, and the runner waits for the stop of a `stops` test | 179 / 6 / 0 / 16 | 77 / 0 / 0 |
+| 2026-11-02 | db9afca (grid tracks, `aspect-ratio` after `max-width`, `transform-box: fill-box`, the drawn canvas's size) | 184 / 1 / 0 / 16 | 77 / 0 / 0 |
 
 What is left partly passing is not TwidgetCore's to fix: see the last section.
 
-The 14 untested features are the host's (limits, restart, storage, message and state edits, forwarded
-copies, previews, the network marker, size hints, the resize anchor): the automatic set does not reach them,
+The 16 untested features are the host's (the CPU, memory, main-thread and animation limits, the size of the
+widget's HTML, restart, storage, message and state edits, forwarded copies, previews, the network marker,
+size hints, the resize anchor, the client's time over the corner): the automatic set does not reach them,
 and each client checks them in its own host. The gesture claim is tested since v0.1.2: the runner's presses
 go through a bubble that follows the shared policy, as CLIENTS.md asks. Since v0.2.1 a test with a
 `message` runs as that kind of message (the server's flags, the bot's state and a viewer where requests are
 allowed), and the runner answers its requests from the manifest's `bot` table, as the test bot would.
 
-For comparison, the old litehtml renderer copy in widget-sandbox (web build, upstream litehtml) is at
-66 / 41 / 52 in widget-sandbox's own results.
+For comparison, widget-sandbox's litehtml prototype (web build, upstream litehtml; frozen since
+2026-10-30) was at 66 / 41 / 52 in widget-sandbox's own results.
 
 ## Swift renderer on macOS
 
@@ -55,39 +55,9 @@ viewer, and answers requests from the manifest's `bot` table. This lets the cont
 originals, copies and previews with their actual permissions. Tests without a `message` use the
 private-chat context, as `CLIENTS.md` requires. Unknown message kinds stop the run.
 
-The macOS renderer corrections checked on 28 October 2026 restore existing behavior:
-
-- Include `<html>` in the `touch-action` ancestor walk, as the shared gesture policy requires.
-- Accumulate `movementX` and `movementY` across coalesced moves while retaining the latest position.
-- Deliver pending moves in insertion order, including `pointermove` before its compatibility `mousemove`.
-- Preserve native click counts and give the shared arbiter's `dblclick` a count of at least two, without changing gesture thresholds.
-
-The ancestor walk and move accumulation/order match the existing portable C++ renderer. These are
-native renderer corrections; the profile, protocol, host-glue policies and runtime quotas are unchanged.
-
-Before the rebase, recorded on macOS 27.0.1: all 25 affected native tests pass. All 53 automatic runs complete with 609
-passing checks. One hover fixture check skips because its capability query returns false; native
-hover events and rendering pass separate interaction tests. One touch-event check skips because
-the native runner sends mouse input. The upstream report has 174 in-profile
-features passing, zero partial/failing features and 14 host features untested. TwidgetLab's 12 gates
-verify 1,146 fresh-render frames, 289 fresh-parse patches and 108 replay frames (97 patched), with zero
-differences. These scoped results do not replace the recorded full-suite timing diagnostics or the
-host, manual client and bot checks.
-
-After rebasing the nine local commits onto `538e420` on 28 October 2026, the production and test patches are equivalent;
-the incoming change only removes duplicate text conversion in the portable canvas. The pinned
-widget-sandbox v0.2.3 shim already converts those arguments. The portable Release build passes all
-329 assertions. Rebuilt TwidgetLab passes all 12 gates: 1,142 fresh-render frames, 285 fresh-parse
-patches and 108 replay frames (98 patched), with zero differences.
-
-The fresh native checks are not fully green: 24 of 25 cases pass; the packing in-flight case records
-13 px of checkbox ink against its unchanged 18 px requirement. An isolated run passes the pixel
-assertions, but one sample arrives 30.4 ms after its target, exceeding the unchanged 25 ms allowance. Its
-post-click sampling assertions are unchanged by these commits. The fresh automatic set completes
-53 runs without runtime errors, but judges 173 in-profile features passing and one partial:
-`tw.theme-params` observes the new palette with an old CSS background inside `themeChanged`.
-The theme paths are unchanged by the local patches and rebase; the cause of that ordering failure
-remains open. The earlier passing records do not establish a clean result for this latest run.
+The last recorded run, on 28 October 2026 against widget-sandbox v0.2.3: all 53 automatic runs complete
+without runtime errors, with 173 in-profile features passing and one partial (`tw.theme-params`: inside
+`themeChanged` the widget sees the new palette with the old CSS background, a cause still open).
 
 From this repository:
 
@@ -159,6 +129,8 @@ message-list integration and live bot delivery need their own checks.
 | `text-overflow: ellipsis` | the fork's `render_item_inline_context::apply_ellipsis` |
 | `filter` and `backdrop-filter`: blur, brightness, contrast, grayscale, hue-rotate, invert, opacity, saturate, sepia, drop-shadow | `FilterPush`, `Backdrop` in the display list; `D2DBackend::filtered` |
 | A canvas drawn from another canvas that the same batch draws later | `Renderer::apply_ops` |
+| The paint limit (v0.6.0): heavy boxes counted before every frame from the computed style and running animations, `limit` once past 16 (2 with `backdrop-filter`), then a paint without blur, filters, backdrop or transparency | `Renderer::count_paint`, `stop_paint`, `src/paint_policy.*` |
+| A long flush in parts of 1000 ops builds once, at the frame | `PARTIAL_BATCH_OPS` |
 
 ## The visual set
 
@@ -179,7 +151,7 @@ v0.1.1 adds widgets judged whole: 14 (no CSS at all), 15 (a body background with
 (selection). The runner paints the default palette's `bg_color` under the transparent renderer, as a client
 draws its bubble. On 2026-10-21 they differ from the references by where their lines wrap, the fonts again:
 the body background of 15 fills the bubble edge to edge, and 14 lays out as the reference does. 16 is a
-tester's: a mouse selects its opted-in paragraph in the Windows spike, touch does not yet.
+tester's: a mouse selects its opted-in paragraph in a Windows host, touch does not yet.
 
 ## Each platform's painter
 
