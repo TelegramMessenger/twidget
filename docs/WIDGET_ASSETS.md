@@ -19,7 +19,7 @@ widget-sandbox's validator drops them (widget-sandbox's `docs/profile-v1.md`).
 
 ## `data:` URLs
 
-Allowed MIME types (the sanitizer's `imageMIMETypes`, `Sources/LiteHTML/core/lhx_sanitizer.cpp`): `image/png`, `image/jpeg` (`image/jpg`), `image/gif`, `image/webp`, `image/avif`, `image/bmp`, `image/x-icon` (`image/vnd.microsoft.icon`) and `image/svg+xml`. PNG, JPEG, GIF and WebP decode on every platform; AVIF, BMP and ICO are best effort.
+Allowed MIME types (the sanitizer's `imageMIMETypes`, `apple/Sources/LiteHTML/core/lhx_sanitizer.cpp`): `image/png`, `image/jpeg` (`image/jpg`), `image/gif`, `image/webp`, `image/avif`, `image/bmp`, `image/x-icon` (`image/vnd.microsoft.icon`) and `image/svg+xml`. PNG, JPEG, GIF and WebP decode on every platform; AVIF, BMP and ICO are best effort.
 
 `data:image/svg+xml` is an **SVG image**, not a document:
 
@@ -35,7 +35,7 @@ Writing them:
 - Use single quotes inside the SVG.
 - A script may build a new SVG URL every frame for short animations. The Apple renderer caches decoded images in a byte-bounded cache keyed by the full URL.
 
-`Examples/images` holds the demo pictures (`sunset`, `aurora`, `ocean`, `dunes`, `forest`, `map`, `logo`) as small SVG files. They replace the `app:` pictures the macOS app used to draw in code.
+`apple/Examples/images` holds the demo pictures (`sunset`, `aurora`, `ocean`, `dunes`, `forest`, `map`, `logo`) as small SVG files. They replace the `app:` pictures the macOS app used to draw in code.
 
 ## `icon:` URLs
 
@@ -43,11 +43,11 @@ Writing them:
 icon:<name>[?size=<px>][&color=<hex>][&weight=<weight>]
 ```
 
-The icon set is a subset of [Phosphor Icons](https://phosphoricons.com) 2.1.1 (MIT), shipped in `Sources/TwidgetAssets`:
+The icon set is a subset of [Phosphor Icons](https://phosphoricons.com) 2.1.1 (MIT), shipped in `apple/Sources/TwidgetAssets`:
 
 - `icons.json` is the manifest: format `twidget-icons`, `version` 1, the icon names, the variants, defaults, limits, the weight table and the `sf:` alias table. A port implements exactly the names in the manifest version it ships. Adding icons bumps `version`; names are never removed or redrawn within a version.
 - `icons/<variant>/<name>.svg` are the unmodified Phosphor files, four variants per icon: `light`, `regular`, `bold` and `fill`. Every file is `<svg viewBox="0 0 256 256" fill="currentColor">` with one or two filled `<path>` elements and no strokes, so every port draws the same shape with any SVG or path renderer.
-- `twa_icon_data.inc` is the same path data compiled into C++ by `tools/icons/generate.py`, for the portable resolver in `Sources/TwidgetAssets/twa_icons.cpp` (C API in `include/twidget_assets.h`). Android, iOS and desktop ports can compile that file as is, or read `icons.json` and the SVG files.
+- `twa_icon_data.inc` is the same path data compiled into C++ by `apple/tools/icons/generate.py`, for the portable resolver in `apple/Sources/TwidgetAssets/twa_icons.cpp` (C API in `include/twidget_assets.h`). Android, iOS and desktop ports can compile that file as is, or read `icons.json` and the SVG files.
 
 363 icons × 4 variants is about 600 KB of path data. The subset holds every icon an `sf:` alias points to plus a common UI set (arrows, carets, files, chat, media controls, weather, commerce, people, devices, code). The whole Phosphor set would be about 2.9 MB in every binary for names nobody uses yet; the manifest can grow later.
 

@@ -22,8 +22,8 @@ host suspends callbacks when hidden. No drag input or texture mapping is claimed
 From the twidget root, on a Mac with Metal:
 
 ```sh
-swift run --package-path tools/solar-system-check --scratch-path /tmp/solar-check-build --disable-sandbox VerifySolar Examples/native-3d/solar-system.html /tmp/solar-quickjs
-swift run --package-path tools/solar-system-check --scratch-path /tmp/solar-check-build --disable-sandbox VerifySolar Examples/native-3d/solar-system.html /tmp/solar-jsc --jsc
+swift run --package-path apple/tools/solar-system-check --scratch-path /tmp/solar-check-build --disable-sandbox VerifySolar apple/Examples/native-3d/solar-system.html /tmp/solar-quickjs
+swift run --package-path apple/tools/solar-system-check --scratch-path /tmp/solar-check-build --disable-sandbox VerifySolar apple/Examples/native-3d/solar-system.html /tmp/solar-jsc --jsc
 ```
 
 The checker enforces the 32,767-byte HTML cap and renders real offscreen Metal

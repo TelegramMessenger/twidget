@@ -1,14 +1,14 @@
 # TwidgetCore
 
-TwidgetCore is a renderer for widget-sandbox's renderer protocol in portable C++: what `TwidgetRenderer`
-does in Swift, for every platform. widget-sandbox owns the protocol (`docs/protocol.md` there) and the
+TwidgetCore is a renderer for widget-sandbox's renderer protocol in portable C++. widget-sandbox owns the protocol (`docs/protocol.md` there) and the
 sandbox and validator in front of it. TwidgetCore takes the validated messages, lays the widget
-out with the litehtml fork in `Sources/LiteHTML/litehtml`, and hands a platform display lists and
+out with the litehtml fork in `litehtml/`, and hands a platform display lists and
 compositor layers to draw.
 
-The plan is one renderer everywhere: TwidgetCore becomes the renderer on Apple platforms too, and
-the Swift code shrinks to the Apple backend (CoreGraphics or Metal drawing, Core Animation layers,
-magic move). Until then both exist side by side.
+The Apple renderer in `apple/` is a separate renderer on the same fork, written in Swift for Telegram
+for macOS.
+
+Its sources are in `core/`: `src/` and `include/` below are its folders, and every other path starts at the repository root.
 
 ## What it does
 
@@ -94,7 +94,7 @@ The renderer is not thread-safe: one widget's calls must not overlap.
 
 ## Platforms
 
-Each platform's backend is in `platform/`. Apple, Android and the web reach the core through the C
+Each platform's backend is in `platforms/`. Apple, Android and the web reach the core through the C
 ABI in `include/twidget_litehtml.h` (input, frames, layers and paint), Windows and Qt through the C++ API.
 The C ABI, the wasm exports and JNI make the same calls, camelCased in Kotlin and Java; only what one
 platform alone needs differs (`twl_render`, Apple's CPU raster; `twl_backend_id`, `twl_alloc` and
@@ -103,11 +103,11 @@ Every platform draws the same display list commands and runs canvases:
 
 | Platform | Backend | Painter | What the build produces |
 |---|---|---|---|
-| iOS, macOS | `apple/`: CoreText, CoreGraphics, ImageIO | `CGBackend::paint`, canvases as bitmap contexts | `libtwidget_litehtml.a`, merged into one archive by `tools/build-apple.sh` |
-| Android | `android/jni.cpp` over `android/kotlin/` | `DisplayListPainter`, `CanvasBitmaps` on `android.graphics` | `libtwidget_litehtml.so`, plus the Kotlin sources for the host's Gradle build |
-| Web | `web/wasm.cpp` over `web/painter.ts` | `DisplayListPainter`, `CanvasBitmaps` on canvas 2D | `twidget_litehtml.js` and `.wasm`, plus the TypeScript for the host's bundle |
-| Windows | `windows/`: DirectWrite, WIC and Direct2D | `D2DBackend::paint` | `twidget::d2d`, which a host paints with |
-| Qt (any desktop) | `qt/`: QFont, QImage and QPainter, canvas included | `QtBackend::paint` into a QImage | `twidget::qt` with `-DTWIDGET_QT=ON` |
+| iOS, macOS | `platforms/apple/`: CoreText, CoreGraphics, ImageIO | `CGBackend::paint`, canvases as bitmap contexts | `libtwidget_litehtml.a`, merged into one archive by `tools/build-apple.sh` |
+| Android | `platforms/android/jni.cpp` over `platforms/android/kotlin/` | `DisplayListPainter`, `CanvasBitmaps` on `android.graphics` | `libtwidget_litehtml.so`, plus the Kotlin sources for the host's Gradle build |
+| Web | `platforms/web/wasm.cpp` over `platforms/web/painter.ts` | `DisplayListPainter`, `CanvasBitmaps` on canvas 2D | `twidget_litehtml.js` and `.wasm`, plus the TypeScript for the host's bundle |
+| Windows | `platforms/windows/`: DirectWrite, WIC and Direct2D | `D2DBackend::paint` | `twidget::d2d`, which a host paints with |
+| Qt (any desktop) | `platforms/qt/`: QFont, QImage and QPainter, canvas included | `QtBackend::paint` into a QImage | `twidget::qt` with `-DTWIDGET_QT=ON` |
 
 Android and the web paint from JSON (`to_json` of the display list, the canvas ops and the
 composition, in `src/encode.cpp`); the keys are documented next to each `to_json`.
@@ -138,27 +138,27 @@ build reads the profile's UA layer from its `packages/core/profile.json` into a 
 
 The build produces `twidget::litehtml` (the fork and its gumbo), `twidget::core` and the platform's
 backend; Android and Emscripten builds go through their toolchain files. With `TWIDGET_BUILD_TESTS`
-(on when twidget is the top-level project) it also builds the checks in `Tests/TwidgetCoreTests`,
+(on when twidget is the top-level project) it also builds the checks in `tests/`,
 and on macOS the CoreGraphics tests and `twidget-core-run`, which turns a message log into a PNG.
-TwidgetCore is C++20. Apple's SwiftPM build does not use TwidgetCore yet.
+TwidgetCore is C++20. Apple's SwiftPM build does not use TwidgetCore.
 
 `-DTWIDGET_QT=ON` adds the QPainter backend and, with the tests, `twidget_qt_tests`, which checks its
-pixels on Qt's offscreen platform. `tools/qt-demo` is a desktop demo on it: widget-sandbox's corpus
+pixels on Qt's offscreen platform. `demos/qt` is a desktop demo on it: widget-sandbox's corpus
 in a feed, each widget a `WidgetHost` from widget-sandbox's desktop core over TwidgetCore.
 
 ```sh
-cmake -S tools/qt-demo -B build-qt -G Ninja -DCMAKE_PREFIX_PATH=<Qt 6>/<compiler>
+cmake -S demos/qt -B build-qt -G Ninja -DCMAKE_PREFIX_PATH=<Qt 6>/<compiler>
 cmake --build build-qt
 build-qt/twidget-qt-demo [corpus folder or .html file]
 ```
 
-`tools/macos-demo` is the same demo for macOS on `CGBackend`, with the compositor's layers on Core
+`demos/macos` is the same demo for macOS on `CGBackend`, with the compositor's layers on Core
 Animation. Its README records the build and visual checks.
 
-`tools/android-demo` is the same demo for Android, set up as Telegram for Android is: Java with no
+`demos/android` is the same demo for Android, set up as Telegram for Android is: Java with no
 Kotlin or AndroidX, views built in code, and one native library built by CMake, holding the core with
-`platform/android/jni.cpp` and widget-sandbox's C++ WidgetHost behind a small JNI bridge. Its Java
-copies the Kotlin backend and painter under `platform/android`. Not yet built: see its README.
+`platforms/android/jni.cpp` and widget-sandbox's C++ WidgetHost behind a small JNI bridge. Its Java
+copies the Kotlin backend and painter under `platforms/android`. Not yet built: see its README.
 
 `tools/conformance` runs widget-sandbox's conformance set (`packages/conformance/CLIENTS.md` there) on
 TwidgetCore, Windows only: each widget of the automatic set through the desktop host, drawn off screen
@@ -199,17 +199,8 @@ The Mac build needed CoreFoundation linked by the litehtml target: its date inpu
 uses that framework. The demo now defaults to macOS 13.3, matching the floating-point
 `std::to_chars` requirement already recorded in `tools/build-apple.sh`.
 
-This is not yet a replacement for the Swift renderer. Of the three stress fixtures Telegram for macOS
-checks its renderer with, the canvas-market replay and the live Mac demo show a flat fill in place of
-the chart content.
-
-The path to one implementation is to move renderer decisions into this core while retaining
-platform painting, text, input, and compositor playback adapters. Port and verify the existing
-fast paths before switching production clients. Compare the shared core and Swift renderer on
-the same Mac first, using deterministic pixels, interactions, CPU, memory, and idle wakeups;
-then run the same fixtures on actual target devices. A build or a passing protocol test does not
-establish visual or performance parity. Shared algorithms can avoid duplicated work, but equal
-CPU percentages across different hardware and drawing backends are not a meaningful guarantee.
+Of the three stress fixtures Telegram for macOS checks its renderer with, the canvas-market replay
+and the live Mac demo show a flat fill in place of the chart content.
 
 ## Not yet here
 

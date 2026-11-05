@@ -8,8 +8,8 @@ a small `Theme`), and one native library built by CMake through `externalNativeB
 | Piece | Here | In Telegram it would go |
 |---|---|---|
 | Widget JS, validator, host | widget-sandbox's C++ `WidgetHost` (`packages/desktop`), behind `cpp/widget_host_jni.cpp` and `WidgetHostNative.java` | `TMessagesProj/jni`, next to tgnet |
-| DOM, CSS, layout, events, animations, canvas | TwidgetCore, behind `platform/android/jni.cpp` and `LitehtmlNative.java` | `TMessagesProj/jni` |
-| Fonts, text widths, images, canvas bitmaps, painting | `LitehtmlBackend`, `DisplayListPainter`, `CanvasBitmaps` (Java copies of the Kotlin in `platform/android`) | `org.telegram.ui.Components` |
+| DOM, CSS, layout, events, animations, canvas | TwidgetCore, behind `platforms/android/jni.cpp` and `LitehtmlNative.java` | `TMessagesProj/jni` |
+| Fonts, text widths, images, canvas bitmaps, painting | `LitehtmlBackend`, `DisplayListPainter`, `CanvasBitmaps` (Java copies of the Kotlin in `platforms/android`) | `org.telegram.ui.Components` |
 | Driving the core, compositor layers, text editing | `WidgetRenderer`, `WidgetView` | `org.telegram.ui.Components` |
 | The feed | `LaunchActivity`, `WidgetCell` | a `ChatMessageCell` for widget messages |
 

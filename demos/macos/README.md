@@ -7,8 +7,8 @@ It is the same pipeline as `LiteHTMLWidgetRenderer` with the Swift taken out:
 | Piece | Here | In the Swift renderer |
 |---|---|---|
 | Widget JS, validator, host | widget-sandbox's C++ `WidgetHost` (`packages/desktop`) | `WidgetHost.swift` |
-| DOM, CSS, layout, events, animations, canvas | TwidgetCore (`Sources/TwidgetCore`) | `TwidgetRenderer` + `LHDocument` |
-| Painting | `CGBackend` (`platform/apple/coregraphics.cpp`) | `LHContainer` |
+| DOM, CSS, layout, events, animations, canvas | TwidgetCore (`core`) | `TwidgetRenderer` + `LHDocument` |
+| Painting | `CGBackend` (`platforms/apple/coregraphics.cpp`) | `LHContainer` |
 | Compositor layers | the core's `Composition`, played on CALayers by `widget_view.mm` | `WidgetCompositor` |
 
 Each widget's document is painted into an image on its own clock thread. Transform and opacity
@@ -19,7 +19,7 @@ one `CATransaction`.
 ## Build
 
 ```sh
-cmake -S tools/macos-demo -B build-macos -G Ninja      # or -G Xcode
+cmake -S demos/macos -B build-macos -G Ninja      # or -G Xcode
 cmake --build build-macos
 open build-macos/twidget-macos-demo.app                 # or pass a corpus folder or .html file
 ```
@@ -31,8 +31,7 @@ widget-sandbox must be checked out next to twidget, or its path given in `TWIDGE
 Built and launched on Apple Silicon on 2026-10-14 after adding the litehtml CoreFoundation link
 and setting the demo's minimum macOS version to 13.3. The core and Apple CTest suites pass.
 The canvas-market stress widget still displays a flat fill instead of its charts, reproduced in
-both message replay and the live demo. This is an experimental comparison app, not a production
-replacement for the Swift renderer. See [the portability check](../../docs/TWIDGET_CORE.md#portability-check-2026-10-14)
+both message replay and the live demo. This is an experimental demo. See [the portability check](../../docs/TWIDGET_CORE.md#portability-check-2026-10-14)
 for remaining behavior and performance gaps. Other areas that still need visual verification:
 
 - **Coordinates:** the view hosts its own layer tree (y up). A `stage` layer's `sublayerTransform`

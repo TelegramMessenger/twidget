@@ -4,10 +4,10 @@ twidget includes code from these projects. Their license texts are kept next to 
 
 | Project | Where | License |
 |---|---|---|
-| [litehtml](https://github.com/litehtml/litehtml) (modified) | `Sources/LiteHTML/litehtml` | BSD 3-Clause, Copyright (c) 2013 Yuri Kobets (tordex), see `Sources/LiteHTML/litehtml/LICENSE` |
-| [gumbo-parser](https://github.com/google/gumbo-parser) | `Sources/LiteHTML/litehtml/src/gumbo` | Apache License 2.0, Copyright 2010 Google Inc., see `Sources/LiteHTML/litehtml/src/gumbo/LICENSE` |
-| [three.js](https://github.com/mrdoob/three.js) r160 | `Sources/Twidget3D/Resources/three.js` | MIT, Copyright (c) 2010-2023 three.js authors, see the file's header |
-| [Phosphor Icons](https://github.com/phosphor-icons/core) 2.1.1 (a subset, unmodified) | `Sources/TwidgetAssets/icons`, and the path data in `Sources/TwidgetAssets/twa_icon_data.inc` | MIT, Copyright (c) 2023 Phosphor Icons, see `Sources/TwidgetAssets/icons/LICENSE` |
+| [litehtml](https://github.com/litehtml/litehtml) (modified) | `litehtml` | BSD 3-Clause, Copyright (c) 2013 Yuri Kobets (tordex), see `litehtml/LICENSE` |
+| [gumbo-parser](https://github.com/google/gumbo-parser) | `litehtml/src/gumbo` | Apache License 2.0, Copyright 2010 Google Inc., see `litehtml/src/gumbo/LICENSE` |
+| [three.js](https://github.com/mrdoob/three.js) r160 | `apple/Sources/Twidget3D/Resources/three.js` | MIT, Copyright (c) 2010-2023 three.js authors, see the file's header |
+| [Phosphor Icons](https://github.com/phosphor-icons/core) 2.1.1 (a subset, unmodified) | `apple/Sources/TwidgetAssets/icons`, and the path data in `apple/Sources/TwidgetAssets/twa_icon_data.inc` | MIT, Copyright (c) 2023 Phosphor Icons, see `apple/Sources/TwidgetAssets/icons/LICENSE` |
 
 QuickJS is not included: it comes with [widget-sandbox](https://github.com/TelegramMessenger/widget-sandbox), which the
 build takes as a dependency, under its own notices.
