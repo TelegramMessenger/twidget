@@ -1,34 +1,47 @@
 # twidget
 
-Native rendering for [twidget](#twidget-widgets) widgets on Apple platforms, built on a heavily optimized fork of [litehtml](https://github.com/litehtml/litehtml). It powers the interactive HTML messages in Telegram for macOS.
+Native renderers for Telegram's HTML widgets, built on a heavily optimized fork of [litehtml](https://github.com/litehtml/litehtml).
 
-twidget is one framework shared by every client:
+Widgets run on [widget-sandbox](https://github.com/TelegramMessenger/widget-sandbox), one framework shared by every client:
 - **The shared parts.** A hostile sandbox runs the widget as written, and a validator checks every DOM operation against one policy.
 - **The per-client parts.** Each client implements the engine glue and a renderer.
 
-This repository is the Apple renderer. Validated operations come in, events and layout answers go out, and pixels come from litehtml instead of a WebView. It speaks the same host protocol as the WebView renderer, so any twidget host can use it. The twidget bundles themselves are not part of this repository.
+This repository holds renderers: validated operations come in, events and layout answers go out, and pixels come from litehtml instead of a WebView. They speak widget-sandbox's renderer protocol, so any widget-sandbox host can use them. The sandbox, the validator and the JavaScript bundles are widget-sandbox's and are not part of this repository.
+
+There are two renderers on the same litehtml fork:
+
+- **The Apple renderer**, a Swift package for macOS. It powers the HTML widgets in Telegram for macOS and is described on this page.
+- **TwidgetCore**, the same renderer in portable C++20 with backends for Windows (Direct2D), Android, the web, Qt and Apple (iOS and macOS), built with CMake from the repository root. See [docs/TWIDGET_CORE.md](docs/TWIDGET_CORE.md), and [docs/CONFORMANCE.md](docs/CONFORMANCE.md) for where it stands against widget-sandbox's conformance set.
 
 | Product | What it is |
 |---|---|
-| `TwidgetRenderer` | The twidget renderer: mirror DOM, litehtml layout and drawing, events, layout queries, CSS animations and transitions, canvas 2D on CoreGraphics |
+| `TwidgetRenderer` | The widget renderer: mirror DOM, litehtml layout and drawing, events, layout queries, CSS animations and transitions, canvas 2D on CoreGraphics |
 | `LiteHTML` | The renderer core: parsing, sanitizing, layout, CoreGraphics and Metal drawing, hit testing, text selection |
-| `TwidgetAssets` | The widget icon set (a Phosphor Icons subset) and the portable C++ resolver for `icon:` URLs |
-| `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it. Runs on QuickJS by default (hard heap cap, same engine as twidget's sandbox); JavaScriptCore is available as `JSCScriptRuntime` |
-| `HTML3D` | `<script src="app:three">` for `HTMLScript`: three.js r160 with its WebGL renderer replaced by a Metal one, on QuickJS or JavaScriptCore |
+| `TwidgetAssets` | An icon set (a Phosphor Icons subset) and the portable C++ resolver for `icon:` URLs |
+| `TwidgetIcons` | The same icons from Swift: an `icon:` URL as a `data:` URL |
+| `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it. Runs on QuickJS by default (hard heap cap, the same engine as widget-sandbox); JavaScriptCore is available as `JSCScriptRuntime` |
+| `Twidget3D` | three.js r160 with its WebGL renderer replaced by a Metal one |
+| `HTML3D` | `<script src="app:three">` for `HTMLScript`, on `Twidget3D`, on QuickJS or JavaScriptCore |
+| `Twidget3DSandbox` | widget-sandbox's experimental 3D channel (`Widget3DBackend`) on `Twidget3D` |
 | `HTMLSandbox` | The CPU quota policy and the large-stack script thread |
 
 macOS 10.13+, Swift 5.5+, C++17.
 
-Other platforms use TwidgetCore, the same renderer in portable C++20, built with CMake from the
-repository root: see [docs/TWIDGET_CORE.md](docs/TWIDGET_CORE.md).
+The package depends on widget-sandbox. By default it expects a checkout next to this one (`../widget-sandbox`). Set `TWIDGET_WIDGET_SANDBOX` to another path, or to the repository URL, which is what a package that depends on twidget through SwiftPM needs:
+
+```sh
+TWIDGET_WIDGET_SANDBOX=https://github.com/TelegramMessenger/widget-sandbox.git swift build
+```
 
 ```swift
 .package(url: "https://github.com/TelegramMessenger/twidget.git", branch: "main")
 ```
 
-## twidget widgets
+`TWIDGET_WIDGET_SANDBOX_BRANCH` picks widget-sandbox's branch when it comes by URL (`main` by default).
 
-`LiteHTMLWidgetRenderer` implements the renderer side of the twidget host protocol:
+## Widgets
+
+`LiteHTMLWidgetRenderer` implements the renderer side of widget-sandbox's renderer protocol:
 - **Host → renderer:** `ops`, `query`, `listen`, `preventDefault`, `requestFrame` and `frozen`.
 - **Renderer → host:** `ready`, `size`, `event`, `gesture`, `result`, `frame`, `resize`, `media` and `violation`.
 
@@ -68,9 +81,10 @@ On the ported corpus, every widget lays out to WebKit's height within 4 pt, and 
 
 **Known gaps:**
 - Form controls render as static content.
-- Native hosts can enable scroll containers with `WidgetHost.Options.nativeScrolling`; the shared widget profile clips them by default.
+- Scroll containers are clipped, as widget profile 1 asks. `WidgetHost.Options.nativeScrolling` scrolls them natively, an experiment that widget-sandbox honours only in debug builds and builds with `TWIDGET_EXPERIMENTAL_SCROLLING`.
 - Fallback fonts for symbols such as ✕ can differ from WebKit's choice.
-- WebGL is not part of the twidget protocol.
+- WebGL is not part of widget-sandbox's protocol.
+- The heavy-box limit of widget-sandbox v0.6.0 (16 boxes with blurred shadows, filters or transparency, 2 with `backdrop-filter`) is counted by TwidgetCore, not yet by this renderer.
 
 ### Script animations
 
@@ -145,7 +159,7 @@ The policy lives in portable C++ (`lhx::SanitizerPolicy`, `lhx::Sanitizer` in `S
 
 ## Standalone scripted documents
 
-For hosts that don't run twidget, `HTMLScript` is a smaller model: the script returns HTML instead of driving a DOM.
+For hosts that don't run widget-sandbox, `HTMLScript` is a smaller model: the script returns HTML instead of driving a DOM.
 
 A document with `<script>` blocks becomes an `HTMLScript`. The script's `render()` function returns the HTML to show. The host gets `scriptDidChange` whenever the output changes and draws `currentHTML`.
 
@@ -201,7 +215,7 @@ public protocol HTMLScriptContext: AnyObject {
 - `invoke` calls one of the hooks: `fire`, `frame`, `callRender`, `callAction`, `callInput` or `describe`.
 - An engine throws `HTMLScriptError` with `.timeLimit`, `.outOfMemory` or `.exception`. The sandbox turns those into a stopped script or an error line.
 
-`QuickJSScriptRuntime` (the default) and `JSCScriptRuntime` are the two implementations. QuickJS comes from the [TelegramMessenger/quickjs](https://github.com/TelegramMessenger/quickjs) submodule; clone with `--recurse-submodules` (SwiftPM fetches it automatically). To switch engines:
+`QuickJSScriptRuntime` (the default) and `JSCScriptRuntime` are the two implementations. QuickJS is widget-sandbox's `CQuickJS` product, built from its [TelegramMessenger/quickjs](https://github.com/TelegramMessenger/quickjs) submodule: a widget-sandbox checkout needs `git submodule update --init`, and SwiftPM fetches it on its own. To switch engines:
 
 ```swift
 HTMLScript.runtime = JSCScriptRuntime.shared
@@ -230,7 +244,9 @@ There are two levels to plug into.
 
 ### Images
 
-Widgets are single self-contained documents: pictures are `data:` URLs or inline SVG, and icons are `icon:heart-fill?size=24&color=ff2d55` URLs resolved from a bundled, MIT-licensed icon set (`TwidgetAssets`, portable C++). [docs/WIDGET_ASSETS.md](docs/WIDGET_ASSETS.md) is the specification every client implements.
+A widget is one self-contained document. Under widget profile 1 its pictures are `data:` images (PNG, JPEG, GIF, WebP) or inline SVG, and widget-sandbox's validator drops every other URL before the renderer sees it.
+
+Standalone documents (`LHDocument`, `HTMLScript`) can also use `icon:heart-fill?size=24&color=ff2d55` URLs, resolved from a bundled, MIT-licensed icon set (`TwidgetAssets`, portable C++): see [docs/WIDGET_ASSETS.md](docs/WIDGET_ASSETS.md).
 
 `LHImages.setProvider { url in … }` supplies images for the host's own schemes (the scheme must also be allowed with `LHSanitizer`). For older Apple-only content, `LHImages.registerImage(_:name:)` registers `app:name` images and `sf:symbol.name?size=20&color=%23ff0000` renders SF Symbols on macOS 11+, falling back to the icon set's alias table; `LHImages.portableSymbols` resolves every `sf:` through the aliases.
 
@@ -265,7 +281,7 @@ All work happens in the Lab, and every optimization is checked against a fresh r
 - **CoreGraphics path:** pixel-identical. `LiteHTMLLab bench --verify` replays recorded animation traces and compares every frame with a from-scratch render. `compare` diffs two runs trace by trace.
 - **Metal path:** checked within a tolerance against CoreGraphics (`gpu --verify`). The thresholds are a maximum interior difference, a share of pixels more than 8 levels off (0.000% on the bundled traces) and zero structural differences.
 - **Painter path:** receives exactly what the CoreGraphics path draws.
-- **twidget renderer:** `tools/perflab/TwidgetLab` in the Telegram for macOS repository gates every change. `TW_VERIFY=1` compares every on-screen frame with a fresh render and checks handed-off animations against the animation engine; `TW_PATCHCHECK=1` compares every patched document with a fresh parse; `replaycheck` replays recorded click sessions through the patch paths.
+- **Widget renderer:** `tools/perflab/TwidgetLab` in the Telegram for macOS repository gates every change. `TW_VERIFY=1` compares every on-screen frame with a fresh render and checks handed-off animations against the animation engine; `TW_PATCHCHECK=1` compares every patched document with a fresh parse; `replaycheck` replays recorded click sessions through the patch paths.
 
 ## Lab
 
@@ -294,4 +310,4 @@ swift build -c release
 
 ## License
 
-BSD 3-Clause, see `LICENSE`. Bundled third-party code (litehtml, Gumbo, QuickJS-ng, three.js and Phosphor Icons) keeps its own license, listed in `THIRD_PARTY_NOTICES.md`.
+BSD 3-Clause, see `LICENSE`. Bundled third-party code (litehtml, Gumbo, three.js and Phosphor Icons) keeps its own license, listed in `THIRD_PARTY_NOTICES.md`.

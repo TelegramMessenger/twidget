@@ -1,7 +1,7 @@
 # TwidgetCore
 
-TwidgetCore is the renderer of the twidget protocol in portable C++: what `TwidgetRenderer` does in
-Swift, for every client. widget-sandbox owns the protocol (`docs/protocol.md` there) and the
+TwidgetCore is a renderer for widget-sandbox's renderer protocol in portable C++: what `TwidgetRenderer`
+does in Swift, for every platform. widget-sandbox owns the protocol (`docs/protocol.md` there) and the
 sandbox and validator in front of it. TwidgetCore takes the validated messages, lays the widget
 out with the litehtml fork in `Sources/LiteHTML/litehtml`, and hands a platform display lists and
 compositor layers to draw.
@@ -173,6 +173,16 @@ build-conformance/twidget-conformance <out> [--filter auto/03] [--width 360]
 node ../widget-sandbox/packages/conformance/tools/report.mjs --out <out>/report <out>/run.json
 ```
 
+`tools/stress` runs widget-sandbox's stress kit (`packages/stress/CLIENTS.md` there) the same way, painting
+every frame with Direct2D on the GPU on a Windows client's frame clock. `--pass measure` is the kit's
+measuring run under `compat`, `--pass production` the strict one that shows where each load stops.
+
+```sh
+cmake -S tools/stress -B build-stress -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-stress
+build-stress/twidget-stress <out> --pass measure|production [--filter <load>]
+node ../widget-sandbox/packages/stress/tools/report.mjs --out <out>/report <out>/*.run.json
+```
+
 ## Portability check, 2026-10-14
 
 Checked on Apple Silicon with Xcode's AppleClang and Emscripten 6.0.12:
@@ -189,12 +199,9 @@ The Mac build needed CoreFoundation linked by the litehtml target: its date inpu
 uses that framework. The demo now defaults to macOS 13.3, matching the floating-point
 `std::to_chars` requirement already recorded in `tools/build-apple.sh`.
 
-This is not yet a replacement for Telegram's Swift renderer. The three fixtures in Telegram's
-`tools/perflab/widget-stress` expose gaps beyond the existing unit coverage:
-
-- The canvas-market replay and the live Mac demo show a flat fill in place of the chart content.
-
-`docs/PERFORMANCE_PARITY.md` tracks the rest against the Swift renderer, item by item.
+This is not yet a replacement for the Swift renderer. Of the three stress fixtures Telegram for macOS
+checks its renderer with, the canvas-market replay and the live Mac demo show a flat fill in place of
+the chart content.
 
 The path to one implementation is to move renderer decisions into this core while retaining
 platform painting, text, input, and compositor playback adapters. Port and verify the existing
@@ -206,14 +213,12 @@ CPU percentages across different hardware and drawing backends are not a meaning
 
 ## Not yet here
 
-- **The Composition player for Windows** (layers on `Windows.UI.Composition`) lives in a Windows
-  spike with its host adapter.
-- **Platform validation is incomplete.** The Qt backend and its demo were previously built against
+- **A composition player for Windows.** A Windows host plays `composition()` on
+  `Windows.UI.Composition` in its own adapter; none is in this repository.
+- **Platform validation is incomplete.** Windows runs the conformance set and the stress kit
+  (`tools/conformance`, `tools/stress`). The Qt backend and its demo were previously built against
   Qt 6.8 on Windows. Apple and Emscripten build results are recorded above. Android has only
   type checks: the JNI bridges against `jni.h`, the Kotlin and the demo's Java against `android.jar`;
   nothing has been built with the NDK or run on a device.
-- **The hosts still use widget-sandbox's renderer copy.** Its Android and web demos build their own
-  renderer against upstream litehtml; moving them onto this tree means building `libtwidget_litehtml`
-  from here and replacing their painters with the ones in `platform/`.
 - **`TW_LITEHTML_TWIDGET`** keeps the code that needs the fork apart from code that also builds
   against upstream litehtml. With the fork the only litehtml, it can go.

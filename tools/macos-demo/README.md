@@ -1,7 +1,7 @@
 # macOS demo
 
 widget-sandbox's corpus in a feed of bubbles on macOS, rendered by TwidgetCore, the portable C++
-renderer that also drives the Windows spike (Direct2D), the Qt demo (QPainter), Android and the web.
+renderer that also draws on Windows (Direct2D), in the Qt demo (QPainter), on Android and on the web.
 It is the same pipeline as `LiteHTMLWidgetRenderer` with the Swift taken out:
 
 | Piece | Here | In the Swift renderer |
@@ -13,7 +13,7 @@ It is the same pipeline as `LiteHTMLWidgetRenderer` with the Swift taken out:
 
 Each widget's document is painted into an image on its own clock thread. Transform and opacity
 animations become CALayers whose keyframe tracks Core Animation plays on the render server, as the
-Windows spike plays them on Windows.UI.Composition. A frame's document image and its layers land in
+Windows host plays them on Windows.UI.Composition. A frame's document image and its layers land in
 one `CATransaction`.
 
 ## Build
