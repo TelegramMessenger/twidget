@@ -566,17 +566,24 @@ namespace litehtml
             return m;
         }
 
-        thread_local std::vector<std::pair<const element*, element::ptr>> use_hosts;
+        // Function-local for the same reason as sibling_indexes() in
+        // html_tag.cpp: never built by the TLS callback of a new thread.
+        std::vector<std::pair<const element*, element::ptr>>& use_hosts()
+        {
+            thread_local std::vector<std::pair<const element*, element::ptr>> hosts;
+            return hosts;
+        }
 
         struct use_host_scope
         {
-            use_host_scope(const element::ptr& target, const element::ptr& use) { use_hosts.emplace_back(target.get(), use); }
-            ~use_host_scope() { use_hosts.pop_back(); }
+            use_host_scope(const element::ptr& target, const element::ptr& use) { use_hosts().emplace_back(target.get(), use); }
+            ~use_host_scope() { use_hosts().pop_back(); }
         };
 
         element::ptr svg_parent(const element::ptr& el)
         {
-            for(auto it = use_hosts.rbegin(); it != use_hosts.rend(); ++it)
+            const auto& hosts = use_hosts();
+            for(auto it = hosts.rbegin(); it != hosts.rend(); ++it)
             {
                 if(it->first == el.get())
                 {
