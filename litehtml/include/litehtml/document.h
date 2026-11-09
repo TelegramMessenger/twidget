@@ -72,6 +72,9 @@ namespace litehtml
         uint64_t style_epoch() const { return m_style_epoch; }
         void     note_style_change() { m_style_epoch++; }
         uint64_t m_layout_epoch       = 1;
+        uint64_t m_layout_budget      = 0;
+        uint64_t m_layout_spent       = 0;
+        bool     m_layout_exhausted   = false;
         static std::atomic<uint64_t> s_layout_hits;
         static std::atomic<uint64_t> s_layout_misses;
         static std::atomic<uint64_t> s_layout_mismatches;
@@ -97,6 +100,25 @@ namespace litehtml
         bool     layout_cache_check() const;
         uint64_t layout_epoch() const { return m_layout_epoch; }
         void     invalidate_layout_cache() { m_layout_epoch++; }
+        // Layout budget: how many boxes one render() may lay out afresh (cache hits are free). Nested flex
+        // and grid boxes measure their children several times each, so a few hundred bytes of markup can ask
+        // for 2^depth layouts. Past the budget every box returns at once, the document stays as it was laid
+        // out so far, and it lays out nothing again: layout_exhausted() tells the embedder to stop it.
+        // 0, the default, lays out without a limit.
+        void     set_layout_budget(uint64_t boxes) { m_layout_budget = boxes; }
+        bool     layout_exhausted() const { return m_layout_exhausted; }
+        uint64_t layout_spent() const { return m_layout_spent; }
+        bool     spend_layout()
+        {
+            if(m_layout_exhausted)
+                return false;
+            if(++m_layout_spent > m_layout_budget && m_layout_budget)
+            {
+                m_layout_exhausted = true;
+                return false;
+            }
+            return true;
+        }
         void     note_layout_hit() { s_layout_hits.fetch_add(1, std::memory_order_relaxed); }
         void     note_layout_miss() { s_layout_misses.fetch_add(1, std::memory_order_relaxed); }
         void     note_layout_check_mismatch() { s_layout_mismatches.fetch_add(1, std::memory_order_relaxed); }

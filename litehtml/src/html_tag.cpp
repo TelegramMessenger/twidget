@@ -602,7 +602,7 @@ namespace litehtml
         return *found;
     }
 
-    bool html_tag::get_custom_property(string_id name, css_token_vector& result) const
+    bool html_tag::get_custom_property(string_id name, css_token_vector& result, bool* invalid) const
     {
         const property_value& value = m_style.get_property(name);
 
@@ -611,9 +611,16 @@ namespace litehtml
             result = value.get<css_token_vector>();
             return true;
         }
+        if(value.is<css_wide_keyword>())
+        {
+            // invalid at computed-value time (style::subst_vars)
+            if(invalid)
+                *invalid = true;
+            return false;
+        }
         if(auto _parent = dynamic_cast<html_tag*>(parent().get()))
         {
-            return _parent->get_custom_property(name, result);
+            return _parent->get_custom_property(name, result, invalid);
         }
         return false;
     }

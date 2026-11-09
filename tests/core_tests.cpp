@@ -2404,6 +2404,64 @@ int main() {
         check(t == "0,0 30x10;30,0 30x10;0,10 30x0;", "grid-template from var() (got " + t + ")");
     }
 
+    // ── hostile markup: var() expansion and nested layout are bounded ──
+    {
+        auto widget = [&](Renderer& g, const std::string& css, const std::string& ops) {
+            std::string all = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":")" +
+                              css + R"("},{"op":"ins","parent":3,"id":5,"before":null})" + ops + "]}";
+            return g.receive(parse(all));
+        };
+        auto div = [](int id, int parent, const std::string& style) {
+            return R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":)" +
+                   std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+        };
+        auto rect = [](Renderer& g, int id) {
+            Json r = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+            return css::format_number(r["x"].asNumber(), 1) + " " + css::format_number(r["width"].asNumber(), 1);
+        };
+        auto violation = [](const std::vector<Json>& out) {
+            std::string found;
+            for (const Json& m : out)
+                if (m["type"].asString() == "violation") found += m["detail"].asString() + ";";
+            return found;
+        };
+
+        // Each custom property refers to the one before ten times: --a6 would be a million tokens, --a9 a billion.
+        std::string vars = ":root{--a0:1px;";
+        for (int k = 1; k <= 9; k++) {
+            vars += "--a" + std::to_string(k) + ":";
+            for (int f = 0; f < 10; f++) vars += "var(--a" + std::to_string(k - 1) + ") ";
+            vars += ";";
+        }
+        vars += "}";
+        Renderer v(300, 1, false, backend);
+        widget(v, vars, div(10, 4, "width:var(--a6,30px)") + div(11, 4, "width:var(--a9)") + div(12, 4, "width:50px;margin-left:var(--a2,7px)"));
+        check(rect(v, 10) == "0 30", "a var() past the substitution limit takes its fallback (got " + rect(v, 10) + ")");
+        check(rect(v, 11) == "0 300", "a declaration past it is unset (got " + rect(v, 11) + ")");
+        check(rect(v, 12) == "0 50", "one of a hundred tokens is still substituted, an invalid margin (got " + rect(v, 12) + ")");
+
+        // Flex boxes measure their children several times each: forty nested are 2^40 layouts without the budget.
+        std::string nested;
+        for (int k = 0; k < 40; k++) nested += div(10 + k, k == 0 ? 4 : 9 + k, "display:flex");
+        Renderer n(300, 1, false, backend);
+        auto t0 = std::chrono::steady_clock::now();
+        std::string seen = violation(widget(n, "", nested));
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        check(seen.find("layout limit") != std::string::npos && ms < 2000,
+              "forty nested flex boxes stop at the layout budget (" + seen + " " + std::to_string(int(ms)) + " ms)");
+        DisplayList badge = n.paint();
+        bool text = std::any_of(badge.begin(), badge.end(), [](const Command& c) { return c.kind == Cmd::Text; });
+        check(text && badge.size() < 16, "the stopped widget is the badge alone (" + std::to_string(badge.size()) + " commands)");
+        widget(n, "", div(60, 4, "display:flex"));
+        check(n.paint().size() == badge.size(), "and lays nothing of the widget's out again");
+
+        std::string usual;
+        for (int k = 0; k < 6; k++) usual += div(10 + k, k == 0 ? 4 : 9 + k, "display:flex");
+        Renderer u(300, 1, false, backend);
+        check(violation(widget(u, "", usual)).empty(), "six nested flex boxes are well within it");
+    }
+
     // ── who gets a press: widget-sandbox's gesture policy ──
     {
         Renderer g(300, 1, false, backend);

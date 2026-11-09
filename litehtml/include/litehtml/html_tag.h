@@ -145,7 +145,8 @@ namespace litehtml
         std::string raw_declaration(const std::string& name) const;
         /// What the UA stylesheet alone gives this element for `name` (`revert`); invalid when nothing.
         const property_value& ua_property(string_id name) const;
-        bool        get_custom_property(string_id name, css_token_vector& result) const;
+        // false when the property is not set, or (*invalid then true) set to the guaranteed-invalid value
+        bool        get_custom_property(string_id name, css_token_vector& result, bool* invalid = nullptr) const;
         bool has_own_property(string_id name) const
         {
             const property_value& value = m_style.get_property(name);
