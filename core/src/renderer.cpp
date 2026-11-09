@@ -2357,18 +2357,20 @@ private:
     }
 
     static std::string marker_text(litehtml::list_style_type t, int index) {
+        // Out of a style's range (css-counter-styles: alphabetic from 1, roman 1 to 3999) the marker is decimal, as
+        // browsers draw it; roman past it was one more 'M' per thousand, two million for <ol start=2000000000>.
         auto alpha = [](int n, char base) {
+            if (n < 1) return std::to_string(n);
             std::string s;
-            n = std::max(n, 1);
             while (n > 0) { n--; s.insert(s.begin(), char(base + n % 26)); n /= 26; }
             return s;
         };
         auto roman = [](int n, bool upper) {
+            if (n < 1 || n > 3999) return std::to_string(n);
             static const char* U[] = {"M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"};
             static const char* L[] = {"m", "cm", "d", "cd", "c", "xc", "l", "xl", "x", "ix", "v", "iv", "i"};
             static const int V[] = {1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1};
             std::string s;
-            n = std::max(n, 1);
             for (int i = 0; i < 13; i++) while (n >= V[i]) { s += upper ? U[i] : L[i]; n -= V[i]; }
             return s;
         };

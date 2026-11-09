@@ -2460,6 +2460,29 @@ int main() {
         for (int k = 0; k < 6; k++) usual += div(10 + k, k == 0 ? 4 : 9 + k, "display:flex");
         Renderer u(300, 1, false, backend);
         check(violation(widget(u, "", usual)).empty(), "six nested flex boxes are well within it");
+
+        // List markers out of a style's range are decimal: roman was one more 'M' per thousand, two million of them.
+        auto marker = [&](const std::string& type, int start) {
+            Renderer m(300, 1, false, backend);
+            widget(m, "", R"(,{"op":"el","id":10,"tag":"ol","attrs":[["start",")" + std::to_string(start) + R"("],["style","list-style-type:)" + type +
+                              R"("]]},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"li"},{"op":"ins","parent":10,"id":11,"before":null},)"
+                              R"({"op":"text","id":12,"data":"x"},{"op":"ins","parent":11,"id":12,"before":null})");
+            DisplayList list = m.paint();
+            std::string texts;
+            for (const Command& c : list)
+                if (c.kind == Cmd::Text && c.text != "x") texts += c.text;
+            return texts;
+        };
+        std::string got = marker("upper-roman", 2000000000);
+        check(got == "2000000000.", "an upper-roman marker past 3999 is decimal (got " + got.substr(0, 40) + ", " + std::to_string(got.size()) + " bytes)");
+        got = marker("lower-roman", 3999);
+        check(got == "mmmcmxcix.", "3999 is still roman (got " + got + ")");
+        got = marker("lower-roman", 0);
+        check(got == "0.", "and 0 decimal (got " + got + ")");
+        got = marker("lower-alpha", -3);
+        check(got == "-3.", "an alphabetic marker below 1 is decimal (got " + got + ")");
+        got = marker("upper-alpha", 28);
+        check(got == "AB.", "28 is AB (got " + got + ")");
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
