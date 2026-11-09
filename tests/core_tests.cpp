@@ -2141,6 +2141,40 @@ int main() {
             return c.kind == Cmd::Conic && c.stops.size() >= 4 && c.stops[1].offset == 0.5f && c.stops[2].offset == 0.5f;
         });
         check(stops, "a stop at 0 after one at 50% moves up to 50%");
+
+        // Repeating gradients: a period of zero never filled the line and grew the stops until memory ran out, a tiny
+        // one made millions; both are the average colour now, and a usual one still repeats.
+        auto repeating = [&](const char* background) {
+            Renderer g(300, 1, false, ib);
+            g.receive(parse(std::string(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","width:300px;height:100px;background:)J") + background + R"J("]]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+            static DisplayList keep;
+            keep = g.paint();
+            for (const Command& c : keep)
+                if (c.kind == Cmd::Linear || c.kind == Cmd::Radial || c.kind == Cmd::Conic) return c.stops;
+            return std::vector<Stop>{};
+        };
+        auto solid = [](const std::vector<Stop>& st, Color want) {
+            if (st.empty() || st.size() > 4) return false;
+            for (const Stop& s : st)
+                if (std::abs(s.color.r - want.r) > 1 || std::abs(s.color.g - want.g) > 1 || std::abs(s.color.b - want.b) > 1 || std::abs(s.color.a - want.a) > 1) return false;
+            return true;
+        };
+        for (const char* zero : {"repeating-linear-gradient(to right,red 50%,blue 50%)", "repeating-radial-gradient(red 10px,blue 10px)",
+                                 "repeating-conic-gradient(red 90deg,blue 90deg)", "repeating-linear-gradient(red 0,blue 0)",
+                                 "repeating-linear-gradient(red 120%,blue 120%)"}) {
+            auto st = repeating(zero);
+            check(solid(st, Color{128, 0, 128, 255}), std::string("a repeating gradient with a period of zero is its average colour: ") + zero + " (" + std::to_string(st.size()) + " stops)");
+        }
+        auto tiny = repeating("repeating-linear-gradient(to right,red 0,red 0.001px,blue 0.001px,blue 0.002px)");
+        check(solid(tiny, Color{128, 0, 128, 255}), "a repeating gradient of a period too small to draw is its average colour (" + std::to_string(tiny.size()) + " stops)");
+        auto fade = repeating("repeating-linear-gradient(to right,rgba(255,0,0,0) 0,rgba(255,0,0,0) 0.001px,rgb(0,0,255) 0.001px,rgb(0,0,255) 0.002px)");
+        check(solid(fade, Color{0, 0, 255, 128}), "the average is premultiplied: transparent red adds no red");
+        auto stripes = repeating("repeating-linear-gradient(to right,red 0 10px,blue 10px 20px)");
+        check(stripes.size() >= 60 && stripes.size() <= 4096 && stripes.front().offset <= 0 && stripes.back().offset >= 1, "a usual repeating gradient still repeats (" + std::to_string(stripes.size()) + " stops)");
+        auto offset = repeating("repeating-linear-gradient(to right,red 50px,blue 60px,red 70px)");
+        check(offset.size() >= 40 && offset.front().offset <= 0 && offset.back().offset >= 1, "a period that starts inside the line repeats both ways (" + std::to_string(offset.size()) + " stops)");
         bool mark = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && c.text == "\xE2\x80\xA6"; });
         bool cut = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && !c.text.empty() && c.text.size() < 10 && c.text[0] == 'a'; });
         check(mark && cut, "text-overflow: ellipsis cuts the line and draws the mark");
