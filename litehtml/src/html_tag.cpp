@@ -211,7 +211,15 @@ namespace litehtml
             std::unordered_map<const element*, size_t>       index;
         };
 
-        thread_local std::unordered_map<const element*, sibling_index> g_sibling_indexes;
+        // Function-local, so it is built on first use. A namespace-scope
+        // thread_local of class type is built by the executable's TLS callback
+        // for every new thread, including one that starts before the C runtime
+        // is initialized, and its allocation then crashes the process.
+        std::unordered_map<const element*, sibling_index>& sibling_indexes()
+        {
+            thread_local std::unordered_map<const element*, sibling_index> indexes;
+            return indexes;
+        }
 
         struct apply_scope
         {
@@ -221,7 +229,7 @@ namespace litehtml
                 {
                     g_selector_steps = 0;
                     g_apply_pass++;
-                    g_sibling_indexes.clear();
+                    sibling_indexes().clear();
                 }
             }
             ~apply_scope() { g_apply_depth--; }
@@ -602,7 +610,7 @@ namespace litehtml
         return *found;
     }
 
-    bool html_tag::get_custom_property(string_id name, css_token_vector& result) const
+    bool html_tag::get_custom_property(string_id name, css_token_vector& result, bool* invalid) const
     {
         const property_value& value = m_style.get_property(name);
 
@@ -611,9 +619,16 @@ namespace litehtml
             result = value.get<css_token_vector>();
             return true;
         }
+        if(value.is<css_wide_keyword>())
+        {
+            // invalid at computed-value time (style::subst_vars)
+            if(invalid)
+                *invalid = true;
+            return false;
+        }
         if(auto _parent = dynamic_cast<html_tag*>(parent().get()))
         {
-            return _parent->get_custom_property(name, result);
+            return _parent->get_custom_property(name, result, invalid);
         }
         return false;
     }
@@ -1936,7 +1951,7 @@ namespace litehtml
         static const bool indexed = getenv("LH_NO_SIBLING_INDEX") == nullptr;
         if(indexed && g_apply_depth > 0 && m_children.size() > 16)
         {
-            auto& entry = g_sibling_indexes[this];
+            auto& entry = sibling_indexes()[this];
             if(entry.pass != g_apply_pass || entry.count != m_children.size())
             {
                 entry.pass  = g_apply_pass;

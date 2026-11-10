@@ -2549,7 +2549,34 @@ namespace litehtml
         return false;
     }
 
-    static bool resolve_vars(css_token_vector& tokens, const html_tag* el, std::set<string_id>& chain, int depth)
+    // A declaration may grow to this many tokens (nested ones included) through var(). Without a cap
+    // ten custom properties that each reference the previous one ten times expand to 10^10 tokens.
+    // Over it the declaration is invalid at computed-value time, as css-variables allows for long
+    // variables (https://drafts.csswg.org/css-variables/#long-variables): a custom property gets the
+    // guaranteed-invalid value, and so does one that refers to it without a fallback.
+    static constexpr size_t max_var_substitution_tokens = 16384;
+
+    struct var_budget
+    {
+        size_t left    = max_var_substitution_tokens;
+        bool   invalid = false;
+    };
+
+    static size_t deep_token_count(const css_token_vector& tokens, size_t limit)
+    {
+        size_t n = tokens.size();
+        for(const auto& t : tokens)
+        {
+            if(n > limit)
+                break;
+            if(!t.value.empty())
+                n += deep_token_count(t.value, limit - n);
+        }
+        return n;
+    }
+
+    static bool resolve_vars(css_token_vector& tokens, const html_tag* el, std::set<string_id>& chain, int depth,
+                             var_budget& budget)
     {
         if(depth > 32)
             return false;
@@ -2564,15 +2591,26 @@ namespace litehtml
                 if(chain.count(name))
                     return false;
                 css_token_vector value;
-                if(!el->get_custom_property(name, value))
+                bool             invalid = false;
+                if(!el->get_custom_property(name, value, &invalid))
                 {
                     if(args.size() == 1)
+                    {
+                        budget.invalid = invalid;
                         return false;
+                    }
                     remove(args, 0, 2);
                     value = args;
                 }
+                const size_t size = deep_token_count(value, budget.left);
+                if(size > budget.left)
+                {
+                    budget.invalid = true;
+                    return false;
+                }
+                budget.left -= size;
                 chain.insert(name);
-                const bool ok = resolve_vars(value, el, chain, depth + 1);
+                const bool ok = resolve_vars(value, el, chain, depth + 1, budget);
                 chain.erase(name);
                 if(!ok)
                     return false;
@@ -2582,16 +2620,19 @@ namespace litehtml
                 i--;
                 continue;
             }
-            if(tokens[i].is_component_value() && !resolve_vars(tokens[i].value, el, chain, depth + 1))
+            if(tokens[i].is_component_value() && !resolve_vars(tokens[i].value, el, chain, depth + 1, budget))
                 return false;
         }
         return true;
     }
 
-    void subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el)
+    // false when the substitution ran over max_var_substitution_tokens, or met a property that did
+    bool subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el)
     {
         std::set<string_id> chain = {name};
-        resolve_vars(tokens, el, chain, 0);
+        var_budget          budget;
+        resolve_vars(tokens, el, chain, 0, budget);
+        return !budget.invalid;
     }
 
     void style::subst_vars(const html_tag* el)
@@ -2612,7 +2653,18 @@ namespace litehtml
         for(auto& [name, prop] : pending)
         {
             auto& value = prop.template get<css_token_vector>();
-            subst_vars_(name, value, el);
+            if(!subst_vars_(name, value, el))
+            {
+                if(_s(name).substr(0, 2) == "--")
+                {
+                    // the guaranteed-invalid value: var() of it takes its fallback, nothing is inherited
+                    property_value invalid_value(css_wide_keyword(), prop.m_important);
+                    invalid_value.m_order = prop.m_order;
+                    m_properties[name]    = invalid_value;
+                    continue;
+                }
+                value = {css_token(IDENT, "unset")};
+            }
             std::vector<std::pair<string_id, property_value>> later;
             for(auto longhand : at(shorthands, name))
             {

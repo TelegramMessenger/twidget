@@ -679,6 +679,37 @@ public:
     /// True when the last build patched the previous document instead of parsing a new one.
     bool patched() const { return patched_; }
 
+    /// Boxes one layout may lay out afresh: nested flex, grid and table boxes measure their children several times
+    /// each, so a few hundred bytes of markup ask for 2^depth layouts. The heaviest widget of widget-sandbox's corpus
+    /// lays out 2,600 boxes in a pass; the base is 40 times that, and a document of many elements gets more.
+    static constexpr uint64_t kLayoutBudgetBase = 100000;
+    static constexpr uint64_t kLayoutBudgetPerElement = 50;
+
+    /// Lays the document out within the layout budget. Past it the document stays as far as it got and lays out
+    /// nothing again, and the renderer stops (Renderer::stop_layout).
+    void layout(float width) {
+        uint64_t elements = 0;
+        std::vector<const litehtml::element*> pending;
+        if (auto root = doc_->root()) pending.push_back(root.get());
+        while (!pending.empty()) {
+            const litehtml::element* el = pending.back();
+            pending.pop_back();
+            elements++;
+            for (const auto& child : el->children()) pending.push_back(child.get());
+        }
+        doc_->set_layout_budget(kLayoutBudgetBase + kLayoutBudgetPerElement * elements);
+        doc_->render(litehtml::pixel_t(width));
+        if (doc_->layout_exhausted()) r_.stop_layout(doc_->layout_spent());
+    }
+
+    /// The last layout ran past the budget: the document is laid out no more.
+    bool exhausted() const { return doc_ && doc_->layout_exhausted(); }
+    /// Drops the document: the next build parses a new one.
+    void drop() {
+        elements_.clear();
+        doc_ = nullptr;
+    }
+
     /// The viewport is now `vp_height` tall, without a layout: the document does not depend on it.
     void viewport_resized(int vp_height) { vp_height_ = vp_height; }
     const std::string& master() const { return master_css_; }
@@ -712,7 +743,7 @@ public:
             float width = float(r_.width_);
             if (!changed && !viewport_changed && width == rendered_width_) return false;
             if (!doc_->last_patch_paint_only() || viewport_changed || width != rendered_width_) {
-                doc_->render(litehtml::pixel_t(width));
+                layout(width);
                 rendered_width_ = width;
                 layouts_++;
             }
@@ -734,7 +765,7 @@ public:
 #endif
         if (!doc_) return true;
         rendered_width_ = float(r_.width_);
-        doc_->render(litehtml::pixel_t(rendered_width_));
+        layout(rendered_width_);
         layouts_++;
         index();
         return true;
@@ -892,7 +923,7 @@ public:
         if (!doc_->update_holes(changes, &changed)) return false;
         patched_ = true;
         if (changed && !doc_->last_patch_paint_only()) {
-            doc_->render(litehtml::pixel_t(rendered_width_));
+            layout(rendered_width_);
             layouts_++;
         }
         return true;
@@ -906,7 +937,7 @@ public:
         patched_ = true;
         if (changed && !doc_->last_patch_paint_only()) {
             rendered_width_ = float(r_.width_);
-            doc_->render(litehtml::pixel_t(rendered_width_));
+            layout(rendered_width_);
             layouts_++;
         }
         return true;
@@ -2327,18 +2358,20 @@ private:
     }
 
     static std::string marker_text(litehtml::list_style_type t, int index) {
+        // Out of a style's range (css-counter-styles: alphabetic from 1, roman 1 to 3999) the marker is decimal, as
+        // browsers draw it; roman past it was one more 'M' per thousand, two million for <ol start=2000000000>.
         auto alpha = [](int n, char base) {
+            if (n < 1) return std::to_string(n);
             std::string s;
-            n = std::max(n, 1);
             while (n > 0) { n--; s.insert(s.begin(), char(base + n % 26)); n /= 26; }
             return s;
         };
         auto roman = [](int n, bool upper) {
+            if (n < 1 || n > 3999) return std::to_string(n);
             static const char* U[] = {"M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"};
             static const char* L[] = {"m", "cm", "d", "cd", "c", "xc", "l", "xl", "x", "ix", "v", "iv", "i"};
             static const int V[] = {1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1};
             std::string s;
-            n = std::max(n, 1);
             for (int i = 0; i < 13; i++) while (n >= V[i]) { s += upper ? U[i] : L[i]; n -= V[i]; }
             return s;
         };
@@ -3061,10 +3094,25 @@ void Renderer::write_style(const Node* n, std::string& out) const {
     escape_attr(plain, out);
 }
 
+namespace {
+const char* const kFrozenBadgeCss =
+    "[data-tw-frozen=fatal] body{opacity:.85}[data-tw-badge]{position:fixed;right:6px;bottom:6px;z-index:2147483647;"
+    "font:11px/1.3 -apple-system,system-ui,sans-serif;color:#fff;background:rgba(60,60,60,.75);padding:2px 7px;"
+    "border-radius:9px}";
+}
+
 std::string Renderer::serialize() const {
     std::string out;
     out.reserve(4096);
     out += "<!DOCTYPE html>";
+    if (layout_stopped_) {
+        // Past the layout budget nothing of the widget's is laid out again, its stylesheets neither: the badge alone.
+        out += "<html data-tw-frozen=\"fatal\"><head><style>" + std::string(kFrozenBadgeCss) +
+               "</style></head><body><div data-tw-badge=\"fatal\">";
+        escape_text(frozen_reason_, out);
+        out += "</div></body></html>";
+        return out;
+    }
     // the frozen chrome: html attribute, badge style in head, badge in body (renderer elements, never in the widget's table)
     const Node* html = html_node_.get();
     out += "<html";
@@ -3101,8 +3149,7 @@ std::string Renderer::serialize() const {
             std::string head;
             serialize_node(c, head);
             size_t close = head.rfind("</head>");
-            const char* css = "<style>[data-tw-frozen=fatal] body{opacity:.85}[data-tw-badge]{position:fixed;right:6px;bottom:6px;z-index:2147483647;font:11px/1.3 -apple-system,system-ui,sans-serif;color:#fff;background:rgba(60,60,60,.75);padding:2px 7px;border-radius:9px}</style>";
-            if (close != std::string::npos) head.insert(close, css);
+            if (close != std::string::npos) head.insert(close, std::string("<style>") + kFrozenBadgeCss + "</style>");
             out += head;
         } else {
             serialize_node(c, out);
@@ -3159,11 +3206,11 @@ void Renderer::build_document(bool patch) {
     PatchLog log = std::move(patch_log_);
     patch_log_ = PatchLog{};
 #ifdef TW_LITEHTML_TWIDGET
-    if (patch && patching_) {
+    if (patch && patching_ && !layout_stopped_) {
         patch_log_ = std::move(log);
         bool patched = patch_document();
         patch_log_ = PatchLog{};
-        if (patched) return;
+        if (patched && !layout_stopped_) return;
     }
 #else
     (void)patch;
@@ -3181,6 +3228,7 @@ void Renderer::build_document(bool patch) {
     for (int pass = 0; pass < MAX_PASSES; pass++) {
         double a = now_ms();
         changed = container_->build(html_, vp_height_) || changed;
+        if (layout_stopped_) break;
         double b = now_ms();
         stats_.parse_ms += b - a;  // litehtml lays out inside createFromString+render; not separable
         stats_.passes++;
@@ -3194,6 +3242,16 @@ void Renderer::build_document(bool patch) {
             container_->viewport_resized(vp_height_);
             break;
         }
+    }
+    if (container_->exhausted()) {
+        // Past the layout budget (stop_layout): the document as far as it got is no picture of the widget. Built
+        // once more, from scratch, as the badge alone (serialize).
+        container_->drop();
+        html_ = serialize();
+        container_->build(html_, vp_height_);
+        vp_height_ = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
+        container_->viewport_resized(vp_height_);
+        changed = true;
     }
     doc_height_ = std::ceil(container_->height());
     stats_.builds++;
@@ -3396,7 +3454,7 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
         patches.emplace_back(std::move(el), std::move(style));
     }
     double t0 = now_ms();
-    if (ok && container_->restyle(patches)) {
+    if (ok && container_->restyle(patches) && !layout_stopped_) {
         int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
         if (h == vp_height_) {
             doc_height_ = std::ceil(container_->height());
@@ -5470,6 +5528,16 @@ void Renderer::count_paint() {
         pending_events_.push_back(Json::object().set("type", "paint").set("heavy", paint_.heavy()).set("backdrop", paint_.backdrop()));
     }
     if (auto verdict = paint_.check()) stop_paint(*verdict);
+}
+
+void Renderer::stop_layout(uint64_t boxes) {
+    if (layout_stopped_) return;
+    layout_stopped_ = true;
+    // The host logs it (renderer-violation); the widget is frozen here with the badge alone (build_document).
+    pending_violations_.push_back("layout limit: more than " + std::to_string(boxes - 1) + " boxes in one layout");
+    freeze("Layout limit exceeded", true);
+    // A build in progress rebuilds as the badge itself; a patch or a restyle falls back to one.
+    stale_ = true;
 }
 
 void Renderer::stop_paint(const paint::Verdict& verdict) {

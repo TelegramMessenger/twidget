@@ -2018,6 +2018,46 @@ int main() {
               "a link is --tg-theme-link-color, not underlined (got " + link["color"].asString() + ", " + link["text-decoration-line"].asString() + ")");
     }
 
+    // ── SVG <use>: paint inherits through nested instances, and mutual references end ──
+    {
+        auto fills = [](const DisplayList& d) {
+            std::vector<Color> out;
+            for (const Command& c : d)
+                if (c.kind == Cmd::Path && c.path && c.path->fill) out.push_back(c.path->fill_color);
+            return out;
+        };
+        auto same = [](const std::vector<Color>& f, uint8_t r, uint8_t g, uint8_t b) {
+            return std::all_of(f.begin(), f.end(), [&](const Color& c) { return c.r == r && c.g == g && c.b == b; });
+        };
+        StubBackend nb;
+        Renderer nested(300, 1, false, nb);
+        nested.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","100"],["height","100"],["fill","#00a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"defs","svg":true},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"g","svg":true,"attrs":[["id","a"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"use","svg":true,"attrs":[["href","#b"]]},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"g","svg":true,"attrs":[["id","b"]]},{"op":"ins","parent":11,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"rect","svg":true,"attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":14,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"use","svg":true,"attrs":[["href","#a"],["fill","#0a0"]]},{"op":"ins","parent":10,"id":16,"before":null}]})"));
+        auto f = fills(nested.paint());
+        check(f.size() == 1 && same(f, 0, 170, 0), "a rect used through two <use> levels takes the outer <use>'s fill (" + std::to_string(f.size()) + " paths)");
+
+        StubBackend cb;
+        Renderer cyclic(300, 1, false, cb);
+        cyclic.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","100"],["height","100"],["fill","#00a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"g","svg":true,"attrs":[["id","a"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"rect","svg":true,"attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"use","svg":true,"attrs":[["href","#b"]]},{"op":"ins","parent":11,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"g","svg":true,"attrs":[["id","b"]]},{"op":"ins","parent":10,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"use","svg":true,"attrs":[["href","#a"]]},{"op":"ins","parent":14,"id":15,"before":null}]})"));
+        f = fills(cyclic.paint());
+        check(f.size() > 1 && f.size() < 16 && same(f, 0, 0, 170),
+              "two groups using each other paint a bounded number of instances, each with the root's fill (" + std::to_string(f.size()) + " paths)");
+    }
+
     // ── resize diffs: which side of a widget changing height a host keeps still ──
     {
         auto run = [&](const char* grow, double press_y) {
@@ -2141,6 +2181,163 @@ int main() {
             return c.kind == Cmd::Conic && c.stops.size() >= 4 && c.stops[1].offset == 0.5f && c.stops[2].offset == 0.5f;
         });
         check(stops, "a stop at 0 after one at 50% moves up to 50%");
+
+        // Repeating gradients: a period of zero never filled the line and grew the stops until memory ran out, a tiny
+        // one made millions; both are the average colour now, and a usual one still repeats.
+        auto repeating = [&](const char* background) {
+            Renderer g(300, 1, false, ib);
+            g.receive(parse(std::string(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","width:300px;height:100px;background:)J") + background + R"J("]]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+            static DisplayList keep;
+            keep = g.paint();
+            for (const Command& c : keep)
+                if (c.kind == Cmd::Linear || c.kind == Cmd::Radial || c.kind == Cmd::Conic) return c.stops;
+            return std::vector<Stop>{};
+        };
+        auto solid = [](const std::vector<Stop>& st, Color want) {
+            if (st.empty() || st.size() > 4) return false;
+            for (const Stop& s : st)
+                if (std::abs(s.color.r - want.r) > 1 || std::abs(s.color.g - want.g) > 1 || std::abs(s.color.b - want.b) > 1 || std::abs(s.color.a - want.a) > 1) return false;
+            return true;
+        };
+        // The degenerate-period / non-finite fallback: exactly two stops at 0 and 1 of one average colour. Fails
+        // for an empty or truncated list, so a dropped or partly-unrolled gradient cannot pass.
+        auto averaged = [&](const std::vector<Stop>& st, Color want) {
+            return st.size() == 2 && st.front().offset == 0.0f && st.back().offset == 1.0f && solid(st, want);
+        };
+        // Every stop offset non-decreasing: a tile seam emitted twice an ulp apart would be re-paired by a painter
+        // that sorts stops by offset, turning the ramp between the seams solid.
+        auto ordered = [&](const std::vector<Stop>& st) {
+            for (size_t i = 1; i < st.size(); i++) if (st[i].offset < st[i - 1].offset) return false;
+            return true;
+        };
+        auto stopAt = [&](const std::vector<Stop>& st, float offset, bool blue) {
+            for (const Stop& s : st)
+                if (std::abs(s.offset - offset) < 1e-6f && (blue ? (s.color.b > 200 && s.color.r < 55) : (s.color.r > 200 && s.color.b < 55))) return true;
+            return false;
+        };
+        for (const char* zero : {"repeating-linear-gradient(to right,red 50%,blue 50%)", "repeating-radial-gradient(red 10px,blue 10px)",
+                                 "repeating-conic-gradient(red 90deg,blue 90deg)", "repeating-linear-gradient(red 0,blue 0)",
+                                 "repeating-linear-gradient(red 120%,blue 120%)"}) {
+            auto st = repeating(zero);
+            check(solid(st, Color{128, 0, 128, 255}), std::string("a repeating gradient with a period of zero is its average colour: ") + zero + " (" + std::to_string(st.size()) + " stops)");
+        }
+        auto tiny = repeating("repeating-linear-gradient(to right,red 0,red 0.001px,blue 0.001px,blue 0.002px)");
+        check(solid(tiny, Color{128, 0, 128, 255}), "a repeating gradient of a period too small to draw is its average colour (" + std::to_string(tiny.size()) + " stops)");
+        auto fade = repeating("repeating-linear-gradient(to right,rgba(255,0,0,0) 0,rgba(255,0,0,0) 0.001px,rgb(0,0,255) 0.001px,rgb(0,0,255) 0.002px)");
+        check(solid(fade, Color{0, 0, 255, 128}), "the average is premultiplied: transparent red adds no red");
+        auto stripes = repeating("repeating-linear-gradient(to right,red 0 10px,blue 10px 20px)");
+        check(stripes.size() >= 60 && stripes.size() <= 4096 && stripes.front().offset <= 0 && stripes.back().offset >= 1, "a usual repeating gradient still repeats (" + std::to_string(stripes.size()) + " stops)");
+        auto offset = repeating("repeating-linear-gradient(to right,red 50px,blue 60px,red 70px)");
+        check(offset.size() >= 40 && offset.front().offset <= 0 && offset.back().offset >= 1, "a period that starts inside the line repeats both ways (" + std::to_string(offset.size()) + " stops)");
+        // An interior transparent stop is doubled to fade correctly; a zero-period average must still weigh it
+        // once, so red|transparent|blue at one offset averages to half-alpha purple, not a third.
+        auto midfade = repeating("repeating-linear-gradient(to right,red 50%,transparent 50%,blue 50%)");
+        check(averaged(midfade, Color{128, 0, 128, 128}), "a zero-period average counts an interior transparent stop once (" + std::to_string(midfade.size()) + " stops)");
+        // Stops authored far outside the box still describe a fine period that must repeat, not flatten to its
+        // average: red and blue 10px apart at 30000px are the same stripes as at 0px.
+        auto farout = repeating("repeating-linear-gradient(to right,red 30000px,blue 30010px)");
+        check(farout.size() >= 20 && farout.size() <= 4096 && farout.front().offset <= 0 && farout.back().offset >= 1, "a repeating gradient placed far outside the box still repeats (" + std::to_string(farout.size()) + " stops)");
+        auto faroutx = repeating("repeating-linear-gradient(to right,red 30000px,red 30005px,blue 30005px,blue 30010px)");
+        check(faroutx.size() >= 20 && faroutx.size() <= 4096 && faroutx.front().offset <= 0 && faroutx.back().offset >= 1, "far-outside hard stripes repeat across the box (" + std::to_string(faroutx.size()) + " stops)");
+        // Stops wholly to the LEFT of the box must slide to bracket it, not overshoot past it, and still repeat.
+        auto farleft = repeating("repeating-linear-gradient(to right,blue -30010px,red -30000px)");
+        check(farleft.size() >= 20 && farleft.size() <= 4096 && farleft.front().offset <= 0 && farleft.back().offset >= 1, "a repeating gradient wholly left of the box still repeats (" + std::to_string(farleft.size()) + " stops)");
+        // The slide must land the period bracketing the box, not a whole period past it: one red stop at -250% and
+        // 2048 blue at -50% (period 200%) slid to [-50%, 150%] is 2049 stops that already cover both edges, whereas
+        // overshooting to [150%, 350%] would need a second copy, exceed the budget and flatten to purple.
+        std::string farleftBig = "repeating-linear-gradient(to right,red -250%";
+        for (int i = 0; i < 2048; i++) farleftBig += ",blue -50%";
+        farleftBig += ")";
+        auto farleftFit = repeating(farleftBig.c_str());
+        check(farleftFit.size() == 2049 && farleftFit.front().offset <= 0 && farleftFit.back().offset >= 1, "a wide period wholly left of the box slides to bracket it within the budget (" + std::to_string(farleftFit.size()) + " stops)");
+        // A gradient whose outer stop sits far away but whose period already spans the box keeps its in-box
+        // ramp: it must not be slid out of view or flattened to a solid colour.
+        auto cover = repeating("repeating-linear-gradient(to right,red -1000000px,red 0px,blue 150px,blue 1000000px)");
+        bool cover_red0 = false, cover_blue_half = false;
+        for (const Stop& s : cover) {
+            if (std::abs(s.offset) < 0.01f && s.color.r > 200 && s.color.b < 55) cover_red0 = true;
+            if (std::abs(s.offset - 0.5f) < 0.01f && s.color.b > 200 && s.color.r < 55) cover_blue_half = true;
+        }
+        check(cover.size() == 4 && cover.front().offset <= 0 && cover.back().offset >= 1 && cover_red0 && cover_blue_half, "a period that already spans the box keeps its exact in-box ramp (" + std::to_string(cover.size()) + " stops)");
+        // A fine period placed far outside the box must stay within the painter's stop budget once unrolled (the
+        // non-zero phase here unrolls to 4098 stops without the cap): it is drawn within the budget, not beyond.
+        auto budget = repeating("repeating-linear-gradient(to right,red 30000.002px,transparent 30000.1485px,blue 30000.295px)");
+        check(averaged(budget, Color{128, 0, 128, 128}), "a far fine-period gradient is averaged within the stop budget (" + std::to_string(budget.size()) + " stops)");
+        // An infinite stop offset (1e999%) must not corrupt the average to a transparent colour; an all-red
+        // gradient stays opaque red.
+        auto infoff = repeating("repeating-linear-gradient(to right,red 0%,red 50%,red 1e999%)");
+        check(averaged(infoff, Color{255, 0, 0, 255}), "an infinite stop offset averages to opaque red, not transparent (" + std::to_string(infoff.size()) + " stops)");
+        // Authored transparent stops that expand past the budget are averaged, never forwarded as an oversized
+        // list the painter would refuse.
+        std::string manyStops = "repeating-linear-gradient(to right,red 0px";
+        for (int i = 0; i < 2100; i++) manyStops += ",transparent 150px";
+        manyStops += ",blue 300px)";
+        auto oversized = repeating(manyStops.c_str());
+        check(averaged(oversized, Color{128, 0, 128, 128}), "a transparent-stop expansion past the budget is averaged (" + std::to_string(oversized.size()) + " stops)");
+        // A fine in-box period that fits in 4096 stops must tile and cover both edges, not be flattened by
+        // rounding as the copies are placed (the offsets are accumulated in double for this reason).
+        auto fits = repeating("repeating-linear-gradient(to right,red 0.006%,blue 0.05485%)");
+        check(fits.size() > 2 && fits.size() <= 4096 && fits.front().offset <= 0 && fits.back().offset >= 1, "a fine period that fits the budget tiles and covers the box (" + std::to_string(fits.size()) + " stops)");
+        // Exactly at the budget: the 4096th stop lands on 1, so the gradient is forwarded whole, not averaged.
+        auto exact = repeating("repeating-linear-gradient(to right,red -2.9118052e-9%,blue 0.048828122%)");
+        check(exact.size() == 4096 && exact.front().offset <= 0 && exact.back().offset >= 1, "a period that needs exactly the budget is forwarded and covers the box (" + std::to_string(exact.size()) + " stops)");
+        // A 4096th stop placed a hair short of 1 in double still narrows to the 1.0f the painter sees: coverage
+        // is judged on that float, so the gradient tiles rather than flattening.
+        auto edgeRound = repeating("repeating-linear-gradient(to right,red -2.8e-9%,blue 0.048828122%)");
+        check(edgeRound.size() == 4096 && edgeRound.front().offset <= 0 && edgeRound.back().offset >= 1, "a last stop that rounds onto the edge counts as covering it (" + std::to_string(edgeRound.size()) + " stops)");
+        // A copy that reaches an edge may stop at its first stop there: with the end stop duplicated 2048 times,
+        // one more copy costs two stops, not 2049, so the early-out must not charge it whole and flatten the
+        // gradient. Both edges.
+        std::string dupEndCss = "repeating-linear-gradient(to right,red 0%";
+        for (int i = 0; i < 2048; i++) dupEndCss += ",blue 50%";
+        dupEndCss += ")";
+        auto dupEnd = repeating(dupEndCss.c_str());
+        check(dupEnd.size() == 2051 && dupEnd.front().offset <= 0 && dupEnd.back().offset >= 1 && ordered(dupEnd), "a duplicated end stop lets the last copy stop early and the gradient fit (" + std::to_string(dupEnd.size()) + " stops)");
+        std::string dupStartCss = "repeating-linear-gradient(to right,red 50%";
+        for (int i = 0; i < 2047; i++) dupStartCss += ",red 50%";
+        dupStartCss += ",blue 100%)";
+        auto dupStart = repeating(dupStartCss.c_str());
+        check(dupStart.size() == 2051 && dupStart.front().offset <= 0 && dupStart.back().offset >= 1, "a duplicated start stop lets the first copy stop early and the gradient fit (" + std::to_string(dupStart.size()) + " stops)");
+        // A seed that already reaches into the box must not be slid: slid a period left, this one would need a
+        // whole 2049-stop copy to come back and exceed the budget, where in place it covers with two more stops.
+        std::string inBoxCss = "repeating-linear-gradient(to right,red 25%";
+        for (int i = 0; i < 2047; i++) inBoxCss += ",red 25%";
+        inBoxCss += ",blue 125%)";
+        auto inBox = repeating(inBoxCss.c_str());
+        check(inBox.size() == 2051 && inBox.front().offset <= 0 && inBox.back().offset >= 1, "a seed reaching into the box is tiled in place, not slid (" + std::to_string(inBox.size()) + " stops)");
+        // A slid seed whose copies are placed as seed + copy * period can put the two stops of a tile seam an ulp
+        // apart in the wrong order; the seam stop must reuse the offset already emitted so the list stays ordered.
+        auto seam = repeating("repeating-linear-gradient(to right,red -48%,blue -5.5%)");
+        check(seam.size() >= 4 && seam.front().offset <= 0 && seam.back().offset >= 1 && ordered(seam), "tile seams are emitted at one offset, never an ulp apart in reverse (" + std::to_string(seam.size()) + " stops)");
+        // A far end stop must not cancel the near ones: with blue at 1e20%, last - first loses the 25%, so a seam
+        // placed as offset - period would put the previous tile's blue at 0 instead of 25% (a blue-to-red ramp where
+        // the box is solid blue). The seam reuses the emitted offset, and the slide is placed from the end nearest
+        // the box.
+        auto farEnd = repeating("repeating-linear-gradient(to right,red 25%,blue 75%,blue 1e20%)");
+        check(farEnd.size() == 5 && farEnd.front().offset <= 0 && farEnd.back().offset >= 1 && stopAt(farEnd, 0.25f, true) && stopAt(farEnd, 0.25f, false) && ordered(farEnd), "a far end stop does not cancel the previous tile's seam at 25% (" + std::to_string(farEnd.size()) + " stops)");
+        auto farSlide = repeating("repeating-linear-gradient(to right,red 125%,blue 175%,blue 1e20%)");
+        check(farSlide.size() == 3 && farSlide.front().offset <= 0 && farSlide.back().offset >= 1 && stopAt(farSlide, 1.25f, true) && ordered(farSlide), "a far end stop does not cancel the slid seam at 125% (" + std::to_string(farSlide.size()) + " stops)");
+        auto farStart = repeating("repeating-linear-gradient(to right,red -1e20%,red 25%,blue 75%)");
+        check(farStart.size() == 5 && farStart.front().offset <= 0 && farStart.back().offset >= 1 && stopAt(farStart, 0.75f, true) && stopAt(farStart, 0.75f, false) && ordered(farStart), "a far start stop does not cancel the next tile's seam at 75% (" + std::to_string(farStart.size()) + " stops)");
+        // More authored stops than the budget, with no transparency to expand, are averaged rather than
+        // forwarded whole.
+        std::string manyOpaque = "repeating-linear-gradient(to right,red 0px";
+        for (int i = 1; i <= 4100; i++) manyOpaque += ",red " + std::to_string(i) + "px";
+        manyOpaque += ")";
+        auto opaqueBig = repeating(manyOpaque.c_str());
+        check(averaged(opaqueBig, Color{255, 0, 0, 255}), "an authored list past the budget is averaged (" + std::to_string(opaqueBig.size()) + " stops)");
+        // A stop whose offset tokenises to a non-finite value (0e999 -> 0 * inf = NaN) must never reach the
+        // painter as a NaN stop; the gradient draws its average instead.
+        auto nanoff = repeating("repeating-linear-gradient(to right,red 30000px,lime 0e999%,blue 30010px)");
+        bool nan_finite = true;
+        for (const Stop& s : nanoff) if (!std::isfinite(s.offset)) nan_finite = false;
+        check(nan_finite && averaged(nanoff, Color{64, 128, 64, 255}), "a non-finite stop offset is averaged, never a NaN stop (" + std::to_string(nanoff.size()) + " stops)");
+        // A tiny-period repeating gradient with an interior transparent stop draws its premultiplied average,
+        // instead of unrolling and then doubling every transparent copy past the stop budget.
+        auto tinytrans = repeating("repeating-linear-gradient(to right,red 0,transparent 0.04%,blue 0.08%)");
+        check(averaged(tinytrans, Color{128, 0, 128, 128}), "a tiny-period transparent gradient averages without exploding the stop list (" + std::to_string(tinytrans.size()) + " stops)");
         bool mark = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && c.text == "\xE2\x80\xA6"; });
         bool cut = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && !c.text.empty() && c.text.size() < 10 && c.text[0] == 'a'; });
         check(mark && cut, "text-overflow: ellipsis cuts the line and draws the mark");
@@ -2368,6 +2565,87 @@ int main() {
         check(t == "0,0 300x0;0,0 300x0;0,0 300x0;", "grid-template: none resets the columns (got " + t + ")");
         t = grid("display:grid;grid-template:var(--t);--t:10px / 30px 30px");
         check(t == "0,0 30x10;30,0 30x10;0,10 30x0;", "grid-template from var() (got " + t + ")");
+    }
+
+    // ── hostile markup: var() expansion and nested layout are bounded ──
+    {
+        auto widget = [&](Renderer& g, const std::string& css, const std::string& ops) {
+            std::string all = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":")" +
+                              css + R"("},{"op":"ins","parent":3,"id":5,"before":null})" + ops + "]}";
+            return g.receive(parse(all));
+        };
+        auto div = [](int id, int parent, const std::string& style) {
+            return R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":)" +
+                   std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+        };
+        auto rect = [](Renderer& g, int id) {
+            Json r = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+            return css::format_number(r["x"].asNumber(), 1) + " " + css::format_number(r["width"].asNumber(), 1);
+        };
+        auto violation = [](const std::vector<Json>& out) {
+            std::string found;
+            for (const Json& m : out)
+                if (m["type"].asString() == "violation") found += m["detail"].asString() + ";";
+            return found;
+        };
+
+        // Each custom property refers to the one before ten times: --a6 would be a million tokens, --a9 a billion.
+        std::string vars = ":root{--a0:1px;";
+        for (int k = 1; k <= 9; k++) {
+            vars += "--a" + std::to_string(k) + ":";
+            for (int f = 0; f < 10; f++) vars += "var(--a" + std::to_string(k - 1) + ") ";
+            vars += ";";
+        }
+        vars += "}";
+        Renderer v(300, 1, false, backend);
+        widget(v, vars, div(10, 4, "width:var(--a6,30px)") + div(11, 4, "width:var(--a9)") + div(12, 4, "width:50px;margin-left:var(--a2,7px)"));
+        check(rect(v, 10) == "0 30", "a var() past the substitution limit takes its fallback (got " + rect(v, 10) + ")");
+        check(rect(v, 11) == "0 300", "a declaration past it is unset (got " + rect(v, 11) + ")");
+        check(rect(v, 12) == "0 50", "one of a hundred tokens is still substituted, an invalid margin (got " + rect(v, 12) + ")");
+
+        // Flex boxes measure their children several times each: forty nested are 2^40 layouts without the budget.
+        std::string nested;
+        for (int k = 0; k < 40; k++) nested += div(10 + k, k == 0 ? 4 : 9 + k, "display:flex");
+        Renderer n(300, 1, false, backend);
+        auto t0 = std::chrono::steady_clock::now();
+        std::string seen = violation(widget(n, "", nested));
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        check(seen.find("layout limit") != std::string::npos && ms < 2000,
+              "forty nested flex boxes stop at the layout budget (" + seen + " " + std::to_string(int(ms)) + " ms)");
+        DisplayList badge = n.paint();
+        bool text = std::any_of(badge.begin(), badge.end(), [](const Command& c) { return c.kind == Cmd::Text; });
+        check(text && badge.size() < 16, "the stopped widget is the badge alone (" + std::to_string(badge.size()) + " commands)");
+        widget(n, "", div(60, 4, "display:flex"));
+        check(n.paint().size() == badge.size(), "and lays nothing of the widget's out again");
+
+        std::string usual;
+        for (int k = 0; k < 6; k++) usual += div(10 + k, k == 0 ? 4 : 9 + k, "display:flex");
+        Renderer u(300, 1, false, backend);
+        check(violation(widget(u, "", usual)).empty(), "six nested flex boxes are well within it");
+
+        // List markers out of a style's range are decimal: roman was one more 'M' per thousand, two million of them.
+        auto marker = [&](const std::string& type, int start) {
+            Renderer m(300, 1, false, backend);
+            widget(m, "", R"(,{"op":"el","id":10,"tag":"ol","attrs":[["start",")" + std::to_string(start) + R"("],["style","list-style-type:)" + type +
+                              R"("]]},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"li"},{"op":"ins","parent":10,"id":11,"before":null},)"
+                              R"({"op":"text","id":12,"data":"x"},{"op":"ins","parent":11,"id":12,"before":null})");
+            DisplayList list = m.paint();
+            std::string texts;
+            for (const Command& c : list)
+                if (c.kind == Cmd::Text && c.text != "x") texts += c.text;
+            return texts;
+        };
+        std::string got = marker("upper-roman", 2000000000);
+        check(got == "2000000000.", "an upper-roman marker past 3999 is decimal (got " + got.substr(0, 40) + ", " + std::to_string(got.size()) + " bytes)");
+        got = marker("lower-roman", 3999);
+        check(got == "mmmcmxcix.", "3999 is still roman (got " + got + ")");
+        got = marker("lower-roman", 0);
+        check(got == "0.", "and 0 decimal (got " + got + ")");
+        got = marker("lower-alpha", -3);
+        check(got == "-3.", "an alphabetic marker below 1 is decimal (got " + got + ")");
+        got = marker("upper-alpha", 28);
+        check(got == "AB.", "28 is AB (got " + got + ")");
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──

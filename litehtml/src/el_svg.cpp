@@ -24,7 +24,7 @@ namespace litehtml
     }
 
     bool has_var(const css_token_vector& tokens);
-    void subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el);
+    bool subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el);
 
     namespace
     {
@@ -610,21 +610,30 @@ namespace litehtml
             return m;
         }
 
-        thread_local std::vector<std::pair<const element*, element::ptr>> use_hosts;
+        // Function-local for the same reason as sibling_indexes() in
+        // html_tag.cpp: never built by the TLS callback of a new thread.
+        std::vector<std::pair<const element*, element::ptr>>& use_hosts()
+        {
+            thread_local std::vector<std::pair<const element*, element::ptr>> hosts;
+            return hosts;
+        }
 
         struct use_host_scope
         {
-            use_host_scope(const element::ptr& target, const element::ptr& use) { use_hosts.emplace_back(target.get(), use); }
-            ~use_host_scope() { use_hosts.pop_back(); }
+            use_host_scope(const element::ptr& target, const element::ptr& use) { use_hosts().emplace_back(target.get(), use); }
+            ~use_host_scope() { use_hosts().pop_back(); }
         };
 
-        element::ptr svg_parent(const element::ptr& el)
+        // Each host is left once on the way up, so mutually referencing <use> targets never loop.
+        element::ptr svg_parent(const element::ptr& el, size_t& hosts_above)
         {
-            for(auto it = use_hosts.rbegin(); it != use_hosts.rend(); ++it)
+            const auto& hosts = use_hosts();
+            for(size_t i = std::min(hosts_above, hosts.size()); i-- > 0;)
             {
-                if(it->first == el.get())
+                if(hosts[i].first == el.get())
                 {
-                    return it->second;
+                    hosts_above = i;
+                    return hosts[i].second;
                 }
             }
             return el->parent();
@@ -632,7 +641,8 @@ namespace litehtml
 
         css_token_vector svg_property(const element::ptr& el, string_id name, bool inherited)
         {
-            for(element::ptr cur = el; cur; cur = svg_parent(cur))
+            size_t hosts_above = use_hosts().size();
+            for(element::ptr cur = el; cur; cur = svg_parent(cur, hosts_above))
             {
                 if(const auto* tag = dynamic_cast<const html_tag*>(cur.get()))
                 {
@@ -645,8 +655,7 @@ namespace litehtml
                         css_token_vector tokens = normalize(attr, f_componentize | f_remove_whitespace);
                         if(has_var(tokens))
                         {
-                            subst_vars_(name, tokens, tag);
-                            if(has_var(tokens))
+                            if(!subst_vars_(name, tokens, tag) || has_var(tokens))
                             {
                                 return {};
                             }

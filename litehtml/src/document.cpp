@@ -3108,7 +3108,8 @@ namespace litehtml
     {
         invalidate_paint();
         pixel_t ret = 0_px;
-        if(m_root && m_root_render)
+        m_layout_spent = 0;
+        if(m_root && m_root_render && !m_layout_exhausted)
         {
             position viewport;
             m_container->get_viewport(viewport);
