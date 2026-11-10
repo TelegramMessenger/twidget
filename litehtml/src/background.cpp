@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "background.h"
 #include "document.h"
@@ -799,59 +800,125 @@ namespace litehtml
 
     // Fills [0, 1] with copies of the stops' period. A period of zero (`red 50%, blue 50%`) never fills it, and a tiny
     // one fills it with millions of stops: both draw the average color instead, as the spec asks of a period too small
-    // to render.
-    static void repeat_color_points(std::vector<litehtml::background_layer::color_point>& color_points)
+    // to render. `authored` is the same stops before color_points_transparent_fix() duplicated any interior
+    // transparent stop; the average is taken over it, not the copies, so an interior transparent stop is weighed once.
+    static void repeat_color_points(std::vector<litehtml::background_layer::color_point>& color_points,
+                                    const std::vector<litehtml::background_layer::color_point>& authored)
     {
-        const double first = color_points.front().offset, last = color_points.back().offset;
-        const double period = last - first;
-        double       periods = 0;
-        if(period > 0)
-            periods = std::ceil(std::max(0.0, 1.0 - last) / period) + std::ceil(std::max(0.0, first) / period);
-        if(!(period > 0) || !(periods * static_cast<double>(color_points.size()) <= max_repeated_color_points))
-        {
-            const litehtml::web_color color = average_color(color_points, !(period > 0));
+        const double first0 = color_points.front().offset, last0 = color_points.back().offset;
+        const double period = last0 - first0;
+
+        // Replaces the stops with two of the gradient's average colour, over `authored` (the stops before
+        // color_points_transparent_fix() duplicated an interior transparent one). `evenly` spaces the stops
+        // equally, which the zero-period and non-finite cases need because their offsets define no usable widths.
+        const auto draw_average = [&](bool evenly) {
+            const litehtml::web_color color = average_color(authored, evenly);
             color_points.clear();
             color_points.emplace_back(0.0f, color);
             color_points.emplace_back(1.0f, color);
+        };
+
+        // A non-finite offset (`0e999` tokenises to 0 * inf = NaN, a huge one to inf) would seed bad copies that
+        // reach the painter; a list already past the budget cannot be drawn; a zero or negative period never
+        // tiles. Each draws the average instead.
+        bool nonfinite = false;
+        for(const auto& cp : color_points)
+            if(!std::isfinite(cp.offset)) { nonfinite = true; break; }
+        if(nonfinite || !(period > 0) || color_points.size() > max_repeated_color_points)
+        {
+            draw_average(nonfinite || !(period > 0));
             return;
         }
-        const size_t limit      = max_repeated_color_points + color_points.size();
-        auto         old_points = color_points;
-        if(color_points.back().offset < 1)
+
+        // When every stop lies outside [0, 1] on one side, slide the whole list k whole periods so the period
+        // brackets 0 (a repeating gradient is unchanged by this), and the unroll then spans the box rather than
+        // the gap back to it. ceil, not floor, so a list wholly left of 0 lands bracketing the box instead of
+        // overshooting past it; a list that already reaches the box is left in place. Each stop is placed from
+        // the end nearest the box, as first + (offset - last) or last + (offset - first): the difference of two
+        // floats is exact in double, so a far end stop (1e20%) cannot cancel the near ones the way offset -
+        // k * period would. The ends are range-checked in double first, as narrowing an out-of-range double is
+        // undefined.
+        if(first0 > 1.0 || last0 < 0.0)
         {
-            float gd_size = color_points.back().offset - old_points.front().offset;
-            auto  iter    = old_points.begin();
-            while(color_points.back().offset < 1 && color_points.size() < limit)
+            const double k    = std::ceil(first0 / period);
+            const auto   slid = [&](double offset) {
+                return (k >= 1) ? first0 + (offset - last0) - (k - 1) * period
+                                : last0 + (offset - first0) - (k + 1) * period;
+            };
+            const double sfirst = slid(first0), slast = slid(last0);
+            const double flt_max = static_cast<double>(std::numeric_limits<float>::max());
+            if(k != 0 && std::isfinite(sfirst) && std::isfinite(slast) && std::abs(sfirst) <= flt_max
+               && std::abs(slast) <= flt_max)
+                for(auto& cp : color_points)
+                    cp.offset = static_cast<float>(slid(cp.offset));
+        }
+
+        // Unroll copies of the period across [0, 1], hard-capped at the painter's budget so the forwarded list
+        // never exceeds it. A cheap early-out first counts only the stops the unroll is certain to emit: the seed
+        // list, every whole copy that still ends a full period short of an edge (a copy ending nearer can stop
+        // early at a duplicated end stop) and one stop of the copy that reaches it. That never over-rejects, so
+        // when even it exceeds the budget the period is too fine to tile and the average is drawn without first
+        // building and discarding a capped list.
+        const size_t limit   = max_repeated_color_points;
+        const double sfirst  = color_points.front().offset, slast = color_points.back().offset;
+        const double size    = static_cast<double>(color_points.size());
+        const auto   certain = [&](double gap) {
+            return gap > 0 ? std::max(0.0, std::floor(gap / period) - 1.0) * size + 1.0 : 0.0;
+        };
+        if(size + certain(1.0 - slast) + certain(sfirst) > static_cast<double>(limit))
+        {
+            draw_average(false);
+            return;
+        }
+
+        // Each copy's stop is placed directly (not accumulated) in double as old[i] + copy * period, so the
+        // positions do not drift as the list grows, then narrowed once: the loops and the coverage check compare
+        // the float the painter receives, so a stop that rounds onto an edge counts as reaching it. A stop on the
+        // copy's near seam reuses the float already emitted there instead: computed afresh it could differ by
+        // an ulp and swap order, and a painter that sorts by offset would then pair red with red and blue with
+        // blue, drawing the ramp between them as a solid block; and with a far end stop (1e20%) the period has
+        // already lost the near end, so the seam would land at 0 instead of on the near stop.
+        auto   old_points = color_points;
+        double back_off   = slast;
+        if(back_off < 1)
+        {
+            auto  iter = old_points.begin();
+            long  copy = 1;
+            float seam = color_points.back().offset;
+            while(back_off < 1 && color_points.size() < limit)
             {
-                color_points.emplace_back(iter->offset + gd_size, iter->color);
-                std::advance(iter, 1);
-                if(iter == old_points.end())
-                {
-                    iter    = old_points.begin();
-                    gd_size = color_points.back().offset - old_points.front().offset;
-                }
+                const float at = (iter->offset == old_points.front().offset)
+                    ? seam
+                    : static_cast<float>(static_cast<double>(iter->offset) + copy * period);
+                back_off = at;
+                color_points.emplace_back(at, iter->color);
+                if(++iter == old_points.end()) { iter = old_points.begin(); ++copy; seam = at; }
             }
         }
-        if(color_points.front().offset > 0)
+        double front_off = sfirst;
+        if(front_off > 0)
         {
             // Built backwards and put in front once: inserting each at the front moved the whole list every time.
             std::vector<litehtml::background_layer::color_point> before;
-            float gd_size = color_points.front().offset;
-            auto  iter    = old_points.rbegin();
-            float front   = color_points.front().offset;
-            while(front > 0 && color_points.size() + before.size() < limit)
+            auto  iter = old_points.rbegin();
+            long  copy = 1;
+            float seam = color_points.front().offset;
+            while(front_off > 0 && color_points.size() + before.size() < limit)
             {
-                before.emplace_back(gd_size - (old_points.back().offset - iter->offset), iter->color);
-                front = before.back().offset;
-                std::advance(iter, 1);
-                if(iter == old_points.rend())
-                {
-                    iter    = old_points.rbegin();
-                    gd_size = front;
-                }
+                const float at = (iter->offset == old_points.back().offset)
+                    ? seam
+                    : static_cast<float>(static_cast<double>(iter->offset) - copy * period);
+                front_off = at;
+                before.emplace_back(at, iter->color);
+                if(++iter == old_points.rend()) { iter = old_points.rbegin(); ++copy; seam = at; }
             }
             color_points.insert(color_points.begin(), before.rbegin(), before.rend());
         }
+
+        // If the cap stopped the copies before they covered [0, 1], the period is too fine to tile within the
+        // budget: draw its average rather than forward a list that misses an edge.
+        if(back_off < 1 || front_off > 0)
+            draw_average(false);
     }
 
     void litehtml::background_layer::gradient_base::color_points_transparent_fix()
@@ -995,15 +1062,21 @@ namespace litehtml
             }
         }
 
-        // process transparent
-        if(has_transparent)
-        {
-            color_points_transparent_fix();
-        }
-
         if(repeating)
         {
-            repeat_color_points(color_points);
+            // Keep the authored stops for the average: color_points_transparent_fix() doubles an interior
+            // transparent stop, and a zero-period gradient must still weigh it once (`red 50%, transparent 50%,
+            // blue 50%` is half-alpha purple, not a third). The fix still runs first, so it unrolls at most once.
+            const std::vector<litehtml::background_layer::color_point> authored = color_points;
+            if(has_transparent)
+            {
+                color_points_transparent_fix();
+            }
+            repeat_color_points(color_points, authored);
+        }
+        else if(has_transparent)
+        {
+            color_points_transparent_fix();
         }
 
         return true;
