@@ -2181,6 +2181,40 @@ int main() {
             return c.kind == Cmd::Conic && c.stops.size() >= 4 && c.stops[1].offset == 0.5f && c.stops[2].offset == 0.5f;
         });
         check(stops, "a stop at 0 after one at 50% moves up to 50%");
+
+        // Repeating gradients: a period of zero never filled the line and grew the stops until memory ran out, a tiny
+        // one made millions; both are the average colour now, and a usual one still repeats.
+        auto repeating = [&](const char* background) {
+            Renderer g(300, 1, false, ib);
+            g.receive(parse(std::string(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","width:300px;height:100px;background:)J") + background + R"J("]]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+            static DisplayList keep;
+            keep = g.paint();
+            for (const Command& c : keep)
+                if (c.kind == Cmd::Linear || c.kind == Cmd::Radial || c.kind == Cmd::Conic) return c.stops;
+            return std::vector<Stop>{};
+        };
+        auto solid = [](const std::vector<Stop>& st, Color want) {
+            if (st.empty() || st.size() > 4) return false;
+            for (const Stop& s : st)
+                if (std::abs(s.color.r - want.r) > 1 || std::abs(s.color.g - want.g) > 1 || std::abs(s.color.b - want.b) > 1 || std::abs(s.color.a - want.a) > 1) return false;
+            return true;
+        };
+        for (const char* zero : {"repeating-linear-gradient(to right,red 50%,blue 50%)", "repeating-radial-gradient(red 10px,blue 10px)",
+                                 "repeating-conic-gradient(red 90deg,blue 90deg)", "repeating-linear-gradient(red 0,blue 0)",
+                                 "repeating-linear-gradient(red 120%,blue 120%)"}) {
+            auto st = repeating(zero);
+            check(solid(st, Color{128, 0, 128, 255}), std::string("a repeating gradient with a period of zero is its average colour: ") + zero + " (" + std::to_string(st.size()) + " stops)");
+        }
+        auto tiny = repeating("repeating-linear-gradient(to right,red 0,red 0.001px,blue 0.001px,blue 0.002px)");
+        check(solid(tiny, Color{128, 0, 128, 255}), "a repeating gradient of a period too small to draw is its average colour (" + std::to_string(tiny.size()) + " stops)");
+        auto fade = repeating("repeating-linear-gradient(to right,rgba(255,0,0,0) 0,rgba(255,0,0,0) 0.001px,rgb(0,0,255) 0.001px,rgb(0,0,255) 0.002px)");
+        check(solid(fade, Color{0, 0, 255, 128}), "the average is premultiplied: transparent red adds no red");
+        auto stripes = repeating("repeating-linear-gradient(to right,red 0 10px,blue 10px 20px)");
+        check(stripes.size() >= 60 && stripes.size() <= 4096 && stripes.front().offset <= 0 && stripes.back().offset >= 1, "a usual repeating gradient still repeats (" + std::to_string(stripes.size()) + " stops)");
+        auto offset = repeating("repeating-linear-gradient(to right,red 50px,blue 60px,red 70px)");
+        check(offset.size() >= 40 && offset.front().offset <= 0 && offset.back().offset >= 1, "a period that starts inside the line repeats both ways (" + std::to_string(offset.size()) + " stops)");
         bool mark = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && c.text == "\xE2\x80\xA6"; });
         bool cut = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && !c.text.empty() && c.text.size() < 10 && c.text[0] == 'a'; });
         check(mark && cut, "text-overflow: ellipsis cuts the line and draws the mark");
@@ -2408,6 +2442,87 @@ int main() {
         check(t == "0,0 300x0;0,0 300x0;0,0 300x0;", "grid-template: none resets the columns (got " + t + ")");
         t = grid("display:grid;grid-template:var(--t);--t:10px / 30px 30px");
         check(t == "0,0 30x10;30,0 30x10;0,10 30x0;", "grid-template from var() (got " + t + ")");
+    }
+
+    // ── hostile markup: var() expansion and nested layout are bounded ──
+    {
+        auto widget = [&](Renderer& g, const std::string& css, const std::string& ops) {
+            std::string all = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":")" +
+                              css + R"("},{"op":"ins","parent":3,"id":5,"before":null})" + ops + "]}";
+            return g.receive(parse(all));
+        };
+        auto div = [](int id, int parent, const std::string& style) {
+            return R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":)" +
+                   std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+        };
+        auto rect = [](Renderer& g, int id) {
+            Json r = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+            return css::format_number(r["x"].asNumber(), 1) + " " + css::format_number(r["width"].asNumber(), 1);
+        };
+        auto violation = [](const std::vector<Json>& out) {
+            std::string found;
+            for (const Json& m : out)
+                if (m["type"].asString() == "violation") found += m["detail"].asString() + ";";
+            return found;
+        };
+
+        // Each custom property refers to the one before ten times: --a6 would be a million tokens, --a9 a billion.
+        std::string vars = ":root{--a0:1px;";
+        for (int k = 1; k <= 9; k++) {
+            vars += "--a" + std::to_string(k) + ":";
+            for (int f = 0; f < 10; f++) vars += "var(--a" + std::to_string(k - 1) + ") ";
+            vars += ";";
+        }
+        vars += "}";
+        Renderer v(300, 1, false, backend);
+        widget(v, vars, div(10, 4, "width:var(--a6,30px)") + div(11, 4, "width:var(--a9)") + div(12, 4, "width:50px;margin-left:var(--a2,7px)"));
+        check(rect(v, 10) == "0 30", "a var() past the substitution limit takes its fallback (got " + rect(v, 10) + ")");
+        check(rect(v, 11) == "0 300", "a declaration past it is unset (got " + rect(v, 11) + ")");
+        check(rect(v, 12) == "0 50", "one of a hundred tokens is still substituted, an invalid margin (got " + rect(v, 12) + ")");
+
+        // Flex boxes measure their children several times each: forty nested are 2^40 layouts without the budget.
+        std::string nested;
+        for (int k = 0; k < 40; k++) nested += div(10 + k, k == 0 ? 4 : 9 + k, "display:flex");
+        Renderer n(300, 1, false, backend);
+        auto t0 = std::chrono::steady_clock::now();
+        std::string seen = violation(widget(n, "", nested));
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        check(seen.find("layout limit") != std::string::npos && ms < 2000,
+              "forty nested flex boxes stop at the layout budget (" + seen + " " + std::to_string(int(ms)) + " ms)");
+        DisplayList badge = n.paint();
+        bool text = std::any_of(badge.begin(), badge.end(), [](const Command& c) { return c.kind == Cmd::Text; });
+        check(text && badge.size() < 16, "the stopped widget is the badge alone (" + std::to_string(badge.size()) + " commands)");
+        widget(n, "", div(60, 4, "display:flex"));
+        check(n.paint().size() == badge.size(), "and lays nothing of the widget's out again");
+
+        std::string usual;
+        for (int k = 0; k < 6; k++) usual += div(10 + k, k == 0 ? 4 : 9 + k, "display:flex");
+        Renderer u(300, 1, false, backend);
+        check(violation(widget(u, "", usual)).empty(), "six nested flex boxes are well within it");
+
+        // List markers out of a style's range are decimal: roman was one more 'M' per thousand, two million of them.
+        auto marker = [&](const std::string& type, int start) {
+            Renderer m(300, 1, false, backend);
+            widget(m, "", R"(,{"op":"el","id":10,"tag":"ol","attrs":[["start",")" + std::to_string(start) + R"("],["style","list-style-type:)" + type +
+                              R"("]]},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"li"},{"op":"ins","parent":10,"id":11,"before":null},)"
+                              R"({"op":"text","id":12,"data":"x"},{"op":"ins","parent":11,"id":12,"before":null})");
+            DisplayList list = m.paint();
+            std::string texts;
+            for (const Command& c : list)
+                if (c.kind == Cmd::Text && c.text != "x") texts += c.text;
+            return texts;
+        };
+        std::string got = marker("upper-roman", 2000000000);
+        check(got == "2000000000.", "an upper-roman marker past 3999 is decimal (got " + got.substr(0, 40) + ", " + std::to_string(got.size()) + " bytes)");
+        got = marker("lower-roman", 3999);
+        check(got == "mmmcmxcix.", "3999 is still roman (got " + got + ")");
+        got = marker("lower-roman", 0);
+        check(got == "0.", "and 0 decimal (got " + got + ")");
+        got = marker("lower-alpha", -3);
+        check(got == "-3.", "an alphabetic marker below 1 is decimal (got " + got + ")");
+        got = marker("upper-alpha", 28);
+        check(got == "AB.", "28 is AB (got " + got + ")");
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──

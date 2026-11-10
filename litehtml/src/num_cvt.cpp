@@ -1,5 +1,6 @@
 ﻿#include "num_cvt.h"
 #include "utf8_strings.h"
+#include <string>
 #include <vector>
 
 static std::vector<char>&           latin_lower = *new std::vector<char>{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
@@ -12,6 +13,8 @@ static std::vector<std::u32string>& greek_lower = *new std::vector<std::u32strin
 
 static std::string to_mapped_alpha(int num, const std::vector<char>& map)
 {
+    if(num < 1)
+        return std::to_string(num); // out of the alphabetic styles' range: decimal (css-counter-styles)
     int         dividend = num;
     std::string out;
     int         modulo;
@@ -28,6 +31,8 @@ static std::string to_mapped_alpha(int num, const std::vector<char>& map)
 
 static std::string to_mapped_alpha(int num, const std::vector<std::u32string>& map)
 {
+    if(num < 1)
+        return std::to_string(num); // out of the alphabetic styles' range: decimal (css-counter-styles)
     int         dividend = num;
     std::string out;
     int         modulo;
@@ -59,6 +64,10 @@ std::string litehtml::num_cvt::to_greek_lower(int val)
 
 std::string litehtml::num_cvt::to_roman_lower(int value)
 {
+    // Roman numerals cover 1 to 3999 (css-counter-styles); past that each thousand was one more 'm', a
+    // marker of two million letters for <ol start=2000000000>. Decimal outside it, as browsers draw.
+    if(value < 1 || value > 3999)
+        return std::to_string(value);
     struct romandata_t
     {
         int         value;
@@ -95,6 +104,10 @@ std::string litehtml::num_cvt::to_roman_lower(int value)
 
 std::string litehtml::num_cvt::to_roman_upper(int value)
 {
+    // Roman numerals cover 1 to 3999 (css-counter-styles); past that each thousand was one more 'm', a
+    // marker of two million letters for <ol start=2000000000>. Decimal outside it, as browsers draw.
+    if(value < 1 || value > 3999)
+        return std::to_string(value);
     struct romandata_t
     {
         int         value;

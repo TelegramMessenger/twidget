@@ -24,7 +24,7 @@ namespace litehtml
     }
 
     bool has_var(const css_token_vector& tokens);
-    void subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el);
+    bool subst_vars_(string_id name, css_token_vector& tokens, const html_tag* el);
 
     namespace
     {
@@ -611,8 +611,7 @@ namespace litehtml
                         css_token_vector tokens = normalize(attr, f_componentize | f_remove_whitespace);
                         if(has_var(tokens))
                         {
-                            subst_vars_(name, tokens, tag);
-                            if(has_var(tokens))
+                            if(!subst_vars_(name, tokens, tag) || has_var(tokens))
                             {
                                 return {};
                             }

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 
 #include "background.h"
@@ -759,14 +760,68 @@ namespace litehtml
         }
     }
 
+    // The most stops a repeating gradient unrolls to; the platforms' painters refuse longer lists (Android: 4096).
+    static constexpr size_t max_repeated_color_points = 4096;
+
+    // The gradient's average color, premultiplied (https://drafts.csswg.org/css-images-3/#repeating-gradients): over
+    // the stops as placed, or, with `evenly`, over the same stops spaced evenly (a period of zero).
+    static litehtml::web_color average_color(const std::vector<litehtml::background_layer::color_point>& points,
+                                             bool evenly)
+    {
+        double r = 0, g = 0, b = 0, a = 0, total = 0;
+        for(size_t i = 0; i + 1 < points.size(); i++)
+        {
+            const double width = evenly ? 1.0 : static_cast<double>(points[i + 1].offset) - points[i].offset;
+            if(!(width > 0))
+                continue;
+            for(const auto* c : {&points[i].color, &points[i + 1].color})
+            {
+                const double alpha = c->alpha / 255.0;
+                r += c->red * alpha * width / 2;
+                g += c->green * alpha * width / 2;
+                b += c->blue * alpha * width / 2;
+                a += alpha * width / 2;
+            }
+            total += width;
+        }
+        if(!(total > 0))
+            return points.back().color;
+        litehtml::web_color out;
+        out.alpha = static_cast<litehtml::byte>(std::lround(a / total * 255));
+        if(a > 0)
+        {
+            out.red   = static_cast<litehtml::byte>(std::min(255L, std::lround(r / a)));
+            out.green = static_cast<litehtml::byte>(std::min(255L, std::lround(g / a)));
+            out.blue  = static_cast<litehtml::byte>(std::min(255L, std::lround(b / a)));
+        }
+        return out;
+    }
+
+    // Fills [0, 1] with copies of the stops' period. A period of zero (`red 50%, blue 50%`) never fills it, and a tiny
+    // one fills it with millions of stops: both draw the average color instead, as the spec asks of a period too small
+    // to render.
     static void repeat_color_points(std::vector<litehtml::background_layer::color_point>& color_points)
     {
-        auto old_points = color_points;
+        const double first = color_points.front().offset, last = color_points.back().offset;
+        const double period = last - first;
+        double       periods = 0;
+        if(period > 0)
+            periods = std::ceil(std::max(0.0, 1.0 - last) / period) + std::ceil(std::max(0.0, first) / period);
+        if(!(period > 0) || !(periods * static_cast<double>(color_points.size()) <= max_repeated_color_points))
+        {
+            const litehtml::web_color color = average_color(color_points, !(period > 0));
+            color_points.clear();
+            color_points.emplace_back(0.0f, color);
+            color_points.emplace_back(1.0f, color);
+            return;
+        }
+        const size_t limit      = max_repeated_color_points + color_points.size();
+        auto         old_points = color_points;
         if(color_points.back().offset < 1)
         {
             float gd_size = color_points.back().offset - old_points.front().offset;
             auto  iter    = old_points.begin();
-            while(color_points.back().offset < 1)
+            while(color_points.back().offset < 1 && color_points.size() < limit)
             {
                 color_points.emplace_back(iter->offset + gd_size, iter->color);
                 std::advance(iter, 1);
@@ -779,19 +834,23 @@ namespace litehtml
         }
         if(color_points.front().offset > 0)
         {
+            // Built backwards and put in front once: inserting each at the front moved the whole list every time.
+            std::vector<litehtml::background_layer::color_point> before;
             float gd_size = color_points.front().offset;
             auto  iter    = old_points.rbegin();
-            while(color_points.front().offset > 0)
+            float front   = color_points.front().offset;
+            while(front > 0 && color_points.size() + before.size() < limit)
             {
-                color_points.emplace(color_points.begin(), gd_size - (old_points.back().offset - iter->offset),
-                                     iter->color);
+                before.emplace_back(gd_size - (old_points.back().offset - iter->offset), iter->color);
+                front = before.back().offset;
                 std::advance(iter, 1);
                 if(iter == old_points.rend())
                 {
                     iter    = old_points.rbegin();
-                    gd_size = color_points.front().offset;
+                    gd_size = front;
                 }
             }
+            color_points.insert(color_points.begin(), before.rbegin(), before.rend());
         }
     }
 
