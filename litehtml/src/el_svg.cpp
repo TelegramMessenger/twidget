@@ -580,14 +580,16 @@ namespace litehtml
             ~use_host_scope() { use_hosts().pop_back(); }
         };
 
-        element::ptr svg_parent(const element::ptr& el)
+        // Each host is left once on the way up, so mutually referencing <use> targets never loop.
+        element::ptr svg_parent(const element::ptr& el, size_t& hosts_above)
         {
             const auto& hosts = use_hosts();
-            for(auto it = hosts.rbegin(); it != hosts.rend(); ++it)
+            for(size_t i = std::min(hosts_above, hosts.size()); i-- > 0;)
             {
-                if(it->first == el.get())
+                if(hosts[i].first == el.get())
                 {
-                    return it->second;
+                    hosts_above = i;
+                    return hosts[i].second;
                 }
             }
             return el->parent();
@@ -595,7 +597,8 @@ namespace litehtml
 
         css_token_vector svg_property(const element::ptr& el, string_id name, bool inherited)
         {
-            for(element::ptr cur = el; cur; cur = svg_parent(cur))
+            size_t hosts_above = use_hosts().size();
+            for(element::ptr cur = el; cur; cur = svg_parent(cur, hosts_above))
             {
                 if(const auto* tag = dynamic_cast<const html_tag*>(cur.get()))
                 {

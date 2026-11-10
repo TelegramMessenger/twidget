@@ -2018,6 +2018,46 @@ int main() {
               "a link is --tg-theme-link-color, not underlined (got " + link["color"].asString() + ", " + link["text-decoration-line"].asString() + ")");
     }
 
+    // ── SVG <use>: paint inherits through nested instances, and mutual references end ──
+    {
+        auto fills = [](const DisplayList& d) {
+            std::vector<Color> out;
+            for (const Command& c : d)
+                if (c.kind == Cmd::Path && c.path && c.path->fill) out.push_back(c.path->fill_color);
+            return out;
+        };
+        auto same = [](const std::vector<Color>& f, uint8_t r, uint8_t g, uint8_t b) {
+            return std::all_of(f.begin(), f.end(), [&](const Color& c) { return c.r == r && c.g == g && c.b == b; });
+        };
+        StubBackend nb;
+        Renderer nested(300, 1, false, nb);
+        nested.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","100"],["height","100"],["fill","#00a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"defs","svg":true},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"g","svg":true,"attrs":[["id","a"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"use","svg":true,"attrs":[["href","#b"]]},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"g","svg":true,"attrs":[["id","b"]]},{"op":"ins","parent":11,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"rect","svg":true,"attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":14,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"use","svg":true,"attrs":[["href","#a"],["fill","#0a0"]]},{"op":"ins","parent":10,"id":16,"before":null}]})"));
+        auto f = fills(nested.paint());
+        check(f.size() == 1 && same(f, 0, 170, 0), "a rect used through two <use> levels takes the outer <use>'s fill (" + std::to_string(f.size()) + " paths)");
+
+        StubBackend cb;
+        Renderer cyclic(300, 1, false, cb);
+        cyclic.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","100"],["height","100"],["fill","#00a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"g","svg":true,"attrs":[["id","a"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"rect","svg":true,"attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"use","svg":true,"attrs":[["href","#b"]]},{"op":"ins","parent":11,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"g","svg":true,"attrs":[["id","b"]]},{"op":"ins","parent":10,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"use","svg":true,"attrs":[["href","#a"]]},{"op":"ins","parent":14,"id":15,"before":null}]})"));
+        f = fills(cyclic.paint());
+        check(f.size() > 1 && f.size() < 16 && same(f, 0, 0, 170),
+              "two groups using each other paint a bounded number of instances, each with the root's fill (" + std::to_string(f.size()) + " paths)");
+    }
+
     // ── resize diffs: which side of a widget changing height a host keeps still ──
     {
         auto run = [&](const char* grow, double press_y) {
