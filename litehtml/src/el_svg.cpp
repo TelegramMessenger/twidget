@@ -315,9 +315,11 @@ namespace litehtml
                     {
                         break;
                     }
+                    bool explicit_cmd = false;
                     if(std::isalpha(static_cast<unsigned char>(*s)))
                     {
-                        cmd = *s++;
+                        cmd          = *s++;
+                        explicit_cmd = true;
                     } else if(!cmd)
                     {
                         return;
@@ -418,6 +420,13 @@ namespace litehtml
                         }
                         break;
                     case 'Z':
+                        // closepath takes no arguments, so it never repeats: data after it that is no command is an
+                        // error, and the path ends there (SVG 2, "Error handling in path data"). Repeating it read
+                        // nothing and looped forever, a close per turn.
+                        if(!explicit_cmd)
+                        {
+                            return;
+                        }
                         close();
                         break;
                     default:

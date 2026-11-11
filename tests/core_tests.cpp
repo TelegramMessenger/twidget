@@ -2483,6 +2483,23 @@ int main() {
         check(got == "-3.", "an alphabetic marker below 1 is decimal (got " + got + ")");
         got = marker("upper-alpha", 28);
         check(got == "AB.", "28 is AB (got " + got + ")");
+
+        // Path data that goes on after a closepath without a command: `z` took nothing and was repeated forever, a
+        // close per turn, until the host ran out of memory. The path ends at the error (SVG 2, "Error handling in path
+        // data") and keeps what came before it.
+        auto path = [&](const std::string& d) {
+            Renderer p(300, 1, false, backend);
+            widget(p, "", R"(,{"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","40"],["height","40"],["style","display:block"]]},)"
+                          R"({"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"path","svg":true,"attrs":[["d",")" + d +
+                              R"("],["stroke","red"]]},{"op":"ins","parent":10,"id":11,"before":null})");
+            size_t ops = 0;
+            for (const Command& c : p.paint())
+                if (c.path) ops += c.path->ops.size();
+            return ops;
+        };
+        check(path("M0 0z4") <= 2, "a number after z ends the path (" + std::to_string(path("M0 0z4")) + " ops)");
+        check(path("M0 0 L10 10 z 4,4 L 20 20") <= 3, "and keeps the subpath before it");
+        check(path("M0 0 L10 10 z M20 20 L30 30 z") == 6, "a z followed by a command still starts the next subpath");
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
