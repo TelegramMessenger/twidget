@@ -318,6 +318,11 @@ namespace litehtml
                     bool explicit_cmd = false;
                     if(std::isalpha(static_cast<unsigned char>(*s)))
                     {
+                        // Path data starts with a moveto; anything else is an error from the start (SVG 2).
+                        if(!cmd && *s != 'M' && *s != 'm')
+                        {
+                            return;
+                        }
                         cmd          = *s++;
                         explicit_cmd = true;
                     } else if(!cmd)
@@ -873,6 +878,10 @@ namespace litehtml
             element::ptr        m_hit;
             bool                m_cache_groups = false;
             position            m_cache_bounds;
+            // Elements a <use> drew in this pass: uses of uses multiply (ten per level, eight levels deep, are 10^8),
+            // so past the cap the rest of what they name is left out.
+            static constexpr int kMaxUseDrawn = 10000;
+            int                 m_use_drawn = 0;
 
             bool hits(float x0, float y0, float x1, float y1, float slop) const
             {
@@ -1079,6 +1088,8 @@ namespace litehtml
                     if(p == target)
                         return;
                 }
+                if(++m_use_drawn > kMaxUseDrawn)
+                    return;
                 transform_matrix m{1, 0, 0, 1, attr_length(use, "x", m_view[2], 0), attr_length(use, "y", m_view[3], 0)};
                 const bool symbol = lowcase(target->get_tagName() ? target->get_tagName() : "") == "symbol";
                 std::vector<float> box = numbers(target->get_attr("viewbox"));

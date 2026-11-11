@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -89,10 +90,10 @@ void box_pass(std::vector<float>& src, std::vector<float>& dst, int w, int h, in
             return (horizontal ? size_t(line) * w + i : size_t(i) * w + line) * 4;
         };
         float sum[4] = {0, 0, 0, 0};
-        // Outside the image is transparent: the sum starts with the pixels that reach position 0.
-        for (int i = -r; i <= r; i++)
-            if (size_t k = at(i); k != SIZE_MAX)
-                for (int c = 0; c < 4; c++) sum[c] += src[k + c];
+        // Outside the image is transparent: the sum starts with the pixels that reach position 0, which are the
+        // ones in the image only (a radius far past it costs no more than the line).
+        for (int i = 0, end = int(std::min<int64_t>(r, length - 1)); i <= end; i++)
+            for (int c = 0; c < 4; c++) sum[c] += src[at(i) + c];
         for (int i = 0; i < length; i++) {
             size_t out = at(i);
             for (int c = 0; c < 4; c++) dst[out + c] = sum[c] * scale;
@@ -104,9 +105,14 @@ void box_pass(std::vector<float>& src, std::vector<float>& dst, int w, int h, in
     }
 }
 
+constexpr float kMaxSigma = 100000;
+
 /// A Gaussian of standard deviation `sigma` px as three box blurs (the box sizes SVG's feGaussianBlur gives).
 void gaussian(std::vector<float>& px, int w, int h, float sigma) {
-    if (sigma < 0.5f) return;
+    if (!(sigma >= 0.5f)) return;  // NaN too
+    // An infinite or huge deviation (a scale or amount from a painter) is the same blur as this one at any size an
+    // image has, and keeps the radius an int.
+    sigma = std::min(sigma, kMaxSigma);
     int d = int(std::floor(sigma * 3 * std::sqrt(2 * 3.14159265f) / 4 + 0.5f));
     int r = std::max(1, d / 2);
     std::vector<float> tmp(px.size());
@@ -148,7 +154,12 @@ void filter_pixels(uint8_t* pixels, int w, int h, size_t stride, bool bgra, cons
         } else if (f.kind == Filter::DropShadow) {
             // The alpha in the shadow's colour, blurred and moved, under the image.
             std::vector<float> shadow(px.size(), 0.0f);
-            const int dx = int(std::lround(f.x * scale)), dy = int(std::lround(f.y * scale));
+            // Past the image either way the shadow misses it; NaN is no offset.
+            auto offset = [&](float v) {
+                float moved = v * scale;
+                return moved == moved ? int(std::lround(std::clamp(moved, -float(w + h), float(w + h)))) : 0;
+            };
+            const int dx = offset(f.x), dy = offset(f.y);
             const float color[4] = {f.color.r / 255.0f, f.color.g / 255.0f, f.color.b / 255.0f, f.color.a / 255.0f};
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++) {
