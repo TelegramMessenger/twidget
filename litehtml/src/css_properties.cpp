@@ -547,7 +547,8 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
             break;
         case font_weight_bolder:
             {
-                const int inherited = static_cast<int>(el->parent()->css().m_font_weight.val());
+                // The root has no parent: relative to the initial weight, as browsers take it.
+                const int inherited = el->parent() ? static_cast<int>(el->parent()->css().m_font_weight.val()) : 400;
                 if(inherited < 400)
                 {
                     m_font_weight = 400;
@@ -562,7 +563,7 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
             break;
         case font_weight_lighter:
             {
-                const int inherited = static_cast<int>(el->parent()->css().m_font_weight.val());
+                const int inherited = el->parent() ? static_cast<int>(el->parent()->css().m_font_weight.val()) : 400;
                 if(inherited < 600)
                 {
                     m_font_weight = 100;
