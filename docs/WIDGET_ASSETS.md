@@ -1,34 +1,41 @@
-# Widget assets: images and icons
+# Images and icons in documents
 
-A twidget widget is **one self-contained HTML document**. There is no bundle format, no asset folder and no named image a client has to ship. Everything a widget shows comes from the document itself, or from one icon set that every client bundles identically.
+What LiteHTML (`LHDocument`, `HTMLScript`) accepts as an image in a document of its own: `data:` URLs,
+inline SVG and an `icon:` set every port can bundle identically. Nothing is fetched.
 
 | Source | Use it for | Fetches anything? |
 |---|---|---|
 | `data:` URL | Pictures, logos, charts, sparklines, any bitmap or SVG | Never |
-| Inline `<svg>` | Vector drawings that change with the widget's state | Never |
+| Inline `<svg>` | Vector drawings that change with the document's state | Never |
 | `icon:` URL | UI icons from the built-in set | Never |
 
-Every client must render these three the same way. Nothing else is an image source: `http:`, `https:`, `file:`, `blob:` from elsewhere, relative URLs and host-specific schemes are dropped by the validator.
+Nothing else is an image source: `http:`, `https:`, `file:`, `blob:` from elsewhere and relative URLs are
+dropped by LiteHTML's sanitizer, and a host's own schemes only reach the host's image provider
+(`LHSanitizer.setLinkSchemes(_:imageSchemes:)`).
+
+**Widgets follow widget profile 1 instead**, which is narrower: `data:` PNG, JPEG, GIF and WebP, and inline
+SVG. `data:image/svg+xml` draws the placeholder there and `icon:` URLs never reach the renderer, since
+widget-sandbox's validator drops them (widget-sandbox's `docs/profile-v1.md`).
 
 ## `data:` URLs
 
-Allowed MIME types (the validator's `imageMIMETypes`): `image/png`, `image/jpeg` (`image/jpg`), `image/gif`, `image/webp`, `image/avif`, `image/bmp`, `image/x-icon` (`image/vnd.microsoft.icon`) and `image/svg+xml`. For PNG, JPEG, GIF and WebP every client can decode; AVIF, BMP and ICO are best effort.
+Allowed MIME types (the sanitizer's `imageMIMETypes`, `apple/Sources/LiteHTML/core/lhx_sanitizer.cpp`): `image/png`, `image/jpeg` (`image/jpg`), `image/gif`, `image/webp`, `image/avif`, `image/bmp`, `image/x-icon` (`image/vnd.microsoft.icon`) and `image/svg+xml`. PNG, JPEG, GIF and WebP decode on every platform; AVIF, BMP and ICO are best effort.
 
 `data:image/svg+xml` is an **SVG image**, not a document:
 
-- It is drawn by the client's sanitized SVG renderer, the same one that draws inline `<svg>`, with the same tag and attribute allowlist. Scripts, `on*` handlers, `<foreignObject>` content, `<style>` imports and every external reference (`href`, `xlink:href`, `url()` that isn't a `#fragment`) are dropped.
+- It is drawn by the sanitized SVG renderer, the same one that draws inline `<svg>`, with the same tag and attribute allowlist. Scripts, `on*` handlers, `<foreignObject>` content, `<style>` imports and every external reference (`href`, `xlink:href`, `url()` that isn't a `#fragment`) are dropped.
 - It loads no images of its own, except nested `data:` bitmaps. Nested SVG images and `icon:` URLs inside it render nothing, so an SVG image can't recurse.
 - Its size is its `width` and `height` attributes in CSS px. Without them, a `viewBox` gives the aspect ratio and the width is 300 px; without both, it is 300 × 150.
 - `currentColor` inside an SVG image is black: the image doesn't inherit the page's colour.
-- Clients may cap the rasterized size (the Apple renderer stops at 4096 device pixels a side, and refuses markup over 2 MB or sizes over 16384 px).
+- Ports may cap the rasterized size (the Apple renderer stops at 4096 device pixels a side, and refuses markup over 2 MB or sizes over 16384 px).
 
 Writing them:
 
 - `encodeURIComponent()` the markup, or percent-encode at least `%`, `#`, `<`, `>`, `"` and whitespace. Encoding `'`, `(` and `)` as well makes the URL safe in every context: an HTML attribute with either quote, an unquoted CSS `url()` and any JavaScript string.
 - Use single quotes inside the SVG.
-- A script may build a new SVG URL every frame for short animations. Clients cache decoded images in a byte-bounded cache keyed by the full URL.
+- A script may build a new SVG URL every frame for short animations. The Apple renderer caches decoded images in a byte-bounded cache keyed by the full URL.
 
-`Examples/images` holds the demo pictures (`sunset`, `aurora`, `ocean`, `dunes`, `forest`, `map`, `logo`) as small SVG files. They replace the `app:` pictures the macOS app used to draw in code.
+`apple/Examples/images` holds the demo pictures (`sunset`, `aurora`, `ocean`, `dunes`, `forest`, `map`, `logo`) as small SVG files. They replace the `app:` pictures the macOS app used to draw in code.
 
 ## `icon:` URLs
 
@@ -36,13 +43,13 @@ Writing them:
 icon:<name>[?size=<px>][&color=<hex>][&weight=<weight>]
 ```
 
-The icon set is a subset of [Phosphor Icons](https://phosphoricons.com) 2.1.1 (MIT), shipped in `Sources/TwidgetAssets`:
+The icon set is a subset of [Phosphor Icons](https://phosphoricons.com) 2.1.1 (MIT), shipped in `apple/Sources/TwidgetAssets`:
 
-- `icons.json` is the manifest: format `twidget-icons`, `version` 1, the icon names, the variants, defaults, limits, the weight table and the `sf:` alias table. A client implements exactly the names in the manifest version it ships. Adding icons bumps `version`; names are never removed or redrawn within a version.
-- `icons/<variant>/<name>.svg` are the unmodified Phosphor files, four variants per icon: `light`, `regular`, `bold` and `fill`. Every file is `<svg viewBox="0 0 256 256" fill="currentColor">` with one or two filled `<path>` elements and no strokes, so every client draws the same shape with any SVG or path renderer.
-- `twa_icon_data.inc` is the same path data compiled into C++ by `tools/icons/generate.py`, for the portable resolver in `Sources/TwidgetAssets/twa_icons.cpp` (C API in `include/twidget_assets.h`). Android, iOS and desktop ports can compile that file as is, or read `icons.json` and the SVG files.
+- `icons.json` is the manifest: format `twidget-icons`, `version` 1, the icon names, the variants, defaults, limits, the weight table and the `sf:` alias table. A port implements exactly the names in the manifest version it ships. Adding icons bumps `version`; names are never removed or redrawn within a version.
+- `icons/<variant>/<name>.svg` are the unmodified Phosphor files, four variants per icon: `light`, `regular`, `bold` and `fill`. Every file is `<svg viewBox="0 0 256 256" fill="currentColor">` with one or two filled `<path>` elements and no strokes, so every port draws the same shape with any SVG or path renderer.
+- `twa_icon_data.inc` is the same path data compiled into C++ by `apple/tools/icons/generate.py`, for the portable resolver in `apple/Sources/TwidgetAssets/twa_icons.cpp` (C API in `include/twidget_assets.h`). Android, iOS and desktop ports can compile that file as is, or read `icons.json` and the SVG files.
 
-363 icons × 4 variants is about 600 KB of path data. The subset holds every icon an `sf:` alias points to plus a common UI set (arrows, carets, files, chat, media controls, weather, commerce, people, devices, code). The whole Phosphor set would be about 2.9 MB in the binary of every client for names nobody uses yet; the manifest can grow later.
+363 icons × 4 variants is about 600 KB of path data. The subset holds every icon an `sf:` alias points to plus a common UI set (arrows, carets, files, chat, media controls, weather, commerce, people, devices, code). The whole Phosphor set would be about 2.9 MB in every binary for names nobody uses yet; the manifest can grow later.
 
 ### Grammar
 
@@ -58,7 +65,7 @@ The icon set is a subset of [Phosphor Icons](https://phosphoricons.com) 2.1.1 (M
 - Clamped to 1…512 and rounded to 0.01 px.
 - Missing or invalid: 20.
 
-Like any image, the box can be resized with CSS or `width`/`height` attributes. Clients rasterize at `size` × the device scale (2 on the Apple renderer), so draw an icon at its final size for the sharpest result.
+Like any image, the box can be resized with CSS or `width`/`height` attributes. Ports rasterize at `size` × the device scale (2 on the Apple renderer), so draw an icon at its final size for the sharpest result.
 
 ### Colour
 
@@ -85,7 +92,7 @@ A name that isn't in the manifest, or isn't valid at all (`icon:../x`, `icon:Hea
 
 ### Canonical SVG
 
-So that every client produces identical pixels from identical input, an icon is the SVG document
+So that every port produces identical pixels from identical input, an icon is the SVG document
 
 ```
 <svg xmlns="http://www.w3.org/2000/svg" width="S" height="S" viewBox="0 0 256 256"><path fill="#rrggbb" fill-opacity="A" d="…"/></svg>
@@ -95,20 +102,16 @@ with one `<path>` per path of the variant, `S` the size with at most two decimal
 
 ## Apple compatibility: `sf:` and `app:`
 
-Older Apple-only messages use two schemes no other client can render:
+Older Apple-only messages use two schemes no other port can render:
 
 - `sf:name?size=&color=&weight=&mode=` drew SF Symbols, which Apple licenses only for its own platforms.
 - `app:name` drew seven pictures in code.
 
 Rules for the format:
 
-- New widgets must not use them.
-- The Apple renderer keeps drawing `sf:` with SF Symbols when the host allows the scheme, and falls back to the alias table for names AppKit doesn't know (or before macOS 11). `LHImages.portableSymbols = true` (or `LH_PORTABLE_SYMBOLS=1`) resolves every `sf:` through the aliases, to compare with other clients.
-- Other clients resolve `sf:` through `sfAliases` in `icons.json`: the SF name maps to an icon name, a `.fill` symbol maps to a `-fill` icon, `size` is multiplied by `sfSizeScale` (1.2, because an SF Symbol at point size N draws about 1.2 N px tall), `weight` maps through the weight table, and `mode=multicolor` uses the colour in `sfMulticolor` when one is listed. Unknown names draw the placeholder.
-- `app:` stays a host scheme on Apple; other clients drop it.
+- New documents must not use them.
+- The Apple renderer keeps drawing `sf:` with SF Symbols when the host allows the scheme, and falls back to the alias table for names AppKit doesn't know (or before macOS 11). `LHImages.portableSymbols = true` (or `LH_PORTABLE_SYMBOLS=1`) resolves every `sf:` through the aliases, to compare with other ports.
+- Other ports resolve `sf:` through `sfAliases` in `icons.json`: the SF name maps to an icon name, a `.fill` symbol maps to a `-fill` icon, `size` is multiplied by `sfSizeScale` (1.2, because an SF Symbol at point size N draws about 1.2 N px tall), `weight` maps through the weight table, and `mode=multicolor` uses the colour in `sfMulticolor` when one is listed. Unknown names draw the placeholder.
+- `app:` stays a host scheme on Apple; other ports drop it.
 
 Migrating a message is mechanical: `sf:heart.fill?size=20&color=ff2d55` becomes `icon:heart-fill?size=24&color=ff2d55` (alias, `.fill` → `-fill`, size × 1.2), and `app:sunset` becomes the `data:` URL of `Examples/images/sunset.svg`.
-
-## twidget hosts and the validator
-
-The twidget validator allows only `data:` images today. Until it lists `icon:` (the grammar above, with the length limit), a host expands `icon:` URLs into the canonical `data:image/svg+xml` URL before validation, with `twa_icon_data_url`. Both the WebView renderer and the native renderer then receive the same SVG, so icons look the same in both.

@@ -31,35 +31,52 @@ let package = Package(
     targets: [
         .target(
             name: "TwidgetAssets",
-            path: "Sources/TwidgetAssets",
+            path: "apple/Sources/TwidgetAssets",
             exclude: ["icons", "icons.json", "twa_icon_data.inc"],
             sources: ["twa_icons.cpp"],
             publicHeadersPath: "include"),
         .target(
             name: "TwidgetIcons",
             dependencies: ["TwidgetAssets"],
-            path: "Sources/TwidgetIcons"),
+            path: "apple/Sources/TwidgetIcons"),
+        // The litehtml fork both renderers share. Its headers are C++ and reach LiteHTML through header search
+        // paths: a public headers folder would make SwiftPM wrap them in a Clang module, so it names none.
+        .target(
+            name: "TwidgetLitehtml",
+            path: "litehtml",
+            exclude: ["LICENSE", "src/gumbo/LICENSE"],
+            sources: ["src"],
+            publicHeadersPath: "no-public-headers",
+            cSettings: [
+                .headerSearchPath("include"),
+                .headerSearchPath("include/litehtml"),
+                .headerSearchPath("src"),
+                .headerSearchPath("gumbo-include"),
+            ],
+            cxxSettings: [
+                .headerSearchPath("include"),
+                .headerSearchPath("include/litehtml"),
+                .headerSearchPath("src"),
+                .headerSearchPath("gumbo-include"),
+            ],
+            linkerSettings: [.linkedFramework("CoreFoundation")]),
         .target(
             name: "LiteHTML",
-            dependencies: ["TwidgetAssets"],
-            path: "Sources/LiteHTML",
-            exclude: [
-                "litehtml/LICENSE",
-                "litehtml/src/gumbo/LICENSE",
-            ],
+            dependencies: ["TwidgetAssets", "TwidgetLitehtml"],
+            path: "apple/Sources/LiteHTML",
             publicHeadersPath: "include",
             cSettings: [
-                .headerSearchPath("litehtml/include"),
-                .headerSearchPath("litehtml/include/litehtml"),
-                .headerSearchPath("litehtml/src"),
-                .headerSearchPath("litehtml/gumbo-include"),
+                .headerSearchPath("../../../litehtml/include"),
+                .headerSearchPath("../../../litehtml/include/litehtml"),
+                .headerSearchPath("../../../litehtml/src"),
+                .headerSearchPath("../../../litehtml/gumbo-include"),
                 .headerSearchPath("core"),
             ],
             cxxSettings: [
-                .headerSearchPath("litehtml/include"),
-                .headerSearchPath("litehtml/include/litehtml"),
-                .headerSearchPath("litehtml/src"),
-                .headerSearchPath("litehtml/gumbo-include"),
+                .headerSearchPath("../../../litehtml/include"),
+                .headerSearchPath("../../../litehtml/include/litehtml"),
+                .headerSearchPath("../../../litehtml/src"),
+                .headerSearchPath("../../../litehtml/gumbo-include"),
                 .headerSearchPath("core"),
             ],
             linkerSettings: [
@@ -73,58 +90,58 @@ let package = Package(
             ]),
         .target(
             name: "HTMLSandbox",
-            path: "Sources/HTMLSandbox"),
+            path: "apple/Sources/HTMLSandbox"),
         .target(
             name: "HTMLScript",
             dependencies: ["HTMLSandbox", cQuickJS],
-            path: "Sources/HTMLScript",
+            path: "apple/Sources/HTMLScript",
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("QuartzCore")]),
         .target(
             name: "Twidget3D",
-            path: "Sources/Twidget3D",
+            path: "apple/Sources/Twidget3D",
             resources: [.copy("Resources/three.js"), .copy("Resources/twidget3d.js")],
             linkerSettings: [.linkedFramework("Metal"), .linkedFramework("QuartzCore")]),
         .target(
             name: "HTML3D",
             dependencies: ["HTMLScript", "Twidget3D"],
-            path: "Sources/HTML3D",
+            path: "apple/Sources/HTML3D",
             linkerSettings: [.linkedFramework("JavaScriptCore")]),
         .target(
             name: "Twidget3DSandbox",
             dependencies: ["Twidget3D", .product(name: "WidgetSandbox", package: "WidgetSandbox"), widgetProtocol],
-            path: "Sources/Twidget3DSandbox"),
+            path: "apple/Sources/Twidget3DSandbox"),
         .target(
             name: "TwidgetRenderer",
             dependencies: ["LiteHTML", widgetProtocol, .product(name: "WidgetSandbox", package: "WidgetSandbox")],
-            path: "Sources/TwidgetRenderer",
+            path: "apple/Sources/TwidgetRenderer",
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(
             name: "TwidgetRendererTests",
             dependencies: ["TwidgetRenderer", widgetProtocol, .product(name: "WidgetSandbox", package: "WidgetSandbox"), "HTMLScript", "HTMLSandbox", "LiteHTML", cQuickJS],
-            path: "Tests/TwidgetRendererTests"),
+            path: "apple/Tests/TwidgetRendererTests"),
         .testTarget(
             name: "Twidget3DSandboxTests",
             dependencies: ["Twidget3DSandbox", "Twidget3D", "TwidgetRenderer", .product(name: "WidgetSandbox", package: "WidgetSandbox"), widgetProtocol],
-            path: "Tests/Twidget3DSandboxTests"),
+            path: "apple/Tests/Twidget3DSandboxTests"),
         .testTarget(
             name: "TwidgetIconsTests",
             dependencies: ["TwidgetIcons"],
-            path: "Tests/TwidgetIconsTests"),
+            path: "apple/Tests/TwidgetIconsTests"),
         .testTarget(
             name: "Twidget3DTests",
             dependencies: ["Twidget3D"],
-            path: "Tests/Twidget3DTests"),
+            path: "apple/Tests/Twidget3DTests"),
         .testTarget(
             name: "LiteHTMLTests",
             dependencies: ["LiteHTML", "TwidgetAssets"],
-            path: "Tests/LiteHTMLTests",
+            path: "apple/Tests/LiteHTMLTests",
             cxxSettings: [
-                .headerSearchPath("../../Sources/LiteHTML/litehtml/include"),
-                .headerSearchPath("../../Sources/LiteHTML/litehtml/include/litehtml"),
+                .headerSearchPath("../../../litehtml/include"),
+                .headerSearchPath("../../../litehtml/include/litehtml"),
                 .headerSearchPath("../../Sources/LiteHTML/core"),
                 .headerSearchPath("../../Sources/LiteHTML/include"),
             ],
-            linkerSettings: [.linkedFramework("XCTest")]),
+            linkerSettings: [.linkedFramework("XCTest"), .linkedFramework("QuartzCore")]),
     ],
     cxxLanguageStandard: .gnucxx17
 )
