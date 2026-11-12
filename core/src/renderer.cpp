@@ -473,6 +473,8 @@ bool coalesced(const std::string& type) {
 }
 
 constexpr int MAX_CANVASES = 64;
+/// The levels of a tree the ops build, attached or not (the validator caps the attached one): every walk recurses over them.
+constexpr size_t MAX_TREE_DEPTH = 1024;
 /// Layers: at most this many per widget, this many device pixels in all, and no track shorter
 /// than this (a frame or two is cheaper to paint than to hand over).
 constexpr size_t MAX_LAYERS = 256;
@@ -2833,7 +2835,20 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         if (!p || p->kind != Node::Element) return;
         note_children(p, n);
         // no cycles: the validator forbids them, but a hostile batch must not hang the renderer
-        for (Node* a = p; a; a = a->parent) if (a == n) return;
+        size_t level = 1;
+        for (Node* a = p; a; a = a->parent, level++) if (a == n) return;
+        size_t height = 0;
+        std::vector<std::pair<const Node*, size_t>> below{{n, size_t(1)}};
+        while (!below.empty()) {
+            auto [at, levels] = below.back();
+            below.pop_back();
+            height = std::max(height, levels);
+            for (const Node* c : at->children) below.emplace_back(c, levels + 1);
+        }
+        if (level + height - 1 > MAX_TREE_DEPTH) {
+            out.push_back(Json::object().set("type", "violation").set("detail", "tree depth"));
+            return;
+        }
         n->parent = p;
         const Json* before = op.find("before");
         if (before && before->isNumber()) {

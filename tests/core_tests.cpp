@@ -3129,6 +3129,36 @@ int main() {
         check(drawn >= 100000 && drawn <= (size_t(1) << 24), "one canvas op hands the backend a bounded amount of geometry (" + std::to_string(drawn) + " floats)");
     }
 
+    // ── trees deeper than a document may be ──
+    {
+        auto chain = [](int levels) {
+            std::string ops = R"({"op":"el","id":100000,"tag":"div","attrs":[]})";
+            for (int i = 1; i < levels; i++) {
+                std::string id = std::to_string(100000 + i);
+                ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[]},{"op":"ins","parent":)" + id + R"(,"id":)" + std::to_string(100000 + i - 1) + R"(,"before":null})";
+            }
+            return ops;
+        };
+        const int levels = 100000;
+        const std::string top = std::to_string(100000 + levels - 1);
+        StubBackend db;
+        Renderer d(300, 1, false, db);
+        d.receive(parse(PAGE));
+        d.receive(parse(R"({"type":"ops","ops":[)" + chain(levels) + R"(,{"op":"ins","parent":4,"id":)" + top + R"(,"before":null}]})"));
+        size_t depth = 0, deepest = 0;
+        const std::string& html = d.last_html();
+        for (size_t at = html.find('<'); at != std::string::npos; at = html.find('<', at + 1)) {
+            if (html.compare(at, 4, "<div") == 0) deepest = std::max(deepest, ++depth);
+            else if (html.compare(at, 5, "</div") == 0) depth--;
+        }
+        check(deepest > 0 && deepest <= 1024, "a chain of 100000 nested elements is not built past 1024 levels (" + std::to_string(deepest) + ")");
+        StubBackend fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(PAGE));
+        f.receive(parse(R"({"type":"ops","ops":[)" + chain(levels) + R"(,{"op":"rm","id":)" + top + "}]}"));
+        check(f.last_html().find("id=\"a\"") != std::string::npos, "and a detached one is removed without recursing through it");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
