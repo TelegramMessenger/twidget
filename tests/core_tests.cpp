@@ -3183,6 +3183,18 @@ int main() {
         check(a.last_html().find("kept") == std::string::npos && a.last_html().find("id=\"b\"") != std::string::npos, "and its parent is removed with it afterwards");
     }
 
+    // ── a textarea whose value replaced its children, then removed ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(PAGE));
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":50,"tag":"textarea","attrs":[]},{"op":"text","id":51,"data":"old"},{"op":"ins","parent":50,"id":51,"before":null},
+            {"op":"ins","parent":4,"id":50,"before":null},{"op":"prop","id":50,"name":"value","value":"new"},{"op":"rm","id":50}]})"));
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"ins","parent":4,"id":51,"before":null}]})"));
+        check(t.last_html().find("old") != std::string::npos && t.last_html().find("<textarea") == std::string::npos,
+              "the text a textarea's value replaced does not point at the textarea once that is removed");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
