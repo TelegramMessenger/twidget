@@ -2480,6 +2480,21 @@ int main() {
             total += blurred[size_t(i) * 4 + 3];
         }
         check(spread > 9 && blurred[(10 * 21 + 10) * 4 + 3] < 255 && total > 180 && total < 330, "blur spreads a dot and keeps its alpha (" + std::to_string(spread) + " px, " + std::to_string(total) + ")");
+        // An infinite scale (or amount) was a blur radius of 2^30 and a 2^31-step loop per line; NaN, an int from NaN.
+        {
+            auto started = std::chrono::steady_clock::now();
+            std::vector<uint8_t> px = dot;
+            const float inf = std::numeric_limits<float>::infinity();
+            filter_pixels(px.data(), 21, 21, 21 * 4, false, {f(Filter::Blur, 2)}, inf);
+            filter_pixels(px.data(), 21, 21, 21 * 4, false, {f(Filter::Blur, inf), f(Filter::Blur, std::nanf(""))}, 1);
+            Filter far = f(Filter::DropShadow, inf);
+            far.x = inf;
+            far.y = std::nanf("");
+            far.color = Color{0, 0, 0, 255};
+            filter_pixels(px.data(), 21, 21, 21 * 4, false, {far}, 1);
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            check(ms < 1000, "infinite and NaN blur radii and shadow offsets finish (" + std::to_string(int(ms)) + " ms)");
+        }
         Filter shadow = f(Filter::DropShadow, 0);
         shadow.x = 3;
         shadow.color = Color{0, 0, 255, 255};
@@ -2646,6 +2661,82 @@ int main() {
         check(got == "-3.", "an alphabetic marker below 1 is decimal (got " + got + ")");
         got = marker("upper-alpha", 28);
         check(got == "AB.", "28 is AB (got " + got + ")");
+
+        // Path data that goes on after a closepath without a command: `z` took nothing and was repeated forever, a
+        // close per turn, until the host ran out of memory. The path ends at the error (SVG 2, "Error handling in path
+        // data") and keeps what came before it.
+        auto path = [&](const std::string& d) {
+            Renderer p(300, 1, false, backend);
+            widget(p, "", R"(,{"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","40"],["height","40"],["style","display:block"]]},)"
+                          R"({"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"path","svg":true,"attrs":[["d",")" + d +
+                              R"("],["stroke","red"]]},{"op":"ins","parent":10,"id":11,"before":null})");
+            size_t ops = 0;
+            for (const Command& c : p.paint())
+                if (c.path) ops += c.path->ops.size();
+            return ops;
+        };
+        check(path("M0 0z4") <= 2, "a number after z ends the path (" + std::to_string(path("M0 0z4")) + " ops)");
+        check(path("M0 0 L10 10 z 4,4 L 20 20") <= 3, "and keeps the subpath before it");
+        check(path("M0 0 L10 10 z M20 20 L30 30 z") == 6, "a z followed by a command still starts the next subpath");
+        check(path("Z0") == 0, "Z0 draws nothing and ends");
+
+        // font-weight: bolder and lighter on the root are relative to a parent it does not have: the initial 400.
+        for (const char* weight : {"bolder", "lighter"}) {
+            Renderer f(300, 1, false, backend);
+            f.receive(parse(std::string(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[["style","font-weight:)") +
+                            weight + R"("]]},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body"},)"
+                                     R"({"op":"text","id":5,"data":"x"},{"op":"ins","parent":4,"id":5,"before":null}]})"));
+            check(!f.paint().empty(), std::string("a root with font-weight: ") + weight + " lays out");
+        }
+
+        // <use> fan-out: ten uses of the level below on each of eight levels were 10^8 drawn elements.
+        {
+            Renderer u(300, 1, false, backend);
+            std::string ops = R"(,{"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","40"],["height","40"]]},{"op":"ins","parent":4,"id":10,"before":null},)"
+                              R"({"op":"el","id":11,"tag":"defs","svg":true},{"op":"ins","parent":10,"id":11,"before":null},)"
+                              R"({"op":"el","id":12,"tag":"rect","svg":true,"attrs":[["id","l0"],["width","1"],["height","1"]]},{"op":"ins","parent":11,"id":12,"before":null})";
+            int id = 20;
+            for (int level = 1; level <= 8; level++) {
+                int group = id++;
+                ops += R"(,{"op":"el","id":)" + std::to_string(group) + R"(,"tag":"g","svg":true,"attrs":[["id","l)" + std::to_string(level) +
+                       R"("]]},{"op":"ins","parent":11,"id":)" + std::to_string(group) + R"(,"before":null})";
+                for (int k = 0; k < 10; k++) {
+                    int use = id++;
+                    ops += R"(,{"op":"el","id":)" + std::to_string(use) + R"(,"tag":"use","svg":true,"attrs":[["href","#l)" + std::to_string(level - 1) +
+                           R"("]]},{"op":"ins","parent":)" + std::to_string(group) + R"(,"id":)" + std::to_string(use) + R"(,"before":null})";
+                }
+            }
+            ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"use","svg":true,"attrs":[["href","#l8"]]},{"op":"ins","parent":10,"id":)" +
+                   std::to_string(id) + R"(,"before":null})";
+            widget(u, "", ops);
+            auto started = std::chrono::steady_clock::now();
+            size_t drawn = u.paint().size();
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            check(ms < 2000, "a <use> fan-out of 10^8 is cut short (" + std::to_string(int(ms)) + " ms, " + std::to_string(drawn) + " commands)");
+        }
+
+        // Fifteen nested tables: the layout budget stops them as it does nested flex boxes.
+        {
+            Renderer t(300, 1, false, backend);
+            std::string ops;
+            int id = 10, parent = 4;
+            for (int k = 0; k < 15; k++) {
+                int table = id++, row = id++, cell = id++;
+                ops += R"(,{"op":"el","id":)" + std::to_string(table) + R"(,"tag":"table"},{"op":"ins","parent":)" + std::to_string(parent) +
+                       R"(,"id":)" + std::to_string(table) + R"(,"before":null},{"op":"el","id":)" + std::to_string(row) +
+                       R"(,"tag":"tr"},{"op":"ins","parent":)" + std::to_string(table) + R"(,"id":)" + std::to_string(row) +
+                       R"(,"before":null},{"op":"el","id":)" + std::to_string(cell) + R"(,"tag":"td"},{"op":"ins","parent":)" +
+                       std::to_string(row) + R"(,"id":)" + std::to_string(cell) + R"(,"before":null})";
+                parent = cell;
+            }
+            ops += R"(,{"op":"text","id":)" + std::to_string(id) + R"(,"data":"deep"},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" +
+                   std::to_string(id) + R"(,"before":null})";
+            auto started = std::chrono::steady_clock::now();
+            widget(t, "", ops);
+            t.paint();
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            check(ms < 2000, "fifteen nested tables finish (" + std::to_string(int(ms)) + " ms)");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
