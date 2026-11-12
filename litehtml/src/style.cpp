@@ -2096,7 +2096,7 @@ namespace litehtml
             if(token.type == IDENT)
             {
                 auto idx = css_values(style_text_decoration_line_strings).value_index(token.ident());
-                if(idx.has_value())
+                if(idx.has_value() && idx.value() > 0)
                 {
                     val |= 1 << (idx.value() - 1);
                 }
@@ -2148,7 +2148,7 @@ namespace litehtml
             if(token.type == IDENT)
             {
                 auto idx = css_values(style_text_emphasis_position_strings).value_index(token.ident());
-                if(idx.has_value())
+                if(idx.has_value() && idx.value() > 0)
                 {
                     val |= 1 << (idx.value() - 1);
                 }
