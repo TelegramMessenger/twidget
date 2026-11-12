@@ -3044,6 +3044,32 @@ int main() {
         check(built == 1 && width == 70, "which builds the task once (" + std::to_string(built) + " builds)");
     }
 
+    // ── a pointer move whose restyle runs the layout past its limit ──
+    {
+        StubBackend hb;
+        Renderer h(300, 1, false, hb);
+        std::string ops = R"j({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"body{margin:0}#t{width:100px;min-height:40px;transition:width 1s linear}#t:hover{width:200px}#b{display:none}#t:hover #b{display:block}.g{display:grid}"},
+            {"op":"ins","parent":3,"id":5,"before":null},{"op":"el","id":10,"tag":"div","attrs":[["id","t"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":10,"id":11,"before":null})j";
+        // Twenty nested grids, not displayed until #t is hovered.
+        int parent = 11;
+        for (int i = 0, id = 100; i < 20; i++, id += 3) {
+            std::string g = std::to_string(id), c = std::to_string(id + 1), t = std::to_string(id + 2);
+            ops += R"(,{"op":"el","id":)" + g + R"(,"tag":"div","attrs":[["class","g"]]},{"op":"el","id":)" + c + R"(,"tag":"div","attrs":[]},{"op":"text","id":)" + t +
+                   R"(,"data":"x"},{"op":"ins","parent":)" + c + R"(,"id":)" + t + R"(,"before":null},{"op":"ins","parent":)" + g + R"(,"id":)" + c +
+                   R"(,"before":null},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" + g + R"(,"before":null})";
+            parent = id;
+        }
+        h.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        h.touch(0, 250, 300, 0, true, true);
+        bool stopped = false;
+        for (const Json& m : h.touch(1, 50, 20, 0, true, true))
+            stopped = stopped || (m["type"].asString() == "violation" && m["detail"].asString().find("layout limit") != std::string::npos);
+        check(stopped && events(h.touch(2, 50, 20, 0, true, true)).empty(), "a pointer move that runs the layout past its limit ends with the freeze: its touch is gone");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

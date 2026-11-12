@@ -5225,7 +5225,14 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             return out;
         }
         t.moved = true;
-        if (container_->mouse(1, x, y)) restyled_by_input();
+        if (container_->mouse(1, x, y)) {
+            restyled_by_input();
+            // A layout past its budget freezes the renderer, and freeze() drops every touch: `t` with them.
+            if (touches_.find(pointer) == touches_.end()) {
+                flush_pending(out);
+                return out;
+            }
+        }
         if (t.target) {
             // A finger's events stay with the element it pressed; a mouse's go to the element under
             // it. Either way a capture takes the pointer events.
