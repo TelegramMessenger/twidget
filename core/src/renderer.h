@@ -264,7 +264,7 @@ private:
     void forget(Node* n);
     // shadow tree → HTML → litehtml
     std::string serialize() const;
-    void serialize_node(const Node* n, std::string& out) const;
+    void serialize_node(const Node* n, std::string& out, int level) const;
     /// `patch`: an ops batch, which may go into the document in place (patch_document).
     void rebuild(bool patch = false);
     /// Builds a document a coalesced batch left stale.

@@ -139,7 +139,7 @@ Every document is validated before layout. The validator is an allowlist, not a 
 - **Attributes.** Attributes are allowlisted, every `on*` handler is dropped, and attributes with the reserved `data-lh-` prefix cannot be forged.
 - **URLs.** Links may use `http`, `https`, `mailto` and `#fragment`. Images may only use `data:image/…` with an allowlisted MIME type and `icon:` names from the built-in icon set. SVG images go through the same validator as inline SVG and load nothing external. A host adds its own schemes with `LHSanitizer.setLinkSchemes(_:imageSchemes:)`. URLs with those schemes reach the host's link handler or image provider. The renderer never fetches anything.
 - **CSS.** At-rules are allowlisted, so `@import`, `@font-face` and `@namespace` are removed. Every `url()` and image function is checked against the image rules, and `behavior` and `-moz-binding` are blocked.
-- **Structure limits.** The parser stops at 256 levels of nesting, 20,000 elements and 200,000 table cells, so a hostile document cannot make layout explode. Patched-in subtrees count against the same limits.
+- **Structure limits.** The parser stops at 128 levels of nesting, 20,000 elements and 200,000 table cells, so a hostile document cannot make layout explode. Patched-in subtrees count against the same limits.
 - **Canvas sources.** Only `<canvas>` may show a canvas bitmap, through the renderer's own `twcanvas:` source; `<img>`, SVG `<image>` and CSS `url()` can't reference one.
 - **Bounded caches.** Shared font, canvas font, color, raster and interpolation caches are all bounded, so no widget can grow memory through them.
 - **Reporting.** `sanitizerCounts` and `sanitizerDetails` report what was removed, for logs and tests.

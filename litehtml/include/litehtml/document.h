@@ -106,6 +106,8 @@ namespace litehtml
         // out so far, and it lays out nothing again: layout_exhausted() tells the embedder to stop it.
         // 0, the default, lays out without a limit.
         void     set_layout_budget(uint64_t boxes) { m_layout_budget = boxes; }
+        // Levels of elements built, <html> the first: layout and painting recurse per level, 1.7 KB of stack each at most.
+        static constexpr int max_build_depth = 128;
         bool     layout_exhausted() const { return m_layout_exhausted; }
         uint64_t layout_spent() const { return m_layout_spent; }
         bool     spend_layout()
@@ -171,7 +173,6 @@ namespace litehtml
         std::unordered_set<string_id>           m_left_classes;
         std::unordered_set<string_id>           m_left_ids;
         std::unordered_set<string_id>           m_left_attrs;
-        static constexpr int                    max_build_depth    = 256;
         static constexpr int                    max_build_elements = 20000;
         static constexpr int                    max_table_cells    = 200000;
         int                                     m_table_cells      = 0;

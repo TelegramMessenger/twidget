@@ -3021,13 +3021,16 @@ void Renderer::forget(Node* n) {
 
 // ───────────────────────── serialisation ─────────────────────────
 
-void Renderer::serialize_node(const Node* n, std::string& out) const {
+void Renderer::serialize_node(const Node* n, std::string& out, int level) const {
     switch (n->kind) {
     case Node::Comment: return;
     case Node::Text: escape_text(n->data, out); return;
     case Node::Element: break;
     }
     if (n->tag == "script" || n->tag == "template") return;  // never forwarded by the validator; belt and braces
+#ifdef TW_LITEHTML_TWIDGET
+    if (level > litehtml::document::max_build_depth) return;
+#endif
     if (!css::is_tag_name(n->tag)) return;
     out.push_back('<');
     out += n->tag;
@@ -3072,9 +3075,9 @@ void Renderer::serialize_node(const Node* n, std::string& out) const {
         // The parser drops a newline right after <textarea>: a value that starts with one needs a second.
         if (!n->data.empty() && n->data[0] == '\n') out += '\n';
         escape_text(n->data, out);
-        for (const Node* c : n->children) serialize_node(c, out);
+        for (const Node* c : n->children) serialize_node(c, out, level + 1);
     } else {
-        for (const Node* c : n->children) serialize_node(c, out);
+        for (const Node* c : n->children) serialize_node(c, out, level + 1);
     }
     out += "</";
     out += n->tag;
@@ -3153,7 +3156,7 @@ std::string Renderer::serialize() const {
         if (c == body_node_.get() && frozen_) {
             // badge before the body's own children would shift them; append it inside instead
             std::string body;
-            serialize_node(c, body);
+            serialize_node(c, body, 2);
             size_t close = body.rfind("</body>");
             if (close != std::string::npos) {
                 std::string badge = "<div data-tw-badge=\"" + std::string(frozen_fatal_ ? "fatal" : "paused") + "\">";
@@ -3164,12 +3167,12 @@ std::string Renderer::serialize() const {
             out += body;
         } else if (c == head_node_.get() && frozen_) {
             std::string head;
-            serialize_node(c, head);
+            serialize_node(c, head, 2);
             size_t close = head.rfind("</head>");
             if (close != std::string::npos) head.insert(close, std::string("<style>") + kFrozenBadgeCss + "</style>");
             out += head;
         } else {
-            serialize_node(c, out);
+            serialize_node(c, out, 2);
         }
     }
     out += "</html>";

@@ -3195,6 +3195,29 @@ int main() {
               "the text a textarea's value replaced does not point at the textarea once that is removed");
     }
 
+    // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
+    {
+        StubBackend nb;
+        Renderer n(300, 1, false, nb);
+        std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]})";
+        for (int i = 0; i < 300; i++) {
+            std::string id = std::to_string(1000 + i), parent = std::to_string(i ? 999 + i : 4);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[]},{"op":"ins","parent":)" + parent + R"(,"id":)" + id + R"(,"before":null})";
+            if (i % 100 == 99) ops += R"(,{"op":"text","id":)" + std::to_string(2000 + i) + R"(,"data":"at)" + std::to_string(i + 1) + R"("},{"op":"ins","parent":)" + id + R"(,"id":)" + std::to_string(2000 + i) + R"(,"before":null})";
+        }
+        n.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        std::string texts;
+        for (const Command& c : n.paint())
+            if (c.kind == Cmd::Text) texts += c.text + " ";
+        size_t depth = 0, deepest = 0;
+        const std::string& html = n.last_html();
+        for (size_t at = html.find('<'); at != std::string::npos; at = html.find('<', at + 1)) {
+            if (html.compare(at, 4, "<div") == 0) deepest = std::max(deepest, ++depth);
+            else if (html.compare(at, 5, "</div") == 0) depth--;
+        }
+        check(texts == "at100 " && deepest == 126, "300 nested elements are written and laid out to the 128th level, <html> the first (" + texts + ", " + std::to_string(deepest) + " divs deep)");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
