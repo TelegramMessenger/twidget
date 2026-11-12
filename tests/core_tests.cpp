@@ -3159,6 +3159,18 @@ int main() {
         check(f.last_html().find("id=\"a\"") != std::string::npos, "and a detached one is removed without recursing through it");
     }
 
+    // ── canvases drawn from one another down a long chain ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        c.receive(parse(PAGE));
+        std::string ops;
+        for (int i = 0; i < 200000; i++)
+            ops += std::string(i ? "," : "") + R"({"op":"canvas","id":)" + std::to_string(1000 + i) + R"(,"cmds":[["c","drawImage",{"n":)" + std::to_string(1001 + i) + "},0,0]]}";
+        c.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        check(c.last_html().find("id=\"a\"") != std::string::npos, "a batch of 200000 canvas ops, each drawing the next one's canvas, does not recurse through them all");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

@@ -2719,10 +2719,11 @@ void Renderer::apply_ops(const std::vector<Json>& ops, std::vector<Json>& out) {
         return;
     }
     std::vector<char> done(ops.size(), 0);
-    std::function<void(size_t)> run = [&](size_t i) {
+    // A chain of sources is no longer than the canvases a renderer holds; past that the ops apply in their own order.
+    std::function<void(size_t, int)> run = [&](size_t i, int depth) {
         if (done[i]) return;
         done[i] = 1;
-        if (ops[i]["op"].asString() == "canvas") {
+        if (depth < MAX_CANVASES && ops[i]["op"].asString() == "canvas") {
             for (const Json& cmd : ops[i]["cmds"].arr()) {
                 if (cmd[size_t(1)].asString() != "drawImage") continue;
                 const Json* source = cmd[size_t(2)].find("n");
@@ -2734,14 +2735,14 @@ void Renderer::apply_ops(const std::vector<Json>& ops, std::vector<Json>& out) {
                 // where it is inserted stays in its place.
                 for (size_t k = i + 1; k < it->second; k++) {
                     const std::string& kind = ops[k]["op"].asString();
-                    if (!done[k] && int64_t(ops[k]["id"].asNumber()) == ref && (kind == "el" || kind == "attr")) run(k);
+                    if (!done[k] && int64_t(ops[k]["id"].asNumber()) == ref && (kind == "el" || kind == "attr")) run(k, depth + 1);
                 }
-                run(it->second);
+                run(it->second, depth + 1);
             }
         }
         apply_op(ops[i], out);
     };
-    for (size_t i = 0; i < ops.size(); i++) run(i);
+    for (size_t i = 0; i < ops.size(); i++) run(i, 0);
 }
 
 void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
