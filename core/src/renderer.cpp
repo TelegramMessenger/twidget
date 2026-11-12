@@ -5682,6 +5682,274 @@ std::string Renderer::selectable_text_json() const {
     return out.dump();
 }
 
+#ifdef TW_LITEHTML_TWIDGET
+namespace {
+
+std::string a11y_collapse(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    bool space = false;
+    for (char c : in) {
+        if (c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == '\f') {
+            space = !out.empty();
+        } else {
+            if (space) out.push_back(' ');
+            space = false;
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+std::string a11y_attr(const litehtml::element* el, const char* name) {
+    const char* value = el->get_attr(name);
+    return value ? std::string(value) : std::string();
+}
+
+std::string a11y_lower(std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::string a11y_tag(const litehtml::element* el) {
+    const char* tag = el->get_tagName();
+    return a11y_lower(tag ? std::string(tag) : std::string());
+}
+
+const litehtml::element* a11y_find_id(const litehtml::element* el, const std::string& id) {
+    if (!el || el->is_text()) return nullptr;
+    const char* own = el->get_attr("id");
+    if (own && id == own) return el;
+    for (const auto& child : el->children())
+        if (const litehtml::element* found = a11y_find_id(child.get(), id)) return found;
+    return nullptr;
+}
+
+bool a11y_hidden(const litehtml::element* el) {
+    if (el->css().get_display() == litehtml::display_none) return true;
+    if (el->css().get_visibility() != litehtml::visibility_visible) return true;
+    return a11y_lower(a11y_attr(el, "aria-hidden")) == "true";
+}
+
+void a11y_collect_text(const litehtml::element* el, std::string& text) {
+    if (el->is_text()) {
+        if (auto t = dynamic_cast<const litehtml::el_text*>(el)) text += t->display_text();
+        return;
+    }
+    if (a11y_hidden(el)) return;
+    if (dynamic_cast<const litehtml::el_break*>(el)) {
+        text += " ";
+        return;
+    }
+    std::string label = a11y_attr(el, "aria-label");
+    if (!label.empty()) {
+        text += " " + label + " ";
+        return;
+    }
+    if (a11y_tag(el) == "img") {
+        text += " " + a11y_attr(el, "alt") + " ";
+        return;
+    }
+    if (!el->is_inline()) text += " ";
+    for (const auto& child : el->children()) a11y_collect_text(child.get(), text);
+    if (!el->is_inline()) text += " ";
+}
+
+std::string a11y_subtree_text(const litehtml::element* el) {
+    std::string text;
+    a11y_collect_text(el, text);
+    return a11y_collapse(text);
+}
+
+std::string a11y_name(const litehtml::element* root, const litehtml::element* el, const std::string& tag) {
+    std::string name = a11y_collapse(a11y_attr(el, "aria-label"));
+    if (!name.empty()) return name;
+    std::string ids = a11y_attr(el, "aria-labelledby");
+    if (!ids.empty()) {
+        std::string joined;
+        size_t at = 0;
+        while (at < ids.size()) {
+            size_t end = ids.find(' ', at);
+            if (end == std::string::npos) end = ids.size();
+            if (end > at) {
+                if (const litehtml::element* ref = a11y_find_id(root, ids.substr(at, end - at))) {
+                    std::string part = a11y_subtree_text(ref);
+                    if (!part.empty()) joined += (joined.empty() ? "" : " ") + part;
+                }
+            }
+            at = end + 1;
+        }
+        if (!joined.empty()) return joined;
+    }
+    if (tag == "img") {
+        name = a11y_collapse(a11y_attr(el, "alt"));
+    } else {
+        name = a11y_subtree_text(el);
+    }
+    if (!name.empty()) return name;
+    return a11y_collapse(a11y_attr(el, "title"));
+}
+
+}  // namespace
+#endif
+
+std::string Renderer::accessibility_json() const {
+#ifdef TW_LITEHTML_TWIDGET
+    litehtml::document* doc = container_->doc();
+    if (!doc || !doc->root()) return "[]";
+    const litehtml::element* root = doc->root().get();
+    Json out = Json::array();
+    struct Paragraph {
+        std::string text;
+        bool any = false;
+        float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        std::string live;
+    };
+    Paragraph para;
+    auto grow = [&](const litehtml::position& box) {
+        if (float(box.width) <= 0.f && float(box.height) <= 0.f) return;
+        float x0 = float(box.x), y0 = float(box.y), x1 = float(box.x + box.width), y1 = float(box.y + box.height);
+        if (!para.any) {
+            para.x0 = x0;
+            para.y0 = y0;
+            para.x1 = x1;
+            para.y1 = y1;
+            para.any = true;
+        } else {
+            para.x0 = std::min(para.x0, x0);
+            para.y0 = std::min(para.y0, y0);
+            para.x1 = std::max(para.x1, x1);
+            para.y1 = std::max(para.y1, y1);
+        }
+    };
+    auto flush = [&]() {
+        std::string text = a11y_collapse(para.text);
+        if (!text.empty() && para.any) {
+            Json node = Json::object();
+            node.set("r", std::string("text")).set("n", text);
+            node.set("x", double(para.x0)).set("y", double(para.y0));
+            node.set("w", double(para.x1 - para.x0)).set("h", double(para.y1 - para.y0));
+            if (!para.live.empty()) node.set("live", para.live);
+            out.push(std::move(node));
+        }
+        para = Paragraph{};
+    };
+    static const std::set<std::string> leaves = {"heading", "button", "link", "image", "checkbox", "radio", "switch",
+                                                 "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option",
+                                                 "slider", "progressbar", "meter", "spinbutton"};
+    std::function<void(const litehtml::element*, const std::string&)> walk = [&](const litehtml::element* el, const std::string& live) {
+        if (el->is_text()) {
+            auto text = dynamic_cast<const litehtml::el_text*>(el);
+            if (!text) return;
+            para.text += text->display_text();
+            if (para.live.empty()) para.live = live;
+            el->for_each_render_item([&](const std::shared_ptr<litehtml::render_item>& ri) { grow(ri->get_placement()); });
+            return;
+        }
+        if (a11y_hidden(el)) return;
+        if (dynamic_cast<const litehtml::el_break*>(el)) {
+            para.text += " ";
+            return;
+        }
+        const std::string tag = a11y_tag(el);
+        if (tag == "script" || tag == "style" || tag == "head" || tag == "title") return;
+        std::string role = a11y_lower(a11y_attr(el, "role"));
+        size_t space = role.find(' ');
+        if (space != std::string::npos) role = role.substr(0, space);
+        std::string here = live;
+        std::string ownLive = a11y_lower(a11y_attr(el, "aria-live"));
+        if (ownLive == "polite" || ownLive == "assertive") here = ownLive;
+        else if (ownLive == "off") here.clear();
+        if (role == "status" || role == "log") here = "polite";
+        if (role == "alert") here = "assertive";
+        int level = 0;
+        if ((role.empty() || role == "heading") && tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6') {
+            level = tag[1] - '0';
+            if (role.empty()) role = "heading";
+        }
+        if (role == "heading" && level == 0) {
+            level = std::atoi(a11y_attr(el, "aria-level").c_str());
+            if (level <= 0) level = 2;
+        }
+        if (role.empty()) {
+            if (tag == "button" || tag == "summary") role = "button";
+            else if (tag == "a" && el->get_attr("href")) role = "link";
+            else if (tag == "img") role = (a11y_attr(el, "alt").empty() && !el->get_attr("aria-label")) ? std::string() : std::string("image");
+            else if (tag == "svg" && (el->get_attr("aria-label") || el->get_attr("aria-labelledby"))) role = "image";
+            else if (el->css().get_cursor() == "pointer") role = "button";
+        }
+        if (role == "img") role = "image";
+        if (role == "presentation" || role == "none" || !leaves.count(role)) {
+            if (tag == "img" || tag == "svg") return;
+            bool block = !el->is_inline();
+            if (block) flush();
+            for (const auto& child : el->children()) walk(child.get(), here);
+            if (block) flush();
+            return;
+        }
+        flush();
+        std::string name = a11y_name(root, el, tag);
+        bool range = role == "slider" || role == "progressbar" || role == "meter" || role == "spinbutton";
+        if (name.empty() && !range) return;
+        if (role == "menuitemcheckbox") role = "checkbox";
+        if (role == "menuitemradio") role = "radio";
+        if (role == "meter") role = "progressbar";
+        litehtml::position box = el->get_placement();
+        Json node = Json::object();
+        node.set("r", role).set("n", name);
+        node.set("x", double(box.x)).set("y", double(box.y)).set("w", double(box.width)).set("h", double(box.height));
+        if (level > 0) node.set("lv", double(level));
+        Json states = Json::object();
+        bool anyState = false;
+        auto tri = [&](const char* attr, const char* key) {
+            std::string v = a11y_lower(a11y_attr(el, attr));
+            if (v == "true" || v == "false" || v == "mixed") {
+                states.set(key, v);
+                anyState = true;
+            }
+        };
+        tri("aria-checked", "checked");
+        tri("aria-pressed", "pressed");
+        tri("aria-selected", "selected");
+        tri("aria-expanded", "expanded");
+        if (tag == "summary") {
+            auto parent = el->parent();
+            if (parent && a11y_tag(parent.get()) == "details") {
+                states.set("expanded", std::string(parent->get_attr("open") ? "true" : "false"));
+                anyState = true;
+            }
+        }
+        if (el->get_attr("disabled") || a11y_lower(a11y_attr(el, "aria-disabled")) == "true") {
+            states.set("disabled", std::string("true"));
+            anyState = true;
+        }
+        std::string current = a11y_lower(a11y_attr(el, "aria-current"));
+        if (!current.empty() && current != "false") {
+            states.set("current", std::string("true"));
+            anyState = true;
+        }
+        if (anyState) node.set("st", std::move(states));
+        auto number = [&](const char* attr, const char* key) {
+            const char* v = el->get_attr(attr);
+            if (v && *v) node.set(key, std::atof(v));
+        };
+        number("aria-valuenow", "vn");
+        number("aria-valuemin", "vmin");
+        number("aria-valuemax", "vmax");
+        std::string valueText = a11y_collapse(a11y_attr(el, "aria-valuetext"));
+        if (!valueText.empty()) node.set("vt", valueText);
+        if (!here.empty()) node.set("live", here);
+        if (role != "heading" && role != "image" && role != "progressbar") node.set("act", 1.0);
+        out.push(std::move(node));
+    };
+    walk(root, std::string());
+    flush();
+    return out.dump();
+#else
+    return "[]";
+#endif
+}
+
 bool Renderer::locate(const TextPoint& p, const std::vector<TextRun>& runs, size_t& run, size_t& offset) const {
     bool found = false;
     for (size_t i = 0; i < runs.size(); i++) {
