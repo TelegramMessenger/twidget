@@ -2824,6 +2824,15 @@ int main() {
             check(rect(n, 10) == "5 295" && rect(n, 11) == "0 300" && rect(n, 12) == "5 295",
                   ":nth-child(An+B) with a product past int matches no more than it should (got " + rect(n, 10) + ", " + rect(n, 11) + ", " + rect(n, 12) + ")");
         }
+
+        // A flex factor is kept in thousandths in an int: one past that was cast as it was, and two of them overflowed their sum.
+        {
+            Renderer x(300, 1, false, backend);
+            widget(x, "", div(10, 4, "display:flex") + div(11, 10, "flex-grow:99999999999;height:5px") + div(12, 10, "flex-grow:99999999999;height:5px") + div(13, 10, "width:100px;height:5px") +
+                              div(14, 4, "display:flex") + div(15, 14, "flex-shrink:99999999999;width:300px;height:5px") + div(16, 14, "flex-shrink:99999999999;width:300px;height:5px"));
+            check(rect(x, 11) == "0 100" && rect(x, 12) == "100 100" && rect(x, 13) == "200 100", "two items with a huge flex-grow share the free space (got " + rect(x, 11) + ", " + rect(x, 12) + ", " + rect(x, 13) + ")");
+            check(rect(x, 15) == "0 150" && rect(x, 16) == "150 150", "and two with a huge flex-shrink the overflow (got " + rect(x, 15) + ", " + rect(x, 16) + ")");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──

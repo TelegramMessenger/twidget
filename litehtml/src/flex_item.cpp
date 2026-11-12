@@ -13,12 +13,12 @@ static bool LHReuseColumnMeasure()
 void litehtml::flex_item::init(const litehtml::containing_block_context& self_size,
                                litehtml::formatting_context* fmt_ctx, flex_align_items align_items)
 {
-    grow = static_cast<int>(std::nearbyint(el->css().get_flex_grow() * 1000.0));
+    grow = static_cast<int>(std::fmin(std::fmax(std::nearbyint(el->css().get_flex_grow() * 1000.0), 0.0), 2147483647.0));
     // Negative numbers are invalid.
     // https://www.w3.org/TR/css-flexbox-1/#valdef-flex-grow-number
     grow = std::max(grow, 0);
 
-    shrink = static_cast<int>(std::nearbyint(el->css().get_flex_shrink() * 1000.0));
+    shrink = static_cast<int>(std::fmin(std::fmax(std::nearbyint(el->css().get_flex_shrink() * 1000.0), -1.0), 2147483647.0));
     // Negative numbers are invalid.
     // https://www.w3.org/TR/css-flexbox-1/#valdef-flex-shrink-number
     if(shrink < 0)
