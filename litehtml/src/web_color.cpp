@@ -225,7 +225,7 @@ namespace litehtml
 
     float clamp(float x, float min, float max)
     {
-        if(x < min)
+        if(!(x >= min))
         {
             return min;
         }

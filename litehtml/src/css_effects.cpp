@@ -1178,7 +1178,7 @@ namespace litehtml
                     list.repeat    = sizes;
                 } else if(args[0].type == NUMBER && args[0].n.number_type == css_number_integer && args[0].n.number > 0)
                 {
-                    int n = std::min(static_cast<int>(args[0].n.number), 1000);
+                    int n = static_cast<int>(std::min(args[0].n.number, 1000.f));
                     for(int i = 0; i < n; i++)
                     {
                         list.tracks.insert(list.tracks.end(), sizes.begin(), sizes.end());
@@ -1229,7 +1229,7 @@ namespace litehtml
             {
                 return false;
             }
-            int value = std::max(-1000, std::min(1000, static_cast<int>(tok.n.number)));
+            int value = static_cast<int>(std::max(-1000.f, std::min(1000.f, tok.n.number)));
             if(span)
             {
                 if(value < 0)

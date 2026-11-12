@@ -1,6 +1,8 @@
 #ifndef LITEHTML_CSS_PROPERTIES_H
 #define LITEHTML_CSS_PROPERTIES_H
 
+#include <algorithm>
+#include <climits>
 #include "string_id.h"
 #include "background.h"
 #include "borders.h"
@@ -454,7 +456,7 @@ namespace litehtml
 
     inline int css_properties::get_z_index() const
     {
-        return static_cast<int>(m_z_index.val());
+        return static_cast<int>(std::clamp<double>(m_z_index.val(), INT_MIN, INT_MAX));
     }
 
     inline void css_properties::set_z_index(int mZIndex)

@@ -3,6 +3,7 @@
 #include "style.h"
 #include "document_container.h"
 #include "css_parser.h"
+#include <climits>
 #include <unordered_map>
 #include <mutex>
 #include "internal.h"
@@ -409,7 +410,7 @@ namespace litehtml
             if(item.size() == 2)
             {
                 if(item[1].type == NUMBER && item[1].n.number_type == css_number_integer && item[1].n.number >= 0)
-                    value = std::min(int(item[1].n.number), 0xffff);
+                    value = int(std::min(item[1].n.number, 65535.f));
                 else if(item[1].ident() == "on" || item[1].ident() == "off")
                     value = item[1].ident() == "on" ? 1 : 0;
                 else
@@ -888,7 +889,7 @@ namespace litehtml
         case _order_: // <integer>
             if(val.type == NUMBER && val.n.number_type == css_number_integer)
             {
-                add_parsed_property(name, property_value(static_cast<int>(val.n.number), important));
+                add_parsed_property(name, property_value(static_cast<int>(std::clamp<double>(val.n.number, INT_MIN, INT_MAX)), important));
             }
             break;
 

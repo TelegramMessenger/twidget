@@ -2779,6 +2779,42 @@ int main() {
                 if (m["type"].asString() == "size") height = m["height"].asNumber();
             check(height >= 33554432 && height < 1e9, "the host is told a height (got " + css::format_number(height, 1) + ")");
         }
+
+        // An integer past the range of int was cast as it was: undefined, and on x86 the far end of the range.
+        {
+            struct Features : StubBackend {
+                std::string seen;
+                int create_font(const std::string& family, float size, int weight, bool italic, const std::string& features, FontMetrics& out) override {
+                    seen += features + ";";
+                    return StubBackend::create_font(family, size, weight, italic, features, out);
+                }
+            } fonts;
+            Renderer z(300, 1, false, fonts);
+            widget(z, "", div(10, 4, "position:relative;height:10px") + div(11, 10, "position:absolute;z-index:99999999999;width:10px;height:10px;background:#f00") +
+                              div(12, 10, "position:absolute;z-index:5;width:10px;height:10px;background:#00f") + div(13, 4, "display:flex") +
+                              div(14, 13, "order:99999999999;width:10px;height:5px") + div(15, 13, "order:1;width:10px;height:5px") +
+                              div(16, 4, "display:grid;grid-template-columns:repeat(99999999999,10px)") + div(17, 16, "height:5px") + div(18, 16, "height:5px") +
+                              div(19, 4, "display:grid;grid-template-columns:10px 10px") + div(20, 19, "grid-column:99999999999;height:5px") +
+                              div(21, 4, "font-feature-settings:'tnum' 99999999999;color:hsl(0 0e999% 50%);background:rgb(0e999 0 0)") +
+                              R"(,{"op":"text","id":22,"data":"x"},{"op":"ins","parent":21,"id":22,"before":null})");
+            int red = -1, blue = -1, at = 0;
+            Color text{1, 1, 1, 1}, fill{1, 1, 1, 1};
+            for (const Command& c : z.paint()) {
+                if (c.kind == Cmd::FillRect && c.color.r == 255 && c.color.b == 0) red = at;
+                if (c.kind == Cmd::FillRect && c.color.b == 255) blue = at;
+                if (c.kind == Cmd::FillRect && c.rect.w == 300 && c.rect.h > 10) fill = c.color;
+                if (c.kind == Cmd::Text) text = c.color;
+                at++;
+            }
+            check(blue >= 0 && red > blue, "a z-index past INT_MAX is the highest (" + std::to_string(blue) + ", " + std::to_string(red) + ")");
+            check(rect(z, 14) == "10 10", "an order past INT_MAX is the last (got " + rect(z, 14) + ")");
+            check(rect(z, 18) == "10 10", "repeat() past its limit is the limit, not nothing (got " + rect(z, 18) + ")");
+            check(rect(z, 20) == "299.7 0.3", "a grid line past the limit is the limit (got " + rect(z, 20) + ")");
+            check(fonts.seen.find("tnum=65535") != std::string::npos, "so is a font feature's value (got " + fonts.seen + ")");
+            check(text.r == 0 && text.g == 0 && text.b == 0 && text.a == 255 && fill.r == 0 && fill.g == 0 && fill.b == 0 && fill.a == 255,
+                  "a colour from a number that is none is black (" + std::to_string(text.r) + " " + std::to_string(text.g) + " " + std::to_string(text.b) + " " + std::to_string(text.a) + ", " +
+                      std::to_string(fill.r) + " " + std::to_string(fill.g) + " " + std::to_string(fill.b) + " " + std::to_string(fill.a) + ")");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
