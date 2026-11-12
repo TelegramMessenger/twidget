@@ -2755,7 +2755,8 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         const std::string& adopt_name = str("adopt");
         if (!adopt_name.empty()) {
             Node* n = adopt_name == "html" ? html_node_.get() : adopt_name == "head" ? head_node_.get() : adopt_name == "body" ? body_node_.get() : nullptr;
-            if (!n) return;
+            // A live node keeps its id, as below: its parent and its children point at it.
+            if (!n || nodes_.count(id)) return;
             patch_log_.valid = false;
             adopt(id, n, op["attrs"]);
             return;

@@ -3171,6 +3171,18 @@ int main() {
         check(c.last_html().find("id=\"a\"") != std::string::npos, "a batch of 200000 canvas ops, each drawing the next one's canvas, does not recurse through them all");
     }
 
+    // ── an adopt op that names a live node's id ──
+    {
+        StubBackend ab;
+        Renderer a(300, 1, false, ab);
+        a.receive(parse(PAGE));
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"text","id":30,"data":"kept"},{"op":"ins","parent":11,"id":30,"before":null}]})"));
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":11,"tag":"head","adopt":"head","attrs":[]}]})"));
+        check(a.last_html().find("kept") != std::string::npos, "an adopt op naming a live node's id is ignored: the node stays in the tree");
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":10}]})"));
+        check(a.last_html().find("kept") == std::string::npos && a.last_html().find("id=\"b\"") != std::string::npos, "and its parent is removed with it afterwards");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
