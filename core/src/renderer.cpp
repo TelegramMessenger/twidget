@@ -5860,12 +5860,14 @@ void Renderer::paint_selection(DisplayList& list, int64_t layer, bool tint) cons
     if (!selectable_text()) return;
     const auto& runs = text_runs();
     // A run's Text command starts where its box does, in the coordinates of the groups around it.
+    // A box laid out at 1e30 px has no row a long can hold: clamped, so that the loop over rows below ends.
+    auto row_of = [](float y) { return std::isfinite(y) ? long(std::floor(std::clamp(y, -1e9f, 1e9f))) : 0L; };
     std::unordered_map<long, std::vector<size_t>> rows;
     for (size_t i = 0; i < runs.size(); i++)
-        if (runs[i].selectable && !runs[i].line_break) rows[long(std::floor(runs[i].box.y))].push_back(i);
+        if (runs[i].selectable && !runs[i].line_break) rows[row_of(runs[i].box.y)].push_back(i);
     if (rows.empty()) return;
     auto run_at = [&](const Rect& drawn) -> const TextRun* {
-        long below = long(std::floor(drawn.y - 0.05f)), above = long(std::floor(drawn.y + 0.05f));
+        long below = row_of(drawn.y - 0.05f), above = row_of(drawn.y + 0.05f);
         for (long row = below; row <= above; row++) {
             auto it = rows.find(row);
             if (it == rows.end()) continue;

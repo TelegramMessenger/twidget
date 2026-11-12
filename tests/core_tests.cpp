@@ -3070,6 +3070,21 @@ int main() {
         check(stopped && events(h.touch(2, 50, 20, 0, true, true)).empty(), "a pointer move that runs the layout past its limit ends with the freeze: its touch is gone");
     }
 
+    // ── selectable text, and text placed at 1e30 px ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(PAGE));
+        s.receive(parse(R"j({"type":"ops","ops":[{"op":"el","id":64,"tag":"svg","ns":"svg","attrs":[["width","40"],["height","40"]]},{"op":"el","id":65,"tag":"text","ns":"svg","attrs":[["y","1e30"]]},
+            {"op":"text","id":66,"data":"far"},{"op":"ins","parent":65,"id":66,"before":null},{"op":"ins","parent":64,"id":65,"before":null},{"op":"ins","parent":4,"id":64,"before":null},
+            {"op":"el","id":60,"tag":"div","attrs":[["style","user-select:text"]]},{"op":"text","id":61,"data":"selectable"},{"op":"ins","parent":60,"id":61,"before":null},
+            {"op":"el","id":62,"tag":"div","attrs":[["style","aspect-ratio:1/1e30"]]},{"op":"ins","parent":60,"id":62,"before":null},
+            {"op":"text","id":63,"data":"below"},{"op":"ins","parent":60,"id":63,"before":null},{"op":"ins","parent":4,"id":60,"before":null}]})j"));
+        DisplayList list = s.paint();
+        bool far = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && c.text == "far" && c.rect.y > 1e29f; });
+        check(far, "text drawn at 1e30 px does not hang the paint of a document with selectable text");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
