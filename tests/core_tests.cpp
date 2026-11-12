@@ -2737,6 +2737,17 @@ int main() {
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             check(ms < 2000, "fifteen nested tables finish (" + std::to_string(int(ms)) + " ms)");
         }
+
+        // A compound that names ::before or ::after matched the generated box too, which got one of its own, without end.
+        for (const char* selector : {":last-child::after", ":not(.a)::before", ":nth-child(1n)::after", ":first-child::before",
+                                     "div::after{content:'x'} -tag-after::after"}) {
+            Renderer g(300, 1, false, backend);
+            widget(g, std::string(selector) + "{content:'x'}", div(10, 4, "width:10px"));
+            int generated = 0;
+            for (const Command& c : g.paint())
+                if (c.kind == Cmd::Text && c.text == "x") generated++;
+            check(generated >= 1 && generated <= 3, std::string(selector) + " generates a box for an element, none for a generated box (" + std::to_string(generated) + ")");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──

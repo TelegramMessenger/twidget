@@ -977,6 +977,12 @@ namespace litehtml
                 }
                 break;
             case select_pseudo_element:
+                // A generated box has no ::before or ::after of its own: only the bare form styles it.
+                if((m_tag == __tag_before_ || m_tag == __tag_after_) &&
+                   (selector.m_attrs.size() > 1 || selector.m_tag != star_id))
+                {
+                    return select_no_match;
+                }
                 if(attr.name == _after_)
                 {
                     if(selector.m_attrs.size() == 1 && selector.m_tag == star_id && m_tag != __tag_after_)
