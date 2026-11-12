@@ -2815,6 +2815,15 @@ int main() {
                   "a colour from a number that is none is black (" + std::to_string(text.r) + " " + std::to_string(text.g) + " " + std::to_string(text.b) + " " + std::to_string(text.a) + ", " +
                       std::to_string(fill.r) + " " + std::to_string(fill.g) + " " + std::to_string(fill.b) + " " + std::to_string(fill.a) + ")");
         }
+
+        // (index - B) * A was worked out in int: for 65536n+65537 and the first child it wrapped to 0, a match.
+        {
+            Renderer n(300, 1, false, backend);
+            widget(n, "div:nth-child(65536n+65537){width:50px} div:nth-last-child(65536n+65537){width:60px} div:nth-child(-2147483648n+2147483647){width:70px} div:nth-child(2n+1){margin-left:5px}",
+                   div(10, 4, "height:1px") + div(11, 4, "height:1px") + div(12, 4, "height:1px"));
+            check(rect(n, 10) == "5 295" && rect(n, 11) == "0 300" && rect(n, 12) == "5 295",
+                  ":nth-child(An+B) with a product past int matches no more than it should (got " + rect(n, 10) + ", " + rect(n, 11) + ", " + rect(n, 12) + ")");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──

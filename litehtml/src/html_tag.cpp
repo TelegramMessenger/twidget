@@ -1890,7 +1890,7 @@ namespace litehtml
                     {
                         if(num != 0)
                         {
-                            if((idx - off) * num >= 0 && (idx - off) % num == 0)
+                            if((int64_t(idx) - off) * num >= 0 && (int64_t(idx) - off) % num == 0)
                             {
                                 return true;
                             }
@@ -1927,7 +1927,7 @@ namespace litehtml
                     {
                         if(num != 0)
                         {
-                            if((idx - off) * num >= 0 && (idx - off) % num == 0)
+                            if((int64_t(idx) - off) * num >= 0 && (int64_t(idx) - off) % num == 0)
                             {
                                 return true;
                             }
