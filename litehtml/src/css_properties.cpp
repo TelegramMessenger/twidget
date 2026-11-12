@@ -326,7 +326,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     {
         // Fractional, as browsers keep it (LayoutUnit): flooring to whole CSS px made every
         // line of `line-height: 1.3` text up to 1 px short, an error that adds up down the page.
-        m_line_height.computed_value = pixel_t(m_line_height.css_value.val() * font_size.value());
+        m_line_height.computed_value = pixel_t(clamp_length(m_line_height.css_value.val() * font_size.value()));
     } else
     {
         m_line_height.computed_value =

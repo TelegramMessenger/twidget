@@ -3237,7 +3237,7 @@ namespace litehtml
             ret = pixel_t(val.val());
             break;
         }
-        return ret;
+        return clamp_length(ret.value());
     }
 
     void document::cvt_units(css_length& val, const font_metrics& metrics, pixel_t size) const
@@ -3254,7 +3254,7 @@ namespace litehtml
                 return to_pixels(css_length(value, unit), metrics, size).value();
             }, px);
             if(index < 0)
-                val.set_value(px, css_units_px);
+                val.set_value(clamp_length(px), css_units_px);
             else
                 val.set_calc(index);
         } else if(val.units() != css_units_percentage)

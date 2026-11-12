@@ -1,6 +1,8 @@
 #ifndef LITEHTML_CSS_LENGTH_H
 #define LITEHTML_CSS_LENGTH_H
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <string>
 #include "css_tokenizer.h"
@@ -58,6 +60,12 @@ namespace litehtml
     pixel_t calc_evaluate(int index, pixel_t percent_base, const calc_convert_fn& convert = nullptr);
     /// The expression with every leaf but % in px; -1 when it has no % left, and `px` is then its value.
     int calc_resolve_units(int index, const calc_convert_fn& convert, float& px);
+
+    // The longest length is 2^25 px, about what browsers lay out: sums of lengths stay finite.
+    inline float clamp_length(float px)
+    {
+        return std::isnan(px) ? 0.f : std::min(std::max(px, -33554432.f), 33554432.f);
+    }
 
     inline css_length::css_length(float val, css_units units) :
         m_value(val),
@@ -128,11 +136,11 @@ namespace litehtml
         {
             if(units() == css_units_percentage)
             {
-                return width * m_value / 100.0_px;
+                return clamp_length(width.value() * m_value / 100);
             }
             if(units() == css_units_calc)
             {
-                return calc_evaluate(static_cast<int>(m_value), width);
+                return clamp_length(calc_evaluate(static_cast<int>(m_value), width).value());
             }
             return static_cast<pixel_t>(val());
         }

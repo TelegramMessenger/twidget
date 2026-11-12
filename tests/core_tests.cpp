@@ -2760,6 +2760,25 @@ int main() {
                 check(ms < 2000, std::string("a float: ") + side + " after one of height " + height + " is placed (" + std::to_string(int(ms)) + " ms)");
             }
         }
+
+        {
+            Renderer f(300, 1, false, backend);
+            auto out = widget(f, "", div(9, 4, "height:0e999px;padding-top:3px") + div(10, 4, "width:1e39px;height:3e38rem") + div(12, 4, "width:1e30%;height:1px") +
+                                         div(13, 12, "width:1e30%;line-height:1e39") + R"(,{"op":"text","id":15,"data":"x"},{"op":"ins","parent":13,"id":15,"before":null})" +
+                                         div(14, 4, "width:calc(1e38px * 3);height:1px"));
+            auto box = [&](int id) {
+                Json r = f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+                return css::format_number(r["width"].asNumber(), 1) + " " + css::format_number(r["height"].asNumber(), 1) + " at " + css::format_number(r["y"].asNumber(), 1);
+            };
+            check(box(9) == "300 3 at 0" && box(10) == "33554432 33554432 at 3",
+                  "0e999px is 0 and a length past 2^25 px is 2^25 px, as written or once its unit is resolved (got " + box(9) + ", " + box(10) + ")");
+            check(box(13).rfind("33554432 33554432 at", 0) == 0, "so are a percentage of a percentage and a line height (got " + box(13) + ")");
+            check(box(14).rfind("33554432 1 at", 0) == 0, "and a calc() product (got " + box(14) + ")");
+            double height = 0;
+            for (const Json& m : out)
+                if (m["type"].asString() == "size") height = m["height"].asNumber();
+            check(height >= 33554432 && height < 1e9, "the host is told a height (got " + css::format_number(height, 1) + ")");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
