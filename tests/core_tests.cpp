@@ -2841,6 +2841,22 @@ int main() {
             Json r = a.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"];
             check(r["height"].asNumber() == 33554432, "a height from an aspect ratio stops at 2^25 px (got " + css::format_number(r["height"].asNumber(), 1) + ")");
         }
+
+        // Each float after an inline box that wrapped doubled the markers that carry the box onto the next line: 2^24 of them here.
+        for (int floats : {8, 24}) {
+            Renderer w(300, 1, false, backend);
+            std::string ops = R"(,{"op":"el","id":10,"tag":"p"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"span","attrs":[["style","background:#f00"]]},)"
+                              R"({"op":"ins","parent":10,"id":11,"before":null},{"op":"text","id":12,"data":"word word word word word word word word word word word word"},{"op":"ins","parent":11,"id":12,"before":null})";
+            for (int i = 0; i < floats; i++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(20 + i) + R"(,"tag":"i","attrs":[["style","float:left"]]},{"op":"ins","parent":10,"id":)" + std::to_string(20 + i) + R"(,"before":null})";
+            auto started = std::chrono::steady_clock::now();
+            widget(w, "", ops);
+            int red = 0;
+            for (const Command& c : w.paint())
+                if (c.kind == Cmd::FillRect && c.color.r == 255 && c.color.g == 0) red++;
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            check(red == 2 && ms < 2000, std::to_string(floats) + " floats after a wrapped span leave it one box a line (" + std::to_string(red) + " boxes, " + std::to_string(int(ms)) + " ms)");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──

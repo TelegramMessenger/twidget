@@ -341,6 +341,11 @@ void litehtml::render_item_inline_context::fix_line_width(element_float flt, con
 
             for(auto& item : items)
             {
+                // The line before hands the next box its open inlines again: placed anew, these would open them twice.
+                if(item->get_type() == line_box_item::type_inline_continue)
+                {
+                    continue;
+                }
                 place_inline(std::move(item), self_size, fmt_ctx);
             }
         } else
