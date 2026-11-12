@@ -2748,6 +2748,18 @@ int main() {
                 if (c.kind == Cmd::Text && c.text == "x") generated++;
             check(generated >= 1 && generated <= 3, std::string(selector) + " generates a box for an element, none for a generated box (" + std::to_string(generated) + ")");
         }
+
+        // Nothing gets below a float whose height is not finite: the float after it looked for room without end.
+        for (const char* height : {"1e39px", "0e999px"}) {
+            for (const char* side : {"left", "right"}) {
+                Renderer f(300, 1, false, backend);
+                auto started = std::chrono::steady_clock::now();
+                widget(f, "", div(10, 4, std::string("float:") + side + ";width:80%;height:" + height) + div(11, 4, std::string("float:") + side + ";width:50%;height:10px"));
+                f.paint();
+                double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                check(ms < 2000, std::string("a float: ") + side + " after one of height " + height + " is placed (" + std::to_string(int(ms)) + " ms)");
+            }
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
