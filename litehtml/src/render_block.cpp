@@ -213,7 +213,7 @@ litehtml::rendered_width litehtml::render_item_block::_render(pixel_t x, pixel_t
             ratio_width = std::max<pixel_t>(ratio_width, self_size.min_width);
         }
         pixel_t ratio_height =
-            (ratio_width + box_sizing_width()) / pixel_t(css().get_aspect_ratio()) - box_sizing_height();
+            clamp_length(((ratio_width + box_sizing_width()) / pixel_t(css().get_aspect_ratio()) - box_sizing_height()).value());
         if(self_size.min_height.type == containing_block_context::cbc_value_type_none ||
            self_size.min_height.value < ratio_height)
         {

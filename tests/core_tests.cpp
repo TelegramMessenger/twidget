@@ -2833,6 +2833,14 @@ int main() {
             check(rect(x, 11) == "0 100" && rect(x, 12) == "100 100" && rect(x, 13) == "200 100", "two items with a huge flex-grow share the free space (got " + rect(x, 11) + ", " + rect(x, 12) + ", " + rect(x, 13) + ")");
             check(rect(x, 15) == "0 150" && rect(x, 16) == "150 150", "and two with a huge flex-shrink the overflow (got " + rect(x, 15) + ", " + rect(x, 16) + ")");
         }
+
+        // A height worked out from an aspect ratio is a length like any other: 300 px by 1/1e30 was 3e32 px.
+        {
+            Renderer a(300, 1, false, backend);
+            widget(a, "", div(10, 4, "aspect-ratio:1/1e30") + div(11, 4, "height:1px"));
+            Json r = a.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"];
+            check(r["height"].asNumber() == 33554432, "a height from an aspect ratio stops at 2^25 px (got " + css::format_number(r["height"].asNumber(), 1) + ")");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
