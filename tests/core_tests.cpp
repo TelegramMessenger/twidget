@@ -3085,6 +3085,50 @@ int main() {
         check(far, "text drawn at 1e30 px does not hang the paint of a document with selectable text");
     }
 
+    // ── canvas geometry a few commands multiply: Path2D.addPath, clip lists, a long path filled again and again ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        c.receive(parse(PAGE));
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        auto draw = [&](const std::string& cmds) {
+            cb.runs.clear();
+            c.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[["r",100,100],)" + cmds + "]}]}"));
+        };
+        std::string cmds = R"(["pn",1,"M0 0L10 10L20 0Z"],["pn",2,"M0 0L10 10L20 0Z"])";
+        for (int i = 0; i < 14; i++) cmds += R"(,["pc",1,"addPath",{"p":2}],["pc",2,"addPath",{"p":1}])";
+        draw(cmds + R"(,["c","fill",{"p":1}])");
+        size_t longest = 0;
+        for (const auto& ops : cb.runs)
+            for (const CanvasOp& op : ops) longest = std::max(longest, op.path.points.size());
+        check(longest > 0 && longest <= (size_t(1) << 20), "two Path2D objects added to each other stop growing (" + std::to_string(longest) + " floats)");
+
+        cmds = R"(["c","beginPath"])";
+        for (int i = 0; i < 500; i++) cmds += R"(,["c","lineTo",)" + std::to_string(i % 100) + "," + std::to_string(i * 7 % 100) + "]";
+        for (int i = 0; i < 300; i++) cmds += R"(,["c","clip"],["c","fillRect",0,0,1,1])";
+        draw(cmds);
+        size_t clipped = 0, fills = 0;
+        for (const auto& ops : cb.runs)
+            for (const CanvasOp& op : ops) {
+                size_t held = 0;
+                if (op.clips)
+                    for (const CanvasClip& clip : *op.clips) held += clip.path.points.size();
+                clipped = std::max(clipped, held);
+                fills += op.kind == CanvasOp::Fill;
+            }
+        check(fills == 300 && clipped <= (size_t(1) << 14), "a clip list of long paths stops growing (" + std::to_string(clipped) + " floats in one)");
+
+        std::string d = "M0 0";
+        for (int i = 0; i < 50000; i++) d += " " + std::to_string(i % 100) + " " + std::to_string(i * 7 % 100);
+        cmds = R"(["pn",3,")" + d + R"("])";
+        for (int i = 0; i < 400; i++) cmds += R"(,["c","fill",{"p":3}])";
+        draw(cmds);
+        size_t drawn = 0;
+        for (const auto& ops : cb.runs)
+            for (const CanvasOp& op : ops) drawn += op.path.points.size();
+        check(drawn >= 100000 && drawn <= (size_t(1) << 24), "one canvas op hands the backend a bounded amount of geometry (" + std::to_string(drawn) + " floats)");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

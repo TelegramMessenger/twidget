@@ -102,6 +102,7 @@ private:
     void set(const std::string& property, const Value& value);
     CanvasOp op(CanvasOp::Kind kind) const;
     bool paint_of(const Paint& paint, CanvasPaint& out) const;
+    bool spend(size_t floats);
     void fill(const Geometry& path, bool evenodd, std::vector<CanvasOp>& out);
     void stroke(const Geometry& path, std::vector<CanvasOp>& out);
     void text(const std::string& s, double x, double y, const Value* max_width, bool stroke, std::vector<CanvasOp>& out);
@@ -124,6 +125,8 @@ public:
 private:
     std::unordered_map<std::string, std::optional<Color>> colors_;
     std::map<int, Builder> paths_;
+    size_t paths_floats_ = 0;
+    size_t run_floats_ = 0;
 };
 
 /// Appends an SVG path (`d`) to a geometry, arcs as cubic béziers. Shared with Path2D.
