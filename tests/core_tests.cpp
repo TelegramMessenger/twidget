@@ -4138,6 +4138,26 @@ int main() {
               "a fixed column of no width after one of 100px leaves a 300px table 300px wide, not NaN (" + width(10).dump() + ", " + width(14).dump() + ")");
     }
 
+    // ── a font element's relative size past the largest int ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":6,"tag":"font","attrs":[["size","+2147483647"]]},{"op":"text","id":7,"data":"large"},{"op":"ins","parent":6,"id":7,"before":null},{"op":"ins","parent":4,"id":6,"before":null},
+            {"op":"el","id":9,"tag":"font","attrs":[["size","7"]]},{"op":"text","id":10,"data":"seven"},{"op":"ins","parent":9,"id":10,"before":null},{"op":"ins","parent":4,"id":9,"before":null},
+            {"op":"el","id":12,"tag":"font","attrs":[["size","-2147483647"]]},{"op":"text","id":13,"data":"small"},{"op":"ins","parent":12,"id":13,"before":null},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":15,"tag":"font","attrs":[["size","1"]]},{"op":"text","id":16,"data":"one"},{"op":"ins","parent":15,"id":16,"before":null},{"op":"ins","parent":4,"id":15,"before":null}]})"));
+        t.tick();
+        auto size = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"]["font-size"].asString();
+            return std::string();
+        };
+        check(size(6) == size(9) && size(12) == size(15) && size(6) != size(12),
+              "a relative font size past INT_MAX is the largest size, not the smallest (got " + size(6) + " for +2147483647, " + size(9) + " for 7)");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;
