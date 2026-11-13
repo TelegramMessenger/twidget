@@ -646,6 +646,8 @@ typedef struct GumboInternalOutput {
    * reported so we can work out something appropriate for your use-case.
    */
   GumboVector /* GumboError */ errors;
+
+  bool truncated;
 } GumboOutput;
 
 /**

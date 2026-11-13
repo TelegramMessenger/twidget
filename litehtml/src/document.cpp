@@ -78,6 +78,11 @@ namespace litehtml
 
         // Parse document into GumboOutput
         GumboOutput* output = doc->parse_html(str);
+        if(output->truncated)
+        {
+            container->sanitizer_limit("elements");
+            doc->m_build_limited = true;
+        }
 
         // mode must be set before doc->create_node because it is used in html_tag::set_attr
         switch(output->document->v.document.doc_type_quirks_mode)
@@ -116,6 +121,11 @@ namespace litehtml
         document::ptr doc = std::make_shared<document>(container);
         doc->m_text        = html;
         GumboOutput* output = gumbo_parse_with_options(&kGumboDefaultOptions, doc->m_text.data(), doc->m_text.size());
+        if(output->truncated)
+        {
+            container->sanitizer_limit("elements");
+            doc->m_build_limited = true;
+        }
         switch(output->document->v.document.doc_type_quirks_mode)
         {
         case GUMBO_DOCTYPE_NO_QUIRKS:
@@ -1887,7 +1897,7 @@ namespace litehtml
             gumbo_destroy_output(&kGumboDefaultOptions, output);
             return false;
         };
-        if(output->document->v.document.doc_type_quirks_mode != m_gumbo->document->v.document.doc_type_quirks_mode)
+        if(output->truncated || output->document->v.document.doc_type_quirks_mode != m_gumbo->document->v.document.doc_type_quirks_mode)
             return fail();
         int total = 0, deepest = 0;
         count_elements(output->document, 0, total, deepest);

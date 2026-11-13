@@ -3827,6 +3827,27 @@ int main() {
         check(replaced == 48 && width() == 40, "a text follows one that was not UTF-8 (got " + std::to_string(replaced) + ", " + std::to_string(width()) + ")");
     }
 
+    // ── formatting elements the parser opens again in every block that follows ──
+    {
+        auto texts = [](int formatting, int blocks, size_t name) {
+            StubBackend cb;
+            Renderer c(300, 1, false, cb);
+            std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":10,"tag":"p","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null})";
+            int parent = 10, id = 11;
+            for (int i = 0; i < formatting; i++, parent = id++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"b","attrs":[["class",")" + std::string(name, 'x') + R"("]]},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+            for (int i = 0; i < blocks; i++, id += 2)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[]},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null},{"op":"text","id":)" + std::to_string(id + 1) + R"(,"data":"x"},{"op":"ins","parent":)" + std::to_string(id) + R"(,"id":)" + std::to_string(id + 1) + R"(,"before":null})";
+            c.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            size_t count = 0;
+            for (const Command& command : c.paint())
+                if (command.kind == Cmd::Text) count++;
+            return count;
+        };
+        size_t few = texts(3, 20, 1), many = texts(124, 925, 2000);
+        check(few == 20 && many > 0 && many <= 8, "a parse clones formatting elements up to the size of its input and 1 MB, then stops (" + std::to_string(few) + " and " + std::to_string(many) + " texts painted)");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;
