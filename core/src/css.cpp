@@ -343,8 +343,9 @@ size_t skip_opaque(std::string_view css, size_t i) {
     return i;
 }
 
-std::string resolve_light_dark(std::string_view css, bool dark) {
+std::string resolve_light_dark(std::string_view css, bool dark, int nesting) {
     static constexpr std::string_view KEY = "light-dark(";
+    static constexpr int MAX_NESTING = 32;
     // A function token: outside strings, comments and URLs, and not the end of a longer name.
     auto find = [](std::string_view s, size_t from) {
         for (size_t i = from; i + KEY.size() <= s.size();) {
@@ -358,6 +359,7 @@ std::string resolve_light_dark(std::string_view css, bool dark) {
         return std::string_view::npos;
     };
     if (find(css, 0) == std::string_view::npos) return std::string(css);
+    if (nesting >= MAX_NESTING) return {};
     std::string out;
     size_t pos = 0;
     for (int guard = 0; guard < 4096; guard++) {
@@ -379,7 +381,7 @@ std::string resolve_light_dark(std::string_view css, bool dark) {
         auto parts = split_top_level(css.substr(i, close - i), ',');
         std::string chosen = parts.size() == 2 ? parts[dark ? 1 : 0] : parts.empty() ? std::string() : parts[0];
         // The chosen side may hold another light-dark().
-        out += resolve_light_dark(trim(chosen), dark);
+        out += resolve_light_dark(trim(chosen), dark, nesting + 1);
         pos = close < css.size() ? close + 1 : css.size();
     }
     out.append(css.substr(pos));

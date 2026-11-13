@@ -2250,6 +2250,24 @@ int main() {
         check(opacity == "0.5", "an animation with an iteration count of -1e300 ends on its first iteration, forwards (opacity " + opacity + ")");
     }
 
+    // ── light-dark() nested without end ──
+    {
+        check(css::resolve_light_dark("a{color:light-dark(light-dark(red, blue), light-dark(green, light-dark(white, black)))}", true) == "a{color:black}",
+              "light-dark() inside a chosen side resolves too");
+        auto nested = [](int levels, bool closed) {
+            std::string text = "a{--c:";
+            for (int i = 0; i < levels; i++) text += "light-dark(";
+            text += "red";
+            for (int i = 0; closed && i < levels; i++) text += ",blue)";
+            return text + "}";
+        };
+        check(css::resolve_light_dark(nested(32, true), false) == "a{--c:red}", "light-dark() nested 32 deep resolves");
+        std::string resolved = css::resolve_light_dark(nested(33, true), false);
+        check(resolved == "a{--c:}", "the side of a light-dark() that still nests one 32 levels down is dropped (" + resolved + ")");
+        resolved = css::resolve_light_dark(nested(3000, false), false);
+        check(resolved == "a{--c:", "light-dark() nested 3000 deep and never closed resolves 32 levels down and drops the rest (" + std::to_string(resolved.size()) + " bytes left)");
+    }
+
     // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──
     {
         struct Images : StubBackend {
