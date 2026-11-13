@@ -339,7 +339,7 @@ namespace litehtml
                    type == typeid(el_tr) || type == typeid(el_body);
         }
 
-        void scan_selector(const css_selector& selector, bool& attributes, bool& positions)
+        void scan_selector(const css_selector& selector, bool& attributes, bool& positions, bool& emptiness)
         {
             for(const css_selector* sel = &selector; sel; sel = sel->m_left.get())
             {
@@ -370,6 +370,7 @@ namespace litehtml
                             break;
                         case _empty_:
                             attributes = true;
+                            emptiness  = true;
                             break;
                         default:
                             break;
@@ -378,7 +379,7 @@ namespace litehtml
                     for(const auto& inner : attr.selector_list)
                     {
                         if(inner)
-                            scan_selector(*inner, attributes, positions);
+                            scan_selector(*inner, attributes, positions, emptiness);
                     }
                 }
             }
@@ -1722,6 +1723,7 @@ namespace litehtml
             return m_selector_scope;
         bool           attributes = false;
         bool           positions  = false;
+        bool           emptiness  = false;
         selector_names names{m_left_classes, m_left_ids, m_left_attrs};
         for(const css* sheet : {&m_master_css, &m_styles, &m_user_css})
         {
@@ -1729,14 +1731,14 @@ namespace litehtml
             {
                 if(!sel)
                     continue;
-                scan_selector(*sel, attributes, positions);
+                scan_selector(*sel, attributes, positions, emptiness);
                 collect_ancestor_names(*sel, !(sel->m_style && sel->m_style->declares_custom_property()), names);
             }
         }
         bool counters = mentions_counters(m_master_styles);
         for(const auto& sheet : m_css)
             counters = counters || mentions_counters(sheet.text);
-        m_selector_scope = (attributes ? 1 : 0) | (positions ? 2 : 0) | (counters ? 4 : 0);
+        m_selector_scope = (attributes ? 1 : 0) | (positions ? 2 : 0) | (counters || emptiness ? 4 : 0);
         return m_selector_scope;
     }
 

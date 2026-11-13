@@ -4895,6 +4895,29 @@ int main() {
         }
     }
 
+    // ── :empty is matched again when an element gains its first child or loses its last ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".n:empty{height:7px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","n"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["class","n"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"span","attrs":[]},{"op":"ins","parent":12,"id":13,"before":null}]})"));
+        t.tick();
+        auto height = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"]["height"].asNumber();
+            return -1.0;
+        };
+        check(height(10) == 7 && height(12) == 0, ":empty matches the element without children (got " + std::to_string(height(10)) + ", " + std::to_string(height(12)) + ")");
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":11,"tag":"span","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null},{"op":"rm","id":13}]})"));
+        t.tick();
+        check(height(10) == 0, "an element that gained its first child is not :empty (got " + std::to_string(height(10)) + ")");
+        check(height(12) == 7, "an element that lost its last child is :empty (got " + std::to_string(height(12)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
