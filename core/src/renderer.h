@@ -262,6 +262,9 @@ private:
     void adopt(int64_t id, Node* n, const twidget::Json& attrs);
     void detach(Node* n);
     void forget(Node* n);
+    bool hold(const twidget::Json& op);
+    bool take_text(const std::string& old, const std::string& fresh);
+    size_t tree_bytes_ = 0, text_bytes_ = 0, text_pieces_ = 0, sheet_blocks_ = 0;
     // shadow tree → HTML → litehtml
     std::string serialize() const;
     void serialize_node(const Node* n, std::string& out, int level) const;

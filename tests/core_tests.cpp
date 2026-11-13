@@ -3851,6 +3851,93 @@ int main() {
         }
     }
 
+    // ── what ops hold: a batch, a document's text, a node's attributes, the sheets' blocks and the nodes' bytes are bounded natively ──
+    {
+        StubBackend plain;
+        auto send = [](Renderer& r, Json ops) { return r.receive(Json::object().set("type", "ops").set("ops", std::move(ops))); };
+        auto refused = [](const std::vector<Json>& out, const char* what) {
+            int count = 0;
+            for (const Json& m : out) count += m["type"].asString() == "violation" && m["detail"].asString().rfind(what, 0) == 0;
+            return count;
+        };
+        auto known = [](Renderer& r, int id) {
+            for (const Json& m : r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}")))
+                if (m["type"].asString() == "result") return !m["result"].find("error");
+            return false;
+        };
+        auto words = [](int count) {
+            std::string text;
+            for (int i = 0; i < count; i++) text += "a ";
+            return text;
+        };
+        // Every node below stays detached: counted as the ops arrive, never laid out.
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            Json ops = Json::array().push(Json::object().set("op", "el").set("id", 9000).set("tag", "div").set("attrs", Json::array()));
+            for (int i = 0; i < 200000; i++) ops.push(Json::object().set("op", "rm").set("id", 1));
+            auto out = send(r, std::move(ops));
+            check(refused(out, "ops limit") == 1 && !known(r, 9000), "a batch of 200,001 ops is not applied");
+            ops = Json::array().push(Json::object().set("op", "el").set("id", 9000).set("tag", "div").set("attrs", Json::array()));
+            for (int i = 0; i < 199999; i++) ops.push(Json::object().set("op", "rm").set("id", 1));
+            out = send(r, std::move(ops));
+            check(refused(out, "ops limit") == 0 && known(r, 9000), "one of 200,000 is");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            auto text = [&](int id, int count) { return send(r, Json::array().push(Json::object().set("op", "text").set("id", id).set("data", words(count)))); };
+            check(refused(text(100, 60000), "text limit") == 1, "a text of 120,000 words and spaces is refused");
+            check(refused(text(101, 40000), "text limit") == 0 && refused(text(102, 20000), "text limit") == 1, "a document's text nodes hold 100,000 together");
+            auto out = send(r, Json::array().push(Json::object().set("op", "data").set("id", 101).set("data", words(60000))));
+            check(refused(out, "text limit") == 1, "a text node does not grow past them");
+            send(r, Json::array().push(Json::object().set("op", "data").set("id", 101).set("data", words(10000))));
+            check(refused(text(102, 20000), "text limit") == 0 && refused(text(103, 20000), "text limit") == 0 && refused(text(104, 20000), "text limit") == 1,
+                  "text made shorter is counted off");
+            send(r, Json::array().push(Json::object().set("op", "rm").set("id", 102)).push(Json::object().set("op", "rm").set("id", 103)));
+            check(refused(text(105, 40000), "text limit") == 0, "and so is text removed");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            Json ops = Json::array().push(Json::object().set("op", "el").set("id", 100).set("tag", "div").set("attrs", Json::array()));
+            for (int i = 0; i < 4097; i++) ops.push(Json::object().set("op", "attr").set("id", 100).set("name", "data-a" + std::to_string(i)).set("value", "1"));
+            for (int i = 0; i < 4097; i++) ops.push(Json::object().set("op", "style").set("id", 100).set("name", "--p" + std::to_string(i)).set("value", "1").set("important", false));
+            ops.push(Json::object().set("op", "attr").set("id", 100).set("name", "data-a7").set("value", "2"));
+            ops.push(Json::object().set("op", "style").set("id", 100).set("name", "--p7").set("value", "2").set("important", false));
+            auto out = send(r, std::move(ops));
+            check(refused(out, "attribute count") == 1 && refused(out, "declaration count") == 1, "an element takes 4096 attributes and 4096 declarations, and still changes those it has");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            std::string rules;
+            for (int i = 0; i < 9000; i++) rules += "a{}";
+            auto sheet = [&](int id, const std::string& css) {
+                return send(r, Json::array().push(Json::object().set("op", "el").set("id", id).set("tag", "style").set("attrs", Json::array()))
+                                            .push(Json::object().set("op", "css").set("id", id).set("text", css)));
+            };
+            check(refused(sheet(100, rules), "stylesheet limit") == 0 && refused(sheet(101, rules), "stylesheet limit") == 1, "a document's sheets hold 16,384 blocks together");
+            send(r, Json::array().push(Json::object().set("op", "css").set("id", 100).set("text", "a{}")));
+            check(refused(sheet(101, rules), "stylesheet limit") == 0, "a sheet replaced is counted off");
+            send(r, Json::array().push(Json::object().set("op", "rm").set("id", 101)));
+            check(refused(sheet(102, rules), "stylesheet limit") == 0, "and so is one removed");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            const std::string value(13 << 20, 'A');
+            send(r, Json::array().push(Json::object().set("op", "el").set("id", 100).set("tag", "div").set("attrs", Json::array())));
+            int stopped = 0;
+            for (int i = 0; i < 6; i++) stopped += refused(send(r, Json::array().push(Json::object().set("op", "attr").set("id", 100).set("name", "data-a").set("value", value))), "tree limit");
+            check(stopped == 0 && r.last_html().find("data-tw-badge") == std::string::npos, "78 MB set on one attribute in turn is 13 MB held: the widget goes on");
+            for (int i = 0; i < 5; i++) stopped += refused(send(r, Json::array().push(Json::object().set("op", "attr").set("id", 100).set("name", "data-b" + std::to_string(i)).set("value", value))), "tree limit");
+            check(stopped == 1 && r.last_html().find("data-tw-badge=\"fatal\"") != std::string::npos, "past 48 MB held in its nodes the widget is stopped, as past the layout limit");
+            send(r, Json::array().push(Json::object().set("op", "el").set("id", 200).set("tag", "div").set("attrs", Json::array())));
+            check(!known(r, 200), "and a stopped widget's ops are not applied");
+        }
+    }
+
     // ── an adopt op that names a live node's id ──
     {
         StubBackend ab;

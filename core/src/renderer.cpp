@@ -465,11 +465,37 @@ bool is_layer_property(const std::string& property) {
     return property == "transform" || property == "opacity" || property == "translate" || property == "rotate" || property == "scale";
 }
 
+/// What ops may hand over, several times what the validator sends (10,000 ops a batch, 48 K of text, 400 rules): more is refused here too.
+constexpr size_t MAX_BATCH_OPS = 200000;
+constexpr size_t MAX_TEXT_BYTES = 4 << 20;
+constexpr size_t MAX_TEXT_PIECES = 100000;
+constexpr size_t MAX_SHEET_BLOCKS = 16384;
+constexpr size_t MAX_NODE_ATTRS = 4096;
+constexpr size_t MAX_TREE_BYTES = 64 << 20;
+
 /// The `style` attribute is the inline style itself, as in the DOM: setting it replaces what the
 /// style ops set, and a style op that removes a property removes it from what the attribute set.
 void set_inline_style(std::vector<std::pair<std::string, std::string>>& styles, const std::string& text) {
     styles.clear();
-    for (auto& d : css::parse_declarations(text)) styles.emplace_back(std::move(d.name), d.important ? d.value + " !important" : std::move(d.value));
+    for (auto& d : css::parse_declarations(text)) {
+        if (styles.size() >= MAX_NODE_ATTRS) break;
+        styles.emplace_back(std::move(d.name), d.important ? d.value + " !important" : std::move(d.value));
+    }
+}
+
+size_t text_pieces(const std::string& text) {
+    size_t pieces = 0;
+    int last = -1;
+    for (unsigned char c : text) {
+        int space = c <= 0x20 ? 1 : 0;
+        pieces += size_t(space != last) + size_t(c >= 0xE0);
+        last = space;
+    }
+    return pieces;
+}
+
+size_t sheet_blocks(const std::string& css) {
+    return size_t(std::count(css.begin(), css.end(), '{'));
 }
 
 /// A node id from an op or a query; 0, which names no node, for a number that is no int.
@@ -2598,8 +2624,12 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
         // Past the paint limit the host stops the widget: what its task still sent is not drawn.
-        if (paint_stopped_) return out;
+        if (paint_stopped_ || layout_stopped_) return out;
         const auto& ops = msg["ops"].arr();
+        if (ops.size() > MAX_BATCH_OPS) {
+            out.push_back(Json::object().set("type", "violation").set("detail", "ops limit: " + std::to_string(ops.size()) + " operations in one batch"));
+            return out;
+        }
         std::vector<int64_t> scripted;
         bool fast = scripted_only(ops, scripted);
         // Ticking already (something animates), or held back by the throttle, a batch waits for the
@@ -2815,6 +2845,8 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
     const std::string& kind = op["op"].asString();
     int64_t id = node_id(op["id"]);
     auto str = [&](const char* k) -> const std::string& { return op[k].asString(); };
+    auto refuse = [&](const char* what) { out.push_back(Json::object().set("type", "violation").set("detail", what)); };
+    if (!hold(op)) return;
     // What changes the serialised document; `call` marks it itself when it toggles an attribute.
     if (kind != "canvas" && kind != "call" && !(kind == "prop" && (str("name") == "scrollTop" || str("name") == "scrollLeft"))) document_changed_ = true;
     if (!id && (kind == "el" || kind == "text" || kind == "comment")) return;
@@ -2843,7 +2875,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             if (!pair[0].isString() || !pair[1].isString()) continue;
             if (starts_with_on(pair[0].asString())) continue;
             if (pair[0].asString() == "style") set_inline_style(n->styles, pair[1].asString());
-            else n->attrs.emplace_back(pair[0].asString(), pair[1].asString());
+            else if (n->attrs.size() < MAX_NODE_ATTRS) n->attrs.emplace_back(pair[0].asString(), pair[1].asString());
         }
         if (n->tag == "img" && !n->svg) pending_images_.push_back(id);
         nodes_[id] = std::move(n);
@@ -2854,6 +2886,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         auto n = std::make_unique<Node>();
         n->kind = kind == "text" ? Node::Text : Node::Comment;
         n->id = id;
+        if (kind == "text" && !take_text({}, str("data"))) return refuse("text limit");
         n->data = str("data");
         nodes_[id] = std::move(n);
         return;
@@ -2867,6 +2900,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             out.push_back(Json::object().set("type", "violation").set("detail", "attribute " + name.substr(0, 64)));
             return;
         }
+        if (name != "style" && n->attrs.size() >= MAX_NODE_ATTRS && std::none_of(n->attrs.begin(), n->attrs.end(), [&](auto& a) { return a.first == name; })) return refuse("attribute count");
         note_attribute(n, lower(name));
         if (name == "style") {
             set_inline_style(n->styles, str("value"));
@@ -2893,6 +2927,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         n->attrs.erase(std::remove_if(n->attrs.begin(), n->attrs.end(), [&](auto& a) { return a.first == name; }), n->attrs.end());
     } else if (kind == "data") {
         if (n->kind == Node::Element) return;
+        if (n->kind == Node::Text && !take_text(n->data, str("data"))) return refuse("text limit");
         note_children(n->parent, n);
         n->data = str("data");
     } else if (kind == "ins") {
@@ -2950,10 +2985,16 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         if (value.empty()) {
             if (it != n->styles.end()) n->styles.erase(it);
         } else if (it != n->styles.end()) it->second = value;
-        else n->styles.emplace_back(name, value);
+        else if (n->styles.size() < MAX_NODE_ATTRS) n->styles.emplace_back(name, value);
+        else refuse("declaration count");
     } else if (kind == "css") {
         if (attached(n)) patch_log_.valid = false;
-        if (n->tag == "style") n->data = str("text");
+        if (n->tag == "style") {
+            size_t blocks = sheet_blocks_ - sheet_blocks(n->data) + sheet_blocks(str("text"));
+            if (blocks > MAX_SHEET_BLOCKS && blocks > sheet_blocks_) return refuse("stylesheet limit");
+            sheet_blocks_ = blocks;
+            n->data = str("text");
+        }
     } else if (kind == "prop") {
         const std::string& name = str("name");
         const Json& value = op["value"];
@@ -2966,6 +3007,8 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         };
         if (name == "value") {
             std::string v = value.isString() ? value.asString() : value.isNull() ? std::string() : value.dump();
+            tree_bytes_ += value.isString() ? 0 : v.size();
+            if (n->tag == "textarea" && !take_text(n->data, v)) return refuse("text limit");
             if (n->tag == "textarea") {
                 // A textarea's value is its text, a hole when it is the only content.
                 if (!n->children.empty()) patch_log_.valid = false;
@@ -3065,7 +3108,7 @@ void Renderer::adopt(int64_t id, Node* n, const Json& attrs) {
         }
         bool found = false;
         for (auto& a : n->attrs) if (a.first == pair[0].asString()) { a.second = pair[1].asString(); found = true; }
-        if (!found) n->attrs.emplace_back(pair[0].asString(), pair[1].asString());
+        if (!found && n->attrs.size() < MAX_NODE_ATTRS) n->attrs.emplace_back(pair[0].asString(), pair[1].asString());
     }
 }
 
@@ -3076,9 +3119,56 @@ void Renderer::detach(Node* n) {
     n->parent = nullptr;
 }
 
+bool Renderer::take_text(const std::string& old, const std::string& fresh) {
+    size_t bytes = text_bytes_ - old.size() + fresh.size(), pieces = text_pieces_ - text_pieces(old) + text_pieces(fresh);
+    if ((bytes > MAX_TEXT_BYTES && bytes > text_bytes_) || (pieces > MAX_TEXT_PIECES && pieces > text_pieces_)) return false;
+    text_bytes_ = bytes;
+    text_pieces_ = pieces;
+    return true;
+}
+
+bool Renderer::hold(const Json& op) {
+    if (layout_stopped_) return false;
+    size_t bytes = 0;
+    auto count = [&](const Json& value) { bytes += value.isString() ? value.asString().size() : 0; };
+    count(op["data"]);
+    count(op["text"]);
+    count(op["name"]);
+    count(op["value"]);
+    for (const Json& pair : op["attrs"].arr()) {
+        count(pair[0]);
+        count(pair[1]);
+    }
+    if (bytes > MAX_TREE_BYTES - std::min(tree_bytes_, MAX_TREE_BYTES)) {
+        // The count only grows with what ops bring: what the nodes hold now, before the widget is stopped for it.
+        size_t held = 0;
+        auto add = [&](const Node& n) {
+            held += n.data.size();
+            for (const auto& [name, value] : n.attrs) held += name.size() + value.size();
+            for (const auto& [name, value] : n.styles) held += name.size() + value.size();
+        };
+        for (const auto& [id, n] : nodes_) add(*n);
+        add(*html_node_);
+        add(*head_node_);
+        add(*body_node_);
+        tree_bytes_ = held;
+        if (held > MAX_TREE_BYTES / 4 * 3 || bytes > MAX_TREE_BYTES / 4) {
+            layout_stopped_ = true;
+            pending_violations_.push_back("tree limit: " + std::to_string(held) + " bytes of text, attributes and styles, " + std::to_string(bytes) + " more in one op");
+            freeze("Document limit exceeded", true);
+            stale_ = true;
+            return false;
+        }
+    }
+    tree_bytes_ += bytes;
+    return true;
+}
+
 void Renderer::forget(Node* n) {
     forget_canvas(n->id);
     resize_watch_.erase(n->id);
+    if (n->kind == Node::Text || n->tag == "textarea") take_text(n->data, {});
+    if (n->tag == "style") sheet_blocks_ -= sheet_blocks(n->data);
     for (Node* c : n->children) {
         c->parent = nullptr;
         forget(c);
