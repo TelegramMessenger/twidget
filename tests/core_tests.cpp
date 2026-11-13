@@ -3405,6 +3405,32 @@ int main() {
         check(t == "0 29999950 ", "in a line 30000000px wide too, where a pixel is less than a float's step (got " + t + ")");
     }
 
+    // ── SVG <use>: its href names an id, never a selector ──
+    {
+        auto paths = [](const DisplayList& d) {
+            return std::count_if(d.begin(), d.end(), [](const Command& c) { return c.kind == Cmd::Path; });
+        };
+        auto page = [](const std::string& href) {
+            return parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"defs","ns":"svg"},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"rect","ns":"svg","attrs":[["id","a"],["width","10"],["height","10"]]},{"op":"ins","parent":11,"id":12,"before":null},
+                {"op":"el","id":14,"tag":"rect","ns":"svg","attrs":[["width","20"],["height","20"]]},{"op":"ins","parent":11,"id":14,"before":null},
+                {"op":"el","id":13,"tag":"use","ns":"svg","attrs":[["href",")" + href + R"("]]},{"op":"ins","parent":10,"id":13,"before":null}]})");
+        };
+        StubBackend ub;
+        Renderer named(300, 1, false, ub);
+        named.receive(page("#a"));
+        check(paths(named.paint()) == 1, "a <use> draws the element its href names");
+        Renderer listed(300, 1, false, ub);
+        listed.receive(page("#a+rect"));
+        check(paths(listed.paint()) == 0, "a <use> whose href is a selector draws nothing");
+        Renderer nested(300, 1, false, ub);
+        nested.receive(page("#a" + std::string(8189, '[')));
+        check(paths(nested.paint()) == 0, "a <use> whose href nests 8189 blocks draws nothing");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;

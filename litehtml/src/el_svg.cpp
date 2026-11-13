@@ -734,6 +734,18 @@ namespace litehtml
             return {};
         }
 
+        bool svg_reference_id(const std::string& id)
+        {
+            if(id.empty() || id.size() > 128)
+                return false;
+            for(char ch : id)
+            {
+                if(!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_' && static_cast<unsigned char>(ch) < 0x80)
+                    return false;
+            }
+            return true;
+        }
+
         float gradient_coordinate(const element::ptr& el, const char* name, float def)
         {
             const char* value = el->get_attr(name);
@@ -750,13 +762,8 @@ namespace litehtml
                                 float opacity, document_container* container)
         {
             std::string id = svg_url_id(svg_property(el, name, true));
-            if(id.empty() || id.size() > 128)
+            if(!svg_reference_id(id))
                 return false;
-            for(char ch : id)
-            {
-                if(!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_')
-                    return false;
-            }
             auto doc = el->get_document();
             if(!doc || !doc->root())
                 return false;
@@ -1086,7 +1093,7 @@ namespace litehtml
                 const char* href = use->get_attr("href");
                 if(!href)
                     href = use->get_attr("xlink:href");
-                if(!href || href[0] != '#' || !href[1] || depth > 8)
+                if(!href || href[0] != '#' || !svg_reference_id(href + 1) || depth > 8)
                     return;
                 element::ptr target;
                 if(auto root = use->get_document()->root())
