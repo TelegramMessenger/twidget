@@ -2186,6 +2186,26 @@ int main() {
               "a press on what grew keeps its top still");
     }
 
+    // ── repeated backgrounds are tiled while the display list is short ──
+    {
+        struct Images : StubBackend {
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                w = h = 1;
+                return true;
+            }
+        } ib;
+        Renderer t(300, 1, false, ib);
+        std::string layers;
+        for (int i = 0; i < 40; i++) layers += std::string(i ? "," : "") + "url(data:image/png;base64,AA==)";
+        t.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:64px;height:64px;background-size:1px 1px;background-image:)J" + layers + R"J("]]},
+            {"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        size_t commands = t.paint().size();
+        check(commands >= 16 * 4096 && commands < 17 * 4096,
+              "of 40 background layers of 4096 tiles each, 16 are recorded tile by tile and the rest once (" + std::to_string(commands) + " commands)");
+    }
+
     // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──
     {
         struct Images : StubBackend {

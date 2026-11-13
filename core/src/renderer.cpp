@@ -509,6 +509,8 @@ constexpr size_t MAX_FACES = 256;
 /// The SVG paints the container keeps for draw_cached, and the commands they hold together.
 constexpr size_t MAX_CACHED_PAINTS = 128;
 constexpr size_t MAX_CACHED_COMMANDS = 50000;
+/// A repeated background is recorded tile by tile while the display list is shorter than this; then once per layer.
+constexpr size_t MAX_TILED_COMMANDS = 65536;
 /// Measured widths, keyed by their text: longer text is measured each time, and every face's keys
 /// together stay within the byte bound.
 constexpr size_t MAX_WIDTH_ENTRIES = 4096;
@@ -1487,7 +1489,7 @@ public:
         const bool across = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_x;
         const bool down = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_y;
         const Rect tile = c.rect;
-        if ((across || down) && tile.w >= 1 && tile.h >= 1 && !c.clip.empty()) {
+        if ((across || down) && tile.w >= 1 && tile.h >= 1 && !c.clip.empty() && list_.size() < MAX_TILED_COMMANDS) {
             float x0 = across ? tile.x - std::ceil((tile.x - c.clip.x) / tile.w) * tile.w : tile.x;
             float y0 = down ? tile.y - std::ceil((tile.y - c.clip.y) / tile.h) * tile.h : tile.y;
             float x1 = across ? c.clip.x + c.clip.w : tile.x + tile.w, y1 = down ? c.clip.y + c.clip.h : tile.y + tile.h;
