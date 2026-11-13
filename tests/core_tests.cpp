@@ -3659,6 +3659,20 @@ int main() {
         check(computed(17, "display") == "list-item", "the UA sheet's list items stay list items (got " + computed(17, "display") + ")");
     }
 
+    // ── an image source that names a canvas the renderer does not hold ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(PAGE));
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":60,"tag":"img","attrs":[["src","tw-canvas:7/-5x2000000000"]]},{"op":"ins","parent":4,"id":60,"before":null},
+            {"op":"el","id":61,"tag":"canvas","attrs":[["width","20"],["height","10"]]},{"op":"ins","parent":4,"id":61,"before":null},{"op":"canvas","id":61,"cmds":[["c","fillRect",0,0,5,5]]}]})"));
+        Json rect = s.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":60}})"))[0]["result"];
+        check(rect["width"].asNumber() == 0 && rect["height"].asNumber() == 0, "an <img> takes no size from a tw-canvas: source of its own (got " + rect.dump() + ")");
+        check(s.viewport_height() < 1000, "and the document is not 2e9 px tall (got " + std::to_string(s.viewport_height()) + ")");
+        rect = s.receive(parse(R"({"type":"query","qid":2,"query":{"q":"rect","id":61}})"))[0]["result"];
+        check(rect["width"].asNumber() == 20 && rect["height"].asNumber() == 10, "a canvas the renderer holds keeps its size (got " + rect.dump() + ")");
+    }
+
     // ── an adopt op that names a live node's id ──
     {
         StubBackend ab;

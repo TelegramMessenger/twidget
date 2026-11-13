@@ -1453,11 +1453,16 @@ public:
         if (url.rfind("tw-canvas:", 0) == 0) {
             // The renderer's own source for a <canvas>: tw-canvas:<node id>/<w>x<h>, drawn from the backend's bitmap.
             int id = 0, w = 0, h = 0;
-            if (std::sscanf(url.c_str() + 10, "%d/%dx%d", &id, &w, &h) == 3) {
-                img.canvas = id;
-                img.w = float(w);
-                img.h = float(h);
+            bool held = false;
+            if (std::sscanf(url.c_str() + 10, "%d/%dx%d", &id, &w, &h) == 3)
+                for (const auto& [node, canvas] : r_.canvases_) held = held || (canvas->id() == id && canvas->width() == w && canvas->height() == h);
+            if (!held) {
+                r_.pending_violations_.push_back("image refused: " + url.substr(0, 80));
+                return;
             }
+            img.canvas = id;
+            img.w = float(w);
+            img.h = float(h);
         } else if (std::string mime = data_mime(url); mime == "image/svg+xml") {
             // Profile 1 has no SVG images: the validator puts its 48 px placeholder, an SVG, in place of
             // every image it refuses. No SVG reaches a backend, whatever the spelling.
