@@ -3396,6 +3396,28 @@ int main() {
                   std::to_string(width(50)) + ", " + std::to_string(width(51)) + ", " + std::to_string(width(52)) + ")");
     }
 
+    // ── calc(): a product of many factors is one scaled node, not a chain as deep as the product ──
+    {
+        double chain = 0, mixed = 0;
+        std::thread worker([&] {
+            StubBackend cb;
+            Renderer c(300, 1, false, cb);
+            std::string factors;
+            for (int i = 0; i < 15000; i++) factors += "*1";
+            c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"#a{width:calc((50% + 10px))" + factors + R"()}#b{width:calc(2*(25% + 5px)*3/4*2)}"},
+                {"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+            c.tick();
+            chain = c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
+            mixed = c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})"))[0]["result"]["width"].asNumber();
+        });
+        worker.join();
+        check(chain == 160 && mixed == 240, "a calc() product of 15000 factors is laid out on a thread's stack (" + std::to_string(chain) + ", " + std::to_string(mixed) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

@@ -153,7 +153,7 @@ namespace litehtml
                     if(!is_number(right) || (divide && right.value == 0))
                         return false;
                     float factor = divide ? 1 / right.value : right.value;
-                    if(is_number(out))
+                    if(is_number(out) || out.kind == calc_node::scaled)
                     {
                         out.value *= factor;
                         continue;
