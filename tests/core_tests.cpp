@@ -5119,6 +5119,40 @@ int main() {
 #endif
 #endif
 
+    // ── calc(): the expressions one widget wrote leave the next widget's alone ──
+    {
+        StubBackend cb;
+        const char* head = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]})";
+        {
+            const char* names[] = {"width", "height", "min-width", "max-width", "min-height", "max-height", "margin-left", "margin-right", "margin-top", "margin-bottom",
+                                   "padding-left", "padding-right", "padding-top", "padding-bottom", "top", "left", "right", "bottom", "flex-basis", "text-indent"};
+            std::string ops = head;
+            int n = 0;
+            for (int id = 10; id < 225; id++) {
+                std::string style;
+                for (const char* name : names) style += std::string(name) + ":calc(1% + " + std::to_string(n++) + "px);";
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":4,"id":)" + std::to_string(id) + R"(,"before":null})";
+            }
+            Renderer first(300, 1, false, cb);
+            first.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            first.tick();
+        }
+        Renderer second(300, 1, false, cb);
+        second.receive(parse(R"({"type":"ops","ops":[)" + std::string(head) + R"(,
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".half{width:calc(50% - 9px)} .card{width:calc(100% - 3em)}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","half"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["class","card"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["style","margin-left:calc(10% + 3px);height:5px"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        second.tick();
+        auto width = [&](int id) {
+            return second.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(10) == 141 && width(11) == 255 && width(12) == 267,
+              "calc() lengths of a widget shown after one with 4300 of them resolve as in a fresh process (got " + std::to_string(width(10)) + ", " +
+                  std::to_string(width(11)) + ", " + std::to_string(width(12)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

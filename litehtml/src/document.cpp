@@ -3247,7 +3247,7 @@ namespace litehtml
             ret = val.calc_percent(size);
             break;
         case css_units_calc:
-            ret = calc_evaluate(static_cast<int>(val.calc_index()), size, [&](float value, css_units unit) {
+            ret = calc_evaluate(val.calc().get(), size, [&](float value, css_units unit) {
                 return to_pixels(css_length(value, unit), metrics, size).value();
             });
             break;
@@ -3309,14 +3309,14 @@ namespace litehtml
         if(val.units() == css_units_calc)
         {
             // Every leaf but % in px; with no % left, the length is a plain one.
-            float px    = 0;
-            int   index = calc_resolve_units(val.calc_index(), [&](float value, css_units unit) {
+            float px         = 0;
+            auto  expression = calc_resolve_units(val.calc(), [&](float value, css_units unit) {
                 return to_pixels(css_length(value, unit), metrics, size).value();
             }, px);
-            if(index < 0)
+            if(!expression)
                 val.set_value(clamp_length(px), css_units_px);
             else
-                val.set_calc(index);
+                val.set_calc(std::move(expression));
         } else if(val.units() != css_units_percentage)
         {
             val.set_value(static_cast<float>(to_pixels(val, metrics, size)), css_units_px);
