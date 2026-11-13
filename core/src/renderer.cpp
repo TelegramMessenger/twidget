@@ -1482,11 +1482,14 @@ public:
             float x0 = across ? tile.x - std::ceil((tile.x - c.clip.x) / tile.w) * tile.w : tile.x;
             float y0 = down ? tile.y - std::ceil((tile.y - c.clip.y) / tile.h) * tile.h : tile.y;
             float x1 = across ? c.clip.x + c.clip.w : tile.x + tile.w, y1 = down ? c.clip.y + c.clip.h : tile.y + tile.h;
-            if (std::ceil((x1 - x0) / tile.w) * std::ceil((y1 - y0) / tile.h) <= 4096) {
-                for (float y = y0; y < y1; y += tile.h) {
-                    for (float x = x0; x < x1; x += tile.w) {
+            // Tiles are counted, not stepped to: far from the origin a float no longer moves by a tile's size.
+            const float columns = std::ceil((x1 - x0) / tile.w), rows = std::ceil((y1 - y0) / tile.h);
+            if (columns < 1 || rows < 1) return;
+            if (columns * rows <= 4096) {
+                for (int row = 0; row < int(rows); row++) {
+                    for (int column = 0; column < int(columns); column++) {
                         Command t = c;
-                        t.rect = Rect{x, y, tile.w, tile.h};
+                        t.rect = Rect{x0 + float(column) * tile.w, y0 + float(row) * tile.h, tile.w, tile.h};
                         list_.push_back(std::move(t));
                     }
                 }

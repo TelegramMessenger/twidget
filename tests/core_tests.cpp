@@ -3317,6 +3317,26 @@ int main() {
               "the text a textarea's value replaced does not point at the textarea once that is removed");
     }
 
+    // ── a repeated background far from the origin is tiled by count ──
+    {
+        struct Images : StubBackend {
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                w = h = 1;
+                return true;
+            }
+        } ib;
+        Renderer t(300, 1, false, ib);
+        t.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","transform:translateX(-33554408px)"]]},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","margin-left:33554408px;width:96px;height:6px;background-image:url(data:image/png;base64,AA==);background-size:6px 6px"]]},
+            {"op":"ins","parent":10,"id":11,"before":null},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        int tiles = 0;
+        for (const Command& c : t.paint())
+            if (c.kind == Cmd::Image) tiles++;
+        check(tiles == 16, "a 96 px box across 2^25 px, where a float steps by 4, gets its 16 tiles of 6 px (got " + std::to_string(tiles) + ")");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;
