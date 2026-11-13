@@ -30,6 +30,8 @@ public:
     virtual bool canvas_source(int64_t node, int& image, int& canvas, float& w, float& h) = 0;
     /// Pixels the canvas may still allocate, given every other canvas of the widget.
     virtual int64_t canvas_allowance(int id) = 0;
+    /// Floats the widget's other canvases keep in their paths: one bound holds for all of them together.
+    virtual size_t canvas_path_floats(int /*id*/) { return 0; }
 };
 
 class Canvas {
@@ -43,6 +45,7 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
     int64_t pixels() const { return int64_t(width_) * height_; }
+    size_t path_floats() const { return paths_floats_ + path_.geometry.points.size(); }
 
     /// One `canvas` op. `out` receives what the backend must run, in order.
     void run(const twidget::Json& cmds, std::vector<CanvasOp>& out);
@@ -104,6 +107,7 @@ private:
     CanvasOp op(CanvasOp::Kind kind) const;
     bool paint_of(const Paint& paint, CanvasPaint& out) const;
     bool spend(size_t floats);
+    size_t path_room() const;
     void fill(const Geometry& path, bool evenodd, std::vector<CanvasOp>& out);
     void stroke(const Geometry& path, std::vector<CanvasOp>& out);
     void text(const std::string& s, double x, double y, const Value* max_width, bool stroke, std::vector<CanvasOp>& out);

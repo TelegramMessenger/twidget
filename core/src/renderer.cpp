@@ -4204,6 +4204,13 @@ int64_t Renderer::canvas_allowance(int id) {
     return Canvas::MAX_PIXELS - used;
 }
 
+size_t Renderer::canvas_path_floats(int id) {
+    size_t used = 0;
+    for (const auto& [node_id, canvas] : canvases_)
+        if (canvas->id() != id) used += canvas->path_floats();
+    return used;
+}
+
 void Renderer::report_size(std::vector<Json>& out) {
     if (track_resize_) note_resize();
     // Every frame asks; the message goes out when a number moved.

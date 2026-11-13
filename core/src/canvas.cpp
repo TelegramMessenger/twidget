@@ -356,6 +356,11 @@ void Canvas::resize(int width, int height, std::vector<CanvasOp>& out) {
     out.push_back(std::move(reset));
 }
 
+size_t Canvas::path_room() const {
+    size_t held = host_.canvas_path_floats(id_) + path_floats();
+    return held < MAX_PATHS_FLOATS ? MAX_PATHS_FLOATS - held : 0;
+}
+
 bool Canvas::spend(size_t floats) {
     if (floats > MAX_RUN_FLOATS - run_floats_) return false;
     run_floats_ += floats;
@@ -415,12 +420,12 @@ void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
             }
             auto held = paths_.find(pid);
             size_t before = held == paths_.end() ? 0 : held->second.geometry.points.size();
-            if (b.geometry.points.size() > MAX_PATH_FLOATS || paths_floats_ - before + b.geometry.points.size() > MAX_PATHS_FLOATS) continue;
+            if (b.geometry.points.size() > MAX_PATH_FLOATS || b.geometry.points.size() > before + path_room()) continue;
             paths_floats_ += b.geometry.points.size() - before;
             paths_[pid] = std::move(b);
         } else if (kind == "pc") {
             auto it = paths_.find(list[1].asInt());
-            if (it == paths_.end() || list.size() < 3 || !list[2].isString() || paths_floats_ >= MAX_PATHS_FLOATS) continue;
+            if (it == paths_.end() || list.size() < 3 || !list[2].isString() || !path_room()) continue;
             rest(3);
             size_t before = it->second.geometry.points.size();
             path_method(it->second, Matrix(), list[2].asString(), args);
@@ -757,7 +762,7 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
         out.push_back(std::move(o));
     } else if (m == Method::drawImage) {
         image(a, out);
-    } else {
+    } else if (path_room()) {
         path_method(path_, s.matrix, method, a);
     }
 }

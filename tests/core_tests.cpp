@@ -3466,6 +3466,32 @@ int main() {
         check(fills >= 3 && copied <= (size_t(1) << 24), "placeholders drawn under a long clip copy a bounded amount of it (" + std::to_string(copied) + " floats)");
     }
 
+    // ── the paths a widget's canvases keep are bounded together ──
+    {
+        StubBackend wb;
+        Renderer w(300, 1, false, wb);
+        w.receive(parse(PAGE));
+        std::string ops;
+        for (int i = 0; i < 8; i++) {
+            std::string id = std::to_string(40 + i);
+            std::string cmds = R"(["pn",1,"M0 0L1 1L2 2L3 3"],["pn",2,null],["pn",3,null],["pn",4,null],["pn",5,null])";
+            for (int k = 0; k < 13; k++) cmds += R"(,["pc",2,"addPath",{"p":1}],["pc",1,"addPath",{"p":2}])";
+            cmds += R"(,["pc",3,"addPath",{"p":2}],["pc",4,"addPath",{"p":2}],["pc",5,"addPath",{"p":1}],["c","addPath",{"p":2}])";
+            ops += std::string(i ? "," : "") + R"({"op":"el","id":)" + id + R"(,"tag":"canvas","attrs":[["width","16"],["height","16"]]},{"op":"ins","parent":4,"id":)" + id +
+                R"(,"before":null},{"op":"canvas","id":)" + id + R"(,"cmds":[)" + cmds + "]}";
+        }
+        w.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        size_t kept = 0;
+        for (int i = 0; i < 8; i++) {
+            wb.runs.clear();
+            w.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":)" + std::to_string(40 + i) +
+                R"(,"cmds":[["c","fill",{"p":1}],["c","fill",{"p":2}],["c","fill",{"p":3}],["c","fill",{"p":4}],["c","fill",{"p":5}],["c","fill"]]}]})"));
+            for (const auto& run : wb.runs)
+                for (const CanvasOp& op : run) kept += op.path.points.size();
+        }
+        check(kept >= (size_t(1) << 20) && kept <= (size_t(5) << 20), "eight canvases keep the paths of one together (" + std::to_string(kept) + " floats)");
+    }
+
     // ── canvases drawn from one another down a long chain ──
     {
         StubBackend cb;

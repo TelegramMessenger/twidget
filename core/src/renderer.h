@@ -438,6 +438,7 @@ private:
     float canvas_text_width(int font, const std::string& text) override;
     bool canvas_source(int64_t node, int& image, int& canvas, float& w, float& h) override;
     int64_t canvas_allowance(int id) override;
+    size_t canvas_path_floats(int id) override;
     void freeze(const std::string& reason, bool fatal);
     /// Frozen, or stopped past the paint or the layout limit: nothing animates.
     bool still() const { return frozen_ || paint_stopped_ || layout_stopped_; }
