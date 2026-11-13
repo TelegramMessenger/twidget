@@ -3208,6 +3208,9 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     const lh::css_properties &css = el->css();
     auto tag = std::dynamic_pointer_cast<lh::html_tag>(el);
     NSMutableDictionary<NSString *, NSString *> *out = [NSMutableDictionary dictionary];
+    const auto keyword = [](lh::css_values names, int index) {
+        return @(std::string(names.value_by_index(index)).c_str());
+    };
     auto px = [](double v) { return [NSString stringWithFormat:@"%gpx", v]; };
     const double fontSize = css.get_font_size().value();
     auto length = [&](const lh::css_length &l, NSString *predefined = @"none") -> NSString * {
@@ -3228,7 +3231,7 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
         case lh::css_units_calc:
             return px(l.val());
         default:
-            return [NSString stringWithFormat:@"%g%s", l.val(), std::string(lh::css_units_strings[l.units()]).c_str()];
+            return [NSString stringWithFormat:@"%g%@", l.val(), keyword(lh::css_units_strings, l.units())];
         }
     };
     auto raw = [&](const char *name, NSString *fallback) -> NSString * {
@@ -3248,7 +3251,6 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
         }
         return [NSString stringWithFormat:@"%@ %@ %@ %@", top, right, bottom, left];
     };
-    auto name = [](std::string_view s) { return @(std::string(s).c_str()); };
     if(found)
     {
         out[@"padding-top"]         = px(found->padding_top().value());
@@ -3275,8 +3277,8 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     out[@"max-width"]   = length(css.get_max_width());
     out[@"max-height"]  = length(css.get_max_height());
     out[@"box-sizing"]  = css.get_box_sizing() == lh::box_sizing_border_box ? @"border-box" : @"content-box";
-    out[@"display"]     = @(std::string(lh::style_display_strings[css.get_display()]).c_str());
-    out[@"position"]    = @(std::string(lh::element_position_strings[css.get_position()]).c_str());
+    out[@"display"]     = keyword(lh::style_display_strings, css.get_display());
+    out[@"position"]    = keyword(lh::element_position_strings, css.get_position());
     out[@"font-size"]   = px(css.get_font_size().value());
     const lh::css_length &lineHeight = css.line_height().css_value;
     if(lineHeight.is_predefined())
@@ -3297,11 +3299,11 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     out[@"color"]            = rgb(css.get_color());
     out[@"background-color"] = rgb(css.get_bg().m_color);
     out[@"opacity"]     = [NSString stringWithFormat:@"%g", css.get_opacity()];
-    out[@"text-align"]  = @(std::string(lh::text_align_strings[css.get_text_align()]).c_str());
+    out[@"text-align"]  = keyword(lh::text_align_strings, css.get_text_align());
     out[@"visibility"]  = css.get_visibility() == lh::visibility_visible ? @"visible" : @"hidden";
-    out[@"direction"]   = name(lh::direction_strings[css.get_direction()]);
-    out[@"white-space"] = name(lh::white_space_strings[css.get_white_space()]);
-    NSString *overflowX = name(lh::overflow_strings[css.get_overflow_x()]), *overflowY = name(lh::overflow_strings[css.get_overflow_y()]);
+    out[@"direction"]   = keyword(lh::direction_strings, css.get_direction());
+    out[@"white-space"] = keyword(lh::white_space_strings, css.get_white_space());
+    NSString *overflowX = keyword(lh::overflow_strings, css.get_overflow_x()), *overflowY = keyword(lh::overflow_strings, css.get_overflow_y());
     out[@"overflow-x"]  = overflowX;
     out[@"overflow-y"]  = overflowY;
     out[@"overflow"]    = [overflowX isEqualToString:overflowY] ? overflowX : [NSString stringWithFormat:@"%@ %@", overflowX, overflowY];
@@ -3318,7 +3320,7 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     NSMutableArray<NSString *> *styles = [NSMutableArray array], *colors = [NSMutableArray array];
     for(int i = 0; i < 4; i++)
     {
-        [styles addObject:name(lh::border_style_strings[sides[i]->style])];
+        [styles addObject:keyword(lh::border_style_strings, sides[i]->style)];
         [colors addObject:rgb(sides[i]->color)];
         out[[NSString stringWithFormat:@"border-%@-style", edges[i]]] = styles[i];
         out[[NSString stringWithFormat:@"border-%@-color", edges[i]]] = colors[i];
@@ -3327,7 +3329,7 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     out[@"border-color"] = shorthand(colors[0], colors[1], colors[2], colors[3]);
     const lh::css_border &outline  = css.get_outline();
     const bool            outlined = outline.style != lh::border_style_none && outline.style != lh::border_style_hidden;
-    out[@"outline-style"]  = name(lh::border_style_strings[outline.style]);
+    out[@"outline-style"]  = keyword(lh::border_style_strings, outline.style);
     out[@"outline-width"]  = outlined ? length(outline.width, @"3px") : @"0px";
     out[@"outline-color"]  = rgb(outline.color.alpha ? outline.color : css.get_color());
     out[@"outline-offset"] = px(css.get_outline_offset().value());
@@ -3340,20 +3342,20 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
     if(decoration & lh::text_decoration_line_line_through)
         [lines addObject:@"line-through"];
     NSString *decorationLine  = lines.count ? [lines componentsJoinedByString:@" "] : @"none";
-    NSString *decorationStyle = name(lh::style_text_decoration_style_strings[css.get_text_decoration_style()]);
+    NSString *decorationStyle = keyword(lh::style_text_decoration_style_strings, css.get_text_decoration_style());
     NSString *decorationColor = rgb(css.get_text_decoration_color().alpha ? css.get_text_decoration_color() : css.get_color());
     out[@"text-decoration-line"]  = decorationLine;
     out[@"text-decoration-style"] = decorationStyle;
     out[@"text-decoration-color"] = decorationColor;
     out[@"text-decoration"]       = [NSString stringWithFormat:@"%@ %@ %@", decorationLine, decorationStyle, decorationColor];
     out[@"text-indent"]           = length(css.get_text_indent(), @"0px");
-    NSString *userSelect          = name(lh::user_select_strings[css.get_user_select()]);
+    NSString *userSelect          = keyword(lh::user_select_strings, css.get_user_select());
     out[@"user-select"]           = userSelect;
     out[@"-webkit-user-select"]   = userSelect;
-    out[@"vertical-align"]        = name(lh::vertical_align_strings[css.get_vertical_align()]);
-    out[@"border-collapse"]       = name(lh::border_collapse_strings[css.get_border_collapse()]);
-    out[@"list-style-type"]       = name(lh::list_style_type_strings[css.get_list_style_type()]);
-    out[@"list-style-position"]   = name(lh::list_style_position_strings[css.get_list_style_position()]);
+    out[@"vertical-align"]        = keyword(lh::vertical_align_strings, css.get_vertical_align());
+    out[@"border-collapse"]       = keyword(lh::border_collapse_strings, css.get_border_collapse());
+    out[@"list-style-type"]       = keyword(lh::list_style_type_strings, css.get_list_style_type());
+    out[@"list-style-position"]   = keyword(lh::list_style_position_strings, css.get_list_style_position());
     out[@"list-style-image"]      = css.get_list_style_image().empty() ? @"none" : [NSString stringWithFormat:@"url(\"%s\")", css.get_list_style_image().c_str()];
     const lh::background &bg = css.get_bg();
     NSMutableArray<NSString *> *images = [NSMutableArray array], *sizes = [NSMutableArray array], *positions = [NSMutableArray array],
@@ -3372,14 +3374,14 @@ static CGRect LHElementRasterBounds(const std::shared_ptr<lh::render_item>& root
             const auto &size = bg.m_size[i];
             NSString   *w = length(size.width, @"auto"), *h = length(size.height, @"auto");
             if(size.width.is_predefined() && size.width.predef() != lh::background_size_auto)
-                [sizes addObject:name(lh::background_size_strings[size.width.predef()])];
+                [sizes addObject:keyword(lh::background_size_strings, size.width.predef())];
             else
                 [sizes addObject:[w isEqualToString:@"auto"] && [h isEqualToString:@"auto"] ? w : [NSString stringWithFormat:@"%@ %@", w, h]];
         }
         if(i < bg.m_position_x.size() && i < bg.m_position_y.size())
             [positions addObject:[NSString stringWithFormat:@"%@ %@", length(bg.m_position_x[i], @"0%"), length(bg.m_position_y[i], @"0%")]];
         if(i < bg.m_repeat.size())
-            [repeats addObject:name(lh::background_repeat_strings[bg.m_repeat[i]])];
+            [repeats addObject:keyword(lh::background_repeat_strings, bg.m_repeat[i])];
     }
     out[@"background-image"]    = images.count ? [images componentsJoinedByString:@", "] : @"none";
     out[@"background-size"]     = sizes.count ? [sizes componentsJoinedByString:@", "] : @"auto";

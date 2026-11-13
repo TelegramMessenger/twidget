@@ -1731,6 +1731,55 @@ int main() {
         }
         s.touch(3, 20, 20, 0, true, false, 0);
         check(claim_x && !claim_y, "a stylesheet's touch-action: pan-y claims horizontal drags");
+
+        const auto checkAlignment = [&](const std::string& property, const std::string& value, const std::string& expected) {
+            const auto display = property == "align-items" ? "display:flex;" : "";
+            auto ops = Json::array().push(Json::object()
+                .set("op", "attr").set("id", 10).set("name", "style")
+                .set("value", display + property + ":" + value + ";color:rgb(1,2,3)"));
+            s.receive(Json::object().set("type", "ops").set("ops", ops));
+            const auto computed = cs(10);
+            check(computed["color"].asString() == "rgb(1, 2, 3)"
+                && computed[property].asString() == expected,
+                property + ": " + value + " survives a full computed-style query (got "
+                    + computed[property].asString() + ")");
+        };
+        for (const auto property : {"align-self", "align-items"}) {
+            for (const auto position : {"center", "start", "end", "self-start", "self-end", "flex-start", "flex-end"}) {
+                for (const auto prefix : {"", "safe ", "unsafe "}) {
+                    const auto value = std::string(prefix) + position;
+                    checkAlignment(property, value, value);
+                }
+            }
+            for (const auto value : {"normal", "stretch", "baseline"}) {
+                checkAlignment(property, value, value);
+            }
+            checkAlignment(property, "first baseline", "baseline");
+            checkAlignment(property, "baseline first", "baseline");
+            checkAlignment(property, "last baseline", "last baseline");
+            checkAlignment(property, "baseline last", "last baseline");
+        }
+        checkAlignment("align-self", "auto", "auto");
+        checkAlignment("align-self", "SaFe /**/ CeNtEr", "safe center");
+        checkAlignment("align-items", "LAST\nBASELINE", "last baseline");
+
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"style","value":""}]})"));
+        for (const auto property : {"align-self", "align-items"}) {
+            for (const auto display : {"flex", "grid"}) {
+                for (const auto value : {"safe center", "unsafe flex-end", "first baseline", "last baseline"}) {
+                    const auto expected = std::string(value) == "first baseline" ? "baseline" : value;
+                    const auto rule = std::string("#a{display:") + display + ";--alignment:" + value + ";"
+                        + property + ":var(--alignment)}#a b,#a::before{display:" + display + ";"
+                        + property + ":inherit}#a::before{content:'x'}";
+                    auto ops = Json::array().push(Json::object().set("op", "css").set("id", 20).set("text", rule));
+                    s.receive(Json::object().set("type", "ops").set("ops", ops));
+                    const auto label = std::string(display) + " " + property + ": " + value;
+                    check(cs(10)[property].asString() == expected, label + " from a stylesheet variable");
+                    check(cs(11)[property].asString() == expected, label + " inherited by a child");
+                    check(cs(10, "::before")[property].asString() == expected, label + " inherited by a pseudo-element");
+                }
+            }
+        }
     }
 
     // ── the boxes of inline elements: their line boxes ──

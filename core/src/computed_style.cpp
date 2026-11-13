@@ -29,6 +29,10 @@ std::string color(const litehtml::web_color& c) {
     return "rgba(" + rgb + ", " + alpha + ")";
 }
 
+std::string Keyword(litehtml::css_values names, int index) {
+    return std::string(names.value_by_index(index));
+}
+
 /// A declared length as a computed one: px for absolute and font-relative units, % kept.
 std::string length(const litehtml::css_length& l, double font_size, const char* predefined) {
     if (l.is_predefined()) return predefined;
@@ -42,12 +46,22 @@ std::string length(const litehtml::css_length& l, double font_size, const char* 
     case litehtml::css_units_px:
     // The fork keeps no text for math that waits for layout: what it makes of no size is the best answer.
     case litehtml::css_units_calc: return px(v);
-    default: return css::format_number(v, 3) + std::string(litehtml::css_units_strings[l.units()]);
+    default: return css::format_number(v, 3) + Keyword(litehtml::css_units_strings, l.units());
     }
 }
 
-std::string name_of(std::string_view s) {
-    return std::string(s);
+std::string Alignment(litehtml::flex_align_items value) {
+    const auto overflow = value & (litehtml::flex_align_items_safe | litehtml::flex_align_items_unsafe);
+    // Overflow-position flags carry an index into self_position_strings.
+    const auto names = overflow
+        ? litehtml::css_values(litehtml::self_position_strings)
+        : litehtml::css_values(litehtml::flex_align_items_strings);
+    const auto result = Keyword(names, value & 0xFF);
+    if (result.empty()) return result;
+    if (value & litehtml::flex_align_items_safe) return "safe " + result;
+    if (value & litehtml::flex_align_items_unsafe) return "unsafe " + result;
+    if (value & litehtml::flex_align_items_last) return "last " + result;
+    return result;
 }
 
 /// `top right bottom left` as Chromium shortens a box shorthand.
@@ -135,16 +149,16 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     double font_size = double(css.get_font_size());
     auto len = [&](const litehtml::css_length& l, const char* predefined) { return length(l, font_size, predefined); };
 
-    std::string display = name_of(litehtml::style_display_strings[css.get_display()]);
+    std::string display = Keyword(litehtml::style_display_strings, css.get_display());
     if (display == "inline-text") display = "inline";
     o.set("display", display);
-    o.set("position", name_of(litehtml::element_position_strings[css.get_position()]));
-    o.set("float", name_of(litehtml::element_float_strings[css.get_float()]));
-    o.set("clear", name_of(litehtml::element_clear_strings[css.get_clear()]));
-    o.set("box-sizing", name_of(litehtml::box_sizing_strings[css.get_box_sizing()]));
-    o.set("visibility", name_of(litehtml::visibility_strings[css.get_visibility()]));
+    o.set("position", Keyword(litehtml::element_position_strings, css.get_position()));
+    o.set("float", Keyword(litehtml::element_float_strings, css.get_float()));
+    o.set("clear", Keyword(litehtml::element_clear_strings, css.get_clear()));
+    o.set("box-sizing", Keyword(litehtml::box_sizing_strings, css.get_box_sizing()));
+    o.set("visibility", Keyword(litehtml::visibility_strings, css.get_visibility()));
     o.set("z-index", css.get_position() == litehtml::element_position_static || css.get_z_index() == 0 ? std::string("auto") : std::to_string(css.get_z_index()));
-    o.set("direction", name_of(litehtml::direction_strings[css.get_direction()])).set("unicode-bidi", "normal");
+    o.set("direction", Keyword(litehtml::direction_strings, css.get_direction())).set("unicode-bidi", "normal");
 
     // The box: what layout used, as getComputedStyle resolves width, height, margins and padding.
     std::string margin[4], padding[4], border_width[4];
@@ -193,7 +207,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
         o.set(std::string("margin-") + edges[i], margin[i]);
         o.set(std::string("padding-") + edges[i], padding[i]);
         o.set(std::string("border-") + edges[i] + "-width", border_width[i]);
-        o.set(std::string("border-") + edges[i] + "-style", name_of(litehtml::border_style_strings[sides[i]->style]));
+        o.set(std::string("border-") + edges[i] + "-style", Keyword(litehtml::border_style_strings, sides[i]->style));
         o.set(std::string("border-") + edges[i] + "-color", color(sides[i]->color));
     }
     o.set("margin", box_shorthand(margin[0], margin[1], margin[2], margin[3]));
@@ -201,7 +215,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("border-width", box_shorthand(border_width[0], border_width[1], border_width[2], border_width[3]));
     std::string styles[4], colors[4];
     for (int i = 0; i < 4; i++) {
-        styles[i] = name_of(litehtml::border_style_strings[sides[i]->style]);
+        styles[i] = Keyword(litehtml::border_style_strings, sides[i]->style);
         colors[i] = color(sides[i]->color);
     }
     o.set("border-style", box_shorthand(styles[0], styles[1], styles[2], styles[3]));
@@ -218,28 +232,28 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
                             radius(r.bottom_left_x, r.bottom_left_y)};
     o.set("border-top-left-radius", radii[0]).set("border-top-right-radius", radii[1]).set("border-bottom-right-radius", radii[2]).set("border-bottom-left-radius", radii[3]);
     o.set("border-radius", box_shorthand(radii[0], radii[1], radii[2], radii[3]));
-    o.set("border-collapse", name_of(litehtml::border_collapse_strings[css.get_border_collapse()]));
+    o.set("border-collapse", Keyword(litehtml::border_collapse_strings, css.get_border_collapse()));
     o.set("border-spacing", len(css.get_border_spacing_x(), "0px") + " " + len(css.get_border_spacing_y(), "0px"));
-    o.set("caption-side", name_of(litehtml::caption_side_strings[css.get_caption_side()]));
+    o.set("caption-side", Keyword(litehtml::caption_side_strings, css.get_caption_side()));
 
     o.set("min-width", len(css.get_min_width(), "auto")).set("min-height", len(css.get_min_height(), "auto"));
     o.set("max-width", len(css.get_max_width(), "none")).set("max-height", len(css.get_max_height(), "none"));
     const auto& offsets = css.get_offsets();
     o.set("top", len(offsets.top, "auto")).set("right", len(offsets.right, "auto")).set("bottom", len(offsets.bottom, "auto")).set("left", len(offsets.left, "auto"));
 
-    std::string ox = name_of(litehtml::overflow_strings[css.get_overflow_x()]), oy = name_of(litehtml::overflow_strings[css.get_overflow_y()]);
+    std::string ox = Keyword(litehtml::overflow_strings, css.get_overflow_x()), oy = Keyword(litehtml::overflow_strings, css.get_overflow_y());
     o.set("overflow-x", ox).set("overflow-y", oy).set("overflow", ox == oy ? ox : ox + " " + oy);
-    o.set("white-space", name_of(litehtml::white_space_strings[css.get_white_space()]));
-    std::string wrap = name_of(litehtml::overflow_wrap_strings[css.get_overflow_wrap()]);
+    o.set("white-space", Keyword(litehtml::white_space_strings, css.get_white_space()));
+    std::string wrap = Keyword(litehtml::overflow_wrap_strings, css.get_overflow_wrap());
     o.set("overflow-wrap", wrap).set("word-wrap", wrap);
-    o.set("word-break", name_of(litehtml::word_break_strings[css.get_word_break()]));
+    o.set("word-break", Keyword(litehtml::word_break_strings, css.get_word_break()));
 
     // Text and fonts.
     o.set("color", color(css.get_color()));
     o.set("font-size", px(font_size));
     int weight = int(css.font_weight().val());
     o.set("font-weight", std::to_string(weight > 0 ? weight : 400));
-    std::string style = name_of(litehtml::font_style_strings[css.font_style_value()]);
+    std::string style = Keyword(litehtml::font_style_strings, css.font_style_value());
     o.set("font-style", style);
     o.set("font-family", css.font_family());
     std::string line_height = css.line_height().css_value.is_predefined() ? std::string("normal") : px(double(css.line_height().computed_value));
@@ -247,14 +261,14 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("font", (style == "normal" ? std::string() : style + " ") + (weight == 400 || weight <= 0 ? std::string() : std::to_string(weight) + " ") + px(font_size) +
                       (line_height == "normal" ? std::string() : " / " + line_height) + " " + css.font_family());
     o.set("font-variant-numeric", raw(tag.get(), "font-variant-numeric", "normal"));
-    o.set("text-align", name_of(litehtml::text_align_strings[css.get_text_align()]));
+    o.set("text-align", Keyword(litehtml::text_align_strings, css.get_text_align()));
     o.set("text-indent", len(css.get_text_indent(), "0px"));
-    o.set("text-transform", name_of(litehtml::text_transform_strings[css.get_text_transform()]));
+    o.set("text-transform", Keyword(litehtml::text_transform_strings, css.get_text_transform()));
     o.set("letter-spacing", double(css.get_letter_spacing()) == 0 ? std::string("normal") : px(double(css.get_letter_spacing())));
     o.set("word-spacing", px(double(css.get_word_spacing())));
-    o.set("vertical-align", name_of(litehtml::vertical_align_strings[css.get_vertical_align()]));
+    o.set("vertical-align", Keyword(litehtml::vertical_align_strings, css.get_vertical_align()));
     std::string decoration = text_decoration_line(css.get_text_decoration_line());
-    std::string decoration_style = name_of(litehtml::style_text_decoration_style_strings[css.get_text_decoration_style()]);
+    std::string decoration_style = Keyword(litehtml::style_text_decoration_style_strings, css.get_text_decoration_style());
     std::string decoration_color = color(css.get_text_decoration_color().alpha ? css.get_text_decoration_color() : css.get_color());
     o.set("text-decoration-line", decoration).set("text-decoration-style", decoration_style).set("text-decoration-color", decoration_color);
     o.set("text-decoration", decoration + " " + decoration_style + " " + decoration_color);
@@ -263,7 +277,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     o.set("user-select", select).set("-webkit-user-select", select);
 
     // Lists.
-    o.set("list-style-type", name_of(litehtml::list_style_type_strings[css.get_list_style_type()]));
+    o.set("list-style-type", Keyword(litehtml::list_style_type_strings, css.get_list_style_type()));
     {
         std::string quotes = "auto";
         for (auto e = el; e; e = e->parent()) {
@@ -275,7 +289,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
         }
         o.set("quotes", quotes);
     }
-    o.set("list-style-position", name_of(litehtml::list_style_position_strings[css.get_list_style_position()]));
+    o.set("list-style-position", Keyword(litehtml::list_style_position_strings, css.get_list_style_position()));
     o.set("list-style-image", css.get_list_style_image().empty() ? std::string("none") : "url(\"" + css.get_list_style_image() + "\")");
 
     // Backgrounds.
@@ -291,11 +305,11 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
         if (i < bg.m_size.size()) {
             const auto& s = bg.m_size[i];
             std::string w = len(s.width, "auto"), h = len(s.height, "auto");
-            sizes += (i ? ", " : "") + (s.width.is_predefined() && s.width.predef() != 0 ? name_of(litehtml::background_size_strings[s.width.predef()]) : h == "auto" && w == "auto" ? w : w + " " + h);
+            sizes += (i ? ", " : "") + (s.width.is_predefined() && s.width.predef() != 0 ? Keyword(litehtml::background_size_strings, s.width.predef()) : h == "auto" && w == "auto" ? w : w + " " + h);
         }
         if (i < bg.m_position_x.size() && i < bg.m_position_y.size())
             positions += (i ? ", " : "") + len(bg.m_position_x[i], "0%") + " " + len(bg.m_position_y[i], "0%");
-        if (i < bg.m_repeat.size()) repeats += (i ? ", " : "") + name_of(litehtml::background_repeat_strings[bg.m_repeat[i]]);
+        if (i < bg.m_repeat.size()) repeats += (i ? ", " : "") + Keyword(litehtml::background_repeat_strings, bg.m_repeat[i]);
     }
     o.set("background-image", images.empty() ? std::string("none") : images);
     o.set("background-size", sizes.empty() ? std::string("auto") : sizes);
@@ -341,7 +355,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     }
     const litehtml::css_border& outline = css.get_outline();
     bool outlined = outline.style != litehtml::border_style_none && outline.style != litehtml::border_style_hidden;
-    o.set("outline-style", name_of(litehtml::border_style_strings[outline.style]));
+    o.set("outline-style", Keyword(litehtml::border_style_strings, outline.style));
     o.set("outline-width", outlined ? len(outline.width, "3px") : std::string("0px"));
     o.set("outline-color", color(outline.color.alpha ? outline.color : css.get_color()));
     o.set("outline-offset", px(double(css.get_outline_offset())));
@@ -359,14 +373,14 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
     }
 
     // Flex and grid.
-    o.set("flex-direction", name_of(litehtml::flex_direction_strings[css.get_flex_direction()]));
-    o.set("flex-wrap", name_of(litehtml::flex_wrap_strings[css.get_flex_wrap()]));
-    o.set("justify-content", name_of(litehtml::flex_justify_content_strings[css.get_flex_justify_content()]));
-    o.set("align-items", name_of(litehtml::flex_align_items_strings[css.get_flex_align_items()]));
-    o.set("align-self", name_of(litehtml::flex_align_items_strings[css.get_flex_align_self()]));
-    o.set("align-content", name_of(litehtml::flex_align_content_strings[css.get_flex_align_content()]));
+    o.set("flex-direction", Keyword(litehtml::flex_direction_strings, css.get_flex_direction()));
+    o.set("flex-wrap", Keyword(litehtml::flex_wrap_strings, css.get_flex_wrap()));
+    o.set("justify-content", Keyword(litehtml::flex_justify_content_strings, css.get_flex_justify_content()));
+    o.set("align-items", Alignment(css.get_flex_align_items()));
+    o.set("align-self", Alignment(css.get_flex_align_self()));
+    o.set("align-content", Keyword(litehtml::flex_align_content_strings, css.get_flex_align_content()));
     o.set("flex-grow", css::format_number(css.get_flex_grow(), 3)).set("flex-shrink", css::format_number(css.get_flex_shrink(), 3));
-    o.set("flex-basis", css.get_flex_basis().is_predefined() ? name_of(litehtml::flex_basis_strings[css.get_flex_basis().predef()]) : len(css.get_flex_basis(), "auto"));
+    o.set("flex-basis", css.get_flex_basis().is_predefined() ? Keyword(litehtml::flex_basis_strings, css.get_flex_basis().predef()) : len(css.get_flex_basis(), "auto"));
     o.set("order", std::to_string(css.get_order()));
     std::string row_gap = len(css.get_row_gap(), "normal"), column_gap = len(css.get_column_gap(), "normal");
     o.set("row-gap", row_gap).set("column-gap", column_gap).set("gap", row_gap == column_gap ? row_gap : row_gap + " " + column_gap);
