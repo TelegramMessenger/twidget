@@ -88,6 +88,7 @@ constexpr size_t MAX_STOPS = 256;
 constexpr size_t MAX_STACK = 512;
 constexpr size_t MAX_TEXT = 4096;
 constexpr size_t MAX_COLORS = 256;
+constexpr size_t MAX_FONT = 512;
 // In floats: a path, a canvas's Path2D objects, a state's clips (CLIP_COST each besides their points), one op's copies.
 constexpr size_t MAX_PATH_FLOATS = size_t(1) << 20;
 constexpr size_t MAX_PATHS_FLOATS = size_t(1) << 22;
@@ -447,11 +448,13 @@ void Canvas::set(const std::string& p, const Value& v) {
     } else if (q == Property::lineDashOffset) {
         if (v.kind == Value::Number && std::isfinite(v.number)) s.dash_offset = float(v.number);
     } else if (q == Property::font) {
-        if (v.kind == Value::String && !v.string.empty()) s.font = v.string;
+        if (v.kind == Value::String && !v.string.empty() && v.string.size() <= MAX_FONT) s.font = v.string;
     } else if (q == Property::textAlign) {
-        if (v.kind == Value::String) s.align = v.string;
+        static const char* const NAMES[] = {"start", "end", "left", "right", "center"};
+        if (std::find(std::begin(NAMES), std::end(NAMES), v.string) != std::end(NAMES)) s.align = v.string;
     } else if (q == Property::textBaseline) {
-        if (v.kind == Value::String) s.baseline = v.string;
+        static const char* const NAMES[] = {"alphabetic", "top", "hanging", "middle", "ideographic", "bottom"};
+        if (std::find(std::begin(NAMES), std::end(NAMES), v.string) != std::end(NAMES)) s.baseline = v.string;
     } else if (q == Property::globalAlpha) {
         if (v.kind == Value::Number && v.number >= 0 && v.number <= 1) s.alpha = float(v.number);
     } else if (q == Property::globalCompositeOperation) {

@@ -3349,6 +3349,23 @@ int main() {
               "a stack of 512 states keeps a bounded amount of clip geometry (" + std::to_string(kept) + " floats, " + std::to_string(nested) + " clips nested)");
     }
 
+    // ── a canvas's state keeps short strings: a font of 512 bytes at most, textAlign and textBaseline by keyword ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(PAGE));
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        std::string big(32000, 'x');
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[["s","font","20px serif"],["s","textAlign","center"],["s","textBaseline","top"],["c","fillText","ab",50,50],)"
+            R"(["s","font","20px )" + big + R"("],["s","textAlign",")" + big + R"("],["s","textBaseline",")" + big + R"("],["c","fillText","ab",50,50]]}]})"));
+        std::vector<CanvasOp> texts;
+        for (const auto& ops : sb.runs)
+            for (const CanvasOp& op : ops)
+                if (op.kind == CanvasOp::Text) texts.push_back(op);
+        check(texts.size() == 2 && texts[1].font == texts[0].font && texts[0].text_dx == -8.0f && texts[1].text_dx == -8.0f && texts[0].y != 50.0f && texts[1].y == texts[0].y,
+              "a canvas ignores a font of 32 K and a textAlign and a textBaseline that are no keyword");
+    }
+
     // ── canvases drawn from one another down a long chain ──
     {
         StubBackend cb;
