@@ -3633,6 +3633,27 @@ int main() {
         check(at == "0.1", "auto-fill repeats a track of 0.0001px 1000 times, however many would fit (the last line at " + at + ")");
     }
 
+    // ── counters and list numbers stop at the ends of int ──
+    {
+        auto texts = [&](const std::string& ops) {
+            Renderer n(300, 1, false, backend);
+            n.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]})" + ops + "]}"));
+            std::string seen;
+            for (const Command& c : n.paint())
+                if (c.kind == Cmd::Text) seen += c.text + " ";
+            return seen;
+        };
+        std::string counted = texts(R"(,{"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":"div{counter-increment:c 2147483647}div::before{content:counter(c)}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"div"},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div"},{"op":"ins","parent":4,"id":12,"before":null})");
+        check(counted == "2147483647 2147483647 2147483647 ", "a counter incremented past the largest int stays there (" + counted + ")");
+        std::string listed = texts(R"(,{"op":"el","id":10,"tag":"ol","attrs":[["start","2147483647"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"li"},{"op":"ins","parent":10,"id":11,"before":null},{"op":"el","id":12,"tag":"li"},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"li"},{"op":"ins","parent":10,"id":13,"before":null})");
+        check(listed == "2147483647. 2147483647. 2147483647. ", "list items numbered past the largest int keep it (" + listed + ")");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;

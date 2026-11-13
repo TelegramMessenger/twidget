@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <climits>
+#include <cstdint>
 #include "html.h"
 #include "element.h"
 #include "document.h"
@@ -444,7 +446,7 @@ namespace litehtml
         std::map<string_id, int>::iterator i;
         if(find_counter(counter_name_id, i))
         {
-            i->second = i->second + increment;
+            i->second = static_cast<int>(std::clamp<int64_t>(static_cast<int64_t>(i->second) + increment, INT_MIN, INT_MAX));
         } else
         {
             // if counter is not found, initialize one on this element

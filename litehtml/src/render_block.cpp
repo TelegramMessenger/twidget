@@ -70,7 +70,7 @@ std::shared_ptr<litehtml::render_item> litehtml::render_item_block::init()
                     src_el()->set_attr("list_index", std::to_string(val).c_str());
                     break;
                 }
-                if(child->css().get_display() == display_list_item)
+                if(child->css().get_display() == display_list_item && val < INT_MAX)
                 {
                     val++;
                 }
