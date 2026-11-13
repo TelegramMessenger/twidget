@@ -2518,7 +2518,9 @@ namespace litehtml
             for(const auto& css : m_css)
             {
                 // Viewport lengths are folded to px while parsing, so such a sheet holds for one viewport.
-                if(css.media != "" || css.text.find("@media") != std::string::npos || css.text.find("@import") != std::string::npos || has_viewport_units(css.text))
+                // At-rule names match in any case, and an escape can spell one, or a viewport unit.
+                const std::string text = lowcase(css.text);
+                if(css.media != "" || text.find('\\') != std::string::npos || text.find("@media") != std::string::npos || text.find("@import") != std::string::npos || has_viewport_units(css.text))
                 {
                     styles_cacheable = false;
                     break;

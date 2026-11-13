@@ -4407,6 +4407,25 @@ int main() {
 #endif
 #endif
 
+    // ── a cached style sheet: @MEDIA in capitals is a media rule of the document that parsed it ──
+    {
+        StubBackend mb;
+        const char* page = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".mq{height:11px;width:200px}@MEDIA (max-width:400px){.mq{width:50px}}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","mq"]]},{"op":"ins","parent":4,"id":10,"before":null}]})";
+        auto width_at = [&](double viewport) {
+            Renderer r(viewport, 1, false, mb);
+            r.receive(parse(page));
+            r.tick();
+            return r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
+        };
+        const double narrow = width_at(300), wide = width_at(600), again = width_at(300);
+        check(narrow == 50 && wide == 200 && again == 50,
+              "a sheet with @MEDIA in capitals is matched against each document's own viewport (got " + std::to_string(narrow) + ", " +
+                  std::to_string(wide) + ", " + std::to_string(again) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
