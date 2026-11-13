@@ -612,6 +612,10 @@ void Canvas::image(const std::vector<Value>& a, std::vector<CanvasOp>& out) {
     double kx = o.dw / sw * w / 48, ky = o.dh / sh * h / 48;
     auto at = [&](double px, double py) { return std::pair{o.dx + (px * w / 48 - sx) * o.dw / sw, o.dy + (py * h / 48 - sy) * o.dh / sh}; };
     auto number = [](double v) { return Value{Value::Number, v}; };
+    size_t held = CLIP_COST;
+    if (state_.clips)
+        for (const CanvasClip& c : *state_.clips) held += c.path.points.size() + CLIP_COST;
+    if (!spend(held)) return;
     auto clips = state_.clips ? std::make_shared<std::vector<CanvasClip>>(*state_.clips) : std::make_shared<std::vector<CanvasClip>>();
     clips->push_back(CanvasClip{rect_geometry(o.dx, o.dy, o.dw, o.dh), false});
     auto draw = [&](Geometry g, Color color) {

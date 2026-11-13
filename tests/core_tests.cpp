@@ -3366,6 +3366,29 @@ int main() {
               "a canvas ignores a font of 32 K and a textAlign and a textBaseline that are no keyword");
     }
 
+    // ── a refused image's placeholder is charged for the clip list it copies ──
+    {
+        StubBackend pb;
+        Renderer p(300, 1, false, pb);
+        p.receive(parse(PAGE));
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":50,"tag":"img","attrs":[["src","data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"]]},
+            {"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        std::string d = "M0 0";
+        for (int i = 0; i < 8000; i++) d += "L" + std::to_string(i % 9) + " " + std::to_string(i % 7);
+        std::string cmds = R"(["pn",1,")" + d + R"("],["c","clip",{"p":1}])";
+        for (int i = 0; i < 1200; i++) cmds += R"(,["c","drawImage",{"n":50},0,0])";
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[)" + cmds + "]}]}"));
+        std::set<const void*> lists;
+        size_t copied = 0, fills = 0;
+        for (const auto& ops : pb.runs)
+            for (const CanvasOp& op : ops) {
+                fills += op.kind == CanvasOp::Fill;
+                if (!op.clips || !lists.insert(op.clips.get()).second) continue;
+                for (const CanvasClip& clip : *op.clips) copied += clip.path.points.size();
+            }
+        check(fills >= 3 && copied <= (size_t(1) << 24), "placeholders drawn under a long clip copy a bounded amount of it (" + std::to_string(copied) + " floats)");
+    }
+
     // ── canvases drawn from one another down a long chain ──
     {
         StubBackend cb;
