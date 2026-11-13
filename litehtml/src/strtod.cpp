@@ -206,8 +206,11 @@ double litehtml::t_strtod(const char* string, char** endPtr)
         }
         while(isdigit(*p))
         {
-            exp  = exp * 10 + (*p - '0');
-            p   += 1;
+            if(exp <= maxExponent)
+            {
+                exp = exp * 10 + (*p - '0');
+            }
+            p += 1;
         }
     }
     if(expSign)

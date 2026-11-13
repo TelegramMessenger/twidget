@@ -22,6 +22,8 @@
 using twidget::Json;
 using namespace twlite;
 
+namespace litehtml { double t_strtod(const char* string, char** endPtr); }
+
 namespace {
 
 int failures = 0;
@@ -4003,6 +4005,16 @@ int main() {
         check(cs(12, "font-size") == "12px" && cs(12, "font-weight") == "700" && cs(12, "font-style") == "italic" && cs(12, "font-family") == "serif",
               "the font attributes of an <svg> set its font as before (got " + cs(12, "font-size") + ", " + cs(12, "font-weight") + ", " +
                   cs(12, "font-style") + ", " + cs(12, "font-family") + ")");
+    }
+
+    // ── the fork's own strtod and an exponent that fits no int ──
+    {
+        char* end = nullptr;
+        const char* text = "1e2147483648";
+        const double big = litehtml::t_strtod(text, &end);
+        const double small = litehtml::t_strtod("1e-2147483649", nullptr);
+        check(std::isinf(big) && end == text + 12 && small == 0 && litehtml::t_strtod("2.5e-3", nullptr) == 0.0025,
+              "an exponent past the range of int reads as infinity or zero, and to its end");
     }
 
     // ── a textarea whose value replaced its children, then removed ──
