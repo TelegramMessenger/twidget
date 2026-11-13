@@ -1985,6 +1985,14 @@ public:
             list_.push_back(std::move(pop));
         }
     }
+
+    // ── the keywords the fork knows outside the profile: the validator cannot see one that arrives through var() ──
+    void trusted_styles(bool trusted) override { trusted_styles_ = trusted; }
+    bool sanitize_declaration(const std::string& name, const litehtml::css_token_vector& value) override {
+        if (trusted_styles_ || value.size() != 1 || (name != "position" && name != "display")) return true;
+        const std::string keyword = value[0].ident();
+        return name == "position" ? keyword != "sticky" : keyword != "list-item" && keyword != "inline-text";
+    }
 #endif
 
     // ── chrome the renderer has none of ──
@@ -2417,6 +2425,7 @@ private:
 
     Renderer& r_;
     Backend& backend_;
+    bool trusted_styles_ = false;
     litehtml::document::ptr doc_;
 #ifdef TW_LITEHTML_TWIDGET
     std::vector<litehtml::transform_matrix> groups_;  // accumulated, during draw()

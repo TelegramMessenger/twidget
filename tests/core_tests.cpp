@@ -3629,6 +3629,36 @@ int main() {
         check(rect(10)["x"].asNumber() == 9, "a sheet in an HTML comment and a range query apply as they did (node 10 at " + std::to_string(rect(10)["x"].asNumber()) + ")");
     }
 
+    // ── a value that arrives through var() is held to the rule of a declared one ──
+    {
+        StubBackend vb;
+        Renderer v(300, 1, false, vb);
+        v.receive(parse(R"x({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":":root{--p:sticky;--d:list-item;--r:relative}#a{position:var(--p)}#b{display:var(--d)}#c{position:var(--none,sticky)}#d{position:sticky}#e{position:var(--r)}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","c"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["id","d"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"div","attrs":[["id","e"]]},{"op":"ins","parent":4,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"div","attrs":[["style","--q:sticky;position:var(--q)"]]},{"op":"ins","parent":4,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"ul","attrs":[]},{"op":"ins","parent":4,"id":16,"before":null},
+            {"op":"el","id":17,"tag":"li","attrs":[]},{"op":"ins","parent":16,"id":17,"before":null}
+        ]})x"));
+        auto computed = [&](int id, const char* name) {
+            return v.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":)" + std::to_string(id) + "}}"))[0]["result"][name].asString();
+        };
+        check(computed(10, "position") == "static", "position: sticky through a custom property is invalid at computed-value time (got " + computed(10, "position") + ")");
+        check(computed(11, "display") == "inline", "display: list-item through a custom property is invalid at computed-value time (got " + computed(11, "display") + ")");
+        check(computed(12, "position") == "static", "position: sticky as a var() fallback is invalid at computed-value time (got " + computed(12, "position") + ")");
+        check(computed(13, "position") == "static", "a declared position: sticky is dropped (got " + computed(13, "position") + ")");
+        check(computed(14, "position") == "relative", "a position of the profile's set passes through var() (got " + computed(14, "position") + ")");
+        check(computed(15, "position") == "static", "position: sticky through an inline custom property is invalid at computed-value time (got " + computed(15, "position") + ")");
+        check(computed(17, "display") == "list-item", "the UA sheet's list items stay list items (got " + computed(17, "display") + ")");
+    }
+
     // ── an adopt op that names a live node's id ──
     {
         StubBackend ab;

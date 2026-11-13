@@ -2684,6 +2684,10 @@ namespace litehtml
                     continue;
                 }
                 value = {css_token(IDENT, "unset")};
+            } else if(auto container = el->get_document()->container();
+                      container && _s(name).substr(0, 2) != "--" && !container->sanitize_declaration(_s(name), value))
+            {
+                value = {css_token(IDENT, "unset")};
             }
             std::vector<std::pair<string_id, property_value>> later;
             for(auto longhand : at(shorthands, name))
