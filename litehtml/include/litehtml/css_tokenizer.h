@@ -193,7 +193,7 @@ namespace litehtml
         };
         union {
             css_hash_type hash_type; // HASH
-            number        n;
+            number        n = {};
         };
         std::vector<css_token> value; // CV_FUNCTION, XXX_BLOCK
 

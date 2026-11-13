@@ -1,7 +1,11 @@
+#include <litehtml/css_properties.h>
 #include <litehtml/style.h>
 
 #include <cstdio>
+#include <cstring>
+#include <new>
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -97,6 +101,29 @@ void KeywordBounds()
     Check(keywords.value_index("valid") == 0, "nonempty keyword keeps its index");
 }
 
+void DeterminateMembers()
+{
+    // The storage is filled first, as a stack or a reused heap block is, so a member left unset shows.
+    alignas(litehtml::css_properties) static unsigned char properties[sizeof(litehtml::css_properties)];
+    std::memset(properties, 0x5a, sizeof(properties));
+    auto* css = new(properties) litehtml::css_properties;
+    Check(css->font_style_value() == litehtml::font_style_normal, "a new computed style has the normal font style");
+    css->~css_properties();
+
+    alignas(litehtml::css_token) static unsigned char token[sizeof(litehtml::css_token)];
+    const litehtml::css_token ident(litehtml::IDENT, "a");
+    std::memset(token, 0x5a, sizeof(token));
+    auto* copy = new(token) litehtml::css_token(ident);
+    Check(copy->n.number == 0 && copy->n.number_type == litehtml::css_number_integer, "a copied identifier token holds the number zero");
+    copy->~css_token();
+
+    litehtml::css_token source(litehtml::IDENT, "a");
+    std::memset(token, 0x5a, sizeof(token));
+    auto* moved = new(token) litehtml::css_token(std::move(source));
+    Check(moved->n.number == 0 && moved->n.number_type == litehtml::css_number_integer, "a moved identifier token holds the number zero");
+    moved->~css_token();
+}
+
 }
 
 int main()
@@ -104,6 +131,7 @@ int main()
     InvalidDeclarations();
     ImageShorthand();
     KeywordBounds();
+    DeterminateMembers();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
