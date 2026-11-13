@@ -3486,6 +3486,35 @@ int main() {
         check(ops == 2 && line && !nan, "an arc to a point that is not finite is a line (" + std::to_string(ops) + " ops)");
     }
 
+    // ── an inline box that clips pops no clip it did not push ──
+    {
+        auto clips = [](const std::string& inner, const std::string& tag = "span") {
+            StubBackend b;
+            Renderer t(300, 1, false, b);
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","overflow:hidden;width:100px;height:40px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":")" + tag + R"(","attrs":[["style",")" + inner + R"("]]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"text","id":12,"data":"inline"},{"op":"ins","parent":11,"id":12,"before":null},
+                {"op":"el","id":13,"tag":"div","attrs":[["style","width:300px;height:20px;background:red"]]},{"op":"ins","parent":10,"id":13,"before":null}]})"));
+            t.tick();
+            int depth = 0, lowest = 0, text_depth = -1, red_depth = -1;
+            for (const Command& c : t.paint()) {
+                if (c.kind == Cmd::ClipPush) depth++;
+                if (c.kind == Cmd::ClipPop) lowest = std::min(lowest, --depth);
+                if (c.kind == Cmd::Text) text_depth = depth;
+                if (c.kind == Cmd::FillRect && c.color.r == 255 && c.color.g == 0) red_depth = depth;
+            }
+            return "end " + std::to_string(depth) + ", lowest " + std::to_string(lowest) + ", text under " + std::to_string(text_depth) + ", the next block under " + std::to_string(red_depth);
+        };
+        std::string seen = clips("overflow:hidden");
+        check(seen == "end 0, lowest 0, text under 1, the next block under 1", "an overflow: hidden span leaves its block's clip open for what follows it (" + seen + ")");
+        seen = clips("contain:paint");
+        check(seen == "end 0, lowest 0, text under 1, the next block under 1", "and so does a span with contain: paint (" + seen + ")");
+        seen = clips("display:inline-block;overflow:hidden");
+        check(seen == "end 0, lowest 0, text under 2, the next block under 1", "an inline block still clips what is inside it (" + seen + ")");
+    }
+
     // ── trees deeper than a document may be ──
     {
         auto chain = [](int levels) {
