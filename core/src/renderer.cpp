@@ -3088,10 +3088,26 @@ void Renderer::serialize_node(const Node* n, std::string& out, int level) const 
     out.push_back('>');
     if (!n->svg && is_void(n->tag)) return;
     if (n->tag == "style") {
-        std::string css = css::resolve_light_dark(rewrite_color_scheme(n->data, dark_), dark_);
-        size_t p = 0;
-        while ((p = css.find("</", p)) != std::string::npos) { css.replace(p, 2, "<\\/"); p += 3; }
-        out += css;
+        // A sheet is raw text to the parser in HTML content only (not in svg, nor in a select): no `<` of it may open a tag.
+        const std::string css = css::resolve_light_dark(rewrite_color_scheme(n->data, dark_), dark_);
+        for (size_t i = 0; i < css.size();) {
+            const size_t end = css::skip_opaque(css, i);
+            if (end == i) {
+                if (css.compare(i, 4, "<!--") == 0) {
+                    i += 4;
+                    continue;
+                }
+                out.push_back(css[i++]);
+                if (out.back() == '<' && i < css.size() && css[i] != '=') out.push_back(' ');
+            }
+            for (; i < end; i++) {
+                const bool escaped = css[i] == '\\' && i + 1 < end;
+                if (escaped && css[i + 1] != '<') out.push_back(css[i++]);
+                else if (escaped) i++;
+                if (css[i] == '<') out += "\\3c ";
+                else out.push_back(css[i]);
+            }
+        }
     } else if (n->tag == "textarea") {
         // The parser drops a newline right after <textarea>: a value that starts with one needs a second.
         if (!n->data.empty() && n->data[0] == '\n') out += '\n';

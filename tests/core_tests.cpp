@@ -3504,6 +3504,49 @@ int main() {
         check(c.last_html().find("id=\"a\"") != std::string::npos, "a batch of 200000 canvas ops, each drawing the next one's canvas, does not recurse through them all");
     }
 
+    // ── a style element where the parser reads markup: its sheet is text, never tags ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","real"],["style","width:40px;height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"svg","ns":"svg","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"g","ns":"svg","attrs":[]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"style","ns":"svg","attrs":[]},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"css","id":13,"text":"#real{margin-left:7px} a::before{content:\"<div data-twid='10' style='width:222px;height:111px'><title>&amp;<plaintext>\"} body>#after{width:77px}"},
+            {"op":"el","id":14,"tag":"div","attrs":[["id","after"],["style","height:5px"]]},{"op":"ins","parent":4,"id":14,"before":null}]})"));
+        t.tick();
+        auto rect = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        check(rect(10)["width"].asNumber() == 40 && rect(10)["height"].asNumber() == 20 && t.last_html().find("<div data-twid='10'") == std::string::npos,
+              "markup in the sheet of a style element in svg content makes no element (node 10 is " + std::to_string(rect(10)["width"].asNumber()) + " wide)");
+        check(rect(10)["x"].asNumber() == 7 && rect(14)["width"].asNumber() == 77,
+              "and the sheet applies, the rules after the string too (got " + std::to_string(rect(10)["x"].asNumber()) + ", " + std::to_string(rect(14)["width"].asNumber()) + ")");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"css","id":13,"text":"#real{margin-left:8px} body>#after{width:77px} /* <div data-twid='10' style='width:222px'> */ <div data-twid='10' style='width:222px'></div> <!--<div data-twid='10' style='width:222px'>-->"}]})"));
+        t.tick();
+        check(rect(10)["width"].asNumber() == 40 && rect(10)["x"].asNumber() == 8, "nor does markup in a comment of the sheet or between its rules (node 10 is " + std::to_string(rect(10)["width"].asNumber()) + " wide at " + std::to_string(rect(10)["x"].asNumber()) + ")");
+
+        // In a select the parser drops the style tag and reads on in the select; an input there ends the select.
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":20,"tag":"select","attrs":[]},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"style","attrs":[]},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"css","id":21,"text":"a{content:\"<input><div data-twid='14' style='width:99px'>\"}"}]})"));
+        t.tick();
+        check(rect(14)["width"].asNumber() == 77 && rect(10)["width"].asNumber() == 40, "nor does markup in the sheet of a style element in a select (node 14 is " + std::to_string(rect(14)["width"].asNumber()) + " wide)");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"style","attrs":[]},{"op":"ins","parent":3,"id":30,"before":null},
+            {"op":"css","id":30,"text":"<!--\n#gen{float:left;height:5px}#gen::before{content:\"<b>\\<&</b>\"}\n-->@media (100px<width){body>#real{margin-left:9px}}"},
+            {"op":"el","id":31,"tag":"div","attrs":[["id","gen"]]},{"op":"ins","parent":4,"id":31,"before":null}]})"));
+        t.tick();
+        check(rect(31)["width"].asNumber() == 72 && t.last_html().find("<b>") == std::string::npos,
+              "a string of a sheet keeps the text it had, written without its `<` (9 characters are " + std::to_string(rect(31)["width"].asNumber()) + " px)");
+        check(rect(10)["x"].asNumber() == 9, "a sheet in an HTML comment and a range query apply as they did (node 10 at " + std::to_string(rect(10)["x"].asNumber()) + ")");
+    }
+
     // ── an adopt op that names a live node's id ──
     {
         StubBackend ab;
