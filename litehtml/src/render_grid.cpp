@@ -2,6 +2,7 @@
 #include "render_grid.h"
 #include "html_tag.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace
@@ -83,7 +84,7 @@ namespace
             pixel_t room        = available - fixed - (fixed_count > 0 ? gap * pixel_t(fixed_count) : 0_px) + gap;
             if(step > 0_px && room > 0_px)
             {
-                count = static_cast<int>(std::floor((room / step).value()));
+                count = static_cast<int>(std::min(std::floor((room / step).value()), 1000.f));
             }
             count = std::max(1, std::min(count, 1000 / static_cast<int>(list.repeat.size())));
         }

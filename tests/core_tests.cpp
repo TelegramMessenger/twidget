@@ -3513,6 +3513,18 @@ int main() {
         check(at == "0,4", "which an ordinary grid never reaches (the fifth item at " + at + ")");
     }
 
+    // ── grid auto-fill: the repetitions are clamped before they are cast ──
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style",")" + std::string("display:grid;width:30000000px;grid-template-columns:repeat(auto-fill,0.0001px)") + R"("]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","grid-column:-1"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        std::string at = css::format_number(g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})"))[0]["result"]["x"].asNumber(), 1);
+        check(at == "0.1", "auto-fill repeats a track of 0.0001px 1000 times, however many would fit (the last line at " + at + ")");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;
