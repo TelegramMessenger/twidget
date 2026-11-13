@@ -343,6 +343,32 @@ namespace litehtml
 
     char mirror(char c);
 
+    // The parser, and whatever walks its tokens, recurses once per level of nesting.
+    static const int kMaxNesting = 128;
+
+    void css_parser::skip_block(char closing_bracket)
+    {
+        std::string closers(1, closing_bracket);
+        while(!closers.empty())
+        {
+            css_token token = next_token();
+            if(token.type == EOF)
+            {
+                return;
+            }
+            if(token.type == closers.back())
+            {
+                closers.pop_back();
+            } else if(token.type == FUNCTION)
+            {
+                closers += ')';
+            } else if(is_one_of(token.type, '{', '[', '('))
+            {
+                closers += mirror(static_cast<char>(token.ch));
+            }
+        }
+    }
+
     // https://www.w3.org/TR/css-syntax-3/#consume-simple-block
     css_token css_parser::consume_simple_block(char opening_bracket)
     {
@@ -353,6 +379,13 @@ namespace litehtml
 
         char closing_bracket = mirror(opening_bracket);
 
+        if(m_depth >= kMaxNesting)
+        {
+            skip_block(closing_bracket);
+            return block;
+        }
+        m_depth++;
+
         while(true)
         {
             // Repeatedly consume the next input token and process it as follows:
@@ -360,11 +393,13 @@ namespace litehtml
 
             if(token.type == closing_bracket)
             {
+                m_depth--;
                 return block;
             }
             if(token.type == EOF)
             {
                 css_parse_error("eof in simple block");
+                m_depth--;
                 return block;
             }
             // Reconsume the current input token. Consume a component value and append it to the value of the block.
@@ -405,6 +440,13 @@ namespace litehtml
         // set to an empty list.
         css_token function(CV_FUNCTION, name);
 
+        if(m_depth >= kMaxNesting)
+        {
+            skip_block(')');
+            return function;
+        }
+        m_depth++;
+
         while(true)
         {
             // Repeatedly consume the next input token and process it as follows:
@@ -413,10 +455,12 @@ namespace litehtml
             switch(token.type)
             {
             case ')':
+                m_depth--;
                 return function;
 
             case EOF:
                 css_parse_error("eof in function");
+                m_depth--;
                 return function;
 
             default:

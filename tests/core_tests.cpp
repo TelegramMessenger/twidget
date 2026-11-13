@@ -3468,6 +3468,30 @@ int main() {
               "a grid's track list stops at 1000 tracks (" + std::to_string(height(10)) + ", " + std::to_string(height(11)) + ", " + std::to_string(height(12)) + ", " + std::to_string(height(13)) + ")");
     }
 
+    // ── blocks and functions nested deeper than the CSS parser keeps ──
+    {
+        StubBackend nb;
+        Renderer n(300, 1, false, nb);
+        std::string nested;
+        for (int i = 0; i < 150; i++) nested += ":is(";
+        nested += "#a" + std::string(150, ')');
+        const std::string deeper = std::string(12000, '(') + std::string(12000, ')');
+        n.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"div{width:10px})" + nested + R"({width:20px}#b{width:calc)" + deeper + R"(}#c:not)" + deeper + R"({width:40px}#c{width:30px}"},
+            {"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","c"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        n.tick();
+        auto width = [&](int id) {
+            return n.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(10) == 10 && width(11) == 10 && width(12) == 30,
+              "a selector or a value nested deeper than the CSS parser keeps is left out, and the rules after it still apply (got " +
+                  std::to_string(width(10)) + ", " + std::to_string(width(11)) + ", " + std::to_string(width(12)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
