@@ -4552,6 +4552,48 @@ int main() {
         check(t == "0 29999950 ", "in a line 30000000px wide too, where a pixel is less than a float's step (got " + t + ")");
     }
 
+    // ── align-content: stretch gives a flex container's free cross space to its lines in one step ──
+    {
+        StubBackend fb;
+        auto stretch = [&](const std::string& tall, int count, int lines) {
+            Renderer f(300, 1, false, fb);
+            std::string ops = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","display:flex"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["style","width:10px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"div","attrs":[["style","display:flex;flex-wrap:wrap;width:100px"]]},{"op":"ins","parent":10,"id":12,"before":null})";
+            int id = 100;
+            for (int i = 0; i < count; i++, id++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style",")" + tall + R"("]]},{"op":"ins","parent":11,"id":)" + std::to_string(id) + R"(,"before":null})";
+            const int first = id;
+            for (int i = 0; i < lines; i++, id++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style","width:100%;height:10px"]]},{"op":"ins","parent":12,"id":)" + std::to_string(id) + R"(,"before":null})";
+            f.receive(parse(ops + "]}"));
+            auto rect = [&](int of, const char* key) {
+                for (const Json& m : f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(of) + "}}")))
+                    if (m["type"].asString() == "result") return m["result"][key].asNumber();
+                return -1.;
+            };
+            std::vector<double> out{rect(12, "height")};
+            for (int i = 0; i < lines; i++) out.push_back(rect(first + i, "y"));
+            return out;
+        };
+        auto shown = [](const std::vector<double>& v) {
+            std::string out;
+            for (double d : v) out += css::format_number(d, 1) + " ";
+            return out;
+        };
+        std::string t = shown(stretch("height:100px", 1, 4));
+        check(t == "100 0 25 50 75 ", "align-content: stretch splits the free cross space between the lines (got " + t + ")");
+        t = shown(stretch("height:100px", 1, 3));
+        check(t == "100 0 33.3 66.7 ", "evenly when it does not divide into whole pixels (got " + t + ")");
+        // 512 grids of 1000 rows of 2^25 px each: a cross size where the rounding of the split leaves more than 2^24 px.
+        const auto far = stretch("display:grid;grid-template-rows:repeat(1000,33554432px);row-gap:33554432px", 512, 250);
+        check(far[0] > 3e13 && far[1] == 0 && std::abs(far[250] / far[0] - 249. / 250) < 1e-4,
+              "and in a container far taller than one length can be, where a pixel is less than a float's step (got " +
+                  css::format_number(far[0], 0) + " " + css::format_number(far[1], 0) + " " + css::format_number(far[250], 0) + ")");
+    }
+
     // ── SVG <use>: its href names an id, never a selector ──
     {
         auto paths = [](const DisplayList& d) {

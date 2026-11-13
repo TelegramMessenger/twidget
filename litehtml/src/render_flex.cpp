@@ -162,29 +162,14 @@ litehtml::rendered_width litehtml::render_item_flex::_render_content(pixel_t x, 
     /////////////////////////////////////////////////////////////////
     /// Distribute free cross size for align-content: stretch
     /////////////////////////////////////////////////////////////////
-    if(css().get_flex_align_content() == flex_align_content_stretch && free_cross_size > 0_px)
+    if(css().get_flex_align_content() == flex_align_content_stretch && free_cross_size > 0_px && !m_lines.empty())
     {
         pixel_t add = free_cross_size / pixel_t(static_cast<int>(m_lines.size()));
-        if(add > 0_px)
+        for(auto& ln : m_lines)
         {
-            for(auto& ln : m_lines)
-            {
-                ln.cross_size   += add;
-                free_cross_size -= add;
-            }
+            ln.cross_size += add;
         }
-        if(!m_lines.empty())
-        {
-            while(free_cross_size > 0_px)
-            {
-                pixel_t distributeStep = 1_px;
-                for(auto& ln : m_lines)
-                {
-                    ln.cross_size   += distributeStep;
-                    free_cross_size -= distributeStep;
-                }
-            }
-        }
+        free_cross_size = 0_px;
     }
 
     /// Reverse lines for flex-wrap: wrap-reverse
