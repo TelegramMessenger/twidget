@@ -3643,6 +3643,32 @@ int main() {
         check(once, "a pointer over the document finds its element");
     }
 
+    // ── ids: a number that fits no int names no node ──
+    {
+        StubBackend sb;
+        Renderer d(300, 1, false, sb);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},
+            {"op":"el","id":1e300,"tag":"div","attrs":[["class","huge"]]},{"op":"ins","parent":4,"id":1e300,"before":-1e300},
+            {"op":"el","id":-1e300,"tag":"div","attrs":[["class","low"]]},{"op":"ins","parent":4,"id":-1e300,"before":null},
+            {"op":"el","id":4294967306,"tag":"canvas","attrs":[["class","wide"]]},{"op":"ins","parent":4,"id":4294967306,"before":null},
+            {"op":"canvas","id":4294967306,"cmds":[["c","drawImage",{"n":1e300},0,0]]},{"op":"canvas","id":1e300,"cmds":[["c","fillRect",0,0,5,5]]},
+            {"op":"text","id":1e19,"data":"stray"},{"op":"ins","parent":4,"id":1e19,"before":null},{"op":"ins","parent":1e300,"id":4,"before":null},
+            {"op":"el","id":0,"tag":"div","attrs":[["class","zero"]]},{"op":"ins","parent":4,"id":0,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","plain"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        std::string html = d.last_html();
+        check(html.find("huge") == std::string::npos && html.find("low") == std::string::npos && html.find("wide") == std::string::npos && html.find("stray") == std::string::npos,
+              "an id that fits no int makes no node");
+        check(html.find("zero") == std::string::npos && html.find("plain") != std::string::npos, "nor does 0, and the nodes around them are made");
+        auto got = d.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":1e300}})"));
+        check(!got.empty() && got[0]["result"]["error"].asString() == "no such element", "a query with such an id finds no element");
+        d.receive(parse(R"({"type":"anim","now":0,"anims":[{"aid":1e300,"target":10,"keyframes":[{"offset":0,"values":{"opacity":"0"}},{"offset":1,"values":{"opacity":"1"}}],"timing":{"duration":1000,"fill":"both"},"startTime":-500},
+            {"aid":7,"target":-1e300,"css":{"kind":"animation","name":"spin","origin":0},"cancelled":true},{"aid":8,"target":1e300,"keyframes":[]}]})"));
+        bool animated = d.last_html().find("opacity:0.") != std::string::npos;
+        d.receive(parse(R"({"type":"anim","now":0,"anims":[{"aid":2147483647,"remove":true}]})"));
+        check(animated && d.last_html().find("opacity") == std::string::npos, "an animation's id past the range of an int is the end of that range");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;

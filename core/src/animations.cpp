@@ -856,8 +856,8 @@ std::optional<WebAnimation> WebAnimation::parse(const Json& o, double clock_offs
     const Json* frames = o.find("keyframes");
     if (!aid || !aid->isNumber() || !target || !target->isNumber() || !frames || !frames->isArray() || frames->arr().size() > MAX_KEYFRAMES) return std::nullopt;
     WebAnimation a;
-    a.aid = int64_t(aid->asNumber());
-    a.target = int64_t(target->asNumber());
+    a.aid = int64_t(aid->asInt());
+    a.target = int64_t(target->asInt());
     const Json& timing = o["timing"];
     auto ms = [&](const char* key, double fallback) -> std::optional<double> {
         const Json* v = timing.find(key);
@@ -1494,7 +1494,7 @@ void Animator::apply_web(const Json& message, double clock_offset_ms) {
             const Json* origin = css_record->find("origin");
             if (!target || !target->isNumber() || !kind || !name || !name->isString() || !origin || !origin->isNumber()) continue;
             if (kind->asString() != "animation" && kind->asString() != "transition") continue;
-            int64_t id = int64_t(target->asNumber());
+            int64_t id = int64_t(target->asInt());
             std::string key = kind->asString() + ":" + name->asString();
             if (item["remove"].asBool()) {
                 if (auto o = overrides_.find(id); o != overrides_.end()) {
@@ -1517,7 +1517,7 @@ void Animator::apply_web(const Json& message, double clock_offset_ms) {
             overrides_[id][key] = o;
             continue;
         }
-        int64_t key = int64_t(aid->asNumber());
+        int64_t key = int64_t(aid->asInt());
         if (item["remove"].asBool()) {
             web_.erase(key);
             continue;

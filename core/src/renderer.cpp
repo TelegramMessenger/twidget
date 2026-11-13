@@ -467,6 +467,12 @@ void set_inline_style(std::vector<std::pair<std::string, std::string>>& styles, 
     for (auto& d : css::parse_declarations(text)) styles.emplace_back(std::move(d.name), d.important ? d.value + " !important" : std::move(d.value));
 }
 
+/// A node id from an op or a query; 0, which names no node, for a number that is no int.
+int64_t node_id(const Json& v) {
+    double d = v.asNumber();
+    return d > -2147483649.0 && d < 2147483648.0 ? int64_t(d) : 0;
+}
+
 /// Move-type events: only the latest one per type and pointer goes out, once per frame.
 bool coalesced(const std::string& type) {
     return type == "pointermove" || type == "mousemove" || type == "touchmove" || type == "wheel";
@@ -2727,7 +2733,7 @@ void Renderer::apply_ops(const std::vector<Json>& ops, std::vector<Json>& out) {
     // The sandbox sends a canvas's commands as one op per canvas, the first canvas used first.
     std::unordered_map<int64_t, size_t> drawn;  // canvas node → its canvas op
     for (size_t i = 0; i < ops.size(); i++)
-        if (ops[i]["op"].asString() == "canvas") drawn.emplace(int64_t(ops[i]["id"].asNumber()), i);
+        if (ops[i]["op"].asString() == "canvas") drawn.emplace(node_id(ops[i]["id"]), i);
     if (drawn.size() < 2) {
         for (const Json& op : ops) apply_op(op, out);
         return;
@@ -2742,14 +2748,14 @@ void Renderer::apply_ops(const std::vector<Json>& ops, std::vector<Json>& out) {
                 if (cmd[size_t(1)].asString() != "drawImage") continue;
                 const Json* source = cmd[size_t(2)].find("n");
                 if (!source) continue;
-                int64_t ref = int64_t(source->asNumber());
+                int64_t ref = node_id(*source);
                 auto it = drawn.find(ref);
                 if (it == drawn.end() || it->second <= i || done[it->second]) continue;
                 // The source's node and its size (a canvas made by script arrives just before its drawing);
                 // where it is inserted stays in its place.
                 for (size_t k = i + 1; k < it->second; k++) {
                     const std::string& kind = ops[k]["op"].asString();
-                    if (!done[k] && int64_t(ops[k]["id"].asNumber()) == ref && (kind == "el" || kind == "attr")) run(k, depth + 1);
+                    if (!done[k] && node_id(ops[k]["id"]) == ref && (kind == "el" || kind == "attr")) run(k, depth + 1);
                 }
                 run(it->second, depth + 1);
             }
@@ -2761,10 +2767,11 @@ void Renderer::apply_ops(const std::vector<Json>& ops, std::vector<Json>& out) {
 
 void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
     const std::string& kind = op["op"].asString();
-    int64_t id = int64_t(op["id"].asNumber());
+    int64_t id = node_id(op["id"]);
     auto str = [&](const char* k) -> const std::string& { return op[k].asString(); };
     // What changes the serialised document; `call` marks it itself when it toggles an attribute.
     if (kind != "canvas" && kind != "call" && !(kind == "prop" && (str("name") == "scrollTop" || str("name") == "scrollLeft"))) document_changed_ = true;
+    if (!id && (kind == "el" || kind == "text" || kind == "comment")) return;
     if (kind == "el") {
         const std::string& adopt_name = str("adopt");
         if (!adopt_name.empty()) {
@@ -2843,7 +2850,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         n->data = str("data");
     } else if (kind == "ins") {
         if (is_root) return;
-        int64_t parent = int64_t(op["parent"].asNumber());
+        int64_t parent = node_id(op["parent"]);
         note_children(n->parent, n);
         detach(n);
         if (parent == 0) return;
@@ -2868,7 +2875,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         n->parent = p;
         const Json* before = op.find("before");
         if (before && before->isNumber()) {
-            Node* b = node(int64_t(before->asNumber()));
+            Node* b = node(node_id(*before));
             if (b && b->parent == p) {
                 auto it = std::find(p->children.begin(), p->children.end(), b);
                 p->children.insert(it, n);
@@ -4384,7 +4391,7 @@ bool Renderer::scripted_only(const Json::Array& ops, std::vector<int64_t>& touch
         // Taking a property away goes back to what the document declares, which only a build knows.
         const std::string& value = op["value"].asString();
         if (value.empty() || value.size() > 256 || !is_layer_property(lower(op["name"].asString()))) return false;
-        int64_t id = int64_t(op["id"].asNumber());
+        int64_t id = node_id(op["id"]);
         auto it = promoted_.find(id);
         if (it == promoted_.end() || !it->second.scripted) return false;
         if (std::find(touched.begin(), touched.end(), id) == touched.end()) touched.push_back(id);
@@ -4397,7 +4404,7 @@ void Renderer::note_scripted(const Json::Array& ops) {
     double now = now_s();
     std::vector<int64_t> moving;
     for (const Json& op : ops)
-        if (op["op"].asString() == "style" && is_layer_property(lower(op["name"].asString()))) moving.push_back(int64_t(op["id"].asNumber()));
+        if (op["op"].asString() == "style" && is_layer_property(lower(op["name"].asString()))) moving.push_back(node_id(op["id"]));
     if (moving.empty()) return;
     bool changed = false;
     if (moving.size() > MAX_LAYERS) {
@@ -4424,7 +4431,7 @@ void Renderer::note_svg(const Json::Array& ops) {
     for (const Json& op : ops) {
         const std::string& kind = op["op"].asString();
         // An insertion changes its parent; a removed node is gone, and so is the way to its SVG.
-        const Node* n = node(int64_t(kind == "ins" ? op["parent"].asNumber() : op["id"].asNumber()));
+        const Node* n = node(node_id(kind == "ins" ? op["parent"] : op["id"]));
         int64_t root = 0;
         for (; n; n = n->parent)
             if (n->kind == Node::Element && n->tag == "svg") root = n->id;
@@ -4639,7 +4646,7 @@ Json Renderer::answer(const Json& q) {
     litehtml::element::ptr el;
     const Node* shadow = nullptr;
     if (q.find("id")) {
-        int64_t id = int64_t(q["id"].asNumber());
+        int64_t id = node_id(q["id"]);
         shadow = node(id);
         el = container_->element(id);
         if (!shadow || shadow->kind != Node::Element) return Json::object().set("error", "no such element");
