@@ -4190,6 +4190,28 @@ int main() {
               "an exponent past the range of int reads as infinity or zero, and to its end");
     }
 
+    // ── chains of sibling combinators over a long row of siblings, matched again on a pointer move ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        std::string chain = "*", css = "div:hover{color:blue}";
+        for (int i = 1; i < 128; i++) chain += "+*";
+        for (int i = 0; i < 12; i++) css += chain + "{outline-offset:" + std::to_string(i) + "px}";
+        std::string ops = R"j({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":")j" + css + R"j("},{"op":"ins","parent":3,"id":5,"before":null})j";
+        for (int i = 0; i < 1950; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","height:1px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        s.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        s.tick();
+        auto start = std::chrono::steady_clock::now();
+        s.hover(0, 10, 10);
+        double moved = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        check(moved < 10, "a pointer move is charged for the siblings its selectors walk, not only for their steps (" + std::to_string(moved) + " s)");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;

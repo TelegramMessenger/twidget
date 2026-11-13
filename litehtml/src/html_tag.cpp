@@ -244,6 +244,12 @@ namespace litehtml
             }
             ~apply_scope() { g_apply_depth--; }
         };
+
+        // A walk over a child list is charged to the selector budget: one step for every 64 children.
+        void charge_children(size_t count)
+        {
+            g_selector_steps += static_cast<int64_t>(count / 64);
+        }
     }
 
     selector_budget::selector_budget()
@@ -1911,6 +1917,7 @@ namespace litehtml
     bool html_tag::is_nth_child(const element::ptr& el, int num, int off, bool of_type,
                                 const css_selector::vector& selector_list) const
     {
+        charge_children(m_children.size());
         int idx = 1;
         for(const auto& child : m_children)
         {
@@ -1948,6 +1955,7 @@ namespace litehtml
     bool html_tag::is_nth_last_child(const element::ptr& el, int num, int off, bool of_type,
                                      const css_selector::vector& selector_list) const
     {
+        charge_children(m_children.size());
         int idx = 1;
         for(auto child = m_children.rbegin(); child != m_children.rend(); child++)
         {
@@ -2017,7 +2025,8 @@ namespace litehtml
                 *is_pseudo = (res & select_match_pseudo_class) != 0;
             return prev;
         }
-        element::ptr ret;
+        charge_children(m_children.size());
+        element* ret = nullptr;
         for(auto& e : m_children)
         {
             if(e->css().get_display() != display_inline_text && !is_generated(*e))
@@ -2039,12 +2048,12 @@ namespace litehtml
                                     *is_pseudo = false;
                                 }
                             }
-                            return ret;
+                            return ret->shared_from_this();
                         }
                     }
                     return nullptr;
                 }
-                ret = e;
+                ret = e.get();
             }
         }
         return nullptr;
@@ -2053,6 +2062,7 @@ namespace litehtml
     litehtml::element::ptr litehtml::html_tag::find_sibling(const element::ptr& el, const css_selector& selector,
                                                             bool apply_pseudo /*= true*/, bool* is_pseudo /*= 0*/)
     {
+        charge_children(m_children.size());
         element::ptr ret = nullptr;
         for(auto& e : m_children)
         {
