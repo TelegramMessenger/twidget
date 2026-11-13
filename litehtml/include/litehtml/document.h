@@ -189,6 +189,8 @@ namespace litehtml
         std::unordered_map<const void*, std::vector<std::shared_ptr<element>>> m_node_elements;
         std::string                             m_master_styles;
         mutable uint32_t                        m_paint_generation = 1;
+        uint32_t                                m_svg_use_generation = 0;
+        int                                     m_svg_use_budget     = 0;
         uint64_t                                m_match_epoch      = 1;
         bool                                    m_has_svg          = false;
         bool                                    m_cull_paint       = false;
@@ -244,6 +246,15 @@ namespace litehtml
         pixel_t   render(pixel_t max_width, render_type rt = render_all);
         void      draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull = false);
         uint32_t  paint_generation() const { return m_paint_generation; }
+        int&      svg_use_budget(int refill)
+        {
+            if(m_svg_use_generation != m_paint_generation)
+            {
+                m_svg_use_generation = m_paint_generation;
+                m_svg_use_budget     = refill;
+            }
+            return m_svg_use_budget;
+        }
         void      note_svg() { m_has_svg = true; }
         bool      has_svg() const { return m_has_svg; }
         void      invalidate_paint() const { m_paint_generation = m_paint_generation + 1 == 0 ? 1 : m_paint_generation + 1; }

@@ -3316,6 +3316,63 @@ int main() {
         check(first > 0 && flipped == first && shorter > 0 && shorter < first, "a box generated again and again gives back what it took (heights " + std::to_string(first) + ", " + std::to_string(flipped) + ", " + std::to_string(shorter) + ")");
     }
 
+    // ── SVG <use>: all that a document's <svg>s draw through it comes from one budget ──
+    {
+        StubBackend ub;
+        const std::string head = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"defs","ns":"svg"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"g","ns":"svg","attrs":[["id","l0"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"g","ns":"svg","attrs":[["id","l1"]]},{"op":"ins","parent":11,"id":13,"before":null})";
+        std::string ops = head;
+        int id = 20;
+        auto add = [&](const char* tag, const std::string& attrs, int parent) {
+            ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":")" + tag + R"(","ns":"svg","attrs":[)" + attrs + R"(]},{"op":"ins","parent":)" +
+                   std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+            return id++;
+        };
+        auto paths = [](const DisplayList& d) {
+            return size_t(std::count_if(d.begin(), d.end(), [](const Command& c) { return c.kind == Cmd::Path; }));
+        };
+        Renderer fan(300, 1, false, ub);
+        for (int k = 0; k < 100; k++) add("rect", R"(["width","1"],["height","1"])", 12);
+        for (int k = 0; k < 100; k++) add("use", R"(["href","#l0"])", 13);
+        for (int k = 0; k < 5; k++) add("use", R"(["href","#l1"])", add("svg", R"(["width","10"],["height","10"])", 4));
+        fan.receive(parse(ops + "]}"));
+        const size_t first = paths(fan.paint());
+        check(first > 5000 && first <= 10000, "five <svg>s that each use 100 x 100 rects draw from one budget (" + std::to_string(first) + " paths)");
+        const size_t again = paths(fan.paint());
+        check(again == first, "and draw the same when painted again (" + std::to_string(again) + " paths)");
+
+        Renderer spaced(300, 1, false, ub);
+        ops = head;
+        for (int k = 0; k < 3; k++) {
+            ops += R"(,{"op":"text","id":)" + std::to_string(id) + R"(,"data":"\n            "},{"op":"ins","parent":12,"id":)" + std::to_string(id) + R"(,"before":null})";
+            id++;
+            add("rect", R"(["width","1"],["height","1"])", 12);
+        }
+        for (int k = 0; k < 600; k++) add("use", R"(["href","#l0"])", 10);
+        spaced.receive(parse(ops + "]}"));
+        const size_t icons = paths(spaced.paint());
+        check(icons == 1800, "600 uses of three rects with white space between them are all drawn (" + std::to_string(icons) + " paths)");
+
+        Renderer few(300, 1, false, ub);
+        few.receive(parse(R"j({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"symbol","ns":"svg","attrs":[["id","s"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"rect","ns":"svg","attrs":[["width","1"],["height","1"],["fill","url(#g)"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"linearGradient","ns":"svg","attrs":[["id","g"]]},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"stop","ns":"svg","attrs":[["offset","0"],["stop-color","red"]]},{"op":"ins","parent":13,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"use","ns":"svg","attrs":[["href","#s"]]},{"op":"ins","parent":10,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"use","ns":"svg","attrs":[["href","#s"],["x","2"]]},{"op":"ins","parent":10,"id":16,"before":null}]})j"));
+        int gradients = 0;
+        for (const Command& c : few.paint())
+            if (c.kind == Cmd::Path && c.path && c.path->gradient == 1) gradients++;
+        check(gradients == 2, "two uses of a symbol draw its gradient-filled rect twice (" + std::to_string(gradients) + ")");
+    }
+
     // ── trees deeper than a document may be ──
     {
         auto chain = [](int levels) {

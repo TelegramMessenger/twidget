@@ -33,6 +33,8 @@ namespace litehtml
         uint32_t m_content_generation = 0;
         bool     m_content_cacheable  = false;
         bool     m_group_cache_eligible = false;
+        uint32_t m_use_generation = 0;
+        int      m_use_allowance  = 0;
         bool     cacheable_paint_key(uint64_t& key) const;
         bool     cached_paint_key(uint64_t& key);
 
