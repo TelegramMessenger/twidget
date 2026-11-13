@@ -269,8 +269,10 @@ void litehtml::render_item_inline_context::apply_ellipsis(pixel_t room)
             done = true;
             if(!text || !text->src_el()->parent())
                 continue;
-            const std::string& shown = text->is_fragment ? text->fragment_text
-                                                         : static_cast<const el_text*>(text->src_el().get())->display_text();
+            const auto* source = dynamic_cast<const el_text*>(text->src_el().get());
+            if(!text->is_fragment && !source)
+                continue;
+            const std::string& shown = text->is_fragment ? text->fragment_text : source->display_text();
             uint_ptr font = text->src_el()->parent()->css().get_font();
             size_t   fit  = 0;
             pixel_t  used = 0_px;

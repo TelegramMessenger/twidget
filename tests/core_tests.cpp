@@ -3340,6 +3340,38 @@ int main() {
         check(texts == "at100 " && deepest == 126, "300 nested elements are written and laid out to the 128th level, <html> the first (" + texts + ", " + std::to_string(deepest) + " divs deep)");
     }
 
+    // ── elements that are not tags ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[["id","s"]]},{"op":"css","id":20,"text":".x{color:red}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","x"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"anchor"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto ask = [&](Json query) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) { return ask(Json::object().set("q", "cs").set("id", id))[prop].asString(); };
+        auto style = [&](const char* op, const char* name, const std::string& value) {
+            auto ops = Json::array().push(Json::object().set("op", op).set("id", 20).set("name", name).set("value", value));
+            t.receive(Json::object().set("type", "ops").set("ops", ops));
+            t.tick();
+        };
+        // Each first write puts the attribute there, each later one goes through the property patch.
+        style("attr", "style", "transform:translateX(1px)");
+        for (const auto value : {"translateX(2px)", "translateX(3px)", "none"}) style("style", "transform", value);
+        for (const auto value : {"0.5", "0.25", "1"}) style("style", "opacity", value);
+        for (const auto value : {"red", "blue"}) style("style", "background-color", value);
+        for (const auto value : {"10px", "20px"}) style("style", "width", value);
+        for (const auto value : {"a", "b", ""}) style("attr", "class", value);
+        check(cs(10, "color") == "rgb(255, 0, 0)" && t.last_html().find("width:20px") != std::string::npos,
+              "inline styles and classes on a <style> element change nothing but its attributes (got " + cs(10, "color") + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

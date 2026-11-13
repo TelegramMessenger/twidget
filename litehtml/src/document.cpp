@@ -564,7 +564,10 @@ namespace litehtml
         case display_inline_flex:
         case display_grid:
         case display_inline_grid:
-            return std::static_pointer_cast<html_tag>(owner)->can_restyle_width_shallow();
+        {
+            auto tag = std::dynamic_pointer_cast<html_tag>(owner);
+            return tag && tag->can_restyle_width_shallow();
+        }
         default:
             return false;
         }
@@ -1204,7 +1207,9 @@ namespace litehtml
         {
             html_hole& hole   = m_holes[changes[entry.first].first];
             int        region = 0;
-            auto       tag    = std::static_pointer_cast<html_tag>(hole.owner);
+            auto       tag    = std::dynamic_pointer_cast<html_tag>(hole.owner);
+            if(!tag)
+                return -1;
             const bool fast   = tag->flip_class(hole.value, changes[entry.first].second, m_match_epoch, &region);
             if(!fast)
             {
@@ -1316,7 +1321,8 @@ namespace litehtml
                     size before;
                     hole.text_elements[w]->get_content_size(before, 0_px);
                     measured.emplace_back(hole.text_elements[w], before);
-                    std::static_pointer_cast<el_text>(hole.text_elements[w])->set_text(words[w]);
+                    if(auto text = std::dynamic_pointer_cast<el_text>(hole.text_elements[w]))
+                        text->set_text(words[w]);
                     retext.push_back(hole.text_elements[w]);
                 }
                 continue;
@@ -1357,7 +1363,7 @@ namespace litehtml
             {
                 hole.owner->set_attr("style", hole.value.c_str());
                 restyle.push_back(hole.owner);
-                if(patch && !outermost_svg(hole.owner))
+                if(patch && !outermost_svg(hole.owner) && dynamic_cast<html_tag*>(hole.owner.get()))
                     patched[hole.owner.get()] = patch;
                 continue;
             }
@@ -1608,17 +1614,18 @@ namespace litehtml
         }
         for(const auto& el : roots)
         {
-            auto patch = fast.find(el.get());
-            if(patch != fast.end())
+            auto       patch = fast.find(el.get());
+            const bool local = patch != fast.end() || background_only.count(el.get());
+            auto       tag   = local ? std::dynamic_pointer_cast<html_tag>(el) : nullptr;
+            if(tag && patch != fast.end())
             {
-                auto tag = std::static_pointer_cast<html_tag>(el);
                 if(!tag->patch_inline_properties(patch->second->names, patch->second->text))
                 {
                     tag->restore_base_style();
                     tag->compute_styles(true);
                 }
-            } else if(background_only.count(el.get()))
-                std::static_pointer_cast<html_tag>(el)->compute_background_style();
+            } else if(tag)
+                tag->compute_background_style();
             else
                 el->compute_styles(!shallow_width.count(el.get()));
         }
@@ -1778,7 +1785,9 @@ namespace litehtml
             std::sort(rules.begin(), rules.end());
             return rules;
         };
-        auto                                              tag     = std::static_pointer_cast<html_tag>(el);
+        auto                                              tag     = std::dynamic_pointer_cast<html_tag>(el);
+        if(!tag)
+            return false;
         bool                                              neutral = check && !has_pseudo();
         std::vector<std::pair<const css_selector*, bool>> rules_before;
         string_map                                        attrs_before;
@@ -2224,7 +2233,8 @@ namespace litehtml
         {
             for(size_t w = 0; w < entry.second.size(); w++)
             {
-                std::static_pointer_cast<el_text>(entry.first[w])->set_text(entry.second[w]);
+                if(auto text = std::dynamic_pointer_cast<el_text>(entry.first[w]))
+                    text->set_text(entry.second[w]);
                 retext.push_back(entry.first[w]);
             }
         }
