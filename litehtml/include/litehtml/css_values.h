@@ -41,6 +41,10 @@ namespace litehtml
 
         std::optional<int> value_index(const std::string_view& str) const
         {
+            if(str.empty())
+            {
+                return std::nullopt;
+            }
             for(std::size_t i = 0; i < size; i++)
             {
                 if(data[i] == str)
@@ -171,7 +175,7 @@ namespace litehtml
     // ==========================================================
     // CSS Property: list-style-type
     // ==========================================================
-    inline constexpr auto list_style_type_strings = split_css_values<24>(
+    inline constexpr auto list_style_type_strings = split_css_values<23>(
         "none;circle;disc;square;disclosure-open;disclosure-closed;armenian;cjk-ideographic;decimal;decimal-leading-zero;georgian;hebrew;hiragana;"
         "hiragana-iroha;katakana;katakana-iroha;lower-alpha;lower-greek;lower-latin;lower-roman;upper-alpha;"
         "upper-latin;upper-roman");
@@ -571,7 +575,7 @@ namespace litehtml
     // ==========================================================
     // CSS Property: appearance
     // ==========================================================
-    inline constexpr auto appearance_strings = split_css_values<17>(
+    inline constexpr auto appearance_strings = split_css_values<16>(
         "none;auto;menulist-button;textfield;button;checkbox;listbox;menulist;meter;progress-bar;push-button;radio;"
         "searchfield;slider-horizontal;square-button;textarea");
 
