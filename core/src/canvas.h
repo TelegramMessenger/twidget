@@ -82,6 +82,7 @@ private:
         float shadow_blur = 0, shadow_x = 0, shadow_y = 0;
         bool smoothing = true;
         std::shared_ptr<const std::vector<CanvasClip>> clips;
+        size_t clip_floats = 0;
     };
     struct Gradient {
         std::string kind;

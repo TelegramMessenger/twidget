@@ -3281,6 +3281,29 @@ int main() {
         check(f.last_html().find("id=\"a\"") != std::string::npos, "and a detached one is removed without recursing through it");
     }
 
+    // ── the clip lists the states of a canvas's stack keep stop growing ──
+    {
+        StubBackend kb;
+        Renderer k(300, 1, false, kb);
+        k.receive(parse(PAGE));
+        k.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        std::string cmds = R"(["c","rect",0,0,9,9])";
+        for (int i = 0; i < 512; i++) cmds += R"(,["c","clip"],["c","save"])";
+        for (int i = 0; i < 512; i++) cmds += R"(,["c","restore"],["c","fillRect",0,0,1,1])";
+        k.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[)" + cmds + "]}]}"));
+        std::set<const void*> lists;
+        size_t kept = 0, fills = 0, nested = 0;
+        for (const auto& ops : kb.runs)
+            for (const CanvasOp& op : ops) {
+                fills += op.kind == CanvasOp::Fill;
+                if (!op.clips || !lists.insert(op.clips.get()).second) continue;
+                nested = std::max(nested, op.clips->size());
+                for (const CanvasClip& clip : *op.clips) kept += clip.path.points.size() + 16;
+            }
+        check(fills == 512 && nested >= 100 && kept <= (size_t(1) << 18) + (size_t(1) << 14),
+              "a stack of 512 states keeps a bounded amount of clip geometry (" + std::to_string(kept) + " floats, " + std::to_string(nested) + " clips nested)");
+    }
+
     // ── canvases drawn from one another down a long chain ──
     {
         StubBackend cb;

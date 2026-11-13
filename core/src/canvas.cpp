@@ -92,6 +92,7 @@ constexpr size_t MAX_COLORS = 256;
 constexpr size_t MAX_PATH_FLOATS = size_t(1) << 20;
 constexpr size_t MAX_PATHS_FLOATS = size_t(1) << 22;
 constexpr size_t MAX_CLIP_FLOATS = size_t(1) << 14;
+constexpr size_t MAX_STACK_CLIP_FLOATS = size_t(1) << 18;
 constexpr size_t CLIP_COST = 16;
 constexpr size_t MAX_RUN_FLOATS = size_t(1) << 24;
 
@@ -706,16 +707,25 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
     } else if (m == Method::clip) {
         const Builder* p = path_arg();
         const Geometry& path = p ? p->geometry : path_.geometry;
-        size_t held = path.points.size() + CLIP_COST;
-        if (s.clips)
-            for (const CanvasClip& c : *s.clips) held += c.path.points.size() + CLIP_COST;
+        size_t held = path.points.size() + CLIP_COST + s.clip_floats;
+        // States saved with no clip() between them share one list.
+        size_t stacked = 0;
+        const void* last = nullptr;
+        for (const State& saved : stack_) {
+            if (saved.clips.get() != last) stacked += saved.clip_floats;
+            last = saved.clips.get();
+        }
         auto clips = std::make_shared<std::vector<CanvasClip>>();
         // An empty path clips everything away.
-        if (held <= MAX_CLIP_FLOATS && spend(held)) {
+        if (held <= MAX_CLIP_FLOATS && stacked + held <= MAX_STACK_CLIP_FLOATS && spend(held)) {
             if (s.clips) *clips = *s.clips;
             clips->push_back(CanvasClip{p ? transformed(path, s.matrix) : path, evenodd(p ? 1 : 0)});
-        } else clips->push_back(CanvasClip{});
+        } else {
+            clips->push_back(CanvasClip{});
+            held = CLIP_COST;
+        }
         s.clips = std::move(clips);
+        s.clip_floats = held;
     } else if (m == Method::fillText || m == Method::strokeText) {
         if (!a.empty() && a[0].kind == Value::String) text(a[0].string, n(1), n(2), a.size() > 3 ? &a[3] : nullptr, m == Method::strokeText, out);
     } else if (m == Method::setLineDash) {
