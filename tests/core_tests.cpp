@@ -3385,6 +3385,15 @@ int main() {
         check(width(31) == 40 && width(33) == 32 && width(41) == 300,
               "a tag that declares the display of a text node, by a variable or by name, is laid out as an inline box (got " +
                   std::to_string(width(31)) + ", " + std::to_string(width(33)) + ", " + std::to_string(width(41)) + ")");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"css","id":20,"text":":root{--w:0-lh-calc} .c{width:calc(50% - 7px)} .v{width:var(--w)} .n{width:1-lh-calc}"},
+            {"op":"el","id":50,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":50,"before":null},
+            {"op":"el","id":51,"tag":"div","attrs":[["class","v"]]},{"op":"ins","parent":4,"id":51,"before":null},
+            {"op":"el","id":52,"tag":"div","attrs":[["class","n"]]},{"op":"ins","parent":4,"id":52,"before":null}]})"));
+        t.tick();
+        check(width(50) == 143 && width(51) == 300 && width(52) == 300,
+              "a length cannot name the unit that marks a calc expression and take another's value (got " +
+                  std::to_string(width(50)) + ", " + std::to_string(width(51)) + ", " + std::to_string(width(52)) + ")");
     }
 
     std::printf("%d failure(s)\n", failures);

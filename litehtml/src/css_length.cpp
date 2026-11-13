@@ -344,7 +344,7 @@ namespace litehtml
 
             auto idx = css_values(css_units_strings).value_index(lowcase(token.unit()));
             // note: 1none and 1\% are invalid
-            if(!idx.has_value() || idx.value() == css_units_none || idx.value() == css_units_percentage)
+            if(!idx.has_value() || is_one_of(idx.value(), css_units_none, css_units_percentage, css_units_calc))
             {
                 return false;
             }
