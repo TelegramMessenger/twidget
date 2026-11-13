@@ -51,6 +51,7 @@ struct BuildStats {
     int scripted = 0;
     /// Paints that handed out the last list again, only layers having moved.
     int reused = 0;
+    size_t names = 0, name_bytes = 0;
 };
 
 class Renderer : private CanvasHost {
@@ -285,6 +286,15 @@ private:
         }
     };
     int meter_depth_ = 0;
+    /// Charges the names the outermost call it spans left in litehtml's name table, which never gives one back.
+    struct NameMeter {
+        Renderer& r;
+        size_t names = 0, bytes = 0;
+        explicit NameMeter(Renderer& renderer);
+        ~NameMeter();
+    };
+    int name_meter_depth_ = 0;
+    void stop_names();
     std::deque<std::pair<double, double>> charges_;  // when, and how long, the passes of the last window took
     double first_charge_ = -1;
     double throttled_until_ = 0;

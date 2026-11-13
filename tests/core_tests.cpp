@@ -4332,6 +4332,63 @@ int main() {
               "6000 font sizes in turn on 50 elements keep fewer than 5000 fonts (made " + std::to_string(b.next) + ", let go of " + std::to_string(b.deleted) + ")");
     }
 
+    // ── names: a widget that keeps inventing class and property names is stopped, an ordinary one is not ──
+    {
+        StubBackend nb;
+        const char* page = R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"#a{width:100px;height:10px;--accent:red}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null}]})";
+        auto violation = [](const std::vector<Json>& out) {
+            for (const Json& m : out)
+                if (m["type"].asString() == "violation" && m["detail"].asString().rfind("name limit", 0) == 0) return true;
+            return false;
+        };
+        auto stopped_after = [&](const std::string& tag, int classes, size_t length, int properties, std::string& html) {
+            Renderer r(300, 1, false, nb);
+            r.receive(parse(page));
+            r.tick();
+            int stopped = 0;
+            for (int round = 1; round <= 12 && !stopped; round++) {
+                std::string list, sheet;
+                for (int i = 0; i < classes; i++) {
+                    std::string name = tag + std::to_string(round) + "c" + std::to_string(i);
+                    list += name + std::string(length > name.size() ? length - name.size() : 0, 'x') + " ";
+                }
+                for (int i = 0; i < properties; i++) sheet += "--" + tag + std::to_string(round) + "p" + std::to_string(i) + ":1;";
+                bool now = violation(r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":")" + list +
+                                                     R"("},{"op":"css","id":20,"text":"#a{width:100px;height:10px;)" + sheet + R"(}"}]})")));
+                if (violation(r.tick()) || now) stopped = round;
+            }
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"after-the-stop"}]})"));
+            r.tick();
+            html = r.last_html();
+            return stopped;
+        };
+        std::string many, long_ones;
+        const int by_count = stopped_after("nm", 2500, 0, 500, many), by_bytes = stopped_after("nl", 100, 4000, 0, long_ones);
+        check(by_count == 7 && by_bytes == 3 && many.find("data-tw-badge=\"fatal\"") != std::string::npos && many.find("after-the-stop") == std::string::npos &&
+                  long_ones.find("data-tw-badge=\"fatal\"") != std::string::npos,
+              "a widget that invents 3000 names, or 400 K of names, a batch is stopped past 20000 names or 1 MB, and its names reach the document no more (stopped after " +
+                  std::to_string(by_count) + " and " + std::to_string(by_bytes) + " batches)");
+
+        Renderer plain(300, 1, false, nb);
+        plain.receive(parse(page));
+        plain.tick();
+        bool stopped = false;
+        for (int i = 0; i < 25000; i++) {
+            Json asked = Json::object().set("q", "cs").set("id", 10).set("prop", "--asked" + std::to_string(i));
+            stopped = violation(plain.receive(Json::object().set("type", "query").set("qid", 1).set("query", asked))) || stopped;
+        }
+        stopped = violation(plain.tick()) || stopped;
+        auto answer = [&](Json query) { return plain.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query)))[0]["result"]; };
+        const std::string accent = answer(Json::object().set("q", "cs").set("id", 10).set("prop", "--accent")).asString();
+        const double width = answer(Json::object().set("q", "rect").set("id", 10))["width"].asNumber();
+        check(!stopped && accent == "red" && width == 100 && plain.last_html().find("data-tw-badge") == std::string::npos,
+              "an ordinary widget is not stopped, and 25000 queries for custom properties nobody declared add no names (got " + accent + ", " + std::to_string(width) + ")");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;

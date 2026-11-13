@@ -532,6 +532,8 @@ constexpr double INPUT_IMMEDIATE_S = 0.25;
 /// The sandbox hands a long flush over in parts of this many ops (widget-sandbox v0.6.0, capture.ts PARTIAL_BATCH_OPS);
 /// only the last part of a task is shorter.
 constexpr size_t PARTIAL_BATCH_OPS = 1000;
+constexpr size_t MAX_NAMES = 20000;
+constexpr size_t MAX_NAME_BYTES = 1 << 20;
 /// The render throttle (the Swift renderer's): a pass costlier than a frame holds the next one back
 /// for THROTTLE_FACTOR times its cost, 25 % of the thread at most; under sustained load, more than
 /// SUSTAINED_LIMIT of SUSTAINED_WINDOW with two passes over HEAVY_PASS_S, 5 %. Nothing is charged in
@@ -2620,6 +2622,7 @@ uint64_t Renderer::layouts() const { return container_->layouts(); }
 uint32_t Renderer::px_height() const { return uint32_t(std::ceil(vp_height_ * dpr_)); }
 
 std::vector<Json> Renderer::receive(const Json& msg) {
+    NameMeter name_meter(*this);
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
@@ -3361,6 +3364,7 @@ void Renderer::settle(std::vector<Json>& out) {
 
 void Renderer::rebuild(bool patch) {
     Meter meter(*this);
+    NameMeter name_meter(*this);
     struct Refresh {
         Renderer& r;
         ~Refresh() { r.refresh_editor(); }
@@ -3371,6 +3375,26 @@ void Renderer::rebuild(bool patch) {
     build_document(patch);
     paint_scan_ = true;
     animate();
+}
+
+Renderer::NameMeter::NameMeter(Renderer& renderer) : r(renderer) {
+#ifdef TW_LITEHTML_TWIDGET
+    if (r.name_meter_depth_++ == 0) {
+        const auto usage = litehtml::_id_usage();
+        names = usage.names;
+        bytes = usage.bytes;
+    }
+#endif
+}
+
+Renderer::NameMeter::~NameMeter() {
+#ifdef TW_LITEHTML_TWIDGET
+    if (--r.name_meter_depth_ != 0) return;
+    const auto usage = litehtml::_id_usage();
+    r.stats_.names += usage.names - names;
+    r.stats_.name_bytes += usage.bytes - bytes;
+    if (r.stats_.names > MAX_NAMES || r.stats_.name_bytes > MAX_NAME_BYTES) r.stop_names();
+#endif
 }
 
 void Renderer::charge(double spent) {
@@ -3679,6 +3703,7 @@ void Renderer::queue_animation_events() {
 }
 
 std::vector<Json> Renderer::tick() {
+    NameMeter name_meter(*this);
     std::vector<Json> out;
     check_hold(out);
     // Held back, a frame only hands out the coalesced moves; the build and the animation step wait.
@@ -4486,6 +4511,7 @@ void Renderer::note_resize() {
 
 DisplayList Renderer::paint() {
     Meter meter(*this);
+    NameMeter name_meter(*this);
     // Messages from a build here go out with the next ones.
     settle(pending_events_);
     if (reuse_paint()) {
@@ -5255,6 +5281,7 @@ std::string Renderer::editor_json() const {
 }
 
 std::vector<Json> Renderer::edit(uint64_t generation, const std::string& text, const std::string& input_type) {
+    NameMeter name_meter(*this);
     std::vector<Json> out;
     last_input_ = now_s();
     if (frozen_ || !editing_.id || generation != editing_.generation) return out;
@@ -5278,6 +5305,7 @@ std::vector<Json> Renderer::edit(uint64_t generation, const std::string& text, c
 }
 
 std::vector<Json> Renderer::end_editing() {
+    NameMeter name_meter(*this);
     std::vector<Json> out;
     blur(out);
     if (stale_) {
@@ -5352,6 +5380,7 @@ std::vector<int64_t> Renderer::chain(int64_t id) const {
 }
 
 std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, bool primary, bool mouse, int modifiers, int button) {
+    NameMeter name_meter(*this);
     std::vector<Json> out;
     last_input_ = now_s();
     settle(out);
@@ -5506,6 +5535,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
 }
 
 std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers) {
+    NameMeter name_meter(*this);
     std::vector<Json> out;
     last_input_ = now_s();
     settle(out);
@@ -5601,6 +5631,7 @@ void Renderer::image_event(const char* type, int64_t id, float w, float h, std::
 }
 
 std::vector<Json> Renderer::image_ready(int id, float w, float h) {
+    NameMeter name_meter(*this);
     std::vector<Json> out;
     if (auto it = waiting_images_.find(id); it != waiting_images_.end()) {
         for (int64_t node_id : it->second) image_event(w > 0 || h > 0 ? "load" : "error", node_id, w, h, out);
@@ -5745,6 +5776,14 @@ void Renderer::stop_layout(uint64_t boxes) {
     pending_violations_.push_back("layout limit: more than " + std::to_string(boxes - 1) + " boxes in one layout");
     freeze("Layout limit exceeded", true);
     // A build in progress rebuilds as the badge itself; a patch or a restyle falls back to one.
+    stale_ = true;
+}
+
+void Renderer::stop_names() {
+    if (layout_stopped_) return;
+    layout_stopped_ = true;
+    pending_violations_.push_back("name limit: more than " + std::to_string(MAX_NAMES) + " names or " + std::to_string(MAX_NAME_BYTES) + " bytes of names");
+    freeze("Name limit exceeded", true);
     stale_ = true;
 }
 

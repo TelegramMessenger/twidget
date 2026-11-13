@@ -105,7 +105,8 @@ litehtml::element::ptr pseudo_of(const litehtml::element::ptr& el, std::string_v
 std::string computed_custom_property(const litehtml::element::ptr& el, const std::string& name) {
     auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(el);
     litehtml::css_token_vector tokens;
-    if (!tag || !tag->get_custom_property(litehtml::_id(name), tokens)) return {};
+    litehtml::string_id id;
+    if (!tag || !litehtml::_find_id(name, id) || !tag->get_custom_property(id, tokens)) return {};
     // The fork drops a declaration's whitespace as it parses: one space goes back between two values, as in
     // `8px 12px`, and none next to punctuation (`,` `/`), whose types are their characters, the values' negative.
     std::string out;

@@ -1,6 +1,7 @@
 #ifndef LITEHTML_STRING_ID_H
 #define LITEHTML_STRING_ID_H
 
+#include <cstddef>
 #include <string>
 
 namespace litehtml
@@ -122,6 +123,14 @@ namespace litehtml
 
     string_id          _id(const std::string& str);
     const std::string& _s(string_id id);
+    bool               _find_id(const std::string& str, string_id& id);
+
+    struct string_id_usage
+    {
+        size_t names = 0;
+        size_t bytes = 0;
+    };
+    string_id_usage _id_usage();
 
 } // namespace litehtml
 
