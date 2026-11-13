@@ -3770,6 +3770,31 @@ int main() {
                   ", " + std::to_string(width(102)) + ", " + std::to_string(width(309)) + ")");
     }
 
+    // ── a text changed in place that is not UTF-8 goes through the parser ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"span","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"hello"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto width = [&] {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", 10))))
+                if (m["type"].asString() == "result") return m["result"]["width"].asNumber();
+            return -1.0;
+        };
+        auto data = [&](const std::string& text) {
+            t.receive(Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "data").set("id", 11).set("data", text))));
+            t.tick();
+        };
+        // An overlong NUL is no character to the text splitter and two replacement characters to the parser.
+        data("\xC0\x80");
+        double replaced = width();
+        data("world");
+        check(replaced == 48 && width() == 40, "a text follows one that was not UTF-8 (got " + std::to_string(replaced) + ", " + std::to_string(width()) + ")");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;

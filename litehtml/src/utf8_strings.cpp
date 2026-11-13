@@ -62,6 +62,32 @@ namespace litehtml
             ; // skip continuation bytes
     }
 
+    bool is_valid_utf8(const std::string& str)
+    {
+        for(size_t i = 0; i < str.size();)
+        {
+            const byte b = static_cast<byte>(str[i]);
+            if(b < 0x80)
+            {
+                i++;
+                continue;
+            }
+            const size_t n = b >= 0xC2 && b <= 0xDF ? 2 : b >= 0xE0 && b <= 0xEF ? 3 : b >= 0xF0 && b <= 0xF4 ? 4 : 0;
+            if(!n || str.size() - i < n)
+                return false;
+            const byte second = static_cast<byte>(str[i + 1]);
+            if(second < (b == 0xE0 ? 0xA0 : b == 0xF0 ? 0x90 : 0x80) || second > (b == 0xED ? 0x9F : b == 0xF4 ? 0x8F : 0xBF))
+                return false;
+            for(size_t k = 2; k < n; k++)
+            {
+                if((static_cast<byte>(str[i + k]) & 0xC0) != 0x80)
+                    return false;
+            }
+            i += n;
+        }
+        return true;
+    }
+
     void append_char(std::string& str, char32_t code)
     {
         if(code <= 0x7F)

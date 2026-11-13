@@ -35,6 +35,7 @@
 #include "render_table.h"
 #include "stylesheet.h"
 #include "types.h"
+#include "utf8_strings.h"
 
 #include <cstdlib>
 #include <cmath>
@@ -1140,7 +1141,7 @@ namespace litehtml
             const std::string& v = change.second;
             if(i >= m_holes.size() || v == m_holes[i].value)
                 continue;
-            if(v.find_first_of("&\r") != std::string::npos || v.find('\0') != std::string::npos)
+            if(v.find_first_of("&\r") != std::string::npos || v.find('\0') != std::string::npos || !is_valid_utf8(v))
                 return -1;
             if(m_holes[i].cls)
             {
