@@ -2,6 +2,7 @@
 #include "render_grid.h"
 #include "html_tag.h"
 #include <algorithm>
+#include <cstdint>
 
 namespace
 {
@@ -148,6 +149,8 @@ namespace
     {
         std::vector<std::vector<bool>> m_rows;
         int                            m_cols;
+        // Cells that placement may still examine or mark: past it items stack in rows of their own.
+        int64_t                        m_budget = 200000;
 
       public:
         explicit occupancy(int cols) :
@@ -157,18 +160,17 @@ namespace
 
         int rows() const { return static_cast<int>(m_rows.size()); }
 
-        bool fits(int row, int col, int row_span, int col_span) const
+        bool spent() const { return m_budget <= 0; }
+
+        bool fits(int row, int col, int row_span, int col_span)
         {
             if(col < 0 || col + col_span > m_cols)
             {
                 return false;
             }
-            for(int r = row; r < row + row_span; r++)
+            for(int r = row; r < row + row_span && r < rows(); r++)
             {
-                if(r >= rows())
-                {
-                    continue;
-                }
+                m_budget -= col_span;
                 for(int c = col; c < col + col_span; c++)
                 {
                     if(m_rows[r][c])
@@ -182,6 +184,11 @@ namespace
 
         void mark(int row, int col, int row_span, int col_span)
         {
+            m_budget -= static_cast<int64_t>(row_span) * col_span;
+            if(spent())
+            {
+                return;
+            }
             while(rows() < row + row_span)
             {
                 m_rows.emplace_back(m_cols, false);
@@ -199,8 +206,13 @@ namespace
     void place_cells(std::vector<grid_cell>& cells, int cols)
     {
         occupancy grid(cols);
+        int       bottom = 0;
         for(auto& cell : cells)
         {
+            if(cell.row >= 0)
+            {
+                bottom = std::max(bottom, cell.row + cell.row_span);
+            }
             if(cell.row >= 0 && cell.col >= 0)
             {
                 grid.mark(cell.row, cell.col, cell.row_span, cell.col_span);
@@ -211,7 +223,8 @@ namespace
             if(cell.row >= 0 && cell.col < 0)
             {
                 int col = 0;
-                while(col + cell.col_span <= cols && !grid.fits(cell.row, col, cell.row_span, cell.col_span))
+                while(!grid.spent() && col + cell.col_span <= cols &&
+                      !grid.fits(cell.row, col, cell.row_span, cell.col_span))
                 {
                     col++;
                 }
@@ -227,13 +240,20 @@ namespace
             {
                 continue;
             }
+            if(grid.spent())
+            {
+                cell.row      = bottom++;
+                cell.row_span = 1;
+                cell.col      = std::max(cell.col, 0);
+                continue;
+            }
             if(cell.col >= 0)
             {
                 if(cell.col < cursor_col)
                 {
                     cursor_row++;
                 }
-                while(!grid.fits(cursor_row, cell.col, cell.row_span, cell.col_span))
+                while(!grid.spent() && !grid.fits(cursor_row, cell.col, cell.row_span, cell.col_span))
                 {
                     cursor_row++;
                 }
@@ -248,7 +268,7 @@ namespace
                         cursor_col = 0;
                         cursor_row++;
                     }
-                    if(grid.fits(cursor_row, cursor_col, cell.row_span, cell.col_span))
+                    if(grid.spent() || grid.fits(cursor_row, cursor_col, cell.row_span, cell.col_span))
                     {
                         break;
                     }
@@ -258,6 +278,7 @@ namespace
                 cell.col    = cursor_col;
                 cursor_col += cell.col_span;
             }
+            bottom = std::max(bottom, cell.row + cell.row_span);
             grid.mark(cell.row, cell.col, cell.row_span, cell.col_span);
         }
     }

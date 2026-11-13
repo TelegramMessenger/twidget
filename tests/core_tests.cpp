@@ -3453,6 +3453,25 @@ int main() {
         check(rect(last)["height"].asNumber() > 0 && rect(wide)["x"].asNumber() < width, "and lays its last row out");
     }
 
+    // ── grid placement: the cells it examines and marks are bounded ──
+    {
+        StubBackend gb;
+        auto place = [&](const std::string& style, const std::string& item, int items, int id) {
+            Renderer g(300, 1, false, gb);
+            std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":4,"id":10,"before":null})";
+            for (int i = 0; i < items; i++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(100 + i) + R"(,"tag":"div","attrs":[["style",")" + item + R"("]]},{"op":"ins","parent":10,"id":)" + std::to_string(100 + i) + R"(,"before":null})";
+            g.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            Json r = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+            return css::format_number(r["x"].asNumber(), 1) + "," + css::format_number(r["y"].asNumber(), 1);
+        };
+        std::string at = place("display:grid;grid-auto-rows:1px", "grid-column:1/span 1000;grid-row:span 1000", 40, 103);
+        check(at == "0,1002", "items past the cells a placement may examine take a row each (the fourth at " + at + ")");
+        at = place("display:grid;grid-auto-rows:1px;grid-template-columns:1fr 1fr", "grid-row:span 2", 5, 104);
+        check(at == "0,4", "which an ordinary grid never reaches (the fifth item at " + at + ")");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;
