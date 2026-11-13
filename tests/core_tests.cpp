@@ -3305,6 +3305,27 @@ int main() {
         check(a.last_html().find("kept") == std::string::npos && a.last_html().find("id=\"b\"") != std::string::npos, "and its parent is removed with it afterwards");
     }
 
+    // ── a byte that continues no character is a character of its own to the CSS tokenizer ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","color:red;width:10px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"x"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto style = [&](const char* name, const std::string& value) {
+            t.receive(Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "style").set("id", 10).set("name", name).set("value", value))));
+            t.tick();
+        };
+        style("color", "\x80");
+        style("width", "20px");
+        Json rect;
+        for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", 10))))
+            if (m["type"].asString() == "result") rect = m["result"];
+        check(rect["width"].asNumber() == 20, "a style value that is not UTF-8 ends its declaration, not the renderer (got " + rect.dump() + ")");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;

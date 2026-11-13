@@ -221,6 +221,7 @@ namespace litehtml
 
         // Index of the next input char.  https://www.w3.org/TR/css-syntax-3/#next-input-code-point
         int index = 0;
+        int prev_index = 0;
 
         // https://www.w3.org/TR/css-syntax-3/#current-input-code-point
         // This is needed to handle the situation when unconsume_char is called when index == str.size().

@@ -104,6 +104,7 @@ namespace litehtml
     int css_tokenizer::consume_char()
     {
         // NOTE: if str[index] == 0 index is not incremented
+        prev_index = index;
         return current_char = read_utf8_char(str, index);
     }
 
@@ -119,8 +120,7 @@ namespace litehtml
             return;
         }
 
-        // NOTE: if index == 0 index is not decremented
-        prev_utf8_char(str, index);
+        index = prev_index;
     }
 
     int css_tokenizer::peek_char()
