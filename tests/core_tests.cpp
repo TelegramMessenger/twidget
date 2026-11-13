@@ -4487,6 +4487,43 @@ int main() {
                   std::to_string(wide) + ", " + std::to_string(again) + ")");
     }
 
+    // ── a class flipped back does not hand a child the style it had before ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".a{color:red}.b{color:blue}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["style","display:block;width:10px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["class","a"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"text","id":13,"data":"a b"},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"hr","attrs":[]},{"op":"ins","parent":12,"id":14,"before":null},
+            {"op":"text","id":15,"data":"c"},{"op":"ins","parent":12,"id":15,"before":null}]})"));
+        t.tick();
+        auto send = [&](const std::string& ops) {
+            t.receive(parse("{\"type\":\"ops\",\"ops\":[" + ops + "]}"));
+            t.tick();
+        };
+        auto display = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"]["display"].asString();
+            return std::string();
+        };
+        auto flip = [&](int id, const char* value) { send("{\"op\":\"attr\",\"id\":" + std::to_string(id) + ",\"name\":\"class\",\"value\":\"" + value + "\"}"); };
+        flip(10, "b");
+        flip(10, "a");
+        send(R"({"op":"style","id":11,"name":"display","value":"table","important":false})");
+        flip(10, "b");
+        check(display(11) == "table", "a child restyled between two flips of a class keeps its style (got " + display(11) + ")");
+        // Two texts trade their lengths: the same number of children, the tag at another place among them.
+        flip(12, "b");
+        flip(12, "a");
+        send(R"({"op":"data","id":13,"data":"x"},{"op":"data","id":15,"data":"y z"})");
+        flip(12, "b");
+        check(display(14) == "block", "a tag among texts that changed keeps its own style when the class flips (got " + display(14) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

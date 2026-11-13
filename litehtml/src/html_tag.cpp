@@ -272,7 +272,7 @@ namespace litehtml
             return false;
         for(const auto& child : m_children)
         {
-            if(child->tag() == __tag_before_ || child->tag() == __tag_after_ || !child->children().empty())
+            if(!child->is_text())
                 return false;
         }
         const int parent_id = parent() ? parent()->css().get_shared_id() : 0;
