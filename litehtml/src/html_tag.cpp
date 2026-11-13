@@ -138,7 +138,10 @@ namespace litehtml
     litehtml::elements_list litehtml::html_tag::select_all(const std::string& selector)
     {
         css_selector sel;
-        sel.parse(selector, get_document()->mode());
+        if(!sel.parse(selector, get_document()->mode()))
+        {
+            return {};
+        }
 
         return select_all(sel);
     }
@@ -166,7 +169,10 @@ namespace litehtml
     litehtml::element::ptr litehtml::html_tag::select_one(const std::string& selector)
     {
         css_selector sel;
-        sel.parse(selector, get_document()->mode());
+        if(!sel.parse(selector, get_document()->mode()))
+        {
+            return nullptr;
+        }
 
         return select_one(sel);
     }
@@ -882,7 +888,10 @@ namespace litehtml
     int litehtml::html_tag::select(const std::string& selector)
     {
         css_selector sel;
-        sel.parse(selector, get_document()->mode());
+        if(!sel.parse(selector, get_document()->mode()))
+        {
+            return select_no_match;
+        }
         return select(sel, true);
     }
 

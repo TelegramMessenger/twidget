@@ -174,8 +174,8 @@ namespace litehtml
       public:
         using ptr = std::shared_ptr<css_element_selector>;
 
-        string_id                      m_prefix;
-        string_id                      m_tag;
+        string_id                      m_prefix = empty_id;
+        string_id                      m_tag    = empty_id;
         css_attribute_selector::vector m_attrs; // subclass and pseudo-element selectors
     };
 

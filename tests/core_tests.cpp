@@ -5032,6 +5032,40 @@ int main() {
         check(height(12) == 7, "an element that lost its last child is :empty (got " + std::to_string(height(12)) + ")");
     }
 
+    // ── SVG <use>: a reference that is no selector names nothing ──
+    {
+        // What paint() finds in the stack it has not written yet: 0 is the id of the tag `a`.
+        void (*volatile leave_on_stack)(int) = [](int value) {
+            volatile int words[65536];
+            for (int i = 0; i < 65536; i++) words[i] = value;
+        };
+        auto paths = [](const DisplayList& d) {
+            int n = 0;
+            for (const Command& c : d)
+                if (c.kind == Cmd::Path && c.path && c.path->fill) n++;
+            return n;
+        };
+        const char* ops = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"use","svg":true,"attrs":[["href","#1"],["x","50"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"a","svg":true,"attrs":[]},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"rect","svg":true,"attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":12,"id":13,"before":null}]})";
+        StubBackend zb;
+        Renderer zeros(300, 1, false, zb);
+        zeros.receive(parse(ops));
+        leave_on_stack(0);
+        const int after_zeros = paths(zeros.paint());
+        StubBackend jb;
+        Renderer junk(300, 1, false, jb);
+        junk.receive(parse(ops));
+        leave_on_stack(0x5a5a5a5a);
+        const int after_junk = paths(junk.paint());
+        check(after_zeros == 1 && after_junk == 1,
+              "a <use> of \"#1\", which is no selector, draws nothing whatever the stack held (" +
+                  std::to_string(after_zeros) + " and " + std::to_string(after_junk) + " paths)");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
