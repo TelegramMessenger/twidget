@@ -3654,6 +3654,20 @@ int main() {
         check(listed == "2147483647. 2147483647. 2147483647. ", "list items numbered past the largest int keep it (" + listed + ")");
     }
 
+    // ── a table's spare width goes to its fixed columns while their widths have a sum ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"table","attrs":[["style","width:300px"]]},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"tbody"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"tr"},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"td","attrs":[["style","width:100px;padding:0;height:20px"]]},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"td","attrs":[["style","width:0;padding:0"]]},{"op":"ins","parent":12,"id":14,"before":null}]})"));
+        auto width = [&](int id) { return t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"]; };
+        check(width(10).isNumber() && width(10).asNumber() == 300 && width(14).isNumber() && width(14).asNumber() == 0,
+              "a fixed column of no width after one of 100px leaves a 300px table 300px wide, not NaN (" + width(10).dump() + ", " + width(14).dump() + ")");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;

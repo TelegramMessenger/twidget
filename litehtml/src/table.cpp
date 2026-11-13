@@ -508,10 +508,12 @@ litehtml::pixel_t litehtml::table_grid::calc_table_width(pixel_t block_width, bo
                 available    -= w;
                 total_fixed  -= maxs[col];
                 widths[col]  += w;
+                if(available <= 0 || total_fixed <= 0)
+                    break;
             }
         }
     }
-    if(available > 0 && have_percent && total_percent < 100)
+    if(available > 0 && have_percent && total_percent > 0 && total_percent < 100)
     {
         for(int col = 0; col < n; col++)
         {
