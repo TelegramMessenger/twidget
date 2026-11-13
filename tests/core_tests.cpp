@@ -3454,6 +3454,46 @@ int main() {
         check(rect["width"].asNumber() == 20, "a style value that is not UTF-8 ends its declaration, not the renderer (got " + rect.dump() + ")");
     }
 
+    // ── a chain of sibling combinators, matched on a pointer move, for a batch of restyled elements and on a change of media ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        const std::string head = R"j({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},{"op":"ins","parent":3,"id":5,"before":null})j";
+        std::string ops = head + R"j(,{"op":"css","id":5,"text":":not(*)~*~*~*~*~*~*~*~*~*~*~*:hover{color:red}:not(*)~*~*~*~*~*~*~*~*~*~*~*.t{color:red}"})j";
+        for (int i = 0; i < 340; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","height:5px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        s.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        s.tick();
+        auto seconds = [](std::chrono::steady_clock::time_point from) { return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count(); };
+        auto start = std::chrono::steady_clock::now();
+        s.hover(0, 10, 197);
+        double moved = seconds(start);
+        check(moved < 5, "a pointer move matches a chain of sibling combinators within one selector budget (" + std::to_string(moved) + " s)");
+        std::string flips;
+        for (int i = 40; i < 340; i++) flips += std::string(flips.empty() ? "" : ",") + R"({"op":"attr","id":)" + std::to_string(100 + i) + R"(,"name":"class","value":"t"})";
+        start = std::chrono::steady_clock::now();
+        s.receive(parse(R"({"type":"ops","ops":[)" + flips + "]}"));
+        s.tick();
+        double restyled = seconds(start);
+        check(restyled < 5, "and the elements a batch restyles share one budget (" + std::to_string(restyled) + " s)");
+
+        StubBackend mb;
+        Renderer m(300, 1, false, mb);
+        ops = head + R"j(,{"op":"css","id":5,"text":"@media (min-height:100px){:not(*)~*~*~*~*~*~*~*~*~*~*~*.t{color:red}}"})j";
+        for (int i = 0; i < 38; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["class","t"],["style","height:5px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        start = std::chrono::steady_clock::now();
+        m.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        m.tick();
+        double media = seconds(start);
+        check(media < 5, "and so do the selectors of a media query that starts to apply as the document grows (" + std::to_string(media) + " s)");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;

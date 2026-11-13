@@ -1126,6 +1126,7 @@ namespace litehtml
 
     int document::apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed)
     {
+        selector_budget budget;
         begin_layout_patch();
         invalidate_paint();
         std::vector<size_t>                             dirty;
@@ -1864,6 +1865,7 @@ namespace litehtml
 
     bool document::update_structure(const std::string& html, bool* changed)
     {
+        selector_budget budget;
         m_match_epoch++;
         begin_layout_patch();
         invalidate_paint();
@@ -3803,6 +3805,7 @@ namespace litehtml
 
     void document::append_children_from_string(element& parent, const char* str, bool replace_existing)
     {
+        selector_budget budget;
         invalidate_paint();
         // parent must belong to this document
         if(parent.get_document().get() != this)

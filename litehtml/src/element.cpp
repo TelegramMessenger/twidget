@@ -252,6 +252,7 @@ namespace litehtml
 
     bool element::find_styles_changes(const std::function<void(const position&)>& redraw_box)
     {
+        selector_budget budget;
         if(css().get_display() == display_inline_text)
         {
             return false;

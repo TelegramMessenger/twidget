@@ -193,6 +193,7 @@ namespace litehtml
     {
         constexpr int64_t        kSelectorStepBudget = 4000000;
         thread_local int         g_apply_depth       = 0;
+        thread_local int         g_budget_depth      = 0;
         thread_local int64_t     g_selector_steps    = 0;
 
         thread_local uint64_t    g_apply_pass        = 0;
@@ -227,7 +228,10 @@ namespace litehtml
             {
                 if(g_apply_depth++ == 0)
                 {
-                    g_selector_steps = 0;
+                    if(g_budget_depth == 0)
+                    {
+                        g_selector_steps = 0;
+                    }
                     g_apply_pass++;
                     sibling_indexes().clear();
                 }
@@ -235,6 +239,16 @@ namespace litehtml
             ~apply_scope() { g_apply_depth--; }
         };
     }
+
+    selector_budget::selector_budget()
+    {
+        if(g_budget_depth++ == 0 && g_apply_depth == 0)
+        {
+            g_selector_steps = 0;
+        }
+    }
+
+    selector_budget::~selector_budget() { g_budget_depth--; }
 
     void litehtml::html_tag::apply_stylesheet(const litehtml::css& stylesheet)
     {
@@ -869,7 +883,7 @@ namespace litehtml
 
     int litehtml::html_tag::select(const css_selector& selector, bool apply_pseudo)
     {
-        if(g_apply_depth > 0 && ++g_selector_steps > kSelectorStepBudget)
+        if((g_apply_depth > 0 || g_budget_depth > 0) && ++g_selector_steps > kSelectorStepBudget)
         {
             return select_no_match;
         }
@@ -2177,6 +2191,7 @@ namespace litehtml
 
     void litehtml::html_tag::refresh_styles()
     {
+        selector_budget budget;
         m_has_style_base = false;
         for(auto& el : m_children)
         {

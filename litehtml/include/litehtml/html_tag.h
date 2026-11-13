@@ -12,6 +12,15 @@
 namespace litehtml
 {
 
+    // Everything matched while one of these lives shares a single budget of selector steps.
+    struct selector_budget
+    {
+        selector_budget();
+        ~selector_budget();
+        selector_budget(const selector_budget&)            = delete;
+        selector_budget& operator=(const selector_budget&) = delete;
+    };
+
     class html_tag : public element
     {
         friend class elements_iterator;
