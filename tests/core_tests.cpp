@@ -3355,6 +3355,33 @@ int main() {
         check(box["height"].asNumber() == 40, "the word a float leaves no room for goes to the next line (height " + css::format_number(box["height"].asNumber(), 1) + ")");
     }
 
+    // ── text-overflow: ellipsis: a long line is cut with a bounded number of measurements ──
+    {
+        struct CountingBackend : StubBackend {
+            size_t measured = 0, bytes = 0;
+            float text_width(int f, const std::string& text) override {
+                measured++;
+                bytes += text.size();
+                return StubBackend::text_width(f, text);
+            }
+        } eb;
+        Renderer e(300, 1, false, eb);
+        e.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:100000px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":")" + std::string(20000, 'a') + R"("},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        DisplayList list = e.paint();
+        size_t shown = 0;
+        float mark = 0;
+        for (const Command& c : list) {
+            if (c.kind == Cmd::Text && c.text == "\xE2\x80\xA6") mark = c.x;
+            else if (c.kind == Cmd::Text && !c.text.empty() && c.text[0] == 'a') shown = c.text.size();
+        }
+        check(shown == 12497 && mark == 99976 && eb.measured <= 64 && eb.bytes <= 1000000,
+              "a 20,000-character line is cut where the mark fits, by search (" + std::to_string(shown) + " shown, mark at " + std::to_string(int(mark)) + ", " +
+                  std::to_string(eb.measured) + " measured, " + std::to_string(eb.bytes) + " bytes)");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;

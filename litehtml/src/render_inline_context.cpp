@@ -6,6 +6,7 @@
 #include "html_tag.h"
 #include "document_container.h"
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -276,17 +277,29 @@ void litehtml::render_item_inline_context::apply_ellipsis(pixel_t room)
             uint_ptr font = text->src_el()->parent()->css().get_font();
             size_t   fit  = 0;
             pixel_t  used = 0_px;
+            // A prefix is no narrower than a shorter one: the cut is searched, not walked a character at a time.
+            std::vector<size_t> ends;
             for(size_t i = 0; i < shown.size();)
             {
                 size_t next = i + 1;
                 while(next < shown.size() && (static_cast<unsigned char>(shown[next]) & 0xC0) == 0x80)
                     next++;
-                pixel_t width = container->text_width(shown.substr(0, next).c_str(), font);
+                ends.push_back(next);
+                i = next;
+            }
+            for(size_t low = 0, high = ends.size(); low < high;)
+            {
+                const size_t  middle = low + (high - low + 1) / 2;
+                const pixel_t width  = container->text_width(shown.substr(0, ends[middle - 1]).c_str(), font);
                 if(item->left() + width > limit)
-                    break;
-                fit  = next;
-                used = width;
-                i    = next;
+                {
+                    high = middle - 1;
+                } else
+                {
+                    low  = middle;
+                    fit  = ends[middle - 1];
+                    used = width;
+                }
             }
             text->cut = static_cast<int>(fit);
             at.x      = item->left() + used;
