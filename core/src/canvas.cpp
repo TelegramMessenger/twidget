@@ -280,9 +280,9 @@ struct Canvas::Value {
             v.kind = List;
             for (const Json& x : j.arr()) v.list.push_back(float(x.asNumber()));
         } else if (j.isObject()) {
-            if (const Json* g = j.find("g")) { v.kind = Gradient; v.ref = int64_t(g->asNumber()); }
-            else if (const Json* p = j.find("p")) { v.kind = PathRef; v.ref = int64_t(p->asNumber()); }
-            else if (const Json* n = j.find("n")) { v.kind = Node; v.ref = int64_t(n->asNumber()); }
+            if (const Json* g = j.find("g")) { v.kind = Gradient; v.ref = g->asInt(); }
+            else if (const Json* p = j.find("p")) { v.kind = PathRef; v.ref = p->asInt(); }
+            else if (const Json* n = j.find("n")) { v.kind = Node; v.ref = n->asInt(); }
             else if (const Json* b = j.find("b64"); b && b->isString()) {
                 v.kind = Pixels;
                 v.pixels = std::make_shared<std::vector<uint8_t>>(base64(b->asString()));

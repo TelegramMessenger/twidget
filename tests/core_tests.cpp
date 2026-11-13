@@ -3556,6 +3556,24 @@ int main() {
         check(strokes == 1 && fills == 1 && curves == 0 && finite, "an arc from 1e308 to -1e308 radians, and an SVG arc between such points, add no curve of NaN");
     }
 
+    // ── a canvas object made under a number past every int is the one that number names ──
+    {
+        StubBackend ob;
+        Renderer o(300, 1, false, ob);
+        o.receive(parse(PAGE));
+        o.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"canvas","id":40,"cmds":[["pn",1e300,"M0 0L5 5L0 5Z"],["c","fill",{"p":1e300}],["g",-1e300,"linear",0,0,10,0],["gs",-1e300,0,"#f00"],["s","fillStyle",{"g":-1e300}],
+            ["c","fillRect",0,0,10,10],["c","drawImage",{"n":1e300},0,0]]}]})"));
+        size_t paths = 0, gradients = 0;
+        for (const auto& ops : ob.runs)
+            for (const CanvasOp& op : ops) {
+                if (op.kind != CanvasOp::Fill) continue;
+                paths += op.paint.kind == CanvasPaint::Solid && op.path.points.size() == 6;
+                gradients += op.paint.kind == CanvasPaint::Linear;
+            }
+        check(paths == 1 && gradients == 1, "a path and a gradient made under 1e300 and -1e300 are the ones those numbers name");
+    }
+
     // ── canvases drawn from one another down a long chain ──
     {
         StubBackend cb;
