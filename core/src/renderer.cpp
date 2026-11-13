@@ -3210,6 +3210,8 @@ void Renderer::serialize_node(const Node* n, std::string& out, int level) const 
     bool styled = !n->styles.empty() || overrides_.count(n->id) || edited;
     for (const auto& [name, value] : n->attrs) {
         if (name == "style") { styled = true; continue; }
+        // The parser folds the case of names and keeps the first of two: the node's id, the fork's key and the style are not the widget's to write.
+        if (css::iequals(name, "data-twid") || css::iequals(name, "data-lh-id") || css::iequals(name, "style")) continue;
         // A canvas's width and height are its natural size, which `src` names: on the fork's image they would be its style.
         if ((canvas && (name == "src" || name == "width" || name == "height")) || !css::is_attribute_name(name)) continue;
         // The platform's editor shows the placeholder of the control being edited.
@@ -3318,6 +3320,7 @@ std::string Renderer::serialize() const {
     bool styled = !html->styles.empty() || !theme_vars_.empty() || overrides_.count(html->id);
     for (const auto& [name, value] : html->attrs) {
         if (name == "style") { styled = true; continue; }
+        if (css::iequals(name, "data-twid") || css::iequals(name, "data-lh-id") || css::iequals(name, "style")) continue;
         if (!css::is_attribute_name(name)) continue;
         out += " " + name + "=\"";
         escape_attr(value, out);

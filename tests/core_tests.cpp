@@ -3967,6 +3967,34 @@ int main() {
         }
     }
 
+    // ── an attribute of the widget's never stands in for the renderer's own data-twid or style, nor for the fork's key ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[["STYLE","--tg-theme-bg-color:#123456 !important"]]},
+            {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:40px;height:20px"],["data-twid","11"],["data-lh-id","k"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":0,"tag":"div","attrs":[["data-twid","10"],["Data-TwId","10"],["style","width:222px;height:111px"]]},{"op":"ins","parent":4,"id":0,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["STYLE","width:99px"],["Style","width:98px"],["style","height:7px"],["Data-LH-Id","k"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        t.tick();
+        auto rect = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        check(rect(10)["width"].asNumber() == 40 && rect(10)["y"].asNumber() == 0 && t.last_html().find("data-twid=\"11\"") == std::string::npos,
+              "an element cannot take a node's id by a data-twid attribute of its own (node 10 is " + std::to_string(rect(10)["width"].asNumber()) + " wide)");
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"height","value":"33px"}]})"));
+        t.tick();
+        check(rect(10)["height"].asNumber() == 33 && rect(10)["y"].asNumber() == 0 && rect(12)["y"].asNumber() >= 33,
+              "and a style op for the node lands on the node's element (at " + std::to_string(rect(10)["y"].asNumber()) + ", " + std::to_string(rect(10)["height"].asNumber()) + " high)");
+        check(rect(12)["width"].asNumber() == 300 && rect(12)["height"].asNumber() == 7 && t.last_html().find("#123456") == std::string::npos,
+              "a style attribute spelt in another case does not replace the one the renderer writes (node 12 is " + std::to_string(rect(12)["width"].asNumber()) + " wide)");
+        std::string html = t.last_html();
+        for (auto& c : html) c = char(std::tolower((unsigned char)c));
+        check(html.find("data-lh-id") == std::string::npos, "the key the fork pairs children by is not an attribute a widget can write");
+    }
+
     // ── an adopt op that names a live node's id ──
     {
         StubBackend ab;
