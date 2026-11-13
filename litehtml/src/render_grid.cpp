@@ -84,7 +84,7 @@ namespace
             {
                 count = static_cast<int>(std::floor((room / step).value()));
             }
-            count = std::max(1, std::min(count, 1000));
+            count = std::max(1, std::min(count, 1000 / static_cast<int>(list.repeat.size())));
         }
         for(size_t i = 0; i <= list.tracks.size(); i++)
         {

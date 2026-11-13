@@ -1130,6 +1130,8 @@ namespace litehtml
 
     bool parse_grid_track_list(const css_token_vector& tokens, grid_track_list& list)
     {
+        // What repeat() may count to is also what a whole list may hold: the layout allocates per track.
+        const size_t max_tracks = 1000;
         list = grid_track_list();
         if(tokens.size() == 1 && tokens[0].ident() == "none")
         {
@@ -1169,7 +1171,7 @@ namespace litehtml
                 std::string count = args[0].ident();
                 if(count == "auto-fill" || count == "auto-fit")
                 {
-                    if(list.repeat_at >= 0)
+                    if(list.repeat_at >= 0 || sizes.size() > max_tracks)
                     {
                         return false;
                     }
@@ -1179,7 +1181,7 @@ namespace litehtml
                 } else if(args[0].type == NUMBER && args[0].n.number_type == css_number_integer && args[0].n.number > 0)
                 {
                     int n = static_cast<int>(std::min(args[0].n.number, 1000.f));
-                    for(int i = 0; i < n; i++)
+                    for(int i = 0; i < n && list.tracks.size() + sizes.size() <= max_tracks; i++)
                     {
                         list.tracks.insert(list.tracks.end(), sizes.begin(), sizes.end());
                     }
@@ -1194,7 +1196,10 @@ namespace litehtml
             {
                 return false;
             }
-            list.tracks.push_back(size);
+            if(list.tracks.size() < max_tracks)
+            {
+                list.tracks.push_back(size);
+            }
         }
         return true;
     }

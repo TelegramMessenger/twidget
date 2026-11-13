@@ -3446,6 +3446,28 @@ int main() {
         check(width() == 16, "and patched in place again (got " + std::to_string(width()) + ")");
     }
 
+    // ── grid: a track list holds at most the 1000 tracks that one repeat() may count to ──
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        std::string sizes;
+        for (int i = 0; i < 7900; i++) sizes += " 1px";
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"div{display:grid}#a{grid-template-rows:repeat(1000,1px 1px 1px)}#b{grid-template-rows:repeat(1000,)" + sizes + R"()}#c{grid-template-rows:repeat(600,1px) repeat(600,2px) 5px 5px}#d{grid-template-columns:repeat(auto-fill,)" + sizes + R"()}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","c"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["id","d"]]},{"op":"ins","parent":4,"id":13,"before":null}]})"));
+        g.tick();
+        auto height = [&](int id) {
+            return g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["height"].asNumber();
+        };
+        check(height(10) == 999 && height(11) == 0 && height(12) == 1400 && height(13) == 0,
+              "a grid's track list stops at 1000 tracks (" + std::to_string(height(10)) + ", " + std::to_string(height(11)) + ", " + std::to_string(height(12)) + ", " + std::to_string(height(13)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
