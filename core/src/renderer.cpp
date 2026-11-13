@@ -37,6 +37,9 @@ namespace {
 constexpr double MIN_HEIGHT = 50.0;
 /// The tallest a host may let a widget grow: past this a document is a runaway, not content.
 constexpr double HEIGHT_CEILING = 16384.0;
+/// The widest a host's view and the densest its screen can be: past these a number is a mistake, not a size.
+constexpr double WIDTH_CEILING = 1048576.0;
+constexpr double MIN_DPR = 0.25, MAX_DPR = 64.0;
 constexpr int MAX_PASSES = 4;
 /// Sent whether or not the widget listens. The one-off animation events are among them because a page's
 /// first build starts its animations before its script says what it listens for; animationiteration
@@ -83,6 +86,8 @@ q::before{content:open-quote}
 q::after{content:close-quote}
 [hidden]{display:none}
 )css";
+
+double bounded(double v, double lo, double hi) { return std::isnan(v) ? lo : std::clamp(v, lo, hi); }
 
 const char* const VOID_TAGS[] = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"};
 
@@ -2484,7 +2489,7 @@ public:
 // ───────────────────────── Renderer ─────────────────────────
 
 Renderer::Renderer(double width, double dpr, bool dark, Backend& backend)
-    : container_(std::make_unique<Container>(*this, backend)), backend_(backend), width_(width), dpr_(dpr), dark_(dark), vp_height_(int(MIN_HEIGHT)) {
+    : container_(std::make_unique<Container>(*this, backend)), backend_(backend), width_(bounded(width, 0, WIDTH_CEILING)), dpr_(bounded(dpr, MIN_DPR, MAX_DPR)), dark_(dark), vp_height_(int(MIN_HEIGHT)) {
     auto make = [](const char* tag) {
         auto n = std::make_unique<Node>();
         n->tag = tag;
@@ -2700,6 +2705,7 @@ void Renderer::report_resizes(std::vector<Json>& out) {
 }
 
 void Renderer::set_width(double width, std::vector<Json>& out) {
+    width = bounded(width, 0, WIDTH_CEILING);
     if (std::fabs(width - width_) < 0.01) return;
     width_ = width;
     rebuild();
@@ -2707,7 +2713,7 @@ void Renderer::set_width(double width, std::vector<Json>& out) {
 }
 
 void Renderer::set_max_height(double height, std::vector<Json>& out) {
-    height = std::clamp(height, MIN_HEIGHT, HEIGHT_CEILING);
+    height = bounded(height, MIN_HEIGHT, HEIGHT_CEILING);
     if (height == max_height_) return;
     max_height_ = height;
     rebuild();

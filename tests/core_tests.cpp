@@ -3841,6 +3841,28 @@ int main() {
         check(d.last_html().find("late") != std::string::npos, "a removed node makes room for a new one");
     }
 
+    // ── a host's sizes that are no sizes ──
+    {
+        StubBackend nb;
+        Renderer n(NAN, -3, false, nb);
+        n.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","height:5000px"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        check(n.width() == 0 && n.px_width() == 0 && n.dpr() > 0 && n.px_height() > 0, "a width that is no number is no width, and a scale below any screen's is the least one");
+        std::vector<Json> out;
+        n.set_width(-300, out);
+        check(n.width() == 0 && n.px_width() == 0, "a negative width is none");
+        n.set_width(1e30, out);
+        check(n.width() == 1048576 && n.px_width() == 262144, "a width past any view is the widest one, at the least scale");
+        n.set_width(300, out);
+        n.set_max_height(NAN, out);
+        (void)n.paint();
+        check(n.viewport_height() == 50, "a height limit that is no number is the least one (" + std::to_string(n.viewport_height()) + ")");
+        n.set_max_height(INFINITY, out);
+        (void)n.paint();
+        check(n.viewport_height() == 5000 && n.px_height() > 0, "and an endless one the ceiling's (" + std::to_string(n.viewport_height()) + ")");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;
