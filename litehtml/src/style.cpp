@@ -132,6 +132,16 @@ namespace litehtml
         thread_local std::vector<style_op>* recorded_ops = nullptr;
         thread_local bool                   suppress_raw = false;
 
+        template <class T> struct scoped_value
+        {
+            T& slot;
+            T  previous;
+            scoped_value(T& s, T value) : slot(s), previous(s) { slot = value; }
+            ~scoped_value() { slot = previous; }
+            scoped_value(const scoped_value&)            = delete;
+            scoped_value& operator=(const scoped_value&) = delete;
+        };
+
         bool is_animation_layer(const std::string& txt, size_t start)
         {
             if(txt.compare(start, 8, "-lh-anim") != 0)
@@ -217,13 +227,13 @@ namespace litehtml
             if(!hit)
             {
                 style scratch;
-                const bool suppressed = suppress_raw;
-                suppress_raw          = false;
-                recorded_ops          = &ops;
-                auto tokens  = normalize(std::string(txt, d.first, d.second), f_componentize);
-                scratch.add(tokens, baseurl, container);
-                recorded_ops = nullptr;
-                suppress_raw = suppressed;
+                css_token_vector tokens;
+                {
+                    scoped_value<bool>                   raw(suppress_raw, false);
+                    scoped_value<std::vector<style_op>*> record(recorded_ops, &ops);
+                    tokens = normalize(std::string(txt, d.first, d.second), f_componentize);
+                    scratch.add(tokens, baseurl, container);
+                }
                 // Viewport lengths fold to px at the current viewport, so their result holds for this parse only.
                 if(key.size() <= max_cached_declaration && !has_viewport_units(tokens))
                 {
@@ -263,7 +273,7 @@ namespace litehtml
             return;
         }
 
-        const bool outer = suppress_raw;
+        scoped_value<bool> raw(suppress_raw, suppress_raw);
         for(auto& decl : decls)
         {
             if(decl.name == "-lh-anim")
@@ -278,7 +288,6 @@ namespace litehtml
             }
             add_property(_id(name), decl.value, baseurl, decl.important, container);
         }
-        suppress_raw = outer;
     }
 
     bool has_var(const css_token_vector& tokens)
