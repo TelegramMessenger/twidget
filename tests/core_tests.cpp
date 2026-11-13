@@ -3418,6 +3418,34 @@ int main() {
         check(chain == 160 && mixed == 240, "a calc() product of 15000 factors is laid out on a thread's stack (" + std::to_string(chain) + ", " + std::to_string(mixed) + ")");
     }
 
+
+    // ── a text that splits into no words leaves its hole without elements ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"span","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"abc"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto data = [&](const std::string& text) {
+            auto ops = Json::array().push(Json::object().set("op", "data").set("id", 11).set("data", text));
+            t.receive(Json::object().set("type", "ops").set("ops", ops));
+            t.tick();
+        };
+        auto width = [&] {
+            for (const Json& m : t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})")))
+                if (m["type"].asString() == "result") return m["result"]["width"].asNumber();
+            return -1.0;
+        };
+        // An overlong NUL ends the text where it stands: no word, no space, a hole with no element.
+        data("\xE0\x80\x80");
+        data("defg");
+        check(width() == 32, "a text set after one that split into no words is laid out (got " + std::to_string(width()) + ")");
+        data("hi");
+        check(width() == 16, "and patched in place again (got " + std::to_string(width()) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

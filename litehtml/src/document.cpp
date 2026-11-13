@@ -1170,7 +1170,7 @@ namespace litehtml
                         return -1;
                 }
             }
-            if(m_holes[i].text && !m_holes[i].text_elements.front()->parent())
+            if(m_holes[i].text && (m_holes[i].text_elements.empty() || !m_holes[i].text_elements.front()->parent()))
                 return -1;
             if(m_holes[i].text && v[0] == '\n')
             {
