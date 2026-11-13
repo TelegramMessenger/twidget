@@ -233,6 +233,11 @@ namespace litehtml
                 };
                 float theta1 = angle(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
                 float dtheta = angle((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+                if(!std::isfinite(theta1) || !std::isfinite(dtheta))
+                {
+                    line(x2, y2);
+                    return;
+                }
                 if(!sweep && dtheta > 0)
                 {
                     dtheta -= 2 * pi;

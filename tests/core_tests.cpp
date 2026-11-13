@@ -3465,6 +3465,25 @@ int main() {
         check(seen == "1 0 2 0 3 1 4 1 ", "a rule that names another counter still counts it (drawn " + seen + ")");
     }
 
+    // ── SVG path data: an arc whose angles are not finite is a line ──
+    {
+        StubBackend ab;
+        Renderer arc(300, 1, false, ab);
+        arc.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"path","ns":"svg","attrs":[["d","M0 0A5 5 0 0 0 1e39 1e39"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        size_t ops = 0;
+        bool line = false, nan = false;
+        for (const Command& c : arc.paint())
+            if (c.kind == Cmd::Path && c.path) {
+                ops += c.path->ops.size();
+                line = !c.path->ops.empty() && c.path->ops.back() == Path::Line;
+                for (float v : c.path->points) nan = nan || std::isnan(v);
+            }
+        check(ops == 2 && line && !nan, "an arc to a point that is not finite is a line (" + std::to_string(ops) + " ops)");
+    }
+
     // ── trees deeper than a document may be ──
     {
         auto chain = [](int levels) {
