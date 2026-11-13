@@ -3509,6 +3509,28 @@ int main() {
               "a 20,000 character word broken four to a line is measured line by line (" + std::to_string(int(lines)) + " lines, " + std::to_string(wb.bytes) + " bytes measured)");
     }
 
+    // ── ids: an element, a text or a second root that names an adopted root's id is ignored ──
+    {
+        StubBackend sb;
+        Renderer d(300, 1, false, sb);
+        d.set_compositing(true);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"@keyframes spin{to{transform:rotate(360deg)}} .k{width:50px;height:50px;animation:spin 1s linear infinite}"},
+            {"op":"ins","parent":3,"id":5,"before":null},{"op":"el","id":10,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":4,"tag":"div","attrs":[["class","k"]]},{"op":"ins","parent":10,"id":4,"before":null},
+            {"op":"text","id":3,"data":"again"},{"op":"ins","parent":10,"id":3,"before":null},
+            {"op":"el","id":2,"tag":"body","adopt":"body","attrs":[]}]})"));
+        const std::string html = d.last_html();
+        bool once = html.find("data-twid=\"4\"") == html.rfind("data-twid=\"4\"") && html.find("<body data-twid=\"4\"") != std::string::npos;
+        check(once, "an element that names the body's id is ignored");
+        check(html.find("again") == std::string::npos, "and a text that names the head's");
+        check(html.find("<html data-twid=\"2\"") != std::string::npos && html.find("<body data-twid=\"2\"") == std::string::npos, "and a root adopted under another root's id keeps its own");
+        // A layer under an ancestor of its own id was its own parent: the walk up from it never ended.
+        if (once) d.hover(0, 10, 10);
+        check(once, "a pointer over the document finds its element");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;

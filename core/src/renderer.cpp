@@ -2770,12 +2770,12 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         if (!adopt_name.empty()) {
             Node* n = adopt_name == "html" ? html_node_.get() : adopt_name == "head" ? head_node_.get() : adopt_name == "body" ? body_node_.get() : nullptr;
             // A live node keeps its id, as below: its parent and its children point at it.
-            if (!n || nodes_.count(id)) return;
+            if (!n || (node(id) && node(id) != n)) return;
             patch_log_.valid = false;
             adopt(id, n, op["attrs"]);
             return;
         }
-        if (nodes_.count(id)) return;  // the validator never reuses a live id; keep the first
+        if (node(id)) return;  // the validator never reuses a live id; keep the first
         auto n = std::make_unique<Node>();
         n->kind = Node::Element;
         if (!css::is_tag_name(str("tag"))) {
@@ -2796,7 +2796,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         return;
     }
     if (kind == "text" || kind == "comment") {
-        if (nodes_.count(id)) return;
+        if (node(id)) return;
         auto n = std::make_unique<Node>();
         n->kind = kind == "text" ? Node::Text : Node::Comment;
         n->id = id;
