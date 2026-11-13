@@ -2229,6 +2229,23 @@ int main() {
         check(longest > 0 && longest < 40000, "a transition retargeted 150 times keeps its value bounded (longest " + std::to_string(longest) + " bytes)");
     }
 
+    // ── an iteration count below zero ──
+    {
+        StubBackend ib;
+        Renderer it(300, 1, false, ib);
+        it.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":"@keyframes k{from{opacity:0}to{opacity:0.5}}.y{animation:k 1ms -1e300 alternate forwards}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","y"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        it.tick();
+        std::string opacity;
+        for (const Json& m : it.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":10}})")))
+            if (m["type"].asString() == "result") opacity = m["result"]["opacity"].asString();
+        check(opacity == "0.5", "an animation with an iteration count of -1e300 ends on its first iteration, forwards (opacity " + opacity + ")");
+    }
+
     // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──
     {
         struct Images : StubBackend {

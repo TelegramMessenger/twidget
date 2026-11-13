@@ -1147,7 +1147,7 @@ std::optional<StyleValues> Animator::sample_animation(int64_t id, Running& item,
             if (events) events->push_back({"animationend", id, spec.name, total});
         }
         if (spec.fill == "forwards" || spec.fill == "both") {
-            int last_iteration = std::max(0, int(std::ceil(std::min(spec.iterations, 1e9))) - 1);
+            int last_iteration = std::max(0, int(std::ceil(std::clamp(spec.iterations, 0.0, 1e9))) - 1);
             double fraction = std::fmod(spec.iterations, 1.0);
             double progress = fraction == 0 ? 1.0 : fraction;
             if (reversed(last_iteration)) progress = 1 - progress;
