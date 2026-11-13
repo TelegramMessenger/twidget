@@ -3968,6 +3968,35 @@ int main() {
         check(n.viewport_height() == 5000 && n.px_height() > 0, "and an endless one the ceiling's (" + std::to_string(n.viewport_height()) + ")");
     }
 
+    // ── a document patched in place lets go of the fonts it no longer uses ──
+    {
+        struct CountingBackend : StubBackend {
+            int deleted = 0;
+            void delete_font(int) override { deleted++; }
+        } b;
+        Renderer t(300, 1, false, b);
+        Json page = Json::array();
+        page.push(Json::object().set("op", "el").set("id", 2).set("tag", "html").set("adopt", "html").set("attrs", Json::array()));
+        page.push(Json::object().set("op", "el").set("id", 3).set("tag", "head").set("adopt", "head").set("attrs", Json::array()));
+        page.push(Json::object().set("op", "el").set("id", 4).set("tag", "body").set("adopt", "body").set("attrs", Json::array()));
+        for (int k = 0; k < 50; k++) {
+            page.push(Json::object().set("op", "el").set("id", 10 + k).set("tag", "div").set("attrs", Json::array().push(Json::array().push("style").push("font-size:9px"))));
+            page.push(Json::object().set("op", "ins").set("parent", 4).set("id", 10 + k).set("before", Json()));
+        }
+        t.receive(Json::object().set("type", "ops").set("ops", page));
+        t.tick();
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; b.next <= 6000 && std::chrono::steady_clock::now() - start < std::chrono::seconds(30); i++) {
+            Json ops = Json::array();
+            for (int k = 0; k < 50; k++)
+                ops.push(Json::object().set("op", "style").set("id", 10 + k).set("name", "font-size").set("value", std::to_string(10 + (i * 50 + k) * 0.001) + "px"));
+            t.receive(Json::object().set("type", "ops").set("ops", ops));
+            t.tick();
+        }
+        check(b.next > 6000 && b.next - b.deleted < 5000,
+              "6000 font sizes in turn on 50 elements keep fewer than 5000 fonts (made " + std::to_string(b.next) + ", let go of " + std::to_string(b.deleted) + ")");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;

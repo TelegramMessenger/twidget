@@ -519,6 +519,8 @@ constexpr double HEAVY_PASS_S = 0.05;
 constexpr double LOAD_GRACE_S = 1;
 /// Backend fonts kept for documents to come, beyond those a document holds.
 constexpr size_t MAX_FACES = 256;
+/// A document keeps every font it was ever styled with: one that made this many since its build is built anew.
+constexpr size_t MAX_PATCHED_FONTS = 4096;
 /// The SVG paints the container keeps for draw_cached, and the commands they hold together.
 constexpr size_t MAX_CACHED_PAINTS = 128;
 constexpr size_t MAX_CACHED_COMMANDS = 50000;
@@ -763,7 +765,7 @@ public:
         // new HTML only changes what it can patch (styles, text, classes, attributes, child lists), and
         // refuses otherwise, leaving the document as it was.
         bool changed = true;
-        if (doc_ && !stale && doc_->update_from_string(html, &changed)) {
+        if (doc_ && !stale && !fonts_grown() && doc_->update_from_string(html, &changed)) {
             patched_ = true;
             if (viewport_changed) doc_->media_changed();
             float width = float(r_.width_);
@@ -794,6 +796,7 @@ public:
         layout(rendered_width_);
         layouts_++;
         index();
+        built_fonts_ = fonts_.size();
         return true;
     }
 
@@ -941,7 +944,8 @@ public:
 #endif
     }
     /// The document was laid out at the current width and viewport: a patch can go straight in.
-    bool can_patch() const { return doc_ && float(r_.width_) == rendered_width_; }
+    bool can_patch() const { return doc_ && float(r_.width_) == rendered_width_ && !fonts_grown(); }
+    bool fonts_grown() const { return fonts_.size() > built_fonts_ + MAX_PATCHED_FONTS; }
     /// Attribute values and sole texts into the document in place (the fork's holes), relaying out
     /// only when a value can move boxes. False, leaving the document as it was, when a change has no hole.
     bool patch(const std::vector<litehtml::document::hole_change>& changes) {
@@ -957,7 +961,7 @@ public:
     /// Replaces the style attribute of elements in place (the fork's style holes), relaying out
     /// only when a value can move boxes. False when the document cannot patch them.
     bool restyle(const std::vector<std::pair<litehtml::element::ptr, std::string>>& patches) {
-        if (!doc_) return false;
+        if (!doc_ || fonts_grown()) return false;
         bool changed = false;
         if (!doc_->update_styles(patches, &changed)) return false;
         patched_ = true;
@@ -2468,6 +2472,7 @@ private:
     std::map<FaceKey, std::unique_ptr<Face>> faces_;
     uint64_t face_clock_ = 0;
     std::unordered_map<litehtml::uint_ptr, Font> fonts_;
+    size_t built_fonts_ = 0;
     litehtml::uint_ptr next_font_ = 0;
     std::unordered_map<std::string, Image> images_;
     int next_image_ = 0;
