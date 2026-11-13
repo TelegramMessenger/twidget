@@ -452,6 +452,11 @@ namespace litehtml
 
     void litehtml::html_tag::apply_selector(const css_selector::ptr& sel)
     {
+        const size_t max_used_styles = 256;
+        if(m_used_styles.size() >= max_used_styles)
+        {
+            return;
+        }
         {
             {
                 const auto& r = sel->m_right;

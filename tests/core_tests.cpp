@@ -3970,6 +3970,21 @@ int main() {
                   std::to_string(width(11)) + ", " + std::to_string(width(12)) + ", " + std::to_string(width(14)) + ")");
     }
 
+    // ── an element takes a bounded number of matching selectors ──
+    {
+        StubBackend mb;
+        Renderer m(300, 1, false, mb);
+        std::string list = "*";
+        for (int i = 1; i < 300; i++) list += ",*";
+        m.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":")" + list + R"({color:rgb(1, 2, 3)}*{color:rgb(4, 5, 6)}#a{width:10px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        Json style = m.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":10}})"))[0]["result"];
+        check(style["color"].asString() == "rgb(1, 2, 3)", "past 256 matching selectors an element takes no more (got " + style["color"].asString() + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
