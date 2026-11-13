@@ -3721,6 +3721,86 @@ int main() {
         check(rect["width"].asNumber() == 20 && rect["height"].asNumber() == 10, "a canvas the renderer holds keeps its size (got " + rect.dump() + ")");
     }
 
+    // ── image sources: a widget's table of them is bounded in number and in bytes, and a canvas keeps one ──
+    {
+        struct Loads : StubBackend {
+            int loads = 0;
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                loads++;
+                w = 40;
+                h = 30;
+                return true;
+            }
+        };
+        auto img = [](int id, const std::string& src) {
+            return Json::object().set("op", "el").set("id", id).set("tag", "img").set("attrs", Json::array().push(Json::array().push("src").push(src)));
+        };
+        auto send = [](Renderer& r, Json ops) { return r.receive(Json::object().set("type", "ops").set("ops", std::move(ops))); };
+        auto width = [](Renderer& r, int id) {
+            double w = -1;
+            for (const Json& m : r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}")))
+                if (m["type"].asString() == "result") w = m["result"]["width"].asNumber();
+            return w;
+        };
+        auto limits = [](const std::vector<Json>& out) {
+            int count = 0;
+            for (const Json& m : out) count += m["type"].asString() == "violation" && m["detail"].asString().rfind("image limit", 0) == 0;
+            return count;
+        };
+        {
+            Loads backend;
+            Renderer r(300, 2, false, backend);
+            r.receive(parse(PAGE));
+            Json ops = Json::array();
+            for (int i = 0; i < 4200; i++) {
+                ops.push(img(1000 + i, "data:image/png;base64," + std::to_string(i)));
+                ops.push(Json::object().set("op", "ins").set("parent", 4).set("id", 1000 + i).set("before", Json()));
+            }
+            auto out = send(r, std::move(ops));
+            int errors = 0, loaded = 0;
+            for (const Json& ev : events(out)) {
+                errors += ev["type"].asString() == "error";
+                loaded += ev["type"].asString() == "load";
+            }
+            check(backend.loads == 4096 && loaded == 4096 && errors == 104, "a widget's image sources: 4096 load, the rest fail as images do: " + std::to_string(backend.loads) + " loads, " + std::to_string(errors) + " errors");
+            check(limits(out) == 1, "the image limit is reported once");
+            check(width(r, 1000) == 40 && width(r, 1000 + 4095) == 40 && width(r, 1000 + 4199) == 0, "the images loaded before the limit show, one past it is a broken image");
+            out = send(r, Json::array().push(Json::object().set("op", "attr").set("id", 1000 + 4199).set("name", "src").set("value", "data:image/png;base64,7"))
+                                       .push(Json::object().set("op", "attr").set("id", 1000).set("name", "src").set("value", "data:image/png;base64,new")));
+            check(backend.loads == 4096 && limits(out) == 0, "past the limit a new source loads nothing more, without another report");
+            check(width(r, 1000 + 4199) == 40 && width(r, 1000) == 0, "a source the table holds shows wherever it is named again");
+        }
+        {
+            Loads backend;
+            Renderer r(300, 2, false, backend);
+            r.receive(parse(PAGE));
+            // Detached, as `new Image()`: loaded all the same, and nothing is serialised.
+            Json ops = Json::array();
+            for (int i = 0; i < 33; i++) {
+                std::string src = "data:image/png;base64," + std::to_string(10 + i);
+                src.resize(1 << 20, 'A');
+                ops.push(img(1000 + i, src));
+            }
+            auto out = send(r, std::move(ops));
+            check(backend.loads == 32 && limits(out) == 1, "a widget's image sources hold 32 MB together: " + std::to_string(backend.loads) + " of 33 loads of 1 MB");
+        }
+        {
+            StubBackend plain;
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"canvas","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":30,"before":null},
+                {"op":"canvas","id":30,"cmds":[["c","fillRect",0,0,5,5]]}]})"));
+            check(width(r, 30) == 10, "a canvas shows at its size");
+            std::string html = r.last_html();
+            size_t at = html.find("tw-canvas:");
+            std::string before = at == std::string::npos ? std::string() : html.substr(at, html.find('"', at) - at);
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":30,"name":"width","value":"20"},{"op":"canvas","id":30,"cmds":[["c","fillRect",0,0,5,5]]}]})"));
+            check(width(r, 30) == 20, "and at its new one once resized");
+            send(r, Json::array().push(img(31, before)).push(Json::object().set("op", "ins").set("parent", 4).set("id", 31).set("before", Json())));
+            check(!before.empty() && width(r, 31) == 0 && width(r, 30) == 20, "the source of a size the canvas no longer has is not kept (" + before + ")");
+        }
+    }
+
     // ── an adopt op that names a live node's id ──
     {
         StubBackend ab;

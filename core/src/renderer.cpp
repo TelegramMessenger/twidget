@@ -537,6 +537,9 @@ constexpr size_t MAX_MEASURED_RUN = 4096;
 /// The profile's image types (widget-sandbox's PROFILE_IMAGES). The validator lets no other through, but
 /// a path around it (generated content's url(), once) must not hand a backend anything else.
 constexpr std::string_view IMAGE_TYPES[] = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"};
+/// The image sources a widget names over its life, and their bytes together: past either a new one is refused, and fails as an image does.
+constexpr size_t MAX_IMAGES = 4096;
+constexpr size_t MAX_IMAGE_BYTES = 32 << 20;
 
 /// A data: URL's media type as widget-sandbox's checkUrl reads it: the scheme in any case, around tabs,
 /// newlines and the C0 controls and spaces at its ends; trimmed and lower-cased. Empty when not a data: URL.
@@ -1453,17 +1456,27 @@ public:
         if (!src) return;
         std::string url = src;
         if (images_.count(url)) return;
+        const bool own = url.rfind("tw-canvas:", 0) == 0;
+        if (!own && (image_sources_ >= MAX_IMAGES || url.size() > MAX_IMAGE_BYTES - image_bytes_)) {
+            if (!images_full_) r_.pending_violations_.push_back("image limit: " + std::to_string(image_sources_) + " sources, " + std::to_string(image_bytes_) + " bytes");
+            images_full_ = true;
+            return;
+        }
         Image img;
-        if (url.rfind("tw-canvas:", 0) == 0) {
+        if (own) {
             // The renderer's own source for a <canvas>: tw-canvas:<node id>/<w>x<h>, drawn from the backend's bitmap.
+            auto held = [&](int id, int w, int h) {
+                for (const auto& [node, canvas] : r_.canvases_)
+                    if (canvas->id() == id && canvas->width() == w && canvas->height() == h) return true;
+                return false;
+            };
             int id = 0, w = 0, h = 0;
-            bool held = false;
-            if (std::sscanf(url.c_str() + 10, "%d/%dx%d", &id, &w, &h) == 3)
-                for (const auto& [node, canvas] : r_.canvases_) held = held || (canvas->id() == id && canvas->width() == w && canvas->height() == h);
-            if (!held) {
+            if (std::sscanf(url.c_str() + 10, "%d/%dx%d", &id, &w, &h) != 3 || !held(id, w, h)) {
                 r_.pending_violations_.push_back("image refused: " + url.substr(0, 80));
                 return;
             }
+            // A canvas is named by the size it has now: the sources of its sizes before, and of canvases gone, are not kept.
+            std::erase_if(images_, [&](const auto& entry) { return entry.second.canvas && !held(entry.second.canvas, int(entry.second.w), int(entry.second.h)); });
             img.canvas = id;
             img.w = float(w);
             img.h = float(h);
@@ -1478,6 +1491,10 @@ public:
             if (!backend_.load_image(img.id, url, img.w, img.h)) img.id = 0;
         } else {
             r_.pending_violations_.push_back("image refused: " + url.substr(0, 80));
+        }
+        if (!own) {
+            image_sources_++;
+            image_bytes_ += url.size();
         }
         images_[url] = img;
     }
@@ -2476,6 +2493,8 @@ private:
     litehtml::uint_ptr next_font_ = 0;
     std::unordered_map<std::string, Image> images_;
     int next_image_ = 0;
+    size_t image_sources_ = 0, image_bytes_ = 0;
+    bool images_full_ = false;
     DisplayList list_;
     std::vector<Command> clips_;
     std::vector<std::vector<Command>> suspended_;
