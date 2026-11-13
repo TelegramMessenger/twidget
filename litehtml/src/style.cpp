@@ -2348,7 +2348,8 @@ namespace litehtml
         auto idx = css_values(self_position_strings).value_index(b);
         if(idx.has_value() && is_one_of(a, "safe", "unsafe"))
         {
-            int value = *idx | (a == "safe" ? flex_align_items_safe : flex_align_items_unsafe);
+            int position = flex_align_items_center + *idx;
+            int value    = position | (a == "safe" ? flex_align_items_safe : flex_align_items_unsafe);
             add_parsed_property(name, property_value(value, important));
         }
     }

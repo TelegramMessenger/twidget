@@ -1782,6 +1782,46 @@ int main() {
         }
     }
 
+    // ── safe and unsafe alignment: the position decides the place ──
+    {
+        StubBackend fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div"},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        auto placed = [&](const std::string& container, const std::string& item, const char* axis) {
+            auto ops = Json::array()
+                .push(Json::object().set("op", "attr").set("id", 10).set("name", "style").set("value", container))
+                .push(Json::object().set("op", "attr").set("id", 11).set("name", "style").set("value", "width:20px;height:20px;" + item));
+            f.receive(Json::object().set("type", "ops").set("ops", ops));
+            for (const Json& m : f.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", 11))))
+                if (m["type"].asString() == "result") return m["result"][axis].asNumber();
+            return -1.0;
+        };
+        auto positions = [&](const char* display, const std::string& box, const char* property, bool on_item, const char* axis, double center, double end) {
+            auto at = [&](const std::string& value) {
+                std::string declaration = std::string(property) + ":" + value;
+                return on_item ? placed(box, declaration, axis) : placed(box + declaration, "", axis);
+            };
+            for (const char* position : {"center", "start", "end", "self-start", "self-end", "flex-start", "flex-end"}) {
+                double alone = at(position), safe = at(std::string("safe ") + position), unsafe = at(std::string("unsafe ") + position);
+                double want = !std::strcmp(position, "center") ? center : !std::strcmp(position, "end") ? end : alone;
+                check(std::fabs(alone - want) < 0.01 && std::fabs(safe - alone) < 0.01 && std::fabs(unsafe - alone) < 0.01,
+                      std::string(display) + " " + property + ": safe and unsafe " + position + " are placed as " + position + " (got " +
+                          std::to_string(safe) + " and " + std::to_string(unsafe) + ", " + position + " alone " + std::to_string(alone) + ")");
+            }
+        };
+        const std::string flex = "display:flex;width:200px;height:100px;";
+        const std::string grid = "display:grid;grid-template-columns:200px;grid-template-rows:100px;width:200px;height:100px;";
+        positions("flex", flex, "align-self", true, "y", 40, 80);
+        positions("flex", flex, "align-items", false, "y", 40, 80);
+        positions("grid", grid, "align-self", true, "y", 40, 80);
+        positions("grid", grid, "align-items", false, "y", 40, 80);
+        positions("grid", grid, "justify-self", true, "x", 90, 180);
+        positions("grid", grid, "justify-items", false, "x", 90, 180);
+    }
+
     // ── the boxes of inline elements: their line boxes ──
     {
         StubBackend ib;

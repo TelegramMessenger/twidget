@@ -51,12 +51,7 @@ std::string length(const litehtml::css_length& l, double font_size, const char* 
 }
 
 std::string Alignment(litehtml::flex_align_items value) {
-    const auto overflow = value & (litehtml::flex_align_items_safe | litehtml::flex_align_items_unsafe);
-    // Overflow-position flags carry an index into self_position_strings.
-    const auto names = overflow
-        ? litehtml::css_values(litehtml::self_position_strings)
-        : litehtml::css_values(litehtml::flex_align_items_strings);
-    const auto result = Keyword(names, value & 0xFF);
+    const auto result = Keyword(litehtml::flex_align_items_strings, value & 0xFF);
     if (result.empty()) return result;
     if (value & litehtml::flex_align_items_safe) return "safe " + result;
     if (value & litehtml::flex_align_items_unsafe) return "unsafe " + result;
