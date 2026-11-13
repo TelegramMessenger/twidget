@@ -4417,6 +4417,31 @@ int main() {
               "an ordinary widget is not stopped, and 25000 queries for custom properties nobody declared add no names (got " + accent + ", " + std::to_string(width) + ")");
     }
 
+    // ── animations: the cache of interpolated value pairs is bounded by the bytes of their text ──
+#if defined(__APPLE__) && defined(__clang__)
+#if !__has_feature(address_sanitizer)
+    {
+        auto in_use = [] {
+            malloc_statistics_t stats{};
+            malloc_zone_statistics(nullptr, &stats);
+            return stats.size_in_use;
+        };
+        interpolate("1px", "2px", 0.5);
+        const size_t before = in_use();
+        for (int i = 0; i < 600; i++) {
+            std::string a = std::to_string(i), b = std::to_string(i + 1);
+            for (int k = 0; k < 1000; k++) {
+                a += " 1";
+                b += " 2";
+            }
+            interpolate(a, b, 0.5);
+        }
+        const size_t kept = in_use() > before ? in_use() - before : 0;
+        check(kept < (24u << 20), "600 value pairs of 1000 numbers each leave the tokens of 256 K of pairs at most (" + std::to_string(kept / 1024) + " KB kept)");
+    }
+#endif
+#endif
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;

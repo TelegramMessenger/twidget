@@ -305,6 +305,7 @@ std::string scaled_translations(std::string_view text, double factor) {
 
 std::optional<std::pair<std::vector<Token>, std::vector<Token>>> pair_tokens(const std::string& a, const std::string& b) {
     thread_local std::unordered_map<std::string, std::optional<std::pair<std::vector<Token>, std::vector<Token>>>> cache;
+    thread_local size_t cached_bytes = 0;
     std::string key = a + '\x01' + b;
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     std::string from = css::normalize_colors(a), to = css::normalize_colors(b);
@@ -326,8 +327,15 @@ std::optional<std::pair<std::vector<Token>, std::vector<Token>>> pair_tokens(con
     }
     std::optional<std::pair<std::vector<Token>, std::vector<Token>>> result;
     if (left.size() == right.size()) result = std::make_pair(std::move(left), std::move(right));
-    if (cache.size() >= 2048) cache.clear();
-    if (key.size() <= 4096) cache.emplace(std::move(key), result);
+    if (key.size() <= 4096) {
+        // Its tokens take some forty times a pair's text: the cache holds those of 256 K of pairs at most.
+        if (cache.size() >= 2048 || cached_bytes + key.size() > 256 * 1024) {
+            cache.clear();
+            cached_bytes = 0;
+        }
+        cached_bytes += key.size();
+        cache.emplace(std::move(key), result);
+    }
     return result;
 }
 
