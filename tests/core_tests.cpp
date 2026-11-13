@@ -3382,6 +3382,29 @@ int main() {
                   std::to_string(eb.measured) + " measured, " + std::to_string(eb.bytes) + " bytes)");
     }
 
+    // ── auto margins on the main axis take a flex line's free space in one step ──
+    {
+        StubBackend fb;
+        auto flex = [&](const std::string& style) {
+            Renderer f(300, 1, false, fb);
+            f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["style","width:50px;height:10px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"div","attrs":[["style","width:50px;height:10px;margin-left:auto"]]},{"op":"ins","parent":10,"id":12,"before":null}]})"));
+            std::string out;
+            for (int id : {11, 12})
+                out += css::format_number(f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["x"].asNumber(), 1) + " ";
+            return out;
+        };
+        std::string t = flex("display:flex");
+        check(t == "0 250 ", "margin-left: auto pushes a flex item to the end of its line (got " + t + ")");
+        t = flex("display:flex;justify-content:center");
+        check(t == "0 250 ", "and leaves justify-content no free space (got " + t + ")");
+        t = flex("display:flex;width:30000000px");
+        check(t == "0 29999950 ", "in a line 30000000px wide too, where a pixel is less than a float's step (got " + t + ")");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;
