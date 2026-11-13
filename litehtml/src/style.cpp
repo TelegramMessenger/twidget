@@ -142,6 +142,10 @@ namespace litehtml
 
         std::mutex&                                                  declaration_cache_lock = *new std::mutex;
         std::unordered_map<std::string, std::vector<style_op>>&      declaration_cache = *new std::unordered_map<std::string, std::vector<style_op>>;
+        // The cache lives as long as the process: long declarations stay out, and so does more than 1 MB of them.
+        constexpr size_t                                             max_cached_declaration = 512;
+        constexpr size_t                                             max_cached_bytes = 1 << 20;
+        size_t                                                       declaration_cache_bytes = 0;
 
         bool split_declarations(const std::string& txt, std::vector<std::pair<size_t, size_t>>& out)
         {
@@ -221,12 +225,16 @@ namespace litehtml
                 recorded_ops = nullptr;
                 suppress_raw = suppressed;
                 // Viewport lengths fold to px at the current viewport, so their result holds for this parse only.
-                if(!has_viewport_units(tokens))
+                if(key.size() <= max_cached_declaration && !has_viewport_units(tokens))
                 {
                     std::lock_guard<std::mutex> guard(declaration_cache_lock);
-                    if(declaration_cache.size() > 50000)
+                    if(declaration_cache.size() > 50000 || declaration_cache_bytes > max_cached_bytes)
+                    {
                         declaration_cache.clear();
-                    declaration_cache.emplace(key, ops);
+                        declaration_cache_bytes = 0;
+                    }
+                    if(declaration_cache.emplace(key, ops).second)
+                        declaration_cache_bytes += key.size();
                 }
             }
             for(const auto& op : ops)

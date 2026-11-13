@@ -15,6 +15,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <malloc/malloc.h>
+#endif
+
 using twidget::Json;
 using namespace twlite;
 
@@ -4234,6 +4238,36 @@ int main() {
         };
         check(width(10) == 130 && width(11) == 300, "calc() of 101 terms is a length, calc() of 201 terms is not (" + std::to_string(width(10)) + ", " + std::to_string(width(11)) + ")");
     }
+
+    // ── style: a declaration longer than 512 bytes is not kept by the process-wide declaration cache ──
+#if defined(__APPLE__) && defined(__clang__)
+#if !__has_feature(address_sanitizer)
+    {
+        auto in_use = [] {
+            malloc_statistics_t stats{};
+            malloc_zone_statistics(nullptr, &stats);
+            return stats.size_in_use;
+        };
+        auto widget = [](int round) {
+            StubBackend sb;
+            Renderer s(300, 1, false, sb);
+            std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]})";
+            for (int i = 0; i < 20; i++) {
+                std::string value = "--a:v" + std::to_string(round * 100 + i);
+                for (int k = 0; k < 3900; k++) value += " x";
+                ops += R"(,{"op":"el","id":)" + std::to_string(10 + i) + R"(,"tag":"div","attrs":[["style",")" + value + R"("]]},{"op":"ins","parent":4,"id":)" + std::to_string(10 + i) + R"(,"before":null})";
+            }
+            s.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            s.tick();
+        };
+        widget(0);
+        const size_t before = in_use();
+        for (int round = 1; round <= 10; round++) widget(round);
+        const size_t kept = in_use() > before ? in_use() - before : 0;
+        check(kept < (8u << 20), "ten widgets of twenty 8 K inline styles each leave nothing behind (" + std::to_string(kept / 1024) + " KB kept)");
+    }
+#endif
+#endif
 
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
