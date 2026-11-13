@@ -165,6 +165,8 @@ if(TWIDGET_BUILD_TESTS)
     endif()
     add_test(NAME twidget_core COMMAND twidget_core_tests)
     add_test(NAME twidget_css_keywords COMMAND twidget_css_keywords_tests)
+    add_test(NAME twidget_unchecked_casts
+        COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/unchecked_casts.cmake")
     # The heavy-box rule against widget-sandbox's shared fixture, the one every client's renderer implements.
     add_executable(twidget_paint_policy_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/paint_policy_tests.cpp")
     target_link_libraries(twidget_paint_policy_tests PRIVATE twidget::core)
