@@ -3431,6 +3431,28 @@ int main() {
         check(paths(nested.paint()) == 0, "a <use> whose href nests 8189 blocks draws nothing");
     }
 
+    // ── a table's rows are padded to its widest row out of the cell budget ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"table"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"tbody"},{"op":"ins","parent":10,"id":11,"before":null})";
+        int  next = 100;
+        auto add  = [&](const char* tag, int parent, const char* attrs) {
+            ops += R"(,{"op":"el","id":)" + std::to_string(next) + R"(,"tag":")" + tag + R"(","attrs":[)" + attrs + R"(]},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" +
+                   std::to_string(next) + R"(,"before":null})";
+            return next++;
+        };
+        int row = add("tr", 11, ""), wide = 0, last = 0;
+        for (int i = 0; i < 150; i++) wide = add("td", row, R"(["colspan","1000"],["style","height:9px"])");
+        for (int i = 0; i < 20; i++) last = add("td", add("tr", 11, ""), R"(["style","height:5px"])");
+        t.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        auto rect = [&](int id) { return t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]; };
+        double width = rect(10)["width"].asNumber();
+        check(width > 0 && width < 1000, "a table with a row of 150000 columns and 20 short rows keeps the columns its cell budget pads, and the cells in them (" + css::format_number(width, 1) + " px wide)");
+        check(rect(last)["height"].asNumber() > 0 && rect(wide)["x"].asNumber() < width, "and lays its last row out");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;

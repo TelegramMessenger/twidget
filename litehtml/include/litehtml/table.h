@@ -210,6 +210,8 @@ namespace litehtml
 
         std::vector<std::shared_ptr<render_item>> m_captions;
 
+        void limit_columns();
+
       public:
         void          clear();
         void          begin_row(const std::shared_ptr<render_item>& row);
