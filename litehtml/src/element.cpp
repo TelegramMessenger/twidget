@@ -389,17 +389,22 @@ namespace litehtml
             }
 
             // on each level, search previous siblings too
-            std::vector<element::ptr> siblings = current->get_siblings_before();
-            std::reverse(siblings.begin(), siblings.end());
-            for(const element::ptr& sibling : siblings)
+            element::ptr el_parent = current->parent();
+            if(el_parent)
             {
-                map_iterator = sibling->m_counter_values.find(counter_name_id);
-                if(map_iterator != sibling->m_counter_values.end())
+                const auto& siblings = el_parent->children();
+                auto        sibling  = std::find(siblings.begin(), siblings.end(), current);
+                while(sibling != siblings.begin())
                 {
-                    return true;
+                    --sibling;
+                    map_iterator = (*sibling)->m_counter_values.find(counter_name_id);
+                    if(map_iterator != (*sibling)->m_counter_values.end())
+                    {
+                        return true;
+                    }
                 }
             }
-            current = current->parent();
+            current = el_parent;
         }
 
         return false;
@@ -425,8 +430,10 @@ namespace litehtml
     void litehtml::element::parse_counter_tokens(const string_vector& tokens, int default_value,
                                                  const std::function<void(string_id, int)>& handler) const
     {
-        int pos = 0;
-        while(pos < static_cast<int>(tokens.size()))
+        // Each name is looked up through all the previous siblings: 16 keep 2000 siblings cheap.
+        static constexpr int max_names = 16;
+        int pos = 0, names = 0;
+        while(pos < static_cast<int>(tokens.size()) && names++ < max_names)
         {
             const std::string& name  = tokens[pos];
             int                value = default_value;

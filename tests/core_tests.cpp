@@ -3435,6 +3435,36 @@ int main() {
         check(gradients == 2, "two uses of a symbol draw its gradient-filled rect twice (" + std::to_string(gradients) + ")");
     }
 
+    // ── counters: a declaration names 16 of them, and an element counts once however many rules it matches ──
+    {
+        auto drawn = [](const std::string& css, const std::string& third = "c") {
+            StubBackend b;
+            Renderer t(300, 1, false, b);
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + css + R"("},{"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"div","attrs":[["class",")" + third + R"("]]},{"op":"ins","parent":4,"id":12,"before":null},
+                {"op":"el","id":13,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":13,"before":null}]})"));
+            t.tick();
+            std::string text;
+            for (const Command& c : t.paint())
+                if (c.kind == Cmd::Text) text += c.text + " ";
+            return text;
+        };
+        std::string names;
+        for (int i = 0; i < 20; i++) names += " n" + std::to_string(i);
+        std::string seen = drawn(".c{counter-increment:" + names + "}.c::before{content:counter(n15) ' ' counter(n16)}");
+        check(seen == "1 0 2 0 3 0 4 0 ", "the 16th counter of a declaration counts and the 17th does not (drawn " + seen + ")");
+        seen = drawn(".c{counter-increment:n}.c{color:red}.c,div.c{margin:0}.x{padding:0}.c::before{content:counter(n)}.c::before{color:blue}", "c x");
+        check(seen == "1 2 3 4 ", "rules that say nothing new about counters do not count again (drawn " + seen + ")");
+        seen = drawn(".c{counter-increment:n}.r{counter-reset:n 10}.c::before{content:counter(n)}", "c r");
+        check(seen == "1 2 10 11 ", "a counter is counted on from the nearest sibling that set it (drawn " + seen + ")");
+        seen = drawn(".c{counter-increment:n}.c.x{counter-increment:m}.c::after{content:counter(n) ' ' counter(m)}", "c x");
+        check(seen == "1 0 2 0 3 1 4 1 ", "a rule that names another counter still counts it (drawn " + seen + ")");
+    }
+
     // ── trees deeper than a document may be ──
     {
         auto chain = [](int levels) {

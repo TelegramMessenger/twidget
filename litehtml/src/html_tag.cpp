@@ -2129,7 +2129,7 @@ namespace litehtml
         return nullptr;
     }
 
-    void litehtml::html_tag::handle_counter_properties()
+    void litehtml::html_tag::handle_counter_properties(bool increment)
     {
         const auto& reset_property = m_style.get_property(_counter_reset_);
         if(reset_property.is<string_vector>())
@@ -2140,8 +2140,9 @@ namespace litehtml
         }
 
         const auto& inc_property = m_style.get_property(_counter_increment_);
-        if(inc_property.is<string_vector>())
+        if(increment && m_counter_changes < 2 && inc_property.is<string_vector>())
         {
+            m_counter_changes++;
             auto inc_function = [&](const string_id& name_id, const int value) { increment_counter(name_id, value); };
             parse_counter_tokens(inc_property.get<string_vector>(), 1, inc_function);
             return;
@@ -2150,8 +2151,12 @@ namespace litehtml
 
     void litehtml::html_tag::add_style(const style& style)
     {
+        const auto& added   = style.get_property(_counter_increment_);
+        const auto& counted = m_style.get_property(_counter_increment_);
+        const bool  changed = added.is<string_vector>() &&
+                              !(counted.is<string_vector>() && counted.get<string_vector>() == added.get<string_vector>());
         m_style.combine(style);
-        handle_counter_properties();
+        handle_counter_properties(changed);
     }
 
     void litehtml::html_tag::restore_base_style()
@@ -2189,6 +2194,7 @@ namespace litehtml
             }
         }
         m_style.clear();
+        m_counter_changes = 0;
         m_style_base     = style();
         m_has_style_base = false;
         m_used_styles.clear();
@@ -2207,6 +2213,7 @@ namespace litehtml
         }
 
         m_style.clear();
+        m_counter_changes = 0;
 
         for(auto& usel : m_used_styles)
         {
