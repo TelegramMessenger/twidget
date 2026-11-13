@@ -4683,6 +4683,24 @@ int main() {
         check(display(14) == "block", "a tag among texts that changed keeps its own style when the class flips (got " + display(14) + ")");
     }
 
+    // ── :empty is matched against the children an element has when its class changes ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".n:empty{height:7px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","m"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"n"}]})"));
+        t.tick();
+        double height = -1;
+        for (const Json& m : t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})")))
+            if (m["type"].asString() == "result") height = m["result"]["height"].asNumber();
+        check(height == 0, "an element with a child is not :empty after its class changed (got " + std::to_string(height) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

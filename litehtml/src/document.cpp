@@ -368,6 +368,9 @@ namespace litehtml
                             if(!attr.selector_list.empty())
                                 attributes = true;
                             break;
+                        case _empty_:
+                            attributes = true;
+                            break;
                         default:
                             break;
                         }
