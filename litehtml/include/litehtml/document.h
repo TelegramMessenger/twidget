@@ -56,6 +56,9 @@ namespace litehtml
     {
       public:
         bool take_table_cells(int count);
+        bool take_generated(size_t bytes);
+        void release_generated(int boxes, size_t bytes);
+        bool generated_limited() const { return m_generated_limited; }
         std::unordered_set<const element*> skip_paint;
         std::unordered_set<const element*> skip_background_images;
         const element* bare_effects = nullptr;
@@ -177,6 +180,12 @@ namespace litehtml
         static constexpr int                    max_table_cells    = 200000;
         int                                     m_table_cells      = 0;
         bool                                    m_table_limited    = false;
+        static constexpr int                    max_generated_boxes = 20000;
+        static constexpr size_t                 max_generated_box   = 32 * 1024;
+        static constexpr size_t                 max_generated_bytes = 1024 * 1024;
+        int                                     m_generated_boxes   = 0;
+        size_t                                  m_generated_bytes   = 0;
+        bool                                    m_generated_limited = false;
         std::unordered_map<const void*, std::vector<std::shared_ptr<element>>> m_node_elements;
         std::string                             m_master_styles;
         mutable uint32_t                        m_paint_generation = 1;

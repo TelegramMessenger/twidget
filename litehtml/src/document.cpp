@@ -1449,6 +1449,28 @@ namespace litehtml
         return true;
     }
 
+    bool document::take_generated(size_t bytes)
+    {
+        if(m_generated_limited)
+            return false;
+        if(m_generated_boxes >= max_generated_boxes || bytes > max_generated_box ||
+           bytes > max_generated_bytes - m_generated_bytes)
+        {
+            m_generated_limited = true;
+            m_container->sanitizer_limit("content");
+            return false;
+        }
+        m_generated_boxes++;
+        m_generated_bytes += bytes;
+        return true;
+    }
+
+    void document::release_generated(int boxes, size_t bytes)
+    {
+        m_generated_boxes -= std::min(boxes, m_generated_boxes);
+        m_generated_bytes -= std::min(bytes, m_generated_bytes);
+    }
+
     void document::forget_positions()
     {
         if(!m_root_render)

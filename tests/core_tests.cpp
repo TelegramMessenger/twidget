@@ -3251,6 +3251,51 @@ int main() {
         check(drawn >= 100000 && drawn <= (size_t(1) << 24), "one canvas op hands the backend a bounded amount of geometry (" + std::to_string(drawn) + " floats)");
     }
 
+    // ── generated content: a document's ::before and ::after boxes are bounded ──
+    {
+        const std::string head = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":20,"tag":"style","attrs":[]},{"op":"ins","parent":3,"id":20,"before":null},)";
+        const char* rect = R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})";
+        std::string title;
+        for (int i = 0; i < 500; i++) title += "a ";
+        auto height = [&](int refs) {
+            StubBackend b;
+            Renderer t(300, 1, false, b);
+            std::string content;
+            for (int i = 0; i < refs; i++) content += "attr(title) ";
+            t.receive(parse(head + R"({"op":"css","id":20,"text":".x::before{content:)" + content + R"(}"},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","x"],["title",")" + title + R"("]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+            t.tick();
+            return t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        };
+        const double full = height(20), more = height(80);
+        check(full > 0 && more == full, "80 attr() of a 1000 character title generate the 20000 boxes a document may, as 20 do (heights " + std::to_string(full) + ", " + std::to_string(more) + ")");
+
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(head + R"({"op":"css","id":20,"text":".x::before{content:attr(title)} .x:hover{color:red}"},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","x"],["title",")" + title + R"("]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        t.tick();
+        const double first = t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        for (int i = 0; i < 30; i++) {
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":""}]})"));
+            t.tick();
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"x"}]})"));
+            t.tick();
+        }
+        const double flipped = t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        for (int i = 0; i < 30; i++) {
+            t.hover(0, 10, 10);
+            t.tick();
+            t.hover(0, 10, 5000);
+            t.tick();
+        }
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"title","value":"a a"}]})"));
+        t.tick();
+        const double shorter = t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        check(first > 0 && flipped == first && shorter > 0 && shorter < first, "a box generated again and again gives back what it took (heights " + std::to_string(first) + ", " + std::to_string(flipped) + ", " + std::to_string(shorter) + ")");
+    }
+
     // ── trees deeper than a document may be ──
     {
         auto chain = [](int levels) {
