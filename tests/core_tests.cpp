@@ -3925,6 +3925,36 @@ int main() {
                   std::to_string(width(10)) + ", " + std::to_string(width(11)) + ", " + std::to_string(width(12)) + ")");
     }
 
+    // ── var(): the declarations of one element share one budget of expanded tokens ──
+    {
+        StubBackend vb;
+        Renderer v(300, 1, false, vb);
+        auto times = [](const std::string& what, int n) {
+            std::string out;
+            for (int i = 0; i < n; i++) out += what + " ";
+            return out;
+        };
+        const std::string twice = times("var(--c)", 2);
+        const std::string css = "#a{--a:" + times("x", 16) + ";--b:" + times("var(--a)", 16) + ";--c:" + times("var(--b)", 16) + ";--e1:" + twice + ";--e2:" + twice +
+                                "}#n{--f:" + twice + "}#j{width:var(--e1,55px)}#k{width:var(--e2,77px)}#m{width:var(--f,66px)}";
+        v.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + css + R"("},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","j"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","k"]]},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["id","n"]]},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":13,"id":14,"before":null}]})"));
+        v.tick();
+        auto width = [&](int id) {
+            return v.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(11) == 300 && width(12) == 77 && width(14) == 300,
+              "an element's second 8192-token custom property is invalid, its first and a descendant's own are not (" +
+                  std::to_string(width(11)) + ", " + std::to_string(width(12)) + ", " + std::to_string(width(14)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

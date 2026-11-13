@@ -2560,8 +2560,9 @@ namespace litehtml
 
     struct var_budget
     {
-        size_t left    = max_var_substitution_tokens;
-        bool   invalid = false;
+        size_t left      = max_var_substitution_tokens;
+        bool   invalid   = false;
+        bool   exhausted = false;
     };
 
     static size_t deep_token_count(const css_token_vector& tokens, size_t limit)
@@ -2607,7 +2608,8 @@ namespace litehtml
                 const size_t size = deep_token_count(value, budget.left);
                 if(size > budget.left)
                 {
-                    budget.invalid = true;
+                    budget.invalid   = true;
+                    budget.exhausted = true;
                     return false;
                 }
                 budget.left -= size;
@@ -2652,10 +2654,18 @@ namespace litehtml
         }
         std::stable_sort(pending.begin(), pending.end(),
                          [](const auto& a, const auto& b) { return a.second.m_order < b.second.m_order; });
+        // One budget for all the declarations of the element: each keeps what it expands to.
+        var_budget budget;
         for(auto& [name, prop] : pending)
         {
-            auto& value = prop.template get<css_token_vector>();
-            if(!subst_vars_(name, value, el))
+            auto&               value = prop.template get<css_token_vector>();
+            std::set<string_id> chain = {name};
+            budget.invalid            = budget.exhausted;
+            if(!budget.exhausted)
+            {
+                resolve_vars(value, el, chain, 0, budget);
+            }
+            if(budget.invalid)
             {
                 if(_s(name).substr(0, 2) == "--")
                 {
