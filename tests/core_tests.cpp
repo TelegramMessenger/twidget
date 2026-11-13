@@ -3340,6 +3340,21 @@ int main() {
         check(texts == "at100 " && deepest == 126, "300 nested elements are written and laid out to the 128th level, <html> the first (" + texts + ", " + std::to_string(deepest) + " divs deep)");
     }
 
+    // ── a float beside a line that a clearing box begins ──
+    {
+        Renderer c(300, 1, false, backend);
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:100px;font:10px/20px sans-serif"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["style","display:inline-block;clear:both"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"text","id":12,"data":"x"},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"text","id":13,"data":" aaaaaaaaaa"},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"span","attrs":[["style","float:left;width:60px;height:10px"]]},{"op":"ins","parent":10,"id":14,"before":null}]})"));
+        c.paint();
+        Json box = c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"];
+        check(box["height"].asNumber() == 40, "the word a float leaves no room for goes to the next line (height " + css::format_number(box["height"].asNumber(), 1) + ")");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;
