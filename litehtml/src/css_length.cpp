@@ -63,6 +63,24 @@ namespace litehtml
             return int(table.size() - 1);
         }
 
+        // An expression lives as long as the process and is copied for every evaluation.
+        constexpr size_t MAX_NODES = 128;
+
+        size_t node_count(const calc_node& root)
+        {
+            size_t                        count = 0;
+            std::vector<const calc_node*> pending = {&root};
+            while(!pending.empty())
+            {
+                const calc_node* node = pending.back();
+                pending.pop_back();
+                count++;
+                for(const auto& arg : node->args)
+                    pending.push_back(&arg);
+            }
+            return count;
+        }
+
         void skip_whitespace(const css_token_vector& tokens, size_t& i)
         {
             while(i < tokens.size() && tokens[i].type == WHITESPACE)
@@ -311,7 +329,7 @@ namespace litehtml
             calc_node node;
             size_t    i = 0;
             css_token_vector single = {token};
-            if(!parse_atom(single, i, node, 0) || is_number(node))
+            if(!parse_atom(single, i, node, 0) || is_number(node) || node_count(node) > MAX_NODES)
             {
                 return false;
             }

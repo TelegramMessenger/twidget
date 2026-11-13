@@ -4160,6 +4160,28 @@ int main() {
         check(style["color"].asString() == "rgb(1, 2, 3)", "past 256 matching selectors an element takes no more (got " + style["color"].asString() + ")");
     }
 
+    // ── calc(): an expression of more than 128 nodes is no length ──
+    {
+        StubBackend eb;
+        Renderer e(300, 1, false, eb);
+        auto terms = [](int n) {
+            std::string out = "calc(10%";
+            for (int i = 0; i < n; i++) out += " + 1px";
+            return out + ")";
+        };
+        e.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"#a{width:)" + terms(100) + "}#b{width:" + terms(200) + R"(}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+        e.tick();
+        auto width = [&](int id) {
+            return e.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(10) == 130 && width(11) == 300, "calc() of 101 terms is a length, calc() of 201 terms is not (" + std::to_string(width(10)) + ", " + std::to_string(width(11)) + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
