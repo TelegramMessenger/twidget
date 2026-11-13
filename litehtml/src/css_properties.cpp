@@ -764,6 +764,14 @@ void litehtml::css_properties::compute_background(const html_tag* el, const docu
 
 void litehtml::css_properties::compute_flex(const html_tag* el, const document::ptr& doc)
 {
+    m_flex_direction       = flex_direction_row;
+    m_flex_wrap            = flex_wrap_nowrap;
+    m_flex_justify_content = flex_justify_content_flex_start;
+    m_flex_align_items     = flex_align_items_stretch;
+    m_flex_align_content   = flex_align_content_stretch;
+    m_flex_grow            = 0;
+    m_flex_shrink          = 1;
+    m_flex_basis           = css_length();
     if(m_display == display_grid || m_display == display_inline_grid)
     {
         m_flex_justify_content = static_cast<flex_justify_content>(el->get_property<int>(
@@ -818,6 +826,13 @@ void litehtml::css_properties::compute_flex(const html_tag* el, const document::
 
 void litehtml::css_properties::compute_grid(const html_tag* el, const document::ptr& doc)
 {
+    m_grid_template_columns = grid_track_list();
+    m_grid_template_rows    = grid_track_list();
+    m_grid_auto_rows        = grid_track_list();
+    m_justify_items         = flex_align_items_normal;
+    m_justify_self          = flex_align_items_auto;
+    m_grid_column           = grid_placement();
+    m_grid_row              = grid_placement();
     if(m_display == display_grid || m_display == display_inline_grid)
     {
         if(const auto* tokens = el->get_token_property(_grid_template_columns_))

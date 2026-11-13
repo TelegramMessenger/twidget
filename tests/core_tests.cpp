@@ -4720,6 +4720,53 @@ int main() {
         check(height == 0, "an element with a child is not :empty after its class changed (got " + std::to_string(height) + ")");
     }
 
+    // ── an element that is no longer a flex or grid container computes none of one's values ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".gr{display:grid;justify-content:center}.fx{display:flex;flex-direction:column;flex-wrap:wrap}.fx>p{flex:2 3 10px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","gr"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["class","fx"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"p","attrs":[]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"p","attrs":[]},{"op":"ins","parent":13,"id":14,"before":null}]})"));
+        t.tick();
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"x"},{"op":"attr","id":11,"name":"class","value":"x"}]})"));
+        t.tick();
+        auto style = [&](int id, const std::string& name) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"][name].asString();
+            return std::string();
+        };
+        check(style(10, "align-items") == style(13, "align-items") && style(10, "justify-content") == style(13, "justify-content"),
+              "a former grid aligns as an element that never was one (got " + style(10, "align-items") + " " + style(10, "justify-content") + ")");
+        check(style(11, "flex-direction") == style(13, "flex-direction") && style(11, "flex-wrap") == style(13, "flex-wrap") && style(11, "align-items") == style(13, "align-items"),
+              "a former flex container keeps no direction or wrap (got " + style(11, "flex-direction") + " " + style(11, "flex-wrap") + " " + style(11, "align-items") + ")");
+        check(style(12, "flex-grow") == style(14, "flex-grow") && style(12, "flex-shrink") == style(14, "flex-shrink") && style(12, "flex-basis") == style(14, "flex-basis"),
+              "a former flex item keeps no flex factors (got " + style(12, "flex-grow") + " " + style(12, "flex-shrink") + " " + style(12, "flex-basis") + ")");
+        {
+            StubBackend b2;
+            Renderer g(300, 1, false, b2);
+            g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".g{display:grid}.c2{grid-template-columns:50px 50px}.p2{grid-column:2}"},{"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","g c2"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"text","id":12,"data":"a"},{"op":"ins","parent":11,"id":12,"before":null},
+                {"op":"el","id":13,"tag":"div","attrs":[["class","p2"]]},{"op":"ins","parent":10,"id":13,"before":null},
+                {"op":"text","id":14,"data":"b"},{"op":"ins","parent":13,"id":14,"before":null}]})"));
+            g.tick();
+            g.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"g"}]})"));
+            g.tick();
+            double width = -1;
+            for (const Json& m : g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})")))
+                if (m["type"].asString() == "result") width = m["result"]["width"].asNumber();
+            check(width == 150, "a grid that drops its column template keeps none of its tracks (got " + std::to_string(width) + ")");
+        }
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
