@@ -4664,6 +4664,30 @@ int main() {
               "a relative font size past INT_MAX is the largest size, not the smallest (got " + size(6) + " for +2147483647, " + size(9) + " for 7)");
     }
 
+    // ── <font size> far out of range ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"font","attrs":[["size","+2147483647"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"font","attrs":[["size","7"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"font","attrs":[["size","-2147483648"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"font","attrs":[["size","1"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"font","attrs":[["size","+1"]]},{"op":"ins","parent":4,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"font","attrs":[["size","4"]]},{"op":"ins","parent":4,"id":15,"before":null}]})"));
+        t.tick();
+        auto ask = [&](Json query) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto size = [&](int id) { return ask(Json::object().set("q", "cs").set("id", id))["font-size"].asString(); };
+        check(size(10) == size(11) && size(12) == size(13) && size(14) == size(15) && size(10) != size(13),
+              "<font size> of +2147483647 is the largest size and of -2147483648 the smallest (got " + size(10) + ", " + size(11) + ", " + size(12) + ", " +
+                  size(13) + ")");
+    }
+
     // ── elements that are not tags ──
     {
         StubBackend b;
