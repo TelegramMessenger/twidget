@@ -3781,6 +3781,22 @@ int main() {
         check(animated && d.last_html().find("opacity") == std::string::npos, "an animation's id past the range of an int is the end of that range");
     }
 
+    // ── nodes: a renderer holds at most the 50,000 the validator lets a widget have ──
+    {
+        StubBackend sb;
+        Renderer d(300, 1, false, sb);
+        std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]})";
+        for (int id = 100; id < 100 + 50002; id++) ops += R"(,{"op":"text","id":)" + std::to_string(id) + R"(,"data":"t)" + std::to_string(id) + R"("})";
+        ops += R"(,{"op":"el","id":60000,"tag":"p","attrs":[["class","late"]]},{"op":"ins","parent":4,"id":60000,"before":null})";
+        ops += R"(,{"op":"ins","parent":4,"id":100,"before":null},{"op":"ins","parent":4,"id":50099,"before":null},{"op":"ins","parent":4,"id":50101,"before":null})";
+        d.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        std::string html = d.last_html();
+        check(html.find("t100") != std::string::npos && html.find("t50099") != std::string::npos, "the first 50,000 nodes are made");
+        check(html.find("t50101") == std::string::npos && html.find("late") == std::string::npos, "and no node past them");
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":100},{"op":"el","id":60000,"tag":"p","attrs":[["class","late"]]},{"op":"ins","parent":4,"id":60000,"before":null}]})"));
+        check(d.last_html().find("late") != std::string::npos, "a removed node makes room for a new one");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;

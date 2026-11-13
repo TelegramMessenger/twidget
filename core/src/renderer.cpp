@@ -481,6 +481,8 @@ bool coalesced(const std::string& type) {
 constexpr int MAX_CANVASES = 64;
 /// The levels of a tree the ops build, attached or not (the validator caps the attached one): every walk recurses over them.
 constexpr size_t MAX_TREE_DEPTH = 1024;
+/// The nodes a renderer holds, attached or not: the validator's own bound (widget-sandbox validator.ts, MAX_NODES).
+constexpr size_t MAX_NODES = 50000;
 /// Layers: at most this many per widget, this many device pixels in all, and no track shorter
 /// than this (a frame or two is cheaper to paint than to hand over).
 constexpr size_t MAX_LAYERS = 256;
@@ -2783,6 +2785,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             return;
         }
         if (node(id)) return;  // the validator never reuses a live id; keep the first
+        if (nodes_.size() >= MAX_NODES) return;
         auto n = std::make_unique<Node>();
         n->kind = Node::Element;
         if (!css::is_tag_name(str("tag"))) {
@@ -2803,7 +2806,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
         return;
     }
     if (kind == "text" || kind == "comment") {
-        if (node(id)) return;
+        if (node(id) || nodes_.size() >= MAX_NODES) return;
         auto n = std::make_unique<Node>();
         n->kind = kind == "text" ? Node::Text : Node::Comment;
         n->id = id;
