@@ -49,6 +49,9 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     m_el_position = static_cast<element_position>(
         el->get_property<int>(_position_, false, element_position_static, offset(m_el_position)));
     m_display = static_cast<style_display>(el->get_property<int>(_display_, false, display_inline, offset(m_display)));
+    // inline-text is what a text node computes to: a tag that declares it would be laid out as one.
+    if(m_display == display_inline_text)
+        m_display = display_inline;
     m_visibility =
         static_cast<visibility>(el->get_property<int>(_visibility_, true, visibility_visible, offset(m_visibility)));
     m_float = static_cast<element_float>(el->get_property<int>(_float_, false, float_none, offset(m_float)));

@@ -3370,6 +3370,21 @@ int main() {
         for (const auto value : {"a", "b", ""}) style("attr", "class", value);
         check(cs(10, "color") == "rgb(255, 0, 0)" && t.last_html().find("width:20px") != std::string::npos,
               "inline styles and classes on a <style> element change nothing but its attributes (got " + cs(10, "color") + ")");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"css","id":20,"text":":root{--d:inline-text} .t{display:var(--d)} .u{display:inline-text} .w{padding-left:300px}"},
+            {"op":"el","id":30,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":31,"tag":"span","attrs":[["class","t"]]},{"op":"ins","parent":30,"id":31,"before":null},
+            {"op":"text","id":32,"data":"words"},{"op":"ins","parent":31,"id":32,"before":null},
+            {"op":"el","id":33,"tag":"span","attrs":[["class","u"]]},{"op":"ins","parent":30,"id":33,"before":null},
+            {"op":"text","id":34,"data":"more"},{"op":"ins","parent":33,"id":34,"before":null},
+            {"op":"el","id":40,"tag":"div","attrs":[["style","width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"el","id":41,"tag":"span","attrs":[["class","t w x"]]},{"op":"ins","parent":40,"id":41,"before":null},
+            {"op":"el","id":42,"tag":"img","attrs":[["class","u w"],["width","300"],["height","10"]]},{"op":"ins","parent":40,"id":42,"before":null}]})"));
+        t.tick();
+        auto width = [&](int id) { return ask(Json::object().set("q", "rect").set("id", id))["width"].asNumber(); };
+        check(width(31) == 40 && width(33) == 32 && width(41) == 300,
+              "a tag that declares the display of a text node, by a variable or by name, is laid out as an inline box (got " +
+                  std::to_string(width(31)) + ", " + std::to_string(width(33)) + ", " + std::to_string(width(41)) + ")");
     }
 
     std::printf("%d failure(s)\n", failures);
