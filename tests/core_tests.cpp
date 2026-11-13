@@ -3515,6 +3515,26 @@ int main() {
         check(kept >= (size_t(1) << 20) && kept <= (size_t(5) << 20), "eight canvases keep the paths of one together (" + std::to_string(kept) + " floats)");
     }
 
+    // ── an arc without a finite sweep adds no curve ──
+    {
+        StubBackend ab;
+        Renderer a(300, 1, false, ab);
+        a.receive(parse(PAGE));
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"canvas","id":40,"cmds":[["c","moveTo",1,1],["c","arc",50,50,10,1e308,-1e308],["c","lineTo",2,2],["c","stroke"],["pn",1,"M1e308 0A5 5 0 0 1 -1e308 5"],["c","fill",{"p":1}]]}]})"));
+        bool finite = true;
+        size_t strokes = 0, fills = 0, curves = 0;
+        for (const auto& ops : ab.runs)
+            for (const CanvasOp& op : ops) {
+                strokes += op.kind == CanvasOp::Stroke;
+                fills += op.kind == CanvasOp::Fill;
+                curves += size_t(std::count(op.path.ops.begin(), op.path.ops.end(), Path::Cubic));
+                if (op.kind == CanvasOp::Stroke)
+                    for (float v : op.path.points) finite = finite && std::isfinite(v);
+            }
+        check(strokes == 1 && fills == 1 && curves == 0 && finite, "an arc from 1e308 to -1e308 radians, and an SVG arc between such points, add no curve of NaN");
+    }
+
     // ── canvases drawn from one another down a long chain ──
     {
         StubBackend cb;

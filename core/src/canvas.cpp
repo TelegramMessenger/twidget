@@ -141,6 +141,7 @@ Composite composite_of(const std::string& name, bool& known) {
 /// current point with a line when there is one. Angles in radians, y down, clockwise positive.
 template <class Emit>
 void arc_segments(double cx, double cy, double rx, double ry, double rotation, double start, double sweep, Emit emit) {
+    if (!std::isfinite(sweep)) return;
     int segments = std::max(1, int(std::ceil(std::fabs(sweep) / (PI / 2) - 1e-9)));
     double step = sweep / segments;
     double k = 4.0 / 3.0 * std::tan(step / 4);
