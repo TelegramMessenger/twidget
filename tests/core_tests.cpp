@@ -5091,6 +5091,34 @@ int main() {
                   std::to_string(after_zeros) + " and " + std::to_string(after_junk) + " paths)");
     }
 
+    // ── style sheets: the process-wide cache of parsed sheets is bounded by the bytes of their text ──
+#if defined(__APPLE__) && defined(__clang__)
+#if !__has_feature(address_sanitizer)
+    {
+        auto in_use = [] {
+            malloc_statistics_t stats{};
+            malloc_zone_statistics(nullptr, &stats);
+            return stats.size_in_use;
+        };
+        auto widget = [](int round) {
+            StubBackend sb;
+            Renderer s(300, 1, false, sb);
+            std::string sheet;
+            for (int i = 0; i < 400; i++) sheet += ".q" + std::to_string(i) + "{width:" + std::to_string(round) + "px;height:" + std::to_string(i) + "px;color:red}";
+            s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + sheet + R"("},
+                {"op":"ins","parent":3,"id":20,"before":null}]})"));
+            s.tick();
+        };
+        widget(0);
+        const size_t before = in_use();
+        for (int round = 1; round <= 100; round++) widget(round);
+        const size_t kept = in_use() > before ? in_use() - before : 0;
+        check(kept < (12u << 20), "a hundred widgets with a sheet of 400 rules each leave the parses of 256 K of sheets at most (" + std::to_string(kept / 1024) + " KB kept)");
+    }
+#endif
+#endif
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

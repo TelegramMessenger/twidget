@@ -2578,10 +2578,18 @@ namespace litehtml
                 m_styles.sort_selectors();
                 if(styles_cacheable)
                 {
+                    // A parse is some 30 times its text: the cache holds the parses of 256 K of sheets at most.
+                    static constexpr size_t     max_styles_cache_bytes = 256 * 1024;
+                    static size_t               styles_cache_bytes     = 0;
                     std::lock_guard<std::mutex> lock(styles_cache_mutex);
-                    if(styles_cache.size() > 128)
+                    const size_t                bytes = styles_key.size();
+                    if(styles_cache.size() > 128 || styles_cache_bytes + bytes > max_styles_cache_bytes)
+                    {
                         styles_cache.clear();
-                    styles_cache.emplace(std::move(styles_key), m_styles);
+                        styles_cache_bytes = 0;
+                    }
+                    if(bytes <= max_styles_cache_bytes && styles_cache.emplace(std::move(styles_key), m_styles).second)
+                        styles_cache_bytes += bytes;
                 }
             }
 
