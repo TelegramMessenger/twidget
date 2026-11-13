@@ -15,6 +15,8 @@ namespace twlite {
 namespace {
 
 constexpr double INF = std::numeric_limits<double>::infinity();
+/// A retargeted transition starts from its interpolated value only while that is this short: one mixed by weight holds both its ends.
+constexpr size_t MAX_RETARGET_VALUE = 16384;
 
 bool is_digit(char c) { return c >= '0' && c <= '9'; }
 bool is_letter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
@@ -1045,6 +1047,7 @@ void Animator::update(const std::unordered_map<int64_t, Declared>& declarations,
                     if (auto t = transitions_.find(id); t != transitions_.end()) t->second.erase(property);
                 } else {
                     std::string current = transition_value(id, property, now).value_or(*old_value);
+                    if (current.size() > MAX_RETARGET_VALUE) current = *old_value;
                     // Its keyframes are its two ends.
                     paint::AnimationPaint heavy;
                     heavy.keyframe(0);

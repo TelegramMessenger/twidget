@@ -2206,6 +2206,29 @@ int main() {
               "of 40 background layers of 4096 tiles each, 16 are recorded tile by tile and the rest once (" + std::to_string(commands) + " commands)");
     }
 
+    // ── a transition retargeted over and over between a length and a percentage ──
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":".t{transition:transform 1000s linear}.a{transform:translateX(10px)}.b{transform:translateX(calc(50% + 1px))}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","t a"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        g.tick();
+        size_t longest = 0;
+        for (int i = 0; i < 150; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            g.hover(0, 1, 1);
+            g.receive(parse(std::string(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":")") + (i % 2 ? "t a" : "t b") + R"("}]})"));
+            g.tick();
+            for (const Json& m : g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":10}})")))
+                if (m["type"].asString() == "result") longest = std::max(longest, m["result"]["transform"].asString().size());
+        }
+        check(longest > 0 && longest < 40000, "a transition retargeted 150 times keeps its value bounded (longest " + std::to_string(longest) + " bytes)");
+    }
+
     // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──
     {
         struct Images : StubBackend {
