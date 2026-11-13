@@ -767,12 +767,28 @@ namespace litehtml
         return selector;
     }
 
+    // Specificity, matching and destruction recurse once per compound of a selector, nested lists included.
+    static const int        kMaxCompounds    = 128;
+    static thread_local int g_selector_depth = 0;
+    static thread_local int g_compounds      = 0;
+
     css_selector::ptr parse_complex_selector(const css_token_vector& tokens, document_mode mode)
     {
+        struct counted
+        {
+            counted()
+            {
+                if(g_selector_depth++ == 0)
+                {
+                    g_compounds = 0;
+                }
+            }
+            ~counted() { g_selector_depth--; }
+        } scope;
         int index = 0;
         skip_whitespace(tokens, index);
         auto sel = parse_compound_selector(tokens, index, mode);
-        if(!sel)
+        if(!sel || ++g_compounds > kMaxCompounds)
         {
             return nullptr;
         }
@@ -806,7 +822,7 @@ namespace litehtml
             // otherwise: index is not at the end, combinator is good and tokens[index] is not whitespace
             // it means if parse_compound_selector fails it's an error
             sel = parse_compound_selector(tokens, index, mode);
-            if(!sel)
+            if(!sel || ++g_compounds > kMaxCompounds)
             {
                 return nullptr;
             }

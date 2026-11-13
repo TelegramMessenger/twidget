@@ -3699,6 +3699,29 @@ int main() {
         check(paths == 1, "a path whose stroke-dasharray nests 8192 blocks is drawn (" + std::to_string(paths) + " paths)");
     }
 
+    // ── a complex selector of more compounds than a document has levels ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        std::string chain = "div", half = "div", ops;
+        for (int i = 1; i < 200; i++) chain += "+div";
+        for (int i = 1; i < 100; i++) half += "+div";
+        for (int i = 0; i < 210; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","height:1px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"div{width:10px})" + chain + R"({width:20px}:is()" + half + ")+" + half + R"({width:40px}div+div+div{width:30px}"},{"op":"ins","parent":3,"id":5,"before":null})" + ops + "]}"));
+        c.tick();
+        auto width = [&](int id) {
+            return c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(100) == 10 && width(102) == 30 && width(309) == 30,
+              "a selector of 200 compounds, in one chain or nested in :is(), is left out and the rules around it apply (got " + std::to_string(width(100)) +
+                  ", " + std::to_string(width(102)) + ", " + std::to_string(width(309)) + ")");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;
