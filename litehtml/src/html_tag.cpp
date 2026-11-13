@@ -1903,13 +1903,18 @@ namespace litehtml
         }
     }
 
+    static bool is_generated(const element& el)
+    {
+        return el.tag() == __tag_before_ || el.tag() == __tag_after_;
+    }
+
     bool html_tag::is_nth_child(const element::ptr& el, int num, int off, bool of_type,
                                 const css_selector::vector& selector_list) const
     {
         int idx = 1;
         for(const auto& child : m_children)
         {
-            if(child->css().get_display() != display_inline_text)
+            if(child->css().get_display() != display_inline_text && !is_generated(*child))
             {
                 if((!of_type && selector_list.empty()) || (of_type && child->tag() == el->tag()) ||
                    child->select(selector_list))
@@ -1946,7 +1951,7 @@ namespace litehtml
         int idx = 1;
         for(auto child = m_children.rbegin(); child != m_children.rend(); child++)
         {
-            if((*child)->css().get_display() != display_inline_text)
+            if((*child)->css().get_display() != display_inline_text && !is_generated(**child))
             {
                 if((!of_type && selector_list.empty()) || (of_type && (*child)->tag() == el->tag()) ||
                    (*child)->select(selector_list))
@@ -1994,7 +1999,7 @@ namespace litehtml
                 entry.index.clear();
                 for(auto& e : m_children)
                 {
-                    if(e->css().get_display() != display_inline_text)
+                    if(e->css().get_display() != display_inline_text && !is_generated(*e))
                     {
                         entry.index[e.get()] = entry.kids.size();
                         entry.kids.push_back(e.get());
@@ -2015,7 +2020,7 @@ namespace litehtml
         element::ptr ret;
         for(auto& e : m_children)
         {
-            if(e->css().get_display() != display_inline_text)
+            if(e->css().get_display() != display_inline_text && !is_generated(*e))
             {
                 if(e == el)
                 {
@@ -2051,7 +2056,7 @@ namespace litehtml
         element::ptr ret = nullptr;
         for(auto& e : m_children)
         {
-            if(e->css().get_display() != display_inline_text)
+            if(e->css().get_display() != display_inline_text && !is_generated(*e))
             {
                 if(e == el)
                 {
@@ -2091,7 +2096,7 @@ namespace litehtml
         int child_count = 0;
         for(const auto& child : m_children)
         {
-            if(child->css().get_display() != display_inline_text)
+            if(child->css().get_display() != display_inline_text && !is_generated(*child))
             {
                 if(!of_type || (of_type && el->tag() == child->tag()))
                 {

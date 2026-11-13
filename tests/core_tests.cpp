@@ -5153,6 +5153,31 @@ int main() {
                   std::to_string(width(11)) + ", " + std::to_string(width(12)) + ")");
     }
 
+    // ── generated ::before and ::after are not siblings of an element matched again ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".f::before{content:'x';display:block}.f::after{content:'y';display:block}.k{margin:0}.k:first-child{height:5px}.k:last-child{width:50px}.k:only-child{padding-left:3px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"p","attrs":[["class","k"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto box = [&] {
+            for (const Json& m : t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})")))
+                if (m["type"].asString() == "result") return std::to_string(int(m["result"]["width"].asNumber())) + "x" + std::to_string(int(m["result"]["height"].asNumber()));
+            return std::string();
+        };
+        check(box() == "53x5", "an only child is the first and the last (got " + box() + ")");
+        // The parent gains ::before and ::after while the child's own style changes: the child is matched again.
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"f"},{"op":"style","id":11,"name":"text-align","value":"right","important":false}]})"));
+        t.tick();
+        check(box() == "53x5", "and stays both beside its parent's generated content (got " + box() + ")");
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":11,"name":"text-align","value":"center","important":false}]})"));
+        t.tick();
+        check(box() == "53x5", "also when it is matched again later (got " + box() + ")");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
