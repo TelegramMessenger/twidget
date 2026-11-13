@@ -3494,6 +3494,21 @@ int main() {
         check(media < 5, "and so do the selectors of a media query that starts to apply as the document grows (" + std::to_string(media) + " s)");
     }
 
+    // ── SVG presentation attributes: their text reaches the CSS parser as written ──
+    {
+        StubBackend sb;
+        Renderer nested(300, 1, false, sb);
+        nested.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"path","ns":"svg","attrs":[["d","M0 0h50"],["stroke","red"],["stroke-dasharray",")" + std::string(8192, '[') +
+            R"("]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        size_t paths = 0;
+        for (const Command& c : nested.paint())
+            if (c.kind == Cmd::Path) paths++;
+        check(paths == 1, "a path whose stroke-dasharray nests 8192 blocks is drawn (" + std::to_string(paths) + " paths)");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;
