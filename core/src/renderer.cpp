@@ -1081,9 +1081,14 @@ public:
         auto key = std::make_tuple(doc_.get(), doc_->paint_generation(), layouts_);
         if (key == trace_key_) return trace_;
         trace_.clear();
-        litehtml::g_paint_trace = &trace_;
-        draw();
-        litehtml::g_paint_trace = nullptr;
+        {
+            struct Tracing {
+                std::vector<const litehtml::render_item*>* previous = litehtml::g_paint_trace;
+                explicit Tracing(std::vector<const litehtml::render_item*>* trace) { litehtml::g_paint_trace = trace; }
+                ~Tracing() { litehtml::g_paint_trace = previous; }
+            } tracing(&trace_);
+            draw();
+        }
         trace_key_ = key;
         return trace_;
     }
