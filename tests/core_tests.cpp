@@ -3958,6 +3958,34 @@ int main() {
         check(few == 20 && many > 0 && many <= 8, "a parse clones formatting elements up to the size of its input and 1 MB, then stops (" + std::to_string(few) + " and " + std::to_string(many) + " texts painted)");
     }
 
+    // ── a font attribute of an <svg> declares the one property it names ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","40"],["font-size","12;position:sticky;display:list-item;top:3px"],
+                ["font-weight","700;float:right"],["font-style","italic;-lh-raw-transition:all 1s"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"text","ns":"svg","attrs":[["font-size","9;fill:red;opacity:0.5"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","40"],["font-size","12"],["font-weight","700"],["font-style","italic"],
+                ["font-family","serif"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        t.tick();
+        auto ask = [&](Json query) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) { return ask(Json::object().set("q", "cs").set("id", id))[prop].asString(); };
+        check(cs(10, "position") == "static" && cs(10, "display") == "inline-block" && cs(10, "float") == "none" && cs(10, "top") == "auto",
+              "a font attribute of an <svg> that goes on past its value declares nothing (got " + cs(10, "position") + ", " + cs(10, "display") + ", " +
+                  cs(10, "float") + ", " + cs(10, "top") + ")");
+        check(cs(11, "opacity") == "1" && cs(11, "fill") == "rgb(0, 0, 0)",
+              "nor does one of an SVG <text> (got " + cs(11, "opacity") + ", " + cs(11, "fill") + ")");
+        check(cs(12, "font-size") == "12px" && cs(12, "font-weight") == "700" && cs(12, "font-style") == "italic" && cs(12, "font-family") == "serif",
+              "the font attributes of an <svg> set its font as before (got " + cs(12, "font-size") + ", " + cs(12, "font-weight") + ", " +
+                  cs(12, "font-style") + ", " + cs(12, "font-family") + ")");
+    }
+
     // ── a textarea whose value replaced its children, then removed ──
     {
         StubBackend tb;

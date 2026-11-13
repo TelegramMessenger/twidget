@@ -1307,7 +1307,7 @@ namespace litehtml
                 std::string text = value;
                 if(std::string(name) == "font-size" && text.find_first_not_of("0123456789.") == std::string::npos)
                     text += "px";
-                m_style.add(std::string(name) + ":" + text, "", nullptr);
+                m_style.add_property(_id(name), text, "", false, get_document()->container());
             }
         }
         for(auto& el : m_children)
