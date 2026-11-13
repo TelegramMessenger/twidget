@@ -635,6 +635,15 @@ public:
         // At least one character goes on the line, however narrow it is.
         size_t lo = size_t(first - boundaries_.begin()) + 1, hi = boundaries_.size() - 1;
         if (float(width) <= 0 || measure(start, boundaries_[lo]) > float(width)) return boundaries_[lo];
+        // The end of the line is near its start: halving the whole rest of the text measures it for every line.
+        for (size_t step = 1; lo < hi; step *= 2) {
+            size_t probe = std::min(hi, lo + step);
+            if (measure(start, boundaries_[probe]) > float(width)) {
+                hi = probe - 1;
+                break;
+            }
+            lo = probe;
+        }
         while (lo < hi) {
             size_t mid = (lo + hi + 1) / 2;
             if (measure(start, boundaries_[mid]) <= float(width)) lo = mid;

@@ -3426,6 +3426,29 @@ int main() {
         check(tiles == 16, "a 96 px box across 2^25 px, where a float steps by 4, gets its 16 tiles of 6 px (got " + std::to_string(tiles) + ")");
     }
 
+    // ── a word broken anywhere measures what fits on its line, not half of the text that is left ──
+    {
+        struct Counting : StubBackend {
+            size_t bytes = 0;
+            float text_width(int font, const std::string& text) override {
+                bytes += text.size();
+                return StubBackend::text_width(font, text);
+            }
+        } wb;
+        Renderer w(300, 1, false, wb);
+        w.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:32px;overflow-wrap:anywhere"]]},{"op":"text","id":11,"data":")" + std::string(20000, 'x') + R"("},
+            {"op":"ins","parent":10,"id":11,"before":null},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[]},{"op":"text","id":13,"data":"x"},{"op":"ins","parent":12,"id":13,"before":null},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        auto height = [&](int id) {
+            return w.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["height"].asNumber();
+        };
+        double lines = height(12) > 0 ? height(10) / height(12) : 0;
+        check(lines == 5000 && wb.bytes < 1000000,
+              "a 20,000 character word broken four to a line is measured line by line (" + std::to_string(int(lines)) + " lines, " + std::to_string(wb.bytes) + " bytes measured)");
+    }
+
     // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
     {
         StubBackend nb;
