@@ -275,10 +275,10 @@ enum CSSTime {
         if t.hasPrefix("calc(") {
             return calc(t)
         }
-        if t.hasSuffix("ms"), let value = Double(t.dropLast(2)) {
+        if t.hasSuffix("ms"), let value = Double(t.dropLast(2)), value.isFinite {
             return value / 1000
         }
-        if t.hasSuffix("s"), let value = Double(t.dropLast()) {
+        if t.hasSuffix("s"), let value = Double(t.dropLast()), value.isFinite {
             return value
         }
         return nil
@@ -443,11 +443,17 @@ struct CSSAnimationSpec: Equatable {
         longhand("animation-duration") { $0.duration = CSSTime.parse($1) ?? 0 }
         longhand("animation-timing-function") { $0.timingText = $1 }
         longhand("animation-delay") { $0.delay = CSSTime.parse($1) ?? 0 }
-        longhand("animation-iteration-count") { $0.iterations = $1 == "infinite" ? .infinity : (Double($1) ?? 1) }
+        longhand("animation-iteration-count") {
+            $0.iterations = $1 == "infinite" ? .infinity : Double($1).flatMap { $0.isFinite ? $0 : nil } ?? 1
+        }
         longhand("animation-direction") { $0.direction = $1 }
         longhand("animation-fill-mode") { $0.fill = $1 }
         longhand("animation-play-state") { $0.paused = $1 == "paused" }
-        return specs.filter { $0.name != "none" && !$0.name.isEmpty }
+        return specs.filter {
+            $0.name != "none" && !$0.name.isEmpty
+                && $0.duration.isFinite && $0.duration >= 0 && $0.delay.isFinite
+                && $0.iterations >= 0 && ($0.iterations.isFinite || $0.iterations == .infinity)
+        }
     }
 
     private static func parseShorthand(_ text: String) -> CSSAnimationSpec {
@@ -466,7 +472,7 @@ struct CSSAnimationSpec: Equatable {
                 spec.timingText = t
             } else if t == "infinite" {
                 spec.iterations = .infinity
-            } else if let count = Double(t) {
+            } else if let count = Double(t), count.isFinite {
                 spec.iterations = count
             } else if ["normal", "reverse", "alternate", "alternate-reverse"].contains(t) {
                 spec.direction = t
@@ -1156,13 +1162,18 @@ final class WidgetAnimator {
             guard spec.fill == "forwards" || spec.fill == "both" else {
                 return (base["transform"], base["opacity"])
             }
-            let last = max(0, Int(ceil(min(spec.iterations, 1e9))) - 1)
+            guard let count = Int(exactly: ceil(min(spec.iterations, 1e9))) else {
+                return nil
+            }
+            let last = max(0, count - 1)
             progress = spec.iterations.truncatingRemainder(dividingBy: 1) == 0 ? 1 : spec.iterations.truncatingRemainder(dividingBy: 1)
             if reversed(spec.direction, last) {
                 progress = 1 - progress
             }
         } else {
-            let iteration = Int(min(local / duration, 1e12))
+            guard let iteration = Int(exactly: floor(min(local / duration, 1e12))) else {
+                return nil
+            }
             progress = (local - Double(iteration) * duration) / duration
             if reversed(spec.direction, iteration) {
                 progress = 1 - progress
@@ -1397,7 +1408,10 @@ final class WidgetAnimator {
                 onEvent?("animationend", id, spec.name, total)
             }
             if spec.fill == "forwards" || spec.fill == "both" {
-                let lastIteration = max(0, Int(ceil(min(spec.iterations, 1e9))) - 1)
+                guard let count = Int(exactly: ceil(min(spec.iterations, 1e9))) else {
+                    return nil
+                }
+                let lastIteration = max(0, count - 1)
                 var progress = spec.iterations.truncatingRemainder(dividingBy: 1) == 0 ? 1.0 : spec.iterations.truncatingRemainder(dividingBy: 1)
                 if reversed(spec.direction, lastIteration) {
                     progress = 1 - progress
@@ -1406,7 +1420,9 @@ final class WidgetAnimator {
             }
             return nil
         }
-        let iteration = Int(min(local / duration, 1e12))
+        guard let iteration = Int(exactly: floor(min(local / duration, 1e12))) else {
+            return nil
+        }
         if iteration != state.iteration {
             state.iteration = iteration
             onEvent?("animationiteration", id, spec.name, local)
