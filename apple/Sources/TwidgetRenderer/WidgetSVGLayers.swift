@@ -169,6 +169,7 @@ final class WidgetSVGLayers {
                 ancestor = node.parent
             }
             guard !nested, !composited.contains(id), let shapes = document.svgShapes(attribute: WidgetDOM.idAttribute, value: String(id), maxWidth: width),
+                  shapes.frame.hasFiniteGeometry,
                   WidgetCompositor.unobscured(document, id, shapes.frame, clip: nil, ignoring: []) else {
                 refused.insert(id)
                 ids.remove(id)

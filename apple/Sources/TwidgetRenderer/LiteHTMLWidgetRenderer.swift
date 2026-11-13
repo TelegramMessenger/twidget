@@ -809,7 +809,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     }
 
     public var tileDebug: String {
-        return "detached=\(documentView.detached) preparing=\(documentView.preparing) held=\(held.count) throttle-ms=\(Int(throttleRemaining(CACurrentMediaTime()) * 1000)) tiles=\(documentView.tileCount) trimmed=\(documentView.tilesTrimmed) \(documentView.flushDebug) doc=\(document != nil) h=\(document.map { Int($0.size.height) } ?? -1) inWindow=\(documentView.windowState.inWindow) onScreen=\(isOnScreen) hostVisible=\(hostVisible) frozen=\(frozen) destroyed=\(destroyed)"
+        return "detached=\(documentView.detached) preparing=\(documentView.preparing) held=\(held.count) throttle-ms=\(Int(throttleRemaining(CACurrentMediaTime()) * 1000)) tiles=\(documentView.tileCount) trimmed=\(documentView.tilesTrimmed) \(documentView.flushDebug) doc=\(document != nil) h=\(document.map { $0.size.height } ?? -1) inWindow=\(documentView.windowState.inWindow) onScreen=\(isOnScreen) hostVisible=\(hostVisible) frozen=\(frozen) destroyed=\(destroyed)"
     }
 
     public var isPrepared: Bool {
@@ -1970,7 +1970,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         stage("style-patch")
         let html = fast == nil || LiteHTMLWidgetRenderer.patchCheck ? dom.serialize(theme: theme, overrides: overrides, canvasSource: { [unowned self] node in self.canvasSource(node) }) : ""
         stage("serialize")
-        let next = fast ?? LHDocument(html: html, css: masterCSS, previous: document, viewportSize: layoutViewport)
+        var next = fast ?? LHDocument(html: html, css: masterCSS, previous: document, viewportSize: layoutViewport)
         next.controlsActive = controlsActive
         next.setDarkColorScheme(theme == "dark")
         checkPaint(next)
@@ -2026,6 +2026,11 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             }
         }
         _ = next.layout(maxWidth: width, preferredWidth: width)
+        if widgetRasterPixelSize(width: width, height: next.size.height, scale: documentView.scale) == nil {
+            next = LHDocument(html: #"<body style="margin:0;padding:0;min-height:1px"></body>"#, css: masterCSS, previous: nil, viewportSize: layoutViewport)
+            _ = next.layout(maxWidth: width, preferredWidth: width)
+            lastLayoutOverrides = nil
+        }
         for (id, offset) in scrolling.offsets {
             _ = next.setScrollOffset(offset, attribute: WidgetDOM.idAttribute, value: String(id))
         }
@@ -2335,7 +2340,10 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         _ = reference.layout(maxWidth: width, preferredWidth: width)
         let size = CGSize(width: width, height: max(1, ceil(document.size.height)))
         let scale = documentView.scale
-        let pw = Int(ceil(size.width * scale)), ph = Int(ceil(size.height * scale))
+        guard let pixelSize = widgetRasterPixelSize(width: width, height: document.size.height, scale: scale) else {
+            return
+        }
+        let pw = Int(pixelSize.width), ph = Int(pixelSize.height)
         func render(_ body: (CGContext) -> Void) -> CGImage? {
             guard let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
                 return nil
@@ -5026,11 +5034,13 @@ class WidgetDocumentView: NSView {
 
     private func syncGrid(layer: CALayer, document: LHDocument, scale: CGFloat) -> (columns: Int, tileSize: CGFloat, height: CGFloat, space: CGColorSpace)? {
         let space = WidgetDocumentView.screenTagged ? (window?.colorSpace?.cgColorSpace ?? WidgetDocumentView.surfaceSpace) : WidgetDocumentView.surfaceSpace
-        let height = max(1, ceil(document.size.height))
-        let pixelWidth = Int(ceil(size.width * scale))
-        if pixelWidth <= 0 || Int(ceil(height * scale)) <= 0 || pixelWidth > 16384 || height * scale > 16384 {
+        let documentHeight = document.size.height
+        guard let pixels = widgetRasterPixelSize(width: size.width, height: documentHeight, scale: scale) else {
+            removeTiles()
             return nil
         }
+        let height = max(1, ceil(documentHeight))
+        let pixelWidth = Int(pixels.width)
         if surfaceSpace.map({ $0 != space }) ?? true || surfaceWidth != pixelWidth {
             if detached, surfaceSpace == space, !tilesTrimmed {
                 retireTilesForResize()

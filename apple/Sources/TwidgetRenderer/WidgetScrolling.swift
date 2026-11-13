@@ -7,6 +7,10 @@ struct WidgetScrollGeometry: Equatable {
     var content: CGSize
     var radii: [CGFloat]
 
+    var rasterSize: CGSize {
+        return CGSize(width: max(viewport.width, content.width), height: max(viewport.height, content.height))
+    }
+
     var maxOffset: CGPoint {
         return CGPoint(x: max(0, content.width - viewport.width), y: max(0, content.height - viewport.height))
     }
@@ -163,12 +167,18 @@ final class WidgetScrollLayer {
         }
     }
 
-    private func columns() -> Int {
-        return max(1, Int(ceil(rasterSize.width / WidgetScrollLayer.tileSize.width)))
+    static func tileGrid(for size: CGSize) -> (columns: Int, rows: Int)? {
+        guard size.width.isFinite, size.height.isFinite,
+              let columns = Int(exactly: max(1, ceil(size.width / tileSize.width))),
+              let rows = Int(exactly: max(1, ceil(size.height / tileSize.height))),
+              !columns.multipliedReportingOverflow(by: rows).overflow else {
+            return nil
+        }
+        return (columns, rows)
     }
 
     private var rasterSize: CGSize {
-        let full = CGSize(width: max(geometry.viewport.width, geometry.content.width), height: max(geometry.viewport.height, geometry.content.height))
+        let full = geometry.rasterSize
         guard clipsRasterToViewport else { return full }
         return CGSize(width: min(full.width, viewportRasterCapacity.width), height: min(full.height, viewportRasterCapacity.height))
     }
@@ -183,26 +193,20 @@ final class WidgetScrollLayer {
                                        height: capacity(geometry.viewport.height, previous: viewportRasterCapacity.height))
     }
 
-    private func rect(_ index: Int) -> CGRect {
-        let columns = self.columns()
-        let size = WidgetScrollLayer.tileSize
-        let width = rasterSize.width, height = rasterSize.height
-        let x = CGFloat(index % columns) * size.width, y = CGFloat(index / columns) * size.height
-        return CGRect(x: x, y: y, width: min(size.width, width - x), height: min(size.height, height - y))
-    }
-
     func ensureTiles(document: LHDocument, scale: CGFloat, attribute: String, velocity: CGFloat = 0) {
-        guard scale.isFinite, scale > 0 else {
+        let raster = rasterSize
+        guard scale.isFinite, scale > 0, let (columns, rows) = Self.tileGrid(for: raster) else {
             return
         }
         rasterSource = (document, scale, attribute)
-        let columns = self.columns()
-        let size = WidgetScrollLayer.tileSize
+        let size = Self.tileSize
+        func rect(_ index: Int) -> CGRect {
+            let x = CGFloat(index % columns) * size.width, y = CGFloat(index / columns) * size.height
+            return CGRect(x: x, y: y, width: min(size.width, raster.width - x), height: min(size.height, raster.height - y))
+        }
         let visible = CGRect(origin: geometry.clamp(offset), size: geometry.viewport.size)
         let ahead = visible.insetBy(dx: -geometry.viewport.width * 0.5, dy: -max(geometry.viewport.height, 256)).offsetBy(dx: 0, dy: velocity)
         let keep = visible.insetBy(dx: -geometry.viewport.width * 2, dy: -geometry.viewport.height * 3)
-        let width = rasterSize.width, height = rasterSize.height
-        let rows = max(1, Int(ceil(height / size.height)))
         for index in Array(tiles.keys) {
             let currentRect = rect(index)
             if !currentRect.intersects(keep) || tiles[index]?.layer.frame != currentRect {
@@ -211,12 +215,15 @@ final class WidgetScrollLayer {
             }
         }
         let firstFill = tiles.isEmpty || refillsVisibleTiles
-        let wanted = ahead.intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        guard !wanted.isNull else {
+        let wanted = ahead.intersection(CGRect(origin: .zero, size: raster))
+        guard wanted.hasFiniteGeometry,
+              let firstRow = Int(exactly: max(0, floor(wanted.minY / size.height))),
+              let endRow = Int(exactly: floor((wanted.maxY - 0.001) / size.height)),
+              let firstColumn = Int(exactly: max(0, floor(wanted.minX / size.width))),
+              let endColumn = Int(exactly: floor((wanted.maxX - 0.001) / size.width)) else {
             return
         }
-        let firstRow = max(0, Int(floor(wanted.minY / size.height))), lastRow = min(rows - 1, Int(floor((wanted.maxY - 0.001) / size.height)))
-        let firstColumn = max(0, Int(floor(wanted.minX / size.width))), lastColumn = min(columns - 1, Int(floor((wanted.maxX - 0.001) / size.width)))
+        let lastRow = min(rows - 1, endRow), lastColumn = min(columns - 1, endColumn)
         guard firstRow <= lastRow, firstColumn <= lastColumn else {
             return
         }
@@ -434,19 +441,24 @@ final class WidgetScrolling {
         var vertical: Set<Int> = []
         var sticky = Set<Int>()
         for (key, info) in scrollers ?? document.scrollers(byAttribute: WidgetDOM.idAttribute) {
-            guard let id = Int(key), let viewport = (info["viewport"] as? NSValue)?.rectValue, let content = (info["content"] as? NSValue)?.sizeValue else {
+            guard let id = Int(key), let viewport = (info["viewport"] as? NSValue)?.rectValue, viewport.hasFiniteGeometry,
+                  let content = (info["content"] as? NSValue)?.sizeValue,
+                  content.width.isFinite, content.height.isFinite, content.width >= 0, content.height >= 0 else {
                 continue
             }
             if (info["wheelX"] as? NSNumber)?.boolValue ?? ((info["wheel"] as? NSNumber)?.boolValue != false) { horizontal.insert(id) }
             if (info["wheelY"] as? NSNumber)?.boolValue ?? ((info["wheel"] as? NSNumber)?.boolValue != false) { vertical.insert(id) }
             if (info["wheel"] as? NSNumber)?.boolValue != false {
-                hits[id] = (info["hitViewport"] as? NSValue)?.rectValue ?? viewport
+                let hit = (info["hitViewport"] as? NSValue)?.rectValue ?? viewport
+                if hit.hasFiniteGeometry {
+                    hits[id] = hit
+                }
             }
             if (info["sticky"] as? NSNumber)?.boolValue == true {
                 sticky.insert(id)
             }
             let radii = ((info["radii"] as? [NSNumber]) ?? []).map { CGFloat($0.doubleValue) }
-            found[id] = WidgetScrollGeometry(viewport: viewport, content: content, radii: radii.count == 8 ? radii : [CGFloat](repeating: 0, count: 8))
+            found[id] = WidgetScrollGeometry(viewport: viewport, content: content, radii: radii.count == 8 && radii.allSatisfy(\.isFinite) ? radii : [CGFloat](repeating: 0, count: 8))
         }
         resizedClips = resizedClips.intersection(found.keys)
         for (id, geometry) in found where Self.resizeAwareClips && hits[id] == nil && offsets[id] == nil {
@@ -499,7 +511,9 @@ final class WidgetScrolling {
                 if nested || promoted.contains(id) || animated.contains(where: { WidgetScrolling.isDescendant($0, of: node, dom: dom) }) || promoted.contains(where: { WidgetScrolling.isDescendant($0, of: node, dom: dom) }) {
                     continue
                 }
-                guard WidgetCompositor.contentSignature(id, dom: dom, box: geometry.viewport, scale: scale, styleKey: styleKey) != nil else {
+                guard widgetRasterPixelSize(width: geometry.viewport.width, height: geometry.viewport.height, scale: scale) != nil,
+                      WidgetScrollLayer.tileGrid(for: geometry.rasterSize) != nil,
+                      WidgetCompositor.contentSignature(id, dom: dom, box: geometry.viewport, scale: scale, styleKey: styleKey) != nil else {
                     continue
                 }
                 guard document.isElement(attribute: WidgetDOM.idAttribute, value: String(id), unobscuredIn: geometry.viewport, ignoring: Set(promoted.map { String($0) }), clipped: false) else {
@@ -580,16 +594,14 @@ final class WidgetScrolling {
         guard !descendants.isEmpty else { return false }
         let info = document.scrollers(byAttribute: WidgetDOM.idAttribute)
         for descendant in descendants {
-            if let viewport = (info[String(descendant)]?["viewport"] as? NSValue)?.rectValue {
+            if let values = info[String(descendant)], let viewport = (values["viewport"] as? NSValue)?.rectValue, viewport.hasFiniteGeometry {
                 geometries[descendant]?.viewport = viewport
-                let values = info[String(descendant)] ?? [:]
                 if (values["wheelX"] as? NSNumber)?.boolValue ?? ((values["wheel"] as? NSNumber)?.boolValue != false) { horizontalWheelIDs.insert(descendant) } else { horizontalWheelIDs.remove(descendant) }
                 if (values["wheelY"] as? NSNumber)?.boolValue ?? ((values["wheel"] as? NSNumber)?.boolValue != false) { verticalWheelIDs.insert(descendant) } else { verticalWheelIDs.remove(descendant) }
-                if (info[String(descendant)]?["wheel"] as? NSNumber)?.boolValue != false {
-                    hitViewports[descendant] = (info[String(descendant)]?["hitViewport"] as? NSValue)?.rectValue ?? viewport
-                } else {
-                    hitViewports[descendant] = nil
-                }
+                let hit = (values["hitViewport"] as? NSValue)?.rectValue ?? viewport
+                hitViewports[descendant] = (values["wheel"] as? NSNumber)?.boolValue != false && hit.hasFiniteGeometry ? hit : nil
+            } else {
+                hitViewports[descendant] = nil
             }
         }
         return true
