@@ -3515,6 +3515,35 @@ int main() {
         check(seen == "end 0, lowest 0, text under 2, the next block under 1", "an inline block still clips what is inside it (" + seen + ")");
     }
 
+    // ── generated content: a box is generated for the first rules that give it content, not for every one ──
+    {
+        auto drawn = [](Renderer& t) {
+            std::string text;
+            for (const Command& c : t.paint())
+                if (c.kind == Cmd::Text) text += c.text;
+            return text;
+        };
+        auto page = [](const std::string& css) {
+            return parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + css + R"("},{"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","x"],["style","width:100px;height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null}]})");
+        };
+        std::string rules;
+        for (int i = 1; i <= 8; i++) rules += ".x::before{content:'r" + std::to_string(i) + "'}.x::before{color:red}";
+        StubBackend b;
+        Renderer eight(300, 1, false, b);
+        eight.receive(page(rules));
+        eight.tick();
+        std::string seen = drawn(eight);
+        check(seen == "r8", "the eighth rule that gives a box content is the one it shows (drawn " + seen + ")");
+        Renderer nine(300, 1, false, b);
+        nine.receive(page(rules + ".x::before{content:'r9'}"));
+        nine.tick();
+        seen = drawn(nine);
+        check(seen == "r8", "and a ninth generates nothing more (drawn " + seen + ")");
+    }
+
     // ── trees deeper than a document may be ──
     {
         auto chain = [](int levels) {

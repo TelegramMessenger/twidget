@@ -23,6 +23,8 @@ namespace litehtml
         static std::string convert_escape(const char* txt);
         bool               add_generated(const element::ptr& el, size_t bytes);
 
+        static constexpr int max_generations = 8;
+        int    m_generations     = 0;
         int    m_generated_boxes = 0;
         size_t m_generated_bytes = 0;
     };

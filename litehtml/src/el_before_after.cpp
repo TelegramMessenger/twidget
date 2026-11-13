@@ -31,7 +31,14 @@ bool litehtml::el_before_after_base::add_generated(const element::ptr& el, size_
 
 void litehtml::el_before_after_base::add_style(const style& style)
 {
+    if(m_style.empty())
+        m_generations = 0;
     html_tag::add_style(style);
+
+    const auto& generated = style.get_property(_content_);
+    if(!generated.is<std::string>() || generated.get<std::string>().empty() || m_generations >= max_generations)
+        return;
+    m_generations++;
 
     auto         children = m_children;
     const int    boxes    = m_generated_boxes;
