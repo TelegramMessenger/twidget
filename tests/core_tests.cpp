@@ -2794,6 +2794,33 @@ int main() {
         check(built == 1 && width == 70, "which builds the task once (" + std::to_string(built) + " builds)");
     }
 
+    // ── a style-attribute patch whose owner is not an html_tag ──
+    // A <style> element is an el_style, not an html_tag. When its inline style
+    // attribute changes so that only transform/opacity/background-color differ,
+    // the change qualifies for the inline-property patch fast path, and the
+    // owner must not be cast to html_tag there: el_style is smaller, so the
+    // cast pointer reads past the object. A sibling div is queried afterwards
+    // to confirm the document survived the patch intact.
+    {
+        StubBackend sb;
+        Renderer r(300, 1, false, sb);
+        r.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html"},
+            {"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":5,"tag":"style","attrs":[["style","opacity:1"]]},
+            {"op":"ins","parent":4,"id":5,"before":null},
+            {"op":"text","id":6,"data":"x"},
+            {"op":"ins","parent":5,"id":6,"before":null},
+            {"op":"el","id":7,"tag":"div"},
+            {"op":"ins","parent":4,"id":7,"before":null},
+            {"op":"text","id":8,"data":"hi"},
+            {"op":"ins","parent":7,"id":8,"before":null}]})"));
+        r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":5,"name":"style","value":"opacity:0"}]})"));
+        double width = r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":7}})"))[0]["result"]["width"].asNumber();
+        check(width > 0, "a style-attribute patch on a <style> element keeps the document intact");
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
