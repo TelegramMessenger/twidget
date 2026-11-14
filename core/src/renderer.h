@@ -510,8 +510,10 @@ private:
     /// The host's theme: the root's variables, and the master CSS's UA layer with their values. False when
     /// neither changed.
     bool apply_theme(const twidget::Json& theme);
-    bool apply_safe_area(const twidget::Json& inset);
-    /// The root's variables (`theme_vars_`) and the UA layer from the theme's and the safe area's.
+    /// Both safe-area layers and the viewport on the place the host's `surface` names (docs/sdk-v1.md §2.17, §2.19),
+    /// from `content_inset_`, `device_inset_`, `page_` and `page_viewport_`. False when no variable changed.
+    bool apply_place();
+    /// The root's variables (`theme_vars_`) and the UA layer from the theme's and the place's.
     void apply_root_variables();
 
     std::unique_ptr<Container> container_;
@@ -533,6 +535,14 @@ private:
     bool damage_valid_ = false;
     std::unordered_set<int> canvases_drawn_;
     double max_height_ = 600;
+    /// The least height reported: 50, and on a profile page its viewport (docs/sdk-v1.md §2.19).
+    double min_height_ = 50;
+    /// The host's `surface` message: a profile page (else a bubble) and the page's checked viewport, 0 without one.
+    bool page_ = false;
+    double page_viewport_ = 0;
+    /// The host's last `safeArea` (the client's chrome) and `deviceSafeArea` (the device's edges) insets, unchecked:
+    /// the place's ranges apply when the variables are made, so a later `surface` re-checks them.
+    twidget::Json content_inset_, device_inset_;
     struct Edges {
         float top, bottom;
     };
@@ -566,7 +576,8 @@ private:
     std::vector<int64_t> pending_images_;
     std::unordered_map<int, std::vector<int64_t>> waiting_images_;
     std::unordered_set<std::string> interest_;
-    /// From the host's `theme` message (the scheme's defaults before one), set on the root after the widget's own style.
+    /// From the host's `theme` message (the scheme's defaults before one), and the place's (both safe-area layers and a
+    /// page's viewport), set on the root after the widget's own style.
     std::vector<std::pair<std::string, std::string>> host_theme_vars_, safe_area_vars_;
     std::vector<std::pair<std::string, std::string>> theme_vars_;  // both, as set on the root
     bool theme_received_ = false;

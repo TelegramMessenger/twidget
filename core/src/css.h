@@ -82,10 +82,23 @@ std::optional<float> parse_opacity(std::string_view text);
 /// each button token whose value passes its grammar, and the text tokens completed from the reference set.
 /// Twin of `themeVariables` in sdk-policy.ts.
 std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::Json& theme);
-/// The `--tg-content-safe-area-*` properties of the host's `safeArea` message (docs/sdk-v1.md §2.17): all six, each
-/// inset 0–64 and corner 0–200 px at two decimals, anything else 0px. Twin of `contentSafeAreaVariables` in sdk-policy.ts.
-std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset);
-/// A name `theme_variables` or `content_safe_area_variables` may set: the widget's own style ops cannot set it on the root.
+/// The `--tg-content-safe-area-*` properties of the host's `safeArea` message (docs/sdk-v1.md §2.17): all six at two
+/// decimals. In a bubble each inset 0–64 and corner 0–200 px; on a profile page (`page`, §2.19) any finite inset ≥ 0
+/// and the corners 0; anything else 0px. Twin of `contentSafeAreaVariables` in sdk-policy.ts.
+std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset, bool page = false);
+/// The `--tg-safe-area-inset-*` properties of the host's `deviceSafeArea` message (docs/sdk-v1.md §2.17), the device's
+/// edges: all four at two decimals, any finite value ≥ 0 on a profile page, always 0px in a bubble. Twin of
+/// `safeAreaVariables` in sdk-policy.ts.
+std::vector<std::pair<std::string, std::string>> safe_area_variables(const twidget::Json& inset, bool page);
+/// A profile page's viewport as the host's `surface` message gives it (docs/sdk-v1.md §2.19): a finite number in
+/// 1…`PAGE_MAX_HEIGHT` at two decimals, anything else and every bubble 0 (no `--tg-viewport-height`). Twin of
+/// `checkViewportHeight` in sdk-policy.ts.
+double page_viewport_height(bool page, const twidget::Json& height);
+/// The page ceiling of profile.json's `tables.surfaces.profile.height.max` (provisional).
+inline constexpr double PAGE_MAX_HEIGHT = 4000;
+/// `--tg-viewport-height` (the widget's whole area on a profile page, edge to edge).
+inline constexpr const char* VIEWPORT_HEIGHT_VARIABLE = "--tg-viewport-height";
+/// A name `theme_variables`, either safe-area layer or the viewport may set: the widget's own style ops cannot set it on the root.
 bool is_theme_variable(std::string_view name);
 
 /// `css` with every `var(--name[, fallback])` replaced by the value of `--name` in `vars`, else by its

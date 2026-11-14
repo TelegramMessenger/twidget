@@ -2472,7 +2472,7 @@ Renderer::Renderer(double width, double dpr, bool dark, Backend& backend)
     head_node_->parent = html_node_.get();
     body_node_->parent = html_node_.get();
     html_node_->children = {head_node_.get(), body_node_.get()};
-    safe_area_vars_ = css::content_safe_area_variables(Json());
+    apply_place();
     apply_theme(Json::object().set("colorScheme", dark ? "dark" : "light"));
     rebuild();
 }
@@ -2485,8 +2485,11 @@ bool Renderer::apply_theme(const Json& theme) {
     return true;
 }
 
-bool Renderer::apply_safe_area(const Json& inset) {
-    auto vars = css::content_safe_area_variables(inset);
+bool Renderer::apply_place() {
+    auto vars = css::safe_area_variables(device_inset_, page_);
+    auto content = css::content_safe_area_variables(content_inset_, page_);
+    vars.insert(vars.end(), content.begin(), content.end());
+    if (page_viewport_ > 0) vars.emplace_back(css::VIEWPORT_HEIGHT_VARIABLE, Json::number(page_viewport_) + "px");
     if (vars == safe_area_vars_) return false;
     safe_area_vars_ = std::move(vars);
     apply_root_variables();
@@ -2597,9 +2600,24 @@ std::vector<Json> Renderer::receive(const Json& msg) {
             rebuild();
             report_size(out);
         }
-    } else if (type == "safeArea") {
-        // The client's time over the widget (docs/sdk-v1.md §2.17): the UA layer pads the body by its band.
-        if (apply_safe_area(msg["inset"])) {
+    } else if (type == "safeArea" || type == "deviceSafeArea") {
+        // The client's chrome over the widget (the time's band in a bubble, the header and the Start button on a page)
+        // and the device's edges (docs/sdk-v1.md §2.17): the UA layer pads the body by their sum on all four sides.
+        (type == "safeArea" ? content_inset_ : device_inset_) = msg["inset"];
+        if (apply_place()) {
+            rebuild();
+            report_size(out);
+        }
+    } else if (type == "surface") {
+        // Where the widget is (docs/sdk-v1.md §2.19): on a profile page any inset ≥ 0, no corners, --tg-viewport-height,
+        // and a height of at least the viewport and at most the page ceiling.
+        page_ = msg["surface"].asString() == "profile";
+        page_viewport_ = css::page_viewport_height(page_, msg["viewportHeight"]);
+        double min_height = page_ ? std::max(MIN_HEIGHT, page_viewport_) : MIN_HEIGHT;
+        bool heights = min_height != min_height_ || (page_ && max_height_ != css::PAGE_MAX_HEIGHT);
+        min_height_ = min_height;
+        if (page_) max_height_ = css::PAGE_MAX_HEIGHT;
+        if (apply_place() || heights) {
             rebuild();
             report_size(out);
         }
@@ -3232,7 +3250,7 @@ void Renderer::build_document(bool patch) {
         stats_.parse_ms += b - a;  // litehtml lays out inside createFromString+render; not separable
         stats_.passes++;
         if (pass == 0 && container_->patched()) stats_.patched++;
-        int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
+        int h = int(std::ceil(std::clamp(container_->height(), min_height_, std::max(min_height_, max_height_))));
         if (h == vp_height_) break;
         bool again = container_->depends_on_viewport_height(html_);
         vp_height_ = h;
@@ -3248,7 +3266,7 @@ void Renderer::build_document(bool patch) {
         container_->drop();
         html_ = serialize();
         container_->build(html_, vp_height_);
-        vp_height_ = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
+        vp_height_ = int(std::ceil(std::clamp(container_->height(), min_height_, std::max(min_height_, max_height_))));
         container_->viewport_resized(vp_height_);
         changed = true;
     }
@@ -3333,7 +3351,7 @@ bool Renderer::patch_document() {
         changes.push_back(std::move(change));
     }
     if (!container_->patch(changes)) return false;
-    int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
+    int h = int(std::ceil(std::clamp(container_->height(), min_height_, std::max(min_height_, max_height_))));
     // A new height moves the viewport: when the layout depends on it, the full path settles that, with
     // the patch already in. Style sheets only change through that path, so html_'s are current.
     if (h != vp_height_) {
@@ -3454,7 +3472,7 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
     }
     double t0 = now_ms();
     if (ok && container_->restyle(patches) && !layout_stopped_) {
-        int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
+        int h = int(std::ceil(std::clamp(container_->height(), min_height_, std::max(min_height_, max_height_))));
         if (h == vp_height_) {
             doc_height_ = std::ceil(container_->height());
             stats_.parse_ms = now_ms() - t0;

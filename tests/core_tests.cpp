@@ -1374,6 +1374,54 @@ int main() {
               "the UA layer pads the body by the band, a widget's var() reads it, and the height is reported again (got " + cs(4, "padding-bottom") + ")");
         s.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":2,"name":"--tg-content-safe-area-inset-bottom","value":"1px"}]})"));
         check(cs(2, "--tg-content-safe-area-inset-bottom") == "24.57px", "the widget cannot set the safe area on the root");
+        s.receive(parse(R"({"type":"deviceSafeArea","inset":{"top":47,"right":0,"bottom":34,"left":0}})"));
+        check(cs(2, "--tg-safe-area-inset-top") == "0px" && cs(4, "padding-top") == "0px",
+              "in a bubble the device's edges are always 0px (got " + cs(2, "--tg-safe-area-inset-top") + ")");
+    }
+
+    // ── the bot's profile page (docs/sdk-v1.md §2.19): both safe-area layers, the viewport, the page's height ──
+    {
+        StubBackend pb;
+        Renderer p(390, 1, false, pb);
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":"#hero{height:var(--tg-viewport-height,10px)}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","hero"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        auto ask = [&](Json query) {
+            for (const Json& m : p.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) {
+            Json q = Json::object().set("q", "cs").set("id", id);
+            return prop[0] == '-' ? ask(q.set("prop", prop)).asString() : ask(q)[prop].asString();
+        };
+        auto inner = [](const std::vector<Json>& out) {
+            double h = -1;
+            for (const Json& m : out)
+                if (m["type"].asString() == "size") h = m["innerHeight"].asNumber();
+            return h;
+        };
+        // As WidgetHost sends them at start: the place first, then both layers (a corner on a page is 0, a side has no cap).
+        std::vector<Json> out = p.receive(parse(R"({"type":"surface","surface":"profile","viewportHeight":844.567})"));
+        double viewport = inner(out);
+        p.receive(parse(R"({"type":"safeArea","inset":{"top":56,"right":0,"bottom":120,"left":0,"cornerLeft":0,"cornerRight":30}})"));
+        p.receive(parse(R"({"type":"deviceSafeArea","inset":{"top":47,"right":-3,"bottom":34,"left":0}})"));
+        check(cs(2, "--tg-viewport-height") == "844.57px" && cs(10, "height") == "844.57px",
+              "a page sets --tg-viewport-height at two decimals (got " + cs(2, "--tg-viewport-height") + ", #hero " + cs(10, "height") + ")");
+        check(viewport >= 844.57, "a page is at least its viewport tall (got " + std::to_string(viewport) + ")");
+        check(cs(2, "--tg-safe-area-inset-top") == "47px" && cs(2, "--tg-safe-area-inset-right") == "0px" &&
+                  cs(2, "--tg-content-safe-area-inset-bottom") == "120px" && cs(2, "--tg-content-safe-area-corner-right") == "0px",
+              "on a page the device's edges are set, a negative one is 0, a content side past 64 stays and a corner is 0");
+        check(cs(4, "padding-top") == "103px" && cs(4, "padding-bottom") == "154px",
+              "the UA layer pads the body by the sum of both layers (got " + cs(4, "padding-top") + ", " + cs(4, "padding-bottom") + ")");
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":2,"name":"--tg-safe-area-inset-top","value":"1px"},{"op":"style","id":2,"name":"--tg-viewport-height","value":"1px"}]})"));
+        check(cs(2, "--tg-safe-area-inset-top") == "47px" && cs(2, "--tg-viewport-height") == "844.57px",
+              "the widget cannot set the device's edges or the viewport on the root");
+        out = p.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"height","value":"9000px"}]})"));
+        out = p.receive(parse(R"({"type":"frame","time":16})"));
+        double tall = inner(out);
+        check(tall < 0 || tall == 4000, "a page is clipped at the 4000 px ceiling (got " + std::to_string(tall) + ")");
     }
 
     // ── text selection: a mouse drag over user-select: text, its text, its highlight ──

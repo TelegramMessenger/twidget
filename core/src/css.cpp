@@ -1010,22 +1010,55 @@ constexpr const char* SAFE_AREA_VARS[][2] = {
 
 } // namespace
 
-std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset) {
+namespace {
+
+constexpr const char* DEVICE_SAFE_AREA_VARS[][2] = {
+    {"top", "--tg-safe-area-inset-top"},
+    {"right", "--tg-safe-area-inset-right"},
+    {"bottom", "--tg-safe-area-inset-bottom"},
+    {"left", "--tg-safe-area-inset-left"},
+};
+
+/// One inset of a place's table (profile.json `tables.surfaces`): a finite number in 0…max (max < 0: no maximum) at
+/// two decimals, anything else 0.
+std::string inset_px(const twidget::Json& value, double max) {
+    double n = value.isNumber() ? value.asNumber() : 0;
+    if (!std::isfinite(n) || n < 0 || (max >= 0 && n > max)) n = 0;
+    return twidget::Json::number(std::round(n * 100) / 100) + "px";
+}
+
+} // namespace
+
+std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset, bool page) {
     std::vector<std::pair<std::string, std::string>> vars;
     vars.reserve(std::size(SAFE_AREA_VARS));
     for (const auto& [field, name] : SAFE_AREA_VARS) {
-        const twidget::Json& value = inset[field];
-        double max = std::string_view(field).rfind("corner", 0) == 0 ? 200 : 64;
-        double n = value.isNumber() ? value.asNumber() : 0;
-        if (!std::isfinite(n) || n < 0 || n > max) n = 0;
-        vars.emplace_back(name, twidget::Json::number(std::round(n * 100) / 100) + "px");
+        bool corner = std::string_view(field).rfind("corner", 0) == 0;
+        // A page has no corners and no upper bound on a side (a large system font, a foldable, Split View).
+        double max = page ? (corner ? 0 : -1) : corner ? 200 : 64;
+        vars.emplace_back(name, inset_px(inset[field], max));
     }
     return vars;
 }
 
+std::vector<std::pair<std::string, std::string>> safe_area_variables(const twidget::Json& inset, bool page) {
+    std::vector<std::pair<std::string, std::string>> vars;
+    vars.reserve(std::size(DEVICE_SAFE_AREA_VARS));
+    for (const auto& [field, name] : DEVICE_SAFE_AREA_VARS) vars.emplace_back(name, page ? inset_px(inset[field], -1) : std::string("0px"));
+    return vars;
+}
+
+double page_viewport_height(bool page, const twidget::Json& height) {
+    double h = height.isNumber() ? height.asNumber() : 0;
+    if (!page || !std::isfinite(h) || h <= 0 || h > PAGE_MAX_HEIGHT) return 0;
+    return std::round(h * 100) / 100;
+}
+
 bool is_theme_variable(std::string_view name) {
-    if (name == "--tg-color-scheme") return true;
+    if (name == "--tg-color-scheme" || name == VIEWPORT_HEIGHT_VARIABLE) return true;
     for (const auto& [field, var] : SAFE_AREA_VARS)
+        if (name == var) return true;
+    for (const auto& [field, var] : DEVICE_SAFE_AREA_VARS)
         if (name == var) return true;
     for (const auto& [field, var] : BUTTON_VARS)
         if (name == var) return true;
