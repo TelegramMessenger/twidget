@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (CGSize)sizeForURL:(NSString *)url NS_SWIFT_NAME(size(forURL:));
 + (void)prefetchURLs:(NSArray<NSString *> *)urls completion:(nullable void (^)(void))completion;
 + (void)registerDemoImages;
++ (nullable NSString *)iconPNGDataURL:(NSString *)url NS_SWIFT_NAME(iconPNGDataURL(_:));
 @property (class, nonatomic) BOOL portableSymbols;
 
 @end

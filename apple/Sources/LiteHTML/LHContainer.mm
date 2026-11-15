@@ -560,8 +560,13 @@ bool RasterSizeAllowed(double width, double height)
     return width >= 1 && height >= 1 && width <= kMaxRasterSide && height <= kMaxRasterSide && width * height <= kMaxRasterPixels;
 }
 
-CGImageRef CreateCheckedRasterImage(NSData* data)
+static const double kRetinaDPI = 144;
+static NSString* const kIconPNGSoftware = @"twidget-icon@2x";
+
+CGImageRef CreateCheckedRasterImage(NSData* data, CGFloat* density)
 {
+    if(density)
+        *density = 1;
     CFStringRef type = RasterTypeForBytes(data);
     if(!type)
         return nullptr;
@@ -578,6 +583,11 @@ CGImageRef CreateCheckedRasterImage(NSData* data)
         id            h     = props[(__bridge id)kCGImagePropertyPixelHeight];
         if([w isKindOfClass:[NSNumber class]] && [h isKindOfClass:[NSNumber class]] && RasterSizeAllowed([w doubleValue], [h doubleValue]))
         {
+            NSDictionary* pngProps = props[(__bridge id)kCGImagePropertyPNGDictionary];
+            id            dpiX     = props[(__bridge id)kCGImagePropertyDPIWidth];
+            id            dpiY     = props[(__bridge id)kCGImagePropertyDPIHeight];
+            if(density && CFEqual(type, CFSTR("public.png")) && [pngProps isKindOfClass:[NSDictionary class]] && [pngProps[(__bridge id)kCGImagePropertyPNGSoftware] isEqual:kIconPNGSoftware] && [dpiX isKindOfClass:[NSNumber class]] && [dpiY isKindOfClass:[NSNumber class]] && std::fabs([dpiX doubleValue] - kRetinaDPI) < 0.5 && std::fabs([dpiY doubleValue] - kRetinaDPI) < 0.5)
+                *density = 2;
             NSDictionary* decode = @{(__bridge id)kCGImageSourceShouldCacheImmediately: @YES};
             image                = CGImageSourceCreateImageAtIndex(src, 0, (__bridge CFDictionaryRef)decode);
             if(image && !RasterSizeAllowed(CGImageGetWidth(image), CGImageGetHeight(image)))
@@ -597,7 +607,8 @@ ImageHandle LoadImageFromData(NSData* data, bool isSVG)
         return {};
     if(!isSVG)
     {
-        CGImageRef image = CreateCheckedRasterImage(data);
+        CGFloat    density = 1;
+        CGImageRef image   = CreateCheckedRasterImage(data, &density);
         if(!image)
             return {};
         size_t intact = PNGIntactRows(data);
@@ -607,7 +618,7 @@ ImageHandle LoadImageFromData(NSData* data, bool isSVG)
             CGImageRelease(image);
             image = kept;
         }
-        return AdoptImage(image, CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image)));
+        return AdoptImage(image, CGSizeMake(CGImageGetWidth(image) / density, CGImageGetHeight(image) / density));
     }
     CGSize      size   = CGSizeZero;
     std::string markup(static_cast<const char*>(data.bytes), data.length);
@@ -4825,4 +4836,33 @@ void LHContainer::get_language(std::string& language, std::string& culture) cons
 {
     language = "en";
     culture  = "";
+}
+
+NSString* LHIconPNGDataURL(NSString* url)
+{
+    const char* raw = url.UTF8String;
+    if(!raw || url.length > 512)
+        return nil;
+    auto icon = twa::parseIconURL(raw);
+    if(!icon)
+        return nil;
+    CGSize     size  = CGSizeZero;
+    CGImageRef image = LHCreateSVGImage(twa::svg(*icon), &size);
+    if(!image)
+        return nil;
+    bool retina = size.width > 0 && size.height > 0 && CGImageGetWidth(image) == static_cast<size_t>(std::lround(size.width * 2)) && CGImageGetHeight(image) == static_cast<size_t>(std::lround(size.height * 2));
+    NSMutableData*        png  = [NSMutableData data];
+    CGImageDestinationRef dest = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, nullptr);
+    if(dest)
+    {
+        NSDictionary* props = retina ? @{(__bridge id)kCGImagePropertyDPIWidth: @(kRetinaDPI), (__bridge id)kCGImagePropertyDPIHeight: @(kRetinaDPI), (__bridge id)kCGImagePropertyPNGDictionary: @{(__bridge id)kCGImagePropertyPNGSoftware: kIconPNGSoftware}} : @{};
+        CGImageDestinationAddImage(dest, image, (__bridge CFDictionaryRef)props);
+        if(!CGImageDestinationFinalize(dest))
+            png = nil;
+        CFRelease(dest);
+    }
+    CGImageRelease(image);
+    if(!dest || png.length == 0)
+        return nil;
+    return [@"data:image/png;base64," stringByAppendingString:[png base64EncodedStringWithOptions:0]];
 }
