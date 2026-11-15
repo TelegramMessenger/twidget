@@ -163,6 +163,11 @@ static void RegisterDemoImages(void)
 
 @implementation LHImages
 
++ (nullable NSString *)iconPNGDataURL:(NSString *)url
+{
+    return LHIconPNGDataURL(url);
+}
+
 + (void)registerImage:(NSImage *)image name:(NSString *)name
 {
     LHRegisterAppImage(name, image);

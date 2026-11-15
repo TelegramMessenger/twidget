@@ -18,6 +18,7 @@
 #include <atomic>
 
 CGImageRef LHCreateSVGImage(const std::string& markup, CGSize* size);
+NSString* LHIconPNGDataURL(NSString* url);
 bool       LHRenderingSVGImage(void);
 
 #ifdef __OBJC__

@@ -5,8 +5,14 @@ import Twidget3D
 import Twidget3DSandbox
 import WidgetSandbox
 import WidgetSandboxProtocol
+import WidgetSandboxQuickJS
 
 final class Twidget3DChannelTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        registerQuickJSEngines()
+    }
+
     override func setUpWithError() throws {
         try XCTSkipUnless(HTML3DSession.isAvailable, "Metal is not available")
     }
@@ -22,6 +28,7 @@ final class Twidget3DChannelTests: XCTestCase {
         let renderer = SurfaceRenderer()
         let channel = Twidget3DBackend.channel()
         var options = WidgetHost.Options()
+        options.engine = .native
         options.sideChannels = [{ channel }]
         let host = try! WidgetHost(html: html, theme: "light", width: 300, options: options, rendererFactory: { _, _, _ in renderer })
         return (host, renderer, channel)

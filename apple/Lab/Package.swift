@@ -14,12 +14,6 @@ let package = Package(
             path: "Sources/LiteHTMLLab",
             swiftSettings: [.unsafeFlags(["-Ounchecked"])]),
         .executableTarget(
-            name: "EngineLab",
-            dependencies: [.product(name: "HTMLSandbox", package: "twidget"), .product(name: "HTMLScript", package: "twidget")],
-            path: "Sources/EngineLab",
-            swiftSettings: [.unsafeFlags(["-Ounchecked"])],
-            linkerSettings: [.linkedFramework("JavaScriptCore")]),
-        .executableTarget(
             name: "PresentLab",
             path: "Sources/PresentLab",
             swiftSettings: [.unsafeFlags(["-Ounchecked"])],

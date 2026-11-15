@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <list>
@@ -519,6 +520,9 @@ size_t PNGIntactRows(NSData* data)
     return intact < height ? static_cast<size_t>(intact) : SIZE_MAX;
 }
 
+constexpr double kMaxRasterSide   = 1024;
+constexpr double kMaxRasterPixels = 1024.0 * 1024.0;
+
 CGImageRef CreateImageKeepingRows(CGImageRef image, size_t keep)
 {
     const size_t    w     = CGImageGetWidth(image), h = CGImageGetHeight(image);
@@ -535,28 +539,86 @@ CGImageRef CreateImageKeepingRows(CGImageRef image, size_t keep)
     return out ?: CGImageRetain(image);
 }
 
+CFStringRef RasterTypeForBytes(NSData* data)
+{
+    const auto*  bytes  = static_cast<const uint8_t*>(data.bytes);
+    const size_t length = data.length;
+    static const uint8_t png[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    if(length >= 8 && std::memcmp(bytes, png, 8) == 0)
+        return CFSTR("public.png");
+    if(length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+        return CFSTR("public.jpeg");
+    if(length >= 6 && (std::memcmp(bytes, "GIF87a", 6) == 0 || std::memcmp(bytes, "GIF89a", 6) == 0))
+        return CFSTR("com.compuserve.gif");
+    if(length >= 12 && std::memcmp(bytes, "RIFF", 4) == 0 && std::memcmp(bytes + 8, "WEBP", 4) == 0)
+        return CFSTR("org.webmproject.webp");
+    return nullptr;
+}
+
+bool RasterSizeAllowed(double width, double height)
+{
+    return width >= 1 && height >= 1 && width <= kMaxRasterSide && height <= kMaxRasterSide && width * height <= kMaxRasterPixels;
+}
+
+static const double kRetinaDPI = 144;
+static NSString* const kIconPNGSoftware = @"twidget-icon@2x";
+
+CGImageRef CreateCheckedRasterImage(NSData* data, CGFloat* density)
+{
+    if(density)
+        *density = 1;
+    CFStringRef type = RasterTypeForBytes(data);
+    if(!type)
+        return nullptr;
+    NSDictionary*    probe = @{(__bridge id)kCGImageSourceTypeIdentifierHint: (__bridge id)type, (__bridge id)kCGImageSourceShouldCache: @NO};
+    CGImageSourceRef src   = CGImageSourceCreateWithData((__bridge CFDataRef)data, (__bridge CFDictionaryRef)probe);
+    if(!src)
+        return nullptr;
+    CGImageRef  image  = nullptr;
+    CFStringRef actual = CGImageSourceGetType(src);
+    if(actual && CFEqual(actual, type) && CGImageSourceGetCount(src) >= 1)
+    {
+        NSDictionary* props = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(src, 0, (__bridge CFDictionaryRef)probe));
+        id            w     = props[(__bridge id)kCGImagePropertyPixelWidth];
+        id            h     = props[(__bridge id)kCGImagePropertyPixelHeight];
+        if([w isKindOfClass:[NSNumber class]] && [h isKindOfClass:[NSNumber class]] && RasterSizeAllowed([w doubleValue], [h doubleValue]))
+        {
+            NSDictionary* pngProps = props[(__bridge id)kCGImagePropertyPNGDictionary];
+            id            dpiX     = props[(__bridge id)kCGImagePropertyDPIWidth];
+            id            dpiY     = props[(__bridge id)kCGImagePropertyDPIHeight];
+            if(density && CFEqual(type, CFSTR("public.png")) && [pngProps isKindOfClass:[NSDictionary class]] && [pngProps[(__bridge id)kCGImagePropertyPNGSoftware] isEqual:kIconPNGSoftware] && [dpiX isKindOfClass:[NSNumber class]] && [dpiY isKindOfClass:[NSNumber class]] && std::fabs([dpiX doubleValue] - kRetinaDPI) < 0.5 && std::fabs([dpiY doubleValue] - kRetinaDPI) < 0.5)
+                *density = 2;
+            NSDictionary* decode = @{(__bridge id)kCGImageSourceShouldCacheImmediately: @YES};
+            image                = CGImageSourceCreateImageAtIndex(src, 0, (__bridge CFDictionaryRef)decode);
+            if(image && !RasterSizeAllowed(CGImageGetWidth(image), CGImageGetHeight(image)))
+            {
+                CGImageRelease(image);
+                image = nullptr;
+            }
+        }
+    }
+    CFRelease(src);
+    return image;
+}
+
 ImageHandle LoadImageFromData(NSData* data, bool isSVG)
 {
     if(!data)
         return {};
     if(!isSVG)
     {
-        CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, nullptr);
-        if(src)
+        CGFloat    density = 1;
+        CGImageRef image   = CreateCheckedRasterImage(data, &density);
+        if(!image)
+            return {};
+        size_t intact = PNGIntactRows(data);
+        if(intact < CGImageGetHeight(image))
         {
-            CGImageRef image = CGImageSourceCreateImageAtIndex(src, 0, nullptr);
-            CFRelease(src);
-            size_t intact = image ? PNGIntactRows(data) : SIZE_MAX;
-            if(intact < CGImageGetHeight(image))
-            {
-                CGImageRef kept = CreateImageKeepingRows(image, intact);
-                CGImageRelease(image);
-                image = kept;
-            }
-            if(image)
-                return AdoptImage(image, CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image)));
+            CGImageRef kept = CreateImageKeepingRows(image, intact);
+            CGImageRelease(image);
+            image = kept;
         }
-        return {};
+        return AdoptImage(image, CGSizeMake(CGImageGetWidth(image) / density, CGImageGetHeight(image) / density));
     }
     CGSize      size   = CGSizeZero;
     std::string markup(static_cast<const char*>(data.bytes), data.length);
@@ -575,7 +637,9 @@ ImageHandle LoadDataURI(const std::string& url)
     std::string meta    = url.substr(5, comma - 5);
     std::string payload = url.substr(comma + 1);
     bool        base64  = meta.find(";base64") != std::string::npos;
-    bool        isSVG   = meta.find("svg") != std::string::npos;
+    std::string mime    = meta.substr(0, meta.find(';'));
+    std::transform(mime.begin(), mime.end(), mime.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    bool        isSVG   = mime == "image/svg+xml";
     NSData*     data    = nil;
     NSString*   str     = [NSString stringWithUTF8String:payload.c_str()];
     if(!str)
@@ -4772,4 +4836,33 @@ void LHContainer::get_language(std::string& language, std::string& culture) cons
 {
     language = "en";
     culture  = "";
+}
+
+NSString* LHIconPNGDataURL(NSString* url)
+{
+    const char* raw = url.UTF8String;
+    if(!raw || url.length > 512)
+        return nil;
+    auto icon = twa::parseIconURL(raw);
+    if(!icon)
+        return nil;
+    CGSize     size  = CGSizeZero;
+    CGImageRef image = LHCreateSVGImage(twa::svg(*icon), &size);
+    if(!image)
+        return nil;
+    bool retina = size.width > 0 && size.height > 0 && CGImageGetWidth(image) == static_cast<size_t>(std::lround(size.width * 2)) && CGImageGetHeight(image) == static_cast<size_t>(std::lround(size.height * 2));
+    NSMutableData*        png  = [NSMutableData data];
+    CGImageDestinationRef dest = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, nullptr);
+    if(dest)
+    {
+        NSDictionary* props = retina ? @{(__bridge id)kCGImagePropertyDPIWidth: @(kRetinaDPI), (__bridge id)kCGImagePropertyDPIHeight: @(kRetinaDPI), (__bridge id)kCGImagePropertyPNGDictionary: @{(__bridge id)kCGImagePropertyPNGSoftware: kIconPNGSoftware}} : @{};
+        CGImageDestinationAddImage(dest, image, (__bridge CFDictionaryRef)props);
+        if(!CGImageDestinationFinalize(dest))
+            png = nil;
+        CFRelease(dest);
+    }
+    CGImageRelease(image);
+    if(!dest || png.length == 0)
+        return nil;
+    return [@"data:image/png;base64," stringByAppendingString:[png base64EncodedStringWithOptions:0]];
 }

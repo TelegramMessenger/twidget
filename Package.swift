@@ -8,7 +8,6 @@ let widgetSandboxBranch = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SA
 let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || widgetSandboxSource.hasPrefix("git@")
     ? .package(name: "WidgetSandbox", url: widgetSandboxSource, .branch(widgetSandboxBranch))
     : .package(name: "WidgetSandbox", path: widgetSandboxSource)
-let cQuickJS: Target.Dependency = .product(name: "CQuickJS", package: "WidgetSandbox")
 let widgetProtocol: Target.Dependency = .product(name: "WidgetSandboxProtocol", package: "WidgetSandbox")
 let optimizesDebug = !#filePath.contains("/checkouts/") && ProcessInfo.processInfo.environment["TWIDGET_DEBUG_UNOPTIMIZED"] == nil
 
@@ -93,7 +92,7 @@ let package = Package(
             path: "apple/Sources/HTMLSandbox"),
         .target(
             name: "HTMLScript",
-            dependencies: ["HTMLSandbox", cQuickJS],
+            dependencies: ["HTMLSandbox"],
             path: "apple/Sources/HTMLScript",
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("QuartzCore")]),
         .target(
@@ -117,11 +116,11 @@ let package = Package(
             linkerSettings: [.linkedFramework("CoreVideo")]),
         .testTarget(
             name: "TwidgetRendererTests",
-            dependencies: ["TwidgetRenderer", widgetProtocol, .product(name: "WidgetSandbox", package: "WidgetSandbox"), "HTMLScript", "HTMLSandbox", "LiteHTML", cQuickJS],
+            dependencies: ["TwidgetRenderer", widgetProtocol, .product(name: "WidgetSandbox", package: "WidgetSandbox"), "HTMLScript", "HTMLSandbox", "LiteHTML"],
             path: "apple/Tests/TwidgetRendererTests"),
         .testTarget(
             name: "Twidget3DSandboxTests",
-            dependencies: ["Twidget3DSandbox", "Twidget3D", "TwidgetRenderer", .product(name: "WidgetSandbox", package: "WidgetSandbox"), widgetProtocol],
+            dependencies: ["Twidget3DSandbox", "Twidget3D", "TwidgetRenderer", .product(name: "WidgetSandbox", package: "WidgetSandbox"), .product(name: "WidgetSandboxQuickJS", package: "WidgetSandbox"), widgetProtocol],
             path: "apple/Tests/Twidget3DSandboxTests"),
         .testTarget(
             name: "TwidgetIconsTests",
