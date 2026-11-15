@@ -8,9 +8,9 @@ A Swift package for macOS on twidget's litehtml fork, and the renderer behind th
 | `LiteHTML` | The renderer core: parsing, sanitizing, layout, CoreGraphics and Metal drawing, hit testing, text selection |
 | `TwidgetAssets` | An icon set (a Phosphor Icons subset) and the portable C++ resolver for `icon:` URLs |
 | `TwidgetIcons` | The same icons from Swift: an `icon:` URL as a `data:` URL |
-| `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it. Runs on QuickJS by default (hard heap cap, the same engine as widget-sandbox); JavaScriptCore is available as `JSCScriptRuntime` |
+| `HTMLScript` | A lighter standalone mode: `render()` returns HTML, actions and timers drive it. Runs on JavaScriptCore (`JSCScriptRuntime`): this branch has no QuickJS, widget-sandbox's macOS branch runs widgets on Nova only |
 | `Twidget3D` | three.js r160 with its WebGL renderer replaced by a Metal one |
-| `HTML3D` | `<script src="app:three">` for `HTMLScript`, on `Twidget3D`, on QuickJS or JavaScriptCore |
+| `HTML3D` | `<script src="app:three">` for `HTMLScript`, on `Twidget3D`, on JavaScriptCore |
 | `Twidget3DSandbox` | widget-sandbox's experimental 3D channel (`Widget3DBackend`) on `Twidget3D` |
 | `HTMLSandbox` | The CPU quota policy and the large-stack script thread |
 
@@ -185,7 +185,7 @@ script?.performAction("tap", value: nil)
 | Output | 256 KB of HTML per `render()` |
 | Hidden documents | Timers and frames pause when the host calls `setVisible(false)`. Due timeouts fire when the document becomes visible again. |
 
-On JavaScriptCore, the memory guard measures the process footprint around a call. That makes it a heuristic, not an isolation boundary. On QuickJS, the limit is a hard heap cap per document.
+On JavaScriptCore, the memory guard measures the process footprint around a call. That makes it a heuristic, not an isolation boundary.
 
 The frame clock is a `CVDisplayLink` bound to the display the host reports through `HTMLScript.setDisplay`, so animations run at the display's refresh rate, including 120 Hz ProMotion. `HTMLScript.errorMarkup` controls how a script error is shown.
 
@@ -207,14 +207,7 @@ public protocol HTMLScriptContext: AnyObject {
 - `invoke` calls one of the hooks: `fire`, `frame`, `callRender`, `callAction`, `callInput` or `describe`.
 - An engine throws `HTMLScriptError` with `.timeLimit`, `.outOfMemory` or `.exception`. The sandbox turns those into a stopped script or an error line.
 
-`QuickJSScriptRuntime` (the default) and `JSCScriptRuntime` are the two implementations. QuickJS is widget-sandbox's `CQuickJS` product, built from its [TelegramMessenger/quickjs](https://github.com/TelegramMessenger/quickjs) submodule: a widget-sandbox checkout needs `git submodule update --init`, and SwiftPM fetches it on its own. To switch engines:
-
-```swift
-HTMLScript.runtime = JSCScriptRuntime.shared
-HTMLScript.runtime = QuickJSScriptRuntime(memoryLimitBytes: 64 << 20)
-```
-
-QuickJS has no `Intl`. Scripts that format dates or numbers with it need a shim on that runtime.
+`JSCScriptRuntime.shared` is the implementation and the default. The QuickJS runtime left with widget-sandbox's `CQuickJS` product: on this branch nothing in twidget builds QuickJS.
 
 ### Libraries
 
@@ -257,7 +250,7 @@ const renderer = new THREE.WebGLRenderer();
 - Up to four lights, with a directional shadow map.
 - Transparency sorting.
 
-Call `HTML3DSession.register()` once. Then attach the layer from `script.scene3D?.makeLayer()` to your view. The bridge reads typed arrays in place on both runtimes, through the JavaScriptCore C API or the QuickJS typed-array shim.
+Call `HTML3DSession.register()` once. Then attach the layer from `script.scene3D?.makeLayer()` to your view. The bridge reads typed arrays in place through the JavaScriptCore C API.
 
 ## Performance
 
@@ -281,14 +274,13 @@ All work happens in the Lab, and every optimization is checked against a fresh r
 
 | Tool | What it does |
 |---|---|
-| `LiteHTMLLab` | Benchmarks, verification, `sanitize`, `scripttest [--runtime quickjs]`, `threetest` and a live viewer |
+| `LiteHTMLLab` | Benchmarks, verification, `sanitize`, `scripttest`, `threetest` and a live viewer |
 | `WebKitLab` | Renders the same chats in WKWebView, for comparison |
-| `EngineLab` | Compares JavaScriptCore with QuickJS |
 | `PresentLab` | Experiments with presentation paths |
 
 Sample chats live in `Examples/chats`. The [native solar-system example](Examples/native-3d/README.md)
 uses smooth meshes, native lighting and depth through the existing HTML3D path;
-its offscreen checker exercises QuickJS and JavaScriptCore. It is standalone
+its offscreen checker exercises JavaScriptCore. It is standalone
 HTMLScript content, outside widget profile 1.
 
 ```sh
