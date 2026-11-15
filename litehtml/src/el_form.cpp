@@ -8,7 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(TW_LITEHTML_NO_CORE_FOUNDATION)
 #include <CoreFoundation/CoreFoundation.h>
 #endif
 #include <cstdio>
@@ -97,7 +97,7 @@ namespace litehtml
 
         std::string date_pattern()
         {
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(TW_LITEHTML_NO_CORE_FOUNDATION)
             CFLocaleRef locale  = CFLocaleCopyCurrent();
             CFStringRef pattern = CFDateFormatterCreateDateFormatFromTemplate(nullptr, CFSTR("ddMMyyyy"), 0, locale);
             CFRelease(locale);

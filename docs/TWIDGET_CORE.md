@@ -142,6 +142,18 @@ backend; Android and Emscripten builds go through their toolchain files. With `T
 and on macOS the CoreGraphics tests and `twidget-core-run`, which turns a message log into a PNG.
 TwidgetCore is C++20. Apple's SwiftPM build does not use TwidgetCore.
 
+`-DTWIDGET_LITEHTML_NO_CORE_FOUNDATION=ON` builds `twidget::litehtml` without CoreFoundation, for a host
+that may link only libSystem and the C++ runtime. It is off by default, and then litehtml asks
+CoreFoundation for the locale's date pattern and links the framework. When on, `el_form.cpp` leaves out
+the framework's header and that lookup, the target does not link the framework, and a date input uses
+the fixed `MM/dd/yyyy`: a valid value is shown in that order, and an empty or invalid one shows the hint
+`mm/dd/yyyy`. A build that compiles litehtml's sources itself defines `TW_LITEHTML_NO_CORE_FOUNDATION` on
+them, a preprocessor guard that C++17 builds take too, and drops its own CoreFoundation link if nothing
+else needs it. The switch changes only litehtml: the CoreGraphics backend `twidget_litehtml` and
+`Package.swift` still link CoreFoundation. `twidget_core_tests` checks the hint an empty date input
+paints, and on macOS the `twidget_litehtml_core_foundation` test checks the library's CoreFoundation
+imports and the link of a program on litehtml alone against the switch.
+
 `-DTWIDGET_QT=ON` adds the QPainter backend and, with the tests, `twidget_qt_tests`, which checks its
 pixels on Qt's offscreen platform. `demos/qt` is a desktop demo on it: widget-sandbox's corpus
 in a feed, each widget a `WidgetHost` from widget-sandbox's desktop core over TwidgetCore.

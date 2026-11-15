@@ -1178,6 +1178,23 @@ int main() {
         check(!f.editor(), "focus() long after the user's input does not");
     }
 
+    // ── paint the date hint to check the pattern selected by the build ──
+    {
+        auto db = StubBackend();
+        auto d = Renderer(400, 1, false, db);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"input","attrs":[["type","date"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        auto hint = std::string();
+        for (const auto& c : d.paint())
+            if (c.kind == Cmd::Text) hint += c.text;
+#if defined(__APPLE__) && !defined(TW_LITEHTML_NO_CORE_FOUNDATION)
+        check(!hint.empty(), "a date input without a value paints a date hint (got " + hint + ")");
+#else
+        check(hint == "mm/dd/yyyy", "a date input without a value shows mm/dd/yyyy (got " + hint + ")");
+#endif
+    }
+
     // ── widget-sandbox v0.1.0: trusted input, the gesture claim, the theme ──
     {
         StubBackend vb;

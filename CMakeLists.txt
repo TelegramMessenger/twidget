@@ -15,6 +15,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(TWIDGET_BUILD_TESTS "Build the TwidgetCore checks" ${PROJECT_IS_TOP_LEVEL})
 option(TWIDGET_QT "Build twidget_qt, the QPainter backend (needs Qt 6)" OFF)
+option(TWIDGET_LITEHTML_NO_CORE_FOUNDATION "Build litehtml without CoreFoundation, using a fixed date pattern" OFF)
 
 # widget-sandbox owns the protocol and its JSON helper. Package.swift finds it the same way: a checkout
 # next to twidget, or the path in TWIDGET_WIDGET_SANDBOX (a URL there is for SwiftPM only).
@@ -61,7 +62,9 @@ add_library(twidget::litehtml ALIAS litehtml)
 target_include_directories(litehtml
     PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
     PRIVATE "${TW_LITEHTML}/src")
-if(APPLE)
+if(TWIDGET_LITEHTML_NO_CORE_FOUNDATION)
+    target_compile_definitions(litehtml PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
+elseif(APPLE)
     target_link_libraries(litehtml PUBLIC "-framework CoreFoundation")
 endif()
 if(MSVC)
@@ -147,6 +150,9 @@ if(TWIDGET_BUILD_TESTS)
     enable_testing()
     add_executable(twidget_core_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/core_tests.cpp")
     target_link_libraries(twidget_core_tests PRIVATE twidget::core)
+    if(TWIDGET_LITEHTML_NO_CORE_FOUNDATION)
+        target_compile_definitions(twidget_core_tests PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
+    endif()
     add_executable(twidget_css_keywords_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/css_keywords_tests.cpp")
     target_link_libraries(twidget_css_keywords_tests PRIVATE twidget::litehtml)
     add_executable(twidget_local_paint_key_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/local_paint_key_tests.cpp")
@@ -207,6 +213,11 @@ if(TWIDGET_BUILD_TESTS)
         add_executable(twidget_apple_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/apple_tests.cpp")
         target_link_libraries(twidget_apple_tests PRIVATE twidget_litehtml)
         add_test(NAME twidget_apple COMMAND twidget_apple_tests)
+        add_test(NAME twidget_litehtml_core_foundation
+            COMMAND "${CMAKE_COMMAND}" "-DNM=${CMAKE_NM}" "-DLIBRARY=$<TARGET_FILE:litehtml>"
+                "-DPROGRAM=$<TARGET_FILE:twidget_css_keywords_tests>"
+                "-DNO_CORE_FOUNDATION=${TWIDGET_LITEHTML_NO_CORE_FOUNDATION}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/litehtml_core_foundation.cmake")
         # Messages from widget-sandbox's sandbox-node.ts in, the paint out as PNG.
         add_executable(twidget-core-run "${CMAKE_CURRENT_SOURCE_DIR}/tools/core-run/run.cpp")
         target_link_libraries(twidget-core-run PRIVATE twidget_litehtml)
