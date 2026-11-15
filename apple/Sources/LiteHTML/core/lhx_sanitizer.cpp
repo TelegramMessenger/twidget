@@ -115,7 +115,7 @@ SanitizerPolicy SanitizerPolicy::standard()
     p.paintAttributes = Words("fill stroke filter mask clip-path marker marker-start marker-mid marker-end cursor color flood-color lighting-color stop-color");
     p.fragmentHrefTags = Words("use lineargradient radialgradient pattern filter textpath mpath");
     p.atRules = Words("media supports keyframes -webkit-keyframes container layer property counter-style starting-style scope page font-feature-values font-palette-values position-try charset");
-    p.imageMIMETypes = Words("image/png image/jpeg image/jpg image/gif image/webp image/avif image/bmp image/x-icon image/vnd.microsoft.icon image/svg+xml");
+    p.imageMIMETypes = Words("image/png image/jpeg image/jpg image/gif image/webp");
     p.imageFunctions = Words("image-set -webkit-image-set image src cross-fade -webkit-cross-fade");
     p.blockedProperties = Words("behavior -moz-binding");
     return p;

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <list>
@@ -519,6 +520,9 @@ size_t PNGIntactRows(NSData* data)
     return intact < height ? static_cast<size_t>(intact) : SIZE_MAX;
 }
 
+constexpr double kMaxRasterSide   = 1024;
+constexpr double kMaxRasterPixels = 1024.0 * 1024.0;
+
 CGImageRef CreateImageKeepingRows(CGImageRef image, size_t keep)
 {
     const size_t    w     = CGImageGetWidth(image), h = CGImageGetHeight(image);
@@ -535,28 +539,75 @@ CGImageRef CreateImageKeepingRows(CGImageRef image, size_t keep)
     return out ?: CGImageRetain(image);
 }
 
+CFStringRef RasterTypeForBytes(NSData* data)
+{
+    const auto*  bytes  = static_cast<const uint8_t*>(data.bytes);
+    const size_t length = data.length;
+    static const uint8_t png[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    if(length >= 8 && std::memcmp(bytes, png, 8) == 0)
+        return CFSTR("public.png");
+    if(length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+        return CFSTR("public.jpeg");
+    if(length >= 6 && (std::memcmp(bytes, "GIF87a", 6) == 0 || std::memcmp(bytes, "GIF89a", 6) == 0))
+        return CFSTR("com.compuserve.gif");
+    if(length >= 12 && std::memcmp(bytes, "RIFF", 4) == 0 && std::memcmp(bytes + 8, "WEBP", 4) == 0)
+        return CFSTR("org.webmproject.webp");
+    return nullptr;
+}
+
+bool RasterSizeAllowed(double width, double height)
+{
+    return width >= 1 && height >= 1 && width <= kMaxRasterSide && height <= kMaxRasterSide && width * height <= kMaxRasterPixels;
+}
+
+CGImageRef CreateCheckedRasterImage(NSData* data)
+{
+    CFStringRef type = RasterTypeForBytes(data);
+    if(!type)
+        return nullptr;
+    NSDictionary*    probe = @{(__bridge id)kCGImageSourceTypeIdentifierHint: (__bridge id)type, (__bridge id)kCGImageSourceShouldCache: @NO};
+    CGImageSourceRef src   = CGImageSourceCreateWithData((__bridge CFDataRef)data, (__bridge CFDictionaryRef)probe);
+    if(!src)
+        return nullptr;
+    CGImageRef  image  = nullptr;
+    CFStringRef actual = CGImageSourceGetType(src);
+    if(actual && CFEqual(actual, type) && CGImageSourceGetCount(src) >= 1)
+    {
+        NSDictionary* props = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(src, 0, (__bridge CFDictionaryRef)probe));
+        id            w     = props[(__bridge id)kCGImagePropertyPixelWidth];
+        id            h     = props[(__bridge id)kCGImagePropertyPixelHeight];
+        if([w isKindOfClass:[NSNumber class]] && [h isKindOfClass:[NSNumber class]] && RasterSizeAllowed([w doubleValue], [h doubleValue]))
+        {
+            NSDictionary* decode = @{(__bridge id)kCGImageSourceShouldCacheImmediately: @YES};
+            image                = CGImageSourceCreateImageAtIndex(src, 0, (__bridge CFDictionaryRef)decode);
+            if(image && !RasterSizeAllowed(CGImageGetWidth(image), CGImageGetHeight(image)))
+            {
+                CGImageRelease(image);
+                image = nullptr;
+            }
+        }
+    }
+    CFRelease(src);
+    return image;
+}
+
 ImageHandle LoadImageFromData(NSData* data, bool isSVG)
 {
     if(!data)
         return {};
     if(!isSVG)
     {
-        CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, nullptr);
-        if(src)
+        CGImageRef image = CreateCheckedRasterImage(data);
+        if(!image)
+            return {};
+        size_t intact = PNGIntactRows(data);
+        if(intact < CGImageGetHeight(image))
         {
-            CGImageRef image = CGImageSourceCreateImageAtIndex(src, 0, nullptr);
-            CFRelease(src);
-            size_t intact = image ? PNGIntactRows(data) : SIZE_MAX;
-            if(intact < CGImageGetHeight(image))
-            {
-                CGImageRef kept = CreateImageKeepingRows(image, intact);
-                CGImageRelease(image);
-                image = kept;
-            }
-            if(image)
-                return AdoptImage(image, CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image)));
+            CGImageRef kept = CreateImageKeepingRows(image, intact);
+            CGImageRelease(image);
+            image = kept;
         }
-        return {};
+        return AdoptImage(image, CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image)));
     }
     CGSize      size   = CGSizeZero;
     std::string markup(static_cast<const char*>(data.bytes), data.length);
@@ -575,7 +626,9 @@ ImageHandle LoadDataURI(const std::string& url)
     std::string meta    = url.substr(5, comma - 5);
     std::string payload = url.substr(comma + 1);
     bool        base64  = meta.find(";base64") != std::string::npos;
-    bool        isSVG   = meta.find("svg") != std::string::npos;
+    std::string mime    = meta.substr(0, meta.find(';'));
+    std::transform(mime.begin(), mime.end(), mime.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    bool        isSVG   = mime == "image/svg+xml";
     NSData*     data    = nil;
     NSString*   str     = [NSString stringWithUTF8String:payload.c_str()];
     if(!str)
