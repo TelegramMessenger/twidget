@@ -76,7 +76,11 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     private var theme: String
     private(set) var document: LHDocument?
     private var themeVariables = WidgetThemeStyle.variables(nil)
-    private var safeAreaVariables = WidgetThemeStyle.contentSafeArea(nil)
+    private var safeAreaVariables = WidgetThemeStyle.place(surface: nil, device: nil, content: nil, viewport: nil)
+    private var placeSurface: Any?
+    private var placeViewportHeight: Any?
+    private var deviceInset: Any?
+    private var contentInset: Any?
     private var masterCSS = WidgetThemeStyle.masterCSS(WidgetThemeStyle.variables(nil) + WidgetThemeStyle.contentSafeArea(nil))
     private let selectsTextByDefault: Bool
     private var buffered: [String] = []
@@ -1039,12 +1043,19 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
             startClock()
         case "frozen":
             freeze(reason: (message["reason"] as? String) ?? "", fatal: (message["fatal"] as? Bool) ?? false)
-        case "theme", "safeArea":
-            if message["type"] as? String == "theme" {
+        case "theme", "safeArea", "deviceSafeArea", "surface":
+            switch message["type"] as? String {
+            case "theme":
                 themeVariables = WidgetThemeStyle.variables(message["theme"])
-            } else {
-                safeAreaVariables = WidgetThemeStyle.contentSafeArea(message["inset"])
+            case "safeArea":
+                contentInset = message["inset"]
+            case "deviceSafeArea":
+                deviceInset = message["inset"]
+            default:
+                placeSurface = message["surface"]
+                placeViewportHeight = message["viewportHeight"]
             }
+            safeAreaVariables = WidgetThemeStyle.place(surface: placeSurface, device: deviceInset, content: contentInset, viewport: placeViewportHeight)
             let variables = themeVariables + safeAreaVariables
             let css = WidgetThemeStyle.masterCSS(variables, selectsTextByDefault: selectsTextByDefault)
             let restyled = css != masterCSS

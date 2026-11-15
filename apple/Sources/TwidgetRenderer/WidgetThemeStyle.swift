@@ -24,7 +24,7 @@ enum WidgetThemeStyle {
         ],
     ]
 
-    static let profileUAStylesheet = "@layer tw-ua{:where(html){color:var(--tg-theme-text-color);font:var(--tg-text-font-size,15px)/var(--tg-text-line-height,1.35) system-ui,sans-serif;-webkit-text-size-adjust:none;text-size-adjust:none;overflow-wrap:break-word;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}:where(body){margin:var(--tg-text-padding,8px 12px);padding:0;padding-bottom:var(--tg-content-safe-area-inset-bottom,0px)}:where(h1,h2,h3,h4,h5,h6){margin:.75em 0 .35em;font-weight:600;line-height:1.25}:where(h1){font-size:1.6em}:where(h2){font-size:1.35em}:where(h3){font-size:1.2em}:where(h4){font-size:1.07em}:where(h5){font-size:1em}:where(h6){font-size:.87em}:where(p,ul,ol,menu,dl,pre,blockquote,figure,table){margin:.6em 0}:where(ul,ol,menu){padding:0 0 0 1.5em;padding-inline-start:1.5em;padding-inline-end:0}:where(ul,menu){list-style-type:disc}:where(ol){list-style-type:decimal}:where(li ul,li menu){list-style-type:circle}:where(li ul,li ol,li menu,li dl){margin:0}:where(dt){font-weight:600}:where(dd){margin:0 0 0 1.5em;margin-inline-start:1.5em;margin-inline-end:0}:where(table){border-collapse:collapse;border-spacing:0}:where(caption){padding:0 0 .3em;color:var(--tg-theme-hint-color);font-size:.87em;text-align:left;text-align:start}:where(th,td){padding:.3em .6em;border-bottom:1px solid var(--tg-theme-section-separator-color);text-align:left;text-align:start;vertical-align:top}:where(th){font-weight:600}:where(th:last-child,td:last-child){padding-right:0;padding-inline-end:0;padding-inline-start:.6em}:where(th:first-child,td:first-child){padding-left:0;padding-inline-start:0;padding-inline-end:.6em}:where(hr){height:0;margin:.6em 0;border:0;border-top:1px solid var(--tg-theme-section-separator-color)}:where(pre,code,kbd,samp){font-family:ui-monospace,monospace;font-size:.9em}:where(pre code,pre kbd,pre samp){font-size:1em}:where(pre){padding:.5em .7em;border-radius:6px;background:rgba(128,128,128,.12);white-space:pre-wrap}:where(blockquote){padding:0 0 0 .75em;padding-inline-start:.75em;padding-inline-end:0;border-left:3px solid var(--tg-theme-accent-text-color);border-inline-start:3px solid var(--tg-theme-accent-text-color);border-inline-end:0}:where(figcaption){margin:.3em 0 0;color:var(--tg-theme-hint-color);font-size:.87em}:where(img){max-width:100%}:where(a[href]){color:var(--tg-theme-link-color);text-decoration:none}:where(b,strong){font-weight:600}:where(i,em,cite,dfn,var){font-style:italic}:where(small){font-size:.85em}:where(sub,sup){position:relative;font-size:.75em;line-height:0;vertical-align:baseline}:where(sup){top:-.5em}:where(sub){bottom:-.25em}:where(mark){background:rgba(255,204,0,.4);color:inherit}:where(body>:first-child){margin-top:0}:where(body>:last-child){margin-bottom:0}:where(button){appearance:none;-webkit-appearance:none;margin:0;border:0;border-radius:var(--tg-button-radius,8px);padding:var(--tg-button-padding,8px 14px);min-height:var(--tg-button-height,auto);font:var(--tg-button-font,500 14px/1.2 system-ui,sans-serif);background:var(--tg-button-bg,rgba(51,144,236,.12));color:var(--tg-button-text,inherit);cursor:pointer;-webkit-tap-highlight-color:transparent}:where(button:not([disabled])):active{opacity:var(--tg-button-pressed-opacity,.7)}:where(button[disabled]){opacity:var(--tg-button-disabled-opacity,.5);cursor:default}}"
+    static let profileUAStylesheet = "@layer tw-ua{:where(html){color:var(--tg-theme-text-color);font:var(--tg-text-font-size,15px)/var(--tg-text-line-height,1.35) system-ui,sans-serif;-webkit-text-size-adjust:none;text-size-adjust:none;overflow-wrap:break-word;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}:where(body){margin:var(--tg-text-padding,8px 12px);padding:calc(var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px)) calc(var(--tg-safe-area-inset-right,0px) + var(--tg-content-safe-area-inset-right,0px)) calc(var(--tg-safe-area-inset-bottom,0px) + var(--tg-content-safe-area-inset-bottom,0px)) calc(var(--tg-safe-area-inset-left,0px) + var(--tg-content-safe-area-inset-left,0px))}:where(h1,h2,h3,h4,h5,h6){margin:.75em 0 .35em;font-weight:600;line-height:1.25}:where(h1){font-size:1.6em}:where(h2){font-size:1.35em}:where(h3){font-size:1.2em}:where(h4){font-size:1.07em}:where(h5){font-size:1em}:where(h6){font-size:.87em}:where(p,ul,ol,menu,dl,pre,blockquote,figure,table){margin:.6em 0}:where(ul,ol,menu){padding:0 0 0 1.5em;padding-inline-start:1.5em;padding-inline-end:0}:where(ul,menu){list-style-type:disc}:where(ol){list-style-type:decimal}:where(li ul,li menu){list-style-type:circle}:where(li ul,li ol,li menu,li dl){margin:0}:where(dt){font-weight:600}:where(dd){margin:0 0 0 1.5em;margin-inline-start:1.5em;margin-inline-end:0}:where(table){border-collapse:collapse;border-spacing:0}:where(caption){padding:0 0 .3em;color:var(--tg-theme-hint-color);font-size:.87em;text-align:left;text-align:start}:where(th,td){padding:.3em .6em;border-bottom:1px solid var(--tg-theme-section-separator-color);text-align:left;text-align:start;vertical-align:top}:where(th){font-weight:600}:where(th:last-child,td:last-child){padding-right:0;padding-inline-end:0;padding-inline-start:.6em}:where(th:first-child,td:first-child){padding-left:0;padding-inline-start:0;padding-inline-end:.6em}:where(hr){height:0;margin:.6em 0;border:0;border-top:1px solid var(--tg-theme-section-separator-color)}:where(pre,code,kbd,samp){font-family:ui-monospace,monospace;font-size:.9em}:where(pre code,pre kbd,pre samp){font-size:1em}:where(pre){padding:.5em .7em;border-radius:6px;background:rgba(128,128,128,.12);white-space:pre-wrap}:where(blockquote){padding:0 0 0 .75em;padding-inline-start:.75em;padding-inline-end:0;border-left:3px solid var(--tg-theme-accent-text-color);border-inline-start:3px solid var(--tg-theme-accent-text-color);border-inline-end:0}:where(figcaption){margin:.3em 0 0;color:var(--tg-theme-hint-color);font-size:.87em}:where(img){max-width:100%}:where(a[href]){color:var(--tg-theme-link-color);text-decoration:none}:where(b,strong){font-weight:600}:where(i,em,cite,dfn,var){font-style:italic}:where(small){font-size:.85em}:where(sub,sup){position:relative;font-size:.75em;line-height:0;vertical-align:baseline}:where(sup){top:-.5em}:where(sub){bottom:-.25em}:where(mark){background:rgba(255,204,0,.4);color:inherit}:where(body>:first-child){margin-top:0}:where(body>:last-child){margin-bottom:0}:where(button){appearance:none;-webkit-appearance:none;margin:0;border:0;border-radius:var(--tg-button-radius,8px);padding:var(--tg-button-padding,8px 14px);min-height:var(--tg-button-height,auto);font:var(--tg-button-font,500 14px/1.2 system-ui,sans-serif);background:var(--tg-button-bg,rgba(51,144,236,.12));color:var(--tg-button-text,inherit);cursor:pointer;-webkit-tap-highlight-color:transparent}:where(button:not([disabled])):active{opacity:var(--tg-button-pressed-opacity,.7)}:where(button[disabled]){opacity:var(--tg-button-disabled-opacity,.5);cursor:default}}"
 
     static let textDefaults: [String: String] = ["fontSize": "15px", "lineHeight": "1.35", "padding": "8px 12px"]
 
@@ -58,7 +58,49 @@ enum WidgetThemeStyle {
         ("padding", "--tg-text-padding", { paddingToken($0) }),
     ]
 
-    static let variableNames: Set<String> = Set(keys.map(variableName) + ["--tg-color-scheme"] + buttonVariables.map { $0.name } + textVariables.map { $0.name } + safeAreaVariables.map { $0.name })
+    static let variableNames: Set<String> = Set(keys.map(variableName) + ["--tg-color-scheme"] + buttonVariables.map { $0.name } + textVariables.map { $0.name } + safeAreaVariables.map { $0.name } + deviceSafeAreaVariables.map { $0.name } + [viewportHeightVariable])
+
+    static let deviceSafeAreaVariables = [
+        (field: "top", name: "--tg-safe-area-inset-top"),
+        (field: "right", name: "--tg-safe-area-inset-right"),
+        (field: "bottom", name: "--tg-safe-area-inset-bottom"),
+        (field: "left", name: "--tg-safe-area-inset-left"),
+    ]
+
+    static let viewportHeightVariable = "--tg-viewport-height"
+    static let pageMaximumHeight = 4000.0
+
+    static func isPage(_ surface: Any?) -> Bool {
+        return (surface as? String) == "profile"
+    }
+
+    private static func inset(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            return nil
+        }
+        let value = number.doubleValue
+        return value.isFinite && value >= 0 ? value : nil
+    }
+
+    static func deviceSafeArea(_ value: Any?, surface: Any?) -> [(name: String, value: String)] {
+        let inset = value as? [String: Any] ?? [:]
+        let page = isPage(surface)
+        return deviceSafeAreaVariables.map { variable in
+            let checked = page ? Self.inset(inset[variable.field]) ?? 0 : 0
+            return (variable.name, shortest((checked * 100).rounded() / 100) + "px")
+        }
+    }
+
+    static func viewport(_ value: Any?, surface: Any?) -> [(name: String, value: String)] {
+        guard isPage(surface), let height = inset(value), height > 0, height <= pageMaximumHeight else {
+            return []
+        }
+        return [(viewportHeightVariable, shortest((height * 100).rounded() / 100) + "px")]
+    }
+
+    static func place(surface: Any?, device: Any?, content: Any?, viewport: Any?) -> [(name: String, value: String)] {
+        return deviceSafeArea(device, surface: surface) + contentSafeArea(content, surface: surface) + Self.viewport(viewport, surface: surface)
+    }
 
     static let safeAreaVariables = [
         (field: "top", name: "--tg-content-safe-area-inset-top", cap: 64.0),
@@ -68,6 +110,18 @@ enum WidgetThemeStyle {
         (field: "cornerLeft", name: "--tg-content-safe-area-corner-left", cap: 200.0),
         (field: "cornerRight", name: "--tg-content-safe-area-corner-right", cap: 200.0),
     ]
+
+    static func contentSafeArea(_ value: Any?, surface: Any?) -> [(name: String, value: String)] {
+        guard isPage(surface) else {
+            return contentSafeArea(value)
+        }
+        let inset = value as? [String: Any] ?? [:]
+        return safeAreaVariables.map { variable in
+            let corner = variable.field == "cornerLeft" || variable.field == "cornerRight"
+            let checked = corner ? 0 : Self.inset(inset[variable.field]) ?? 0
+            return (variable.name, shortest((checked * 100).rounded() / 100) + "px")
+        }
+    }
 
     static func contentSafeArea(_ value: Any?) -> [(name: String, value: String)] {
         let inset = value as? [String: Any] ?? [:]
@@ -81,7 +135,7 @@ enum WidgetThemeStyle {
 
     static func masterCSS(_ variables: [(name: String, value: String)], selectsTextByDefault: Bool = false) -> String {
         let names = Set(variables.map { $0.name })
-        let variables = variables + contentSafeArea(nil).filter { !names.contains($0.name) }
+        let variables = variables + (contentSafeArea(nil) + deviceSafeArea(nil, surface: nil)).filter { !names.contains($0.name) }
         let key = "\(selectsTextByDefault)|" + variables.map { $0.name + ":" + $0.value }.joined(separator: ";")
         masterLock.lock()
         defer { masterLock.unlock() }

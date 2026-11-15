@@ -20,6 +20,40 @@ final class WidgetSafeAreaTests: XCTestCase {
         XCTAssertEqual(WidgetThemeStyle.contentSafeArea(nil).count, 6)
     }
 
+    func testAPageTakesBothLayersAsGivenAndKeepsNoCorners() {
+        let values = Dictionary(uniqueKeysWithValues: WidgetThemeStyle.place(surface: "profile", device: ["top": 47, "right": 0, "bottom": 34.567, "left": -2], content: ["top": 120, "bottom": 96, "cornerLeft": 40, "cornerRight": 40], viewport: 844))
+        XCTAssertEqual(values["--tg-safe-area-inset-top"], "47px")
+        XCTAssertEqual(values["--tg-safe-area-inset-bottom"], "34.57px")
+        XCTAssertEqual(values["--tg-safe-area-inset-left"], "0px")
+        XCTAssertEqual(values["--tg-content-safe-area-inset-top"], "120px")
+        XCTAssertEqual(values["--tg-content-safe-area-inset-bottom"], "96px")
+        XCTAssertEqual(values["--tg-content-safe-area-corner-left"], "0px")
+        XCTAssertEqual(values["--tg-content-safe-area-corner-right"], "0px")
+        XCTAssertEqual(values["--tg-viewport-height"], "844px")
+    }
+
+    func testABubbleHasNoDeviceLayerAndNoViewport() {
+        let values = Dictionary(uniqueKeysWithValues: WidgetThemeStyle.place(surface: "message", device: ["top": 47, "bottom": 34], content: ["bottom": 120, "cornerRight": 80], viewport: 844))
+        XCTAssertEqual(values["--tg-safe-area-inset-top"], "0px")
+        XCTAssertEqual(values["--tg-safe-area-inset-bottom"], "0px")
+        XCTAssertEqual(values["--tg-content-safe-area-inset-bottom"], "0px")
+        XCTAssertEqual(values["--tg-content-safe-area-corner-right"], "80px")
+        XCTAssertNil(values["--tg-viewport-height"])
+    }
+
+    func testThePageViewportIsBounded() {
+        XCTAssertTrue(WidgetThemeStyle.viewport(0, surface: "profile").isEmpty)
+        XCTAssertTrue(WidgetThemeStyle.viewport(4000.5, surface: "profile").isEmpty)
+        XCTAssertTrue(WidgetThemeStyle.viewport(Double.nan, surface: "profile").isEmpty)
+        XCTAssertTrue(WidgetThemeStyle.viewport(true, surface: "profile").isEmpty)
+        XCTAssertEqual(WidgetThemeStyle.viewport(4000, surface: "profile").first?.value, "4000px")
+    }
+
+    func testTheUALayerPadsTheBodyByBothLayersOnEverySide() {
+        let css = WidgetThemeStyle.masterCSS(WidgetThemeStyle.variables(nil) + WidgetThemeStyle.place(surface: "profile", device: ["top": 10], content: ["top": 64, "bottom": 20], viewport: 700))
+        XCTAssertTrue(css.contains("padding:calc(10px + 64px) calc(0px + 0px) calc(0px + 20px) calc(0px + 0px)"), css)
+    }
+
     func testBootUpdatesThemeAndCaptionTransitions() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 500), styleMask: [.borderless], backing: .buffered, defer: false)
