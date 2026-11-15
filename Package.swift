@@ -120,7 +120,7 @@ let package = Package(
             path: "apple/Tests/TwidgetRendererTests"),
         .testTarget(
             name: "Twidget3DSandboxTests",
-            dependencies: ["Twidget3DSandbox", "Twidget3D", "TwidgetRenderer", .product(name: "WidgetSandbox", package: "WidgetSandbox"), widgetProtocol],
+            dependencies: ["Twidget3DSandbox", "Twidget3D", "TwidgetRenderer", .product(name: "WidgetSandbox", package: "WidgetSandbox"), .product(name: "WidgetSandboxQuickJS", package: "WidgetSandbox"), widgetProtocol],
             path: "apple/Tests/Twidget3DSandboxTests"),
         .testTarget(
             name: "TwidgetIconsTests",
