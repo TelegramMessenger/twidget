@@ -54,10 +54,17 @@ struct BuildStats {
     size_t names = 0, name_bytes = 0;
 };
 
+/// The time a renderer reads: finite, non-negative and nondecreasing milliseconds, on the renderer's thread.
+class Clock {
+public:
+    virtual ~Clock() = default;
+    virtual double now_ms() = 0;
+};
+
 class Renderer : private CanvasHost {
 public:
-    /// `backend` is owned by the platform layer and must outlive the renderer.
-    Renderer(double width, double dpr, bool dark, Backend& backend);
+    /// `backend`, and `clock` when given (else the steady clock), are owned by the platform layer and must outlive the renderer.
+    Renderer(double width, double dpr, bool dark, Backend& backend, Clock* clock = nullptr);
     ~Renderer();
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
@@ -80,6 +87,8 @@ public:
     /// The CSS cursor where the mouse last was (`hover` or a mouse `touch`): "pointer", "text", … as the
     /// document computes it, "auto" when it says nothing, after the mouse left, or while frozen.
     std::string cursor() const;
+    /// What a press at (x, y) that starts no selection would claim, without pressing; nothing while frozen.
+    twidget::WidgetGestureClaim claim_at(double x, double y);
     /// A wheel or trackpad scroll over the view. `mode`: 0 pixels, 1 lines, 2 pages.
     std::vector<twidget::Json> wheel(double x, double y, double dx, double dy, int mode, int modifiers = 0);
     /// `type` keydown or keyup, with DOM `key` and `code`, aimed at the control being edited, or else
@@ -127,6 +136,8 @@ public:
     /// `user-select: text`, where the widget does not prevent the press, selects it; any other primary press
     /// drops the selection. The host copies it with its own command, and clears it on what it handles itself.
     bool has_selection() const;
+    /// False when nothing is selected, without laying the text out; when true, has_selection() may still be false.
+    bool may_have_selection() const { return !(selection_.anchor == selection_.focus); }
     /// The selected text, with a line break between blocks and at `<br>`; empty without a selection.
     std::string selected_text() const;
     /// Drops the selection; true when there was one, and the next paint draws no highlight.
@@ -160,8 +171,8 @@ public:
     void set_compositing(bool enabled);
     /// The layers that go above the display list `paint()` returned last.
     const Composition& composition() const { return composition_; }
-    /// The renderer clock, in seconds: what `LayerTrack::start` is on.
-    static double clock() { return now_s(); }
+    /// The steady clock, in seconds: what `LayerTrack::start` is on for a renderer given no Clock.
+    static double clock();
     /// A backend that decodes images asynchronously (the web) reports the size of image `id` here;
     /// the document is rebuilt with it. Returns renderer → host messages (a `size`, when it changed).
     std::vector<twidget::Json> image_ready(int id, float w, float h);
@@ -280,9 +291,9 @@ private:
     struct Meter {
         Renderer& r;
         double start;
-        explicit Meter(Renderer& renderer) : r(renderer), start(r.meter_depth_++ ? 0 : now_s()) {}
+        explicit Meter(Renderer& renderer) : r(renderer), start(r.meter_depth_++ ? 0 : r.now_s()) {}
         ~Meter() {
-            if (--r.meter_depth_ == 0) r.charge(now_s() - start);
+            if (--r.meter_depth_ == 0) r.charge(r.now_s() - start);
         }
     };
     int meter_depth_ = 0;
@@ -355,7 +366,8 @@ private:
     // shadow tree → style attribute, with animation overrides
     void write_style(const Node* n, std::string& out) const;
     // animations
-    static double now_s();
+    double now_ms() const;
+    double now_s() const;
     void build_document(bool patch = false);
     // In-place patching (the Swift renderer's patch log): which attributes and sole texts the ops of
     // a batch changed, for the fork's `update_holes`, so the document is not serialised again.
@@ -530,6 +542,7 @@ private:
 
     std::unique_ptr<Container> container_;
     Backend& backend_;
+    Clock* clock_;
     double width_;
     double dpr_;
     bool dark_;

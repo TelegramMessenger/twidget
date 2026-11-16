@@ -47,6 +47,8 @@ public:
     /// Documents and canvases never share a handle: a canvas's fonts (fillText, strokeText,
     /// measureText) are made for it alone, with empty `features`, and deleted when it drops them.
     virtual int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features, FontMetrics& out) = 0;
+    /// A canvas's font, as above: create_font with empty `features` unless the backend tells the two apart.
+    virtual int create_canvas_font(const std::string& families, float size_px, int weight, bool italic, FontMetrics& out) { return create_font(families, size_px, weight, italic, {}, out); }
     virtual void delete_font(int font) = 0;
     /// Advance width of `text` (UTF-8) in CSS px.
     virtual float text_width(int font, const std::string& text) = 0;

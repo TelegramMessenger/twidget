@@ -23,6 +23,7 @@ Its sources are in `core/`: `src/` and `include/` below are its folders, and eve
 | Heavy boxes (widget-sandbox v0.6.0): the count before every frame, the `limit` message, the stopped paint | `src/paint_policy.*`, `Renderer::count_paint` |
 | `light-dark()`, name checks on everything written into the generated HTML | `src/css.*` |
 | Binary forms of display lists, damage, canvas batches and font metrics for a painter in another process, with strict decoders | `src/wire.*` |
+| The renderer and its platform at the two ends of a byte channel, in versioned messages with strict decoders | `src/remote.*`, `src/renderer_end.*`, `src/platform_end.*` |
 
 A batch of ops is serialised to HTML, which the fork patches into the live document where it can
 (`update_from_string`), and animation frames patch style attributes in place (`update_styles`).
@@ -36,12 +37,24 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   keep when the stream is damaged, and `image_dimensions` there reads the size a header declares, for a
   backend to refuse an image before decoding it. The container hands a backend only the profile's image
   types (`data:` PNG, JPEG, GIF, WebP): an SVG in any spelling is the placeholder, drawn by the core.
+  A canvas's fonts come from `create_canvas_font`, which is `create_font` with empty features unless
+  the backend overrides it to tell them apart, for an allowance of their own. The renderer caches them
+  by the CSS spelling of `font`, and releases them all once it holds more than 64 and at its
+  destruction: one font in two spellings is two handles, each released once, so a backend that hands
+  out one font for several counts its handles.
 - **A painter** for `DisplayList` (`src/display_list.h`): rectangles, borders, text, images,
   gradients, clips, paths, groups and shadows, in CSS px, and the CSS filters, whose colour matrices
   and whose CPU pass over a painter's own pixels are in `src/filters.h`.
 - **A clock.** Call `tick()` while `wants_tick()` holds, and once `next_tick_in()` seconds have passed
-  when it does not. A build inside `paint()` or `last_html()` keeps `wants_tick()` until a `tick()` hands
-  out its messages.
+  when it does not. A build inside `paint()`, `last_html()` or `claim_at()` keeps `wants_tick()` until a
+  `tick()` hands out its messages. The renderer reads the steady clock, or the `twlite::Clock` given to
+  its constructor (`src/renderer.h`): `now_ms()`, finite, non-negative and nondecreasing milliseconds
+  from an origin the host picks, read on the renderer's thread; the Clock outlives the renderer.
+  Everything timed in that renderer follows it, and nothing in another: animations and transitions,
+  where `anim` records start, move coalescing, holds and the gesture arbiter, the render throttle and
+  the time it charges, the build timings in `stats()`. The static `Renderer::clock()` stays the steady
+  clock in seconds. Compositor tracks start on the renderer's clock in seconds: on `Renderer::clock()`
+  for a renderer given no Clock, on the given one otherwise, which a host then samples its tracks on.
 - **Input.** `touch` and `hover`. `wheel` and `key` remain but do nothing: widget profile 1 gives a
   widget no wheel and no keyboard. For text controls, `editor()` describes the one being edited for
   the platform to cover with its own editor, which reports back through `edit()` and `end_editing()`;
@@ -55,10 +68,14 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   after the second tap's click, and `contextmenu` for a hold or a secondary-button press (`button` 2) that
   the claim gives the widget. A hold needs the clock: its deadline is in `next_tick_in()`. A host with no
   recognizers of its own sends `arbitrate` with `bubble: true`, and the renderer then takes those presses
-  itself and reports each in a `bubble` message.
+  itself and reports each in a `bubble` message. `claim_at(x, y)` answers without pressing: the claim a
+  press there would get when it starts no selection, which says whether a hold would be claimed, and
+  no claim while frozen. It neither presses nor selects and returns no event.
 - **Text selection.** A mouse drag over `user-select: text` selects (widget-sandbox v0.1.1, §5.10) and the
   next paint tints it; the host copies `selected_text()` with its own command and calls `clear_selection()`
-  for a press the renderer does not get. For touch, a host selects with its own UI (the message menu and
+  for a press the renderer does not get. `has_selection()` is `selected_text()` being non-empty, and lays
+  the text out to say so; `may_have_selection()`, false when nothing is selected, does not, for a host
+  that asks after every call. For touch, a host selects with its own UI (the message menu and
   its handles): `selectable_text_json()` lists the selectable runs with their fonts and baselines, and the
   host lays its selection over them; the Telegram Android client does so. Each run carries the matrix it
   shows under (CSS transforms as last painted, its layer's track as of the call), so a host asks again
@@ -320,6 +337,263 @@ refuse every cut of every sample, seeded random changes they cannot take, and co
 references, enum values, flags and mask bits past their bounds, leaving the output as it was; no
 decode asks the allocator for more than a bound linear in its bytes.
 
+## Two ends over a byte channel
+
+`src/remote.h` (namespace `twlite::remote`) runs TwidgetCore with its platform in another process. A
+renderer end (`src/renderer_end.h`) owns a `Renderer` whose `Backend` turns each call into a message,
+and waits for the answer where the call returns one; it runs the platform's input and frame requests
+and reports what the platform needs without being asked. A platform end (`src/platform_end.h`) takes
+those messages, checks each one, calls the real `Backend` its host supplies, and gives the host the
+decoded frames and reports. The messages are binary and versioned and carry the binary forms above.
+twidget knows no transport: the embedder carries the bytes and implements the channel.
+
+They build as two targets. `twidget::remote` is `src/remote.cpp` and `src/platform_end.cpp` on
+`twidget::wire`: a program with the platform end links no litehtml, no renderer, no Qt and no platform
+API, and of widget-sandbox it reads two headers, `twidget/json.h` and `twidget/gesture_policy.h`, for
+the JSON and claim types, and links nothing. `twidget::renderer_end` is `src/renderer_end.cpp` on
+`twidget::core` and `twidget::remote`.
+
+The platform end trusts nothing that arrives. It refuses what an honest renderer end never sends, and
+its decoders check structure, as the forms' do, not content: it calls the host's Backend with what a
+request carries, and hands the host lists, batches and JSON whose ids, numbers, text and paint cost
+nothing has looked at. The host checks those before its painter and its platform's services see them.
+
+**The channel.**
+
+```cpp
+class Channel {
+public:
+    virtual ~Channel() = default;
+    virtual void send(std::string message) = 0;
+};
+
+class RendererChannel : public Channel {
+public:
+    virtual bool request(std::string message, std::string& answer) = 0;
+};
+```
+
+The platform end sends on a `Channel`, the renderer end on a `RendererChannel`. The embedder hands
+the renderer end's one-way messages to `PlatformEnd::receive`, and its requests to
+`PlatformEnd::answer`, whose `reply` it returns as the request's answer; when `answer` returns false,
+the request gets none. It hands the platform end's messages to `RendererEnd::deliver`. It keeps these
+rules:
+
+- Messages each way arrive whole, once and in the order they were sent.
+- A request comes after every message the renderer end sent before it: those reach `receive` before
+  the request reaches `answer`. `request` blocks the renderer end's thread until the answer comes
+  back, or returns false when none will (the channel closed, the embedder's own timeout). One request
+  is out at a time.
+- Platform messages reach `deliver` in order, and never while the renderer end is inside a call, a
+  waiting request included.
+- `receive` and `answer` are called in arrival order, one at a time. The host's callbacks run inside
+  them and may call the platform end's input methods, which only send, but not `receive` or `answer`.
+- Neither end's `send` calls back into the end that is sending.
+- The channel, the Backend and the host outlive their end, and a `Clock` outlives the renderer it is
+  given to. No callback destroys an end inside a call, or what it uses, `Host::refused` included: the
+  embedder destroys it once the call has returned.
+- The renderer end sends from its constructor (the first build's Backend calls, then the first
+  `State`) and from its destructor (the canvases and fonts the renderer releases).
+- `send` returns nothing: the embedder learns that its transport closed by itself, or when the next
+  `request` returns false. The ends have no timeout and no thread of their own, and neither is
+  thread-safe.
+- `Caps::message` bounds every message either way. The embedder picks it to fit its transport with
+  its framing: the default, 32 MiB, leaves 64 KiB of widget-sandbox's frames of 32 MiB and 64 KiB.
+
+**Messages.** Every message is a `u8` kind, a `u8` version (1, `remote::VERSION`), its fields and
+nothing after them. Kinds 1-8 are the platform's input and 32-35 its answers to the renderer's
+requests 96-99, in the same order; 64-72 go from the renderer one way. `kind_of(message)` reads the
+header alone: the kind when it is one of these at version 1, nothing otherwise; it never stands in for
+decoding. A changed layout takes a new version or a new kind, and version 1's bytes keep their meaning.
+
+The fields are those of the binary forms, plus:
+
+| Field | Bytes |
+|---|---|
+| `f64` | a double's IEEE-754 bits as a `u64` |
+| `value` | a `u32` length, then exactly one value of the binary forms, of the form named, in that many bytes |
+| `state` | `f64` width, `i32` height, `flag` dirty, `flag` wants_tick, `f64` next_tick_in, `flag` frame_asked |
+| `claim` | `flag` x, `flag` y, `flag` hold |
+
+A `str` is capped by `Caps::text` unless the table says otherwise. Each message is a struct of the
+same name in `src/remote.h`.
+
+| Kind | Message | Way | Fields |
+|---|---|---|---|
+| 1 | `FrameRequest` | platform → renderer | `u64` seq, `flag` tick, `u8` paint: 0 `Skip`, 1 `IfDirty`, 2 `Force` |
+| 2 | `SetWidth` | platform → renderer | `f64` width |
+| 3 | `SetMaxHeight` | platform → renderer | `f64` height |
+| 4 | `SetTheme` | platform → renderer | `flag` dark |
+| 5 | `Touch` | platform → renderer | `i32` action, `f64` x, `f64` y, `i32` pointer, `flag` primary, `flag` mouse, `i32` modifiers, `i32` button |
+| 6 | `Hover` | platform → renderer | `i32` action, `f64` x, `f64` y, `i32` modifiers |
+| 7 | `ClearSelection` | platform → renderer | none |
+| 8 | `ClaimQuery` | platform → renderer | `u64` seq, `f64` x, `f64` y |
+| 32 | `FontAnswer` | platform → renderer, answers 96 | `i32` font, `value` (font metrics) |
+| 33 | `WidthAnswer` | platform → renderer, answers 97 | `f32` width |
+| 34 | `ImageAnswer` | platform → renderer, answers 98 | `flag` ok, `f32` w, `f32` h |
+| 35 | `PixelsAnswer` | platform → renderer, answers 99 | `flag` ok; at 1 a `u32` length, exactly the request's w × h × 4 and at most `pixels`, then the RGBA bytes |
+| 64 | `Frame` | renderer → platform, answers 1 | `u64` seq, `state`, `flag` painted; at 1 `value` (display list), `value` (damage) |
+| 65 | `State` | renderer → platform | `state` |
+| 66 | `Messages` | renderer → platform | `count` (cap `messages`, 4 bytes) × `str`, each a renderer message's JSON |
+| 67 | `Pointer` | renderer → platform, answers 5 and 6 | `str` cursor, `flag` claimed; at 1 `claim` |
+| 68 | `Selection` | renderer → platform | `str` text |
+| 69 | `ClaimAnswer` | renderer → platform, answers 8 | `u64` seq, `claim` |
+| 70 | `FontRelease` | renderer → platform | `i32` font |
+| 71 | `CanvasRun` | renderer → platform | `i32` id, `i32` w, `i32` h, `value` (canvas batch) |
+| 72 | `CanvasRelease` | renderer → platform | `i32` id |
+| 96 | `FontRequest` | renderer → platform, waits | `flag` canvas, `str` families, `f32` size, `i32` weight, `flag` italic; at canvas 0 `str` features |
+| 97 | `WidthRequest` | renderer → platform, waits | `i32` font, `str` text |
+| 98 | `ImageRequest` | renderer → platform, waits | `i32` id, `str` url (cap `url`) |
+| 99 | `PixelsRequest` | renderer → platform, waits | `i32` id, `i32` x, `i32` y, `i32` w, `i32` h; w and h from 0 to `Canvas::MAX_SIDE` (8192), w × h at most `Canvas::MAX_PIXELS` (4096 × 4096) |
+
+- `encode(message, caps, out)` appends the message to `out`. It returns false, `out` cut back to its
+  size on entry, for what the decoder would refuse: a `str` or a count past its cap or past
+  `UINT32_MAX`, a value `wire::encode` refuses, a `Paint` or a pixel size out of range, or a message
+  past `Caps::message` (what `out` held before does not count). A field its flag leaves out must hold
+  its default: an unpainted Frame with a list or damage, a canvas's FontRequest with features and a
+  failed PixelsAnswer with pixels are refused rather than sent without them.
+  `encode_canvas_run(id, w, h, ops, caps, out)` writes a CanvasRun without copying the batch.
+- `decode(message, caps, out)` takes the one message all of `message` holds. It returns false and
+  leaves `out` untouched for anything else: a message past `Caps::message`, another kind or version, a
+  field cut short, a count or a length past its cap or past the bytes left, a `value` longer than the
+  bytes left or that `wire::decode` does not take whole under `Caps::values`, a flag or a `Paint` out
+  of range, a field present or missing against its flag, and bytes left over. A PixelsAnswer decodes
+  against the request it answers, `decode(message, caps, asked, out)`, which must itself be in range.
+  `out` is replaced once the last byte has passed, and what a decoder allocates follows its bytes, as
+  in the binary forms, `std::bad_alloc` included.
+
+**Caps.** `remote::Caps` holds the caller's bounds:
+
+| Cap | Bounds | Default |
+|---|---|---|
+| `values` | the lists, damage and batches inside messages: a `wire::Caps` | its defaults |
+| `message` | the bytes of one message, either way | 32 MiB |
+| `text` | the bytes of one `str` but a URL | 4 MiB |
+| `url` | the bytes of an image URL | 8 MiB |
+| `messages` | the texts of one Messages report | 1024 |
+
+At two caps the renderer gets what an in-process backend that refuses would give it; past any other,
+the end that would send stops:
+
+- an image URL longer than `url` is a failed load, with no request;
+- a PixelsRequest whose w × h × 4 bytes pass `values.pixels`, or whose answer, 7 bytes and the
+  pixels, would pass `message`, is answered not ok without a `canvas_read`, and the renderer fills
+  the `imageData` with zeroes as for any failed read. With the default caps that is a read of more
+  than 8388606 pixels.
+
+**Frames: the host drives the clock.** The renderer end never ticks or paints by itself.
+`PlatformEnd::request_frame(tick, paint)` sends a FrameRequest and returns its seq, counted from 1.
+The renderer end calls `tick()` when `tick` is set, then paints when `paint` is `Force`, or `IfDirty`
+and the renderer is dirty; `Skip` never paints. It answers every FrameRequest with one Frame of the
+same seq: painted, with the list and its damage (nullopt: paint everything), or not, when nothing
+changed or the host said `Skip`. A host that asks for no frame gets none: ops, input and the engine's
+frame requests leave the work unpainted until it asks, and a widget the host does not ask costs
+nothing. State's `dirty`, `wants_tick` and `next_tick_in` tell the host when to ask, as in "A clock"
+above.
+
+The engine's own frame request (`requestFrame` in widget-sandbox's protocol, which a host answers with
+a `frame` message) goes to `RendererEnd::want_frame()`. It sets State's `frame_asked`, reported at
+once, so that the platform learns to ask. The next FrameRequest that ticks takes it, and that call's
+`Output::frame` tells the helper that the engine's frame message is due after the call's messages. A
+FrameRequest that does not tick leaves it set.
+
+**What is reported unasked.** Each call into the renderer end ends with its reports, in this order,
+each only when there is one:
+
+1. `Messages`: the call's renderer messages whose `type` is `size`, `gesture`, `limit`, `violation`
+   or `bubble`, as their JSON; `is_platform_message(type)` names the five for both ends. The others,
+   `event`, `result` and `resize` among them, are the engine's: `receive` and `deliver` hand the
+   helper every message of the call, those five included.
+2. `Pointer`, after a Touch or a Hover: `cursor()` there, and the claim (`x`, `y`, `hold`) of the
+   call's `gesture` message, which a primary press reports.
+3. `Selection`, when the selected text differs from the text reported last (at first empty): empty
+   means no selection, as `has_selection()` says. The text is laid out only when
+   `may_have_selection()`.
+4. The `Frame` that answers a FrameRequest, or the `ClaimAnswer` that answers a ClaimQuery with
+   `claim_at(x, y)`: whether a hold there would be claimed, without pressing.
+5. `State`, when it differs from the one reported last (doubles by their bits) and no Frame carried
+   it. The constructor sends the first.
+
+State is `width()` and `viewport_height()`, the widget's CSS size (the height the document converged
+to, kept within the minimum and the maximum height), `dirty()`, `wants_tick()`, `next_tick_in()`
+(seconds, infinity when nothing is scheduled) and `frame_asked`. The document's own height is the
+`size` message's `height`. Time passing alone reports nothing: State is read at the end of a call.
+
+**The platform end.** `PlatformEnd(backend, host, channel, caps)` sends its host's input with
+`request_frame`, `set_width`, `set_max_height`, `set_theme`, `touch`, `hover`, `clear_selection`
+and `ask_claim`, which returns its seq too, and takes the renderer end's messages in `receive` (kinds
+64-72) and its requests in `answer` (96-99):
+
+- FontRelease, CanvasRun and CanvasRelease call `delete_font`, `canvas_run` and `canvas_release` at
+  once, in the order they arrive, so they keep their place among the frames. The host paints a frame,
+  or keeps what its list names, before it hands the platform end later messages: a release after the
+  frame may free a font or a canvas the list draws with.
+- A FontRequest calls `create_canvas_font` when it is a canvas's and `create_font` otherwise, a
+  WidthRequest `text_width`, an ImageRequest `load_image` with `w` and `h` at 0, a PixelsRequest
+  `canvas_read` (past the caps, as above), each out-parameter default-constructed as at the renderer's
+  call sites. Pixels other than exactly w × h × 4 bytes are answered not ok. The answer replaces
+  `reply` only once it is made.
+- Frame, State, Messages, Pointer, Selection and ClaimAnswer go to the host's `frame`, `state`,
+  `messages`, `pointer`, `selection` and `claim`. `state()` is the last State, a Frame's included,
+  updated before the callback. Each Messages text is parsed with `Json::parse(text, 4)` and must be an
+  object whose `type` is one of the five.
+
+It expects one answer for each `touch`, `hover`, `request_frame` and `ask_claim`, in the order it sent
+them: a Pointer, a Frame with the request's seq, a ClaimAnswer with the query's. State, Messages,
+Selection and the one-way Backend calls may come at any time. It decodes and checks a whole message,
+every JSON text of a report included, before the Backend or the host sees any of it, and refuses:
+
+- a Frame, Pointer or ClaimAnswer that is not the next answer it expects: unsolicited, repeated, out
+  of order or for another seq;
+- a request in `receive`, a one-way message in `answer`, and a kind of its own direction in either;
+- a message of no kind it knows or of another version, one that does not decode, and a report that
+  is not one of the five;
+- an input or an answer that does not encode within its caps.
+
+A refusal is final: `refusing()` turns true, `Host::refused` gets the reason once, and from then on
+`receive` and `answer` return false, `request_frame` and `ask_claim` 0, and nothing touches the
+Backend, the host or the channel. The host stops the widget; the request being answered gets no
+answer.
+
+**The renderer end.** `RendererEnd(width, dpr, dark, channel, caps, clock)` makes its `Renderer`, with
+the clock when one is given, on a Backend that sends:
+
+- `create_font` and `create_canvas_font` as a FontRequest, the second marked as a canvas's,
+  `text_width` as a WidthRequest, `load_image` as an ImageRequest (`w` and `h` from the answer whether
+  it is ok or not), `canvas_read` as a PixelsRequest, each waiting for its answer. Each `text_width`
+  is a round trip; a face asks once per word, as in process.
+- `delete_font`, `canvas_run` and `canvas_release` one way, in the order the renderer makes them.
+
+Its embedder, the process that runs the engine, calls:
+
+- `receive(message)` with each engine message for the renderer, and gets the renderer's messages back;
+- `want_frame()` for the engine's frame request;
+- `deliver(message, out)` with each platform message; `out` is made afresh by each call: the call's
+  renderer messages and `frame`;
+- `renderer()` for what the channel does not carry (the editor, compositing, `trim`, `wheel`, `key`,
+  `image_ready`, `stats`), each call followed by `report(the messages it returned)` so that its reports
+  go out. Only while the end is not stopped, and never `tick()` or `paint()`, which only a
+  FrameRequest runs. Compositor layers stay on this side: no message carries them.
+
+The first failure stops it for good, with `stopped()` and `stop_reason()` for its embedder: a request
+that got no answer, an answer that does not decode, a message or a request past the caps, and a
+platform message that does not decode or is not platform input. The call in progress unwinds on
+neutral Backend answers (font 0 with the metrics untouched, width 0, false) without the channel.
+From then on nothing is sent: `deliver` returns false with `out` empty, no partial messages and no
+engine frame, `receive` returns nothing, and the destructor sends nothing.
+
+`twidget_remote_tests` (ctest `twidget_remote`) links `twidget::remote` alone. Samples of all 25
+kinds come back member by member, and some encode to bytes written out by hand; the decoders refuse
+every cut, every other kind and version, seeded changes they cannot take, counts and lengths past
+their bounds, and optional fields and pixel sizes against their flags and requests, leaving the
+output as it was and asking the allocator for no more than a bound linear in their bytes. A
+platform-end session against a recording Backend makes every input, request, one-way call and report,
+and each refusal above. `twidget_ends_tests` (ctest `twidget_ends`) runs a renderer called directly
+and the two ends over an in-memory channel (`tests/loopback.h`) with the same Backend behaviour and
+equal clocks, and compares, call by call, their messages, decoded lists, damage and batches, the
+Backend calls in order from construction to destruction, cursors, claims, hold answers, selections
+and states; it stops the renderer end at each kind of failure.
+
 ## Building
 
 ```sh
@@ -336,8 +610,9 @@ and its QuickJS submodule with `git submodule update --init` (widget-sandbox's `
 build reads the profile's UA layer from its `packages/core/profile.json` into a generated header.
 
 The build produces `twidget::litehtml` (the fork and its gumbo), `twidget::core`, `twidget::wire`
-(the binary forms, on the standard library alone) and the platform's backend; Android and Emscripten
-builds go through their toolchain files. With `TWIDGET_BUILD_TESTS`
+(the binary forms, on the standard library alone), `twidget::remote` (the two ends' messages and the
+platform end, on `twidget::wire`), `twidget::renderer_end` (the renderer end, on `twidget::core`) and
+the platform's backend; Android and Emscripten builds go through their toolchain files. With `TWIDGET_BUILD_TESTS`
 (on when twidget is the top-level project) it also builds the checks in `tests/`,
 and on macOS the CoreGraphics tests and `twidget-core-run`, which turns a message log into a PNG.
 TwidgetCore is C++20. Apple's SwiftPM build does not use TwidgetCore.

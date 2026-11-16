@@ -387,7 +387,7 @@ Json rect_json(const Rect& r) {
     return o;
 }
 
-double now_ms() {
+double steady_ms() {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
@@ -2559,8 +2559,8 @@ public:
 
 // ───────────────────────── Renderer ─────────────────────────
 
-Renderer::Renderer(double width, double dpr, bool dark, Backend& backend)
-    : container_(std::make_unique<Container>(*this, backend)), backend_(backend), width_(bounded(width, 0, WIDTH_CEILING)), dpr_(bounded(dpr, MIN_DPR, MAX_DPR)), dark_(dark), vp_height_(int(MIN_HEIGHT)) {
+Renderer::Renderer(double width, double dpr, bool dark, Backend& backend, Clock* clock)
+    : container_(std::make_unique<Container>(*this, backend)), backend_(backend), clock_(clock), width_(bounded(width, 0, WIDTH_CEILING)), dpr_(bounded(dpr, MIN_DPR, MAX_DPR)), dark_(dark), vp_height_(int(MIN_HEIGHT)) {
     auto make = [](const char* tag) {
         auto n = std::make_unique<Node>();
         n->tag = tag;
@@ -2620,7 +2620,9 @@ Renderer::~Renderer() {
     for (const auto& [css, font] : canvas_fonts_) backend_.delete_font(font.first);
 }
 
-double Renderer::now_s() { return now_ms() / 1000; }
+double Renderer::now_ms() const { return clock_ ? clock_->now_ms() : steady_ms(); }
+double Renderer::now_s() const { return now_ms() / 1000; }
+double Renderer::clock() { return steady_ms() / 1000; }
 
 uint32_t Renderer::px_width() const { return uint32_t(std::ceil(width_ * dpr_)); }
 uint64_t Renderer::layouts() const { return container_->layouts(); }
@@ -4342,7 +4344,7 @@ int Renderer::canvas_font(const std::string& font, FontMetrics& metrics) {
         return it->second.first;
     }
     css::Font f = css::parse_font(font);
-    int handle = backend_.create_font(f.family, f.size, f.weight, f.italic, {}, metrics);
+    int handle = backend_.create_canvas_font(f.family, f.size, f.weight, f.italic, metrics);
     if (handle && metrics.em_ascent == 0 && metrics.em_descent == 0) set_em_box(metrics, metrics.ascent, metrics.descent, f.size);
     if (handle) canvas_fonts_.emplace(font, std::make_pair(handle, metrics));
     return handle;
@@ -5052,6 +5054,13 @@ twidget::WidgetGestureClaim Renderer::gesture_claim(int64_t target) const {
         if (auto el = n->id ? container_->element(n->id) : nullptr) values.push_back(computed_touch_action(el));
     }
     return twidget::gesture::claimOf(values, prevented);
+}
+
+twidget::WidgetGestureClaim Renderer::claim_at(double x, double y) {
+    NameMeter name_meter(*this);
+    settle(pending_events_);
+    if (frozen_) return {};
+    return gesture_claim(widget_id_at(x, y, nullptr));
 }
 
 std::optional<double> Renderer::hold_deadline() const {
