@@ -52,6 +52,7 @@ public:
 
     bool images_load = true;
     Read reads = Read::Pixels;
+    Backend* answers = nullptr;
     std::vector<Call> calls;
 
 private:
@@ -84,12 +85,19 @@ int LogBackend::made(Call::Op op, const std::string& families, float size, int w
     c.weight = weight;
     c.italic = italic;
     c.metrics_in = out;
-    out = metrics_for(size, weight, italic);
+    if (!answers) {
+        out = metrics_for(size, weight, italic);
+        c.font = ++next_font_;
+    } else if (op == Call::CanvasFont) {
+        c.font = answers->create_canvas_font(families, size, weight, italic, out);
+    } else {
+        c.font = answers->create_font(families, size, weight, italic, features, out);
+    }
     c.metrics = out;
-    c.font = ++next_font_;
-    sizes_[c.font] = size;
+    if (c.font != 0) sizes_[c.font] = size;
+    const int font = c.font;
     calls.push_back(std::move(c));
-    return next_font_;
+    return font;
 }
 
 int LogBackend::create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features, FontMetrics& out) {
@@ -106,6 +114,7 @@ void LogBackend::delete_font(int font) {
     c.font = font;
     sizes_.erase(font);
     calls.push_back(std::move(c));
+    if (answers) answers->delete_font(font);
 }
 
 float LogBackend::text_width(int font, const std::string& text) {
@@ -113,8 +122,12 @@ float LogBackend::text_width(int font, const std::string& text) {
     c.op = Call::TextWidth;
     c.font = font;
     c.text = text;
-    const auto it = sizes_.find(font);
-    const float width = it == sizes_.end() ? 0 : it->second * 0.5f * float(text.size());
+    float width = 0;
+    if (answers) {
+        width = answers->text_width(font, text);
+    } else if (const auto it = sizes_.find(font); it != sizes_.end()) {
+        width = it->second * 0.5f * float(text.size());
+    }
     c.width = width;
     calls.push_back(std::move(c));
     return width;
@@ -127,13 +140,18 @@ bool LogBackend::load_image(int id, const std::string& url, float& w, float& h) 
     c.url = url;
     c.w_in = w;
     c.h_in = h;
-    c.ok = images_load;
-    w = images_load ? float(8 + url.size() % 32) : 2;
-    h = images_load ? float(4 + url.size() % 16) : 3;
+    if (answers) {
+        c.ok = answers->load_image(id, url, w, h);
+    } else {
+        c.ok = images_load;
+        w = images_load ? float(8 + url.size() % 32) : 2;
+        h = images_load ? float(4 + url.size() % 16) : 3;
+    }
     c.image_w = w;
     c.image_h = h;
+    const bool ok = c.ok;
     calls.push_back(std::move(c));
-    return images_load;
+    return ok;
 }
 
 void LogBackend::canvas_run(int id, int w, int h, const std::vector<CanvasOp>& ops) {
@@ -144,6 +162,7 @@ void LogBackend::canvas_run(int id, int w, int h, const std::vector<CanvasOp>& o
     c.h = h;
     c.ops = ops;
     calls.push_back(std::move(c));
+    if (answers) answers->canvas_run(id, w, h, ops);
 }
 
 bool LogBackend::canvas_read(int id, int x, int y, int w, int h, std::vector<uint8_t>& rgba) {
@@ -155,16 +174,20 @@ bool LogBackend::canvas_read(int id, int x, int y, int w, int h, std::vector<uin
     c.w = w;
     c.h = h;
     c.rgba_in = rgba.size();
-    const size_t bytes = size_t(w > 0 ? w : 0) * size_t(h > 0 ? h : 0) * 4;
-    const bool ok = reads != Read::Unsupported;
-    c.ok = ok;
-    if (reads == Read::Pixels) {
-        rgba.resize(bytes);
-        for (size_t i = 0; i < bytes; i++) rgba[i] = uint8_t(size_t(id) * 31 + size_t(x) * 7 + size_t(y) * 13 + i);
-    } else if (reads == Read::WrongSize) {
-        rgba.assign(bytes + 4, 0x7f);
+    if (answers) {
+        c.ok = answers->canvas_read(id, x, y, w, h, rgba);
+    } else {
+        const size_t bytes = size_t(w > 0 ? w : 0) * size_t(h > 0 ? h : 0) * 4;
+        c.ok = reads != Read::Unsupported;
+        if (reads == Read::Pixels) {
+            rgba.resize(bytes);
+            for (size_t i = 0; i < bytes; i++) rgba[i] = uint8_t(size_t(id) * 31 + size_t(x) * 7 + size_t(y) * 13 + i);
+        } else if (reads == Read::WrongSize) {
+            rgba.assign(bytes + 4, 0x7f);
+        }
     }
     c.rgba = rgba;
+    const bool ok = c.ok;
     calls.push_back(std::move(c));
     return ok;
 }
@@ -174,6 +197,7 @@ void LogBackend::canvas_release(int id) {
     c.op = Call::CanvasRelease;
     c.id = id;
     calls.push_back(std::move(c));
+    if (answers) answers->canvas_release(id);
 }
 
 void LogBackend::frame(bool painted) {

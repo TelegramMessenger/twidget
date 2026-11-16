@@ -594,6 +594,64 @@ equal clocks, and compares, call by call, their messages, decoded lists, damage 
 Backend calls in order from construction to destruction, cursors, claims, hold answers, selections
 and states; it stops the renderer end at each kind of failure.
 
+The parity checks compare the two ends with renderers used directly over real workloads, recorded in
+one process and replayed in another. `RecordingRenderer` (`tests/recording_renderer.h`) is a
+`Renderer` that hides each of its non-const public calls: every call, construction and destruction
+included, is a step of the process's one recording (`tests/recording.h`), written as it ends, so the
+file holds every live renderer's steps in the order the process made them. A step holds the call's
+arguments (a received message in a lossless binary JSON form), the size of litehtml's process-wide
+name table at its start, each Backend call the renderer made with what it had put in the outputs and
+what the source's own Backend answered, each clock read (steady time in whole microseconds, through
+the renderer's `Clock`), and what the renderer gave and showed: its messages, the cursor after a
+pointer call, the claim of a `claim_at`, the list and damage of a paint, then the reads
+`RendererEnd::finish()` makes, in its order, for the selection and the state. Those observations are
+the expected values. The file is binary, with lists, damage and batches in their binary forms, and
+ends with a record of its counts and of the recorder's first error; `twidget_replay` refuses a file
+that is missing, cut short, without that record, with bytes after it, with counts that disagree or
+with an error. In a fresh process it runs only the two ends: a `Loopback` (`tests/loopback.h`) for
+each recorded renderer, opened at its construction and closed at its destruction, so that as many
+are alive as in the source and the name table grows as it did. Each step goes through the platform
+end or, for a call the channel does not carry, to the renderer end's `renderer()` and then
+`report()`. The platform end's Backend answers from the step's recorded calls in order and the
+renderer's clock gives the step's recorded reads: a call of another kind, a call or a read past them,
+or one left unused fails the step. What the host heard is compared with `twidget_ends_tests`' own
+code (`tests/reports.h`): the messages, the reports in their order, lists, damage and batches decoded
+member by member with their float bits and sharing, the Backend calls in order with their inputs and
+answers, cursors, claims, hold answers, selections and states, and the name table's size; the first
+difference stops the run, naming the step and the member. `Command::key` is compared through a
+correspondence: litehtml mixes heap addresses into an SVG paint-cache key, so the keys differ from
+process to process, and within each session zero must meet zero and each recorded key always the
+same replayed key and back; while that holds, the replayed keys are mapped to the recorded ones and
+compared as every other member. Each source prints how many sessions, steps, lists, Backend calls of
+each kind (canvas batches and pixel reads among them), pointer reports, claims, hold queries,
+selection changes, ticks, engine frames, resizes, theme changes and keyed commands it compared, in
+all and per labelled session, and `--needs` requires those it can reach to be above zero.
+`tests/parity.cmake` then replays it perturbed, and each perturbation must pass every earlier step
+and fail at the changed one on that member alone: the first painted list's first `rect.x` one float
+up, a byte added to the text of the first recorded `text_width`, and, for a source with keyed
+commands, one replayed key changed to split a repeated key or to merge two. The sources, each a
+ctest:
+
+- `twidget_parity_core`: `tests/core_tests.cpp`, unchanged, compiled with `Renderer` defined as
+  `RecordingRenderer` (`twidget_core_record`, `tests/core_record.cpp`). It is recorded at test time
+  into the build tree, about 475 MB, and removed after a passing check. Its own checks are printed,
+  not gated, as `twidget_core` gates them; a recording that fails does gate. Its canvas-limit
+  sessions send batches past the 32 MiB message cap, so its replay raises `Caps::message` to 256 MiB.
+- `twidget_parity_bench`: `tests/bench.cpp`, unchanged, in its seven modes (mixed, transform, swarm,
+  css, drag and drag-doc at 60 elements, canvas at 50, 10 frames each), one labelled session each
+  (`twidget_bench_record`, `tests/bench_record.cpp`), recorded at test time the same way.
+- `twidget_parity_corpus`: `tests/recordings/corpus.twrec`, committed, which `tools/record` (see
+  "Building") recorded from four widget-sandbox corpus widgets run for real:
+  `compat/canvas-line-chart.html` (canvas batches, claims), `gestures/1-pairs/01-joystick-xy.html`
+  (a claim that holds, the engine's frame requests, animation), `compat/dark-mode.html` (the theme)
+  and `htmlbubbles-ported/03-stress-test/13-fuzz.html` (the corpus's only image). Its replay needs
+  no engine. Its origin names the widgets, twidget's and widget-sandbox's versions as `git describe`
+  gave them, the recorder, its backend and toolchain, the host's options and the script. It is
+  checked on macOS only: `~Renderer` releases canvases and canvas fonts in the order of its hash
+  tables, libc++'s in the recording. `parity.cmake` fails it when it is missing or larger than 358600
+  bytes (`-DMAX_BYTES`), the first recording's 286880 plus a quarter; re-recordings vary in size with
+  timing.
+
 ## Building
 
 ```sh
@@ -669,6 +727,34 @@ cmake -S tools/stress -B build-stress -G Ninja -DCMAKE_BUILD_TYPE=Release && cma
 build-stress/twidget-stress <out> --pass measure|production [--filter <load>]
 node ../widget-sandbox/packages/stress/tools/report.mjs --out <out>/report <out>/*.run.json
 ```
+
+`tools/record` makes the corpus recording of `twidget_parity_corpus`, macOS only. Each widget runs
+for real: widget-sandbox's desktop `WidgetHost` with QuickJS, the validator, its `WidgetJS` bundles
+and `BasicIntl`, strict with `webAnimations`, at width 320, DPR 2, locale `en` and light, over a
+`RecordingRenderer` on `CGBackend`. The adapter between them is shaped as `tools/conformance`'s: one
+lock around every core call, messages to the host after it is released, and a 16 ms frame loop that
+ticks when the engine asked, the renderer wants a tick or its wake is due, and paints when dirty.
+The script is fixed, and the origin carries its numbers: load, 300 ms of frames, `claim_at` over a
+grid, a press at the first point that claims with six moves and a release, six hovers and a leave,
+width 240 then 320, theme dark then light, destruction. A widget that does not load, render or paint,
+or that throws or dies other than by the recorder's own shutdown, ends the recording with that error,
+which the replay refuses; that is decided once the host is destroyed, which delivers the engine's
+last reports. The project builds widget-sandbox's `packages/desktop`, found as twidget's own build
+finds it, with its QuickJS submodule.
+
+```sh
+cmake -S tools/record -B build-record -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build-record
+build-record/twidget-record --out tests/recordings/corpus.twrec compat/canvas-line-chart.html \
+    gestures/1-pairs/01-joystick-xy.html compat/dark-mode.html htmlbubbles-ported/03-stress-test/13-fuzz.html
+```
+
+The committed recording holds what the renderer gave when it was made, so it is made again whenever
+that changes: a change to the recording's format, which takes a new version in `tests/recording.h`
+(the replay refuses any other), and a change to the binary forms or to the renderer that changes what
+it gives these widgets, the Backend calls it makes for them or the clock reads it takes. The new
+recording keeps the four widgets and passes the Debug and the sanitizer replay, and `TW_CORPUS_BYTES`
+in `CMakeLists.txt`, the cap `parity.cmake` checks, becomes its measured size plus a quarter, which
+stays within 512 KiB.
 
 ## Portability check, 2026-10-14
 

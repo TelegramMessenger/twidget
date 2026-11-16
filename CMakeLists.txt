@@ -260,6 +260,47 @@ if(TWIDGET_BUILD_TESTS)
         target_compile_options(twidget_ends_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_ends COMMAND twidget_ends_tests)
+    # core_tests.cpp and bench.cpp unchanged, each renderer they make recorded call by call for twidget_replay.
+    add_executable(twidget_core_record "${CMAKE_CURRENT_SOURCE_DIR}/tests/core_record.cpp")
+    target_include_directories(twidget_core_record PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(twidget_core_record PRIVATE twidget::core twidget::remote)
+    if(TWIDGET_LITEHTML_NO_CORE_FOUNDATION)
+        target_compile_definitions(twidget_core_record PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
+    endif()
+    add_executable(twidget_bench_record "${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_record.cpp")
+    target_include_directories(twidget_bench_record PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(twidget_bench_record PRIVATE twidget::core twidget::remote)
+    if(MSVC)
+        target_compile_options(twidget_core_record PRIVATE /utf-8)
+        target_compile_options(twidget_bench_record PRIVATE /utf-8)
+    endif()
+    # Those recordings through the two ends alone, every step compared with what the recorded renderer gave, then a list, a Backend call and a paint key perturbed and caught.
+    add_executable(twidget_replay "${CMAKE_CURRENT_SOURCE_DIR}/tests/replay.cpp")
+    target_include_directories(twidget_replay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(twidget_replay PRIVATE twidget::renderer_end)
+    if(MSVC)
+        target_compile_options(twidget_replay PRIVATE /utf-8)
+    endif()
+    # Recorded at test time into the build tree and removed after a passing check; core_tests' canvas-limit batches pass remote's 32 MiB message cap.
+    add_test(NAME twidget_parity_core
+        COMMAND "${CMAKE_COMMAND}" "-DRECORDER=$<TARGET_FILE:twidget_core_record>" "-DREPLAY=$<TARGET_FILE:twidget_replay>"
+            "-DRECORDING=${CMAKE_CURRENT_BINARY_DIR}/recordings/core.twrec" -DSOURCE=core
+            "-DNEEDS=sessions,steps,lists,batches,reads,calls,pointers,claims,selections,ticks,resizes,themes,images,keys"
+            -DMESSAGE_BYTES=268435456 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
+    add_test(NAME twidget_parity_bench
+        COMMAND "${CMAKE_COMMAND}" "-DRECORDER=$<TARGET_FILE:twidget_bench_record>" "-DREPLAY=$<TARGET_FILE:twidget_replay>"
+            "-DRECORDING=${CMAKE_CURRENT_BINARY_DIR}/recordings/bench.twrec" -DSOURCE=bench
+            "-DNEEDS=sessions,steps,lists,batches,calls,pointers,ticks" -DSESSIONS=7 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
+    # Corpus widgets recorded once by tools/record on macOS and committed: the recording carries libc++'s hash order, so it replays there only.
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(TW_CORPUS_RECORDING "${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/corpus.twrec")
+        # The first recording's 286880 bytes plus a quarter; re-recordings vary in size with timing, and a larger one fails the check.
+        set(TW_CORPUS_BYTES 358600)
+        add_test(NAME twidget_parity_corpus
+            COMMAND "${CMAKE_COMMAND}" "-DREPLAY=$<TARGET_FILE:twidget_replay>" "-DRECORDING=${TW_CORPUS_RECORDING}" -DSOURCE=corpus
+                "-DNEEDS=sessions,steps,lists,batches,calls,pointers,claims,holds,ticks,engine,resizes,themes,images" -DSESSIONS=4
+                -DMAX_BYTES=${TW_CORPUS_BYTES} -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
+    endif()
     if(TWIDGET_QT)
         add_executable(twidget_qt_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/qt_tests.cpp")
         target_link_libraries(twidget_qt_tests PRIVATE twidget::qt)
