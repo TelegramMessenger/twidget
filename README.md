@@ -35,7 +35,7 @@ cmake --build build
 ctest --test-dir build
 ```
 
-This builds `twidget::litehtml`, `twidget::core` and the platform's backend. Android and Emscripten builds go through their toolchain files, and `-DTWIDGET_QT=ON` adds the Qt backend.
+This builds `twidget::litehtml`, `twidget::core`, `twidget::wire` (the binary forms of the paint values, on the standard library alone) and the platform's backend. Android and Emscripten builds go through their toolchain files, and `-DTWIDGET_QT=ON` adds the Qt backend.
 
 ## Documentation
 
