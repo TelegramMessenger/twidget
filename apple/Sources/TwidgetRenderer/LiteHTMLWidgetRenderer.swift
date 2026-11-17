@@ -18,6 +18,7 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
         }
     }
     public var onDiag: ((String, String) -> Void)?
+    public var operationWatchdog: (() -> (() -> Void))?
     public var schedule: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     public var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }
     public var isOnExecutor: () -> Bool = { Thread.isMainThread }
@@ -676,6 +677,8 @@ public final class LiteHTMLWidgetRenderer: TaskRenderer {
     private var meterDepth = 0
 
     private func metered<T>(_ body: () -> T) -> T {
+        let finish = meterDepth == 0 ? operationWatchdog?() : nil
+        defer { finish?() }
         meterDepth += 1
         let cpuStart = LiteHTMLWidgetRenderer.threadCPUSeconds()
         defer {
@@ -3953,6 +3956,8 @@ class WidgetDocumentView: NSView {
             guard let view = view, let document = view.document else {
                 return
             }
+            let finish = view.owner?.operationWatchdog?()
+            defer { finish?() }
             let start = CACurrentMediaTime()
             let clip = ctx.boundingBoxOfClipPath
             let origin = layer.frame.origin
@@ -4053,7 +4058,10 @@ class WidgetDocumentView: NSView {
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
         let schedule = owner?.scheduleUrgent
+        let watchdog = owner?.operationWatchdog
         let draw = { [weak self] in
+            let finishOperation = watchdog?()
+            defer { finishOperation?() }
             let start = CACurrentMediaTime()
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef)] = []
             for job in jobs {
@@ -4638,7 +4646,10 @@ class WidgetDocumentView: NSView {
         let space = WidgetDocumentView.surfaceSpace
         let margin = WidgetDocumentView.cullMargin
         let schedule = owner?.scheduleUrgent
+        let watchdog = owner?.operationWatchdog
         let draw = { [weak self] in
+            let finishOperation = watchdog?()
+            defer { finishOperation?() }
             var made: [(index: Int, rect: CGRect, surface: IOSurfaceRef, partial: Bool, dirty: CGRect, usedSpare: Bool)] = []
             var aborted = false
             var stats = WidgetTileStats.Snapshot()
@@ -5801,6 +5812,8 @@ final class WidgetBackingStoreDocumentView: WidgetDocumentView {
         guard let document = document, let ctx = NSGraphicsContext.current?.cgContext else {
             return
         }
+        let finish = owner?.operationWatchdog?()
+        defer { finish?() }
         let start = CACurrentMediaTime()
         defer {
             recordDraw((CACurrentMediaTime() - start) * 1000)
