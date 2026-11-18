@@ -1357,7 +1357,9 @@ namespace litehtml
             {
                 hole.owner->set_attr("style", hole.value.c_str());
                 restyle.push_back(hole.owner);
-                if(patch && !outermost_svg(hole.owner))
+                // patch_inline_properties() is an html_tag method; a non-html_tag owner
+                // (e.g. el_style for a <style> element) must not be cast to html_tag.
+                if(patch && !outermost_svg(hole.owner) && dynamic_cast<html_tag*>(hole.owner.get()))
                     patched[hole.owner.get()] = patch;
                 continue;
             }
