@@ -3837,16 +3837,19 @@ void Renderer::update_composition(double now) {
             }
             // The widest margin around it that nothing paints over.
             Rect at = bounds_under(p.box, m);
+            Rect room = at;
             for (float margin : {std::max(48.0f, std::max(p.box.w, p.box.h) / 2), 16.0f, 2.0f}) {
-                p.reach = Rect{at.x - margin, at.y - margin, at.w + 2 * margin, at.h + 2 * margin};
-                if (p.has_clip) p.reach = intersection(p.reach, p.clip);
+                room = Rect{at.x - margin, at.y - margin, at.w + 2 * margin, at.h + 2 * margin};
+                p.reach = p.has_clip ? intersection(room, p.clip) : room;
                 if (!container_->covered(el, p.reach, trace, others)) break;
             }
+            // A clip that all the room is inside, away from its corners, cuts nothing: the layer goes without.
+            // The room as it is before the clip cuts it: what is left of it is inside the clip always.
             if (p.has_clip) {
                 const Radii& q = p.clip_radii;
                 float corner = std::max({q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly});
                 Rect inner{p.clip.x + corner, p.clip.y + corner, p.clip.w - 2 * corner, p.clip.h - 2 * corner};
-                if (contains(inner, p.reach)) p.has_clip = false;
+                if (contains(inner, room)) p.has_clip = false;
             }
             elements[id] = el;
             next.emplace(id, std::move(p));
