@@ -978,6 +978,27 @@ int main() {
         check(s.last_html().find("translateX(201px)") != std::string::npos, "the document has it");
     }
 
+    // ── a scripted layer keeps the overflow clip it shows through ──
+    {
+        StubBackend rb;
+        Renderer r(400, 1, false, rb);
+        r.set_compositing(true);
+        r.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","margin:100px;width:20px;height:20px;overflow:hidden"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","width:20px;height:200px;background-color:#0a0"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        r.paint();
+        for (int y = 1; y <= 3; y++) {
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":11,"name":"transform","value":"translateY(-)" + std::to_string(20 * y) + R"J(px)"}]})J"));
+            r.paint();
+        }
+        const auto& layers = r.composition().layers;
+        check(layers.size() == 1 && layers[0].id == 11, "a column a script rolls in a window is a layer");
+        if (layers.size() == 1)
+            check(layers[0].has_clip && layers[0].clip.x == 100 && layers[0].clip.y == 100 && layers[0].clip.w == 20 && layers[0].clip.h == 20,
+                  "under the window's clip: the column is taller than the window");
+    }
+
     // ── a crowd moved by script stays in the document ──
     {
         StubBackend cb;
