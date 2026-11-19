@@ -1,0 +1,8 @@
+[package]
+name = "lh-html5"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+html5ever = "=0.35.0"

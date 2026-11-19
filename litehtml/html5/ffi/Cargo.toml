@@ -1,0 +1,11 @@
+[package]
+name = "lh-html5-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+lh-html5 = { path = "../core" }

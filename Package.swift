@@ -9,6 +9,7 @@ let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || w
     ? .package(name: "WidgetSandbox", url: widgetSandboxSource, .branch(widgetSandboxBranch))
     : .package(name: "WidgetSandbox", path: widgetSandboxSource)
 let widgetProtocol: Target.Dependency = .product(name: "WidgetSandboxProtocol", package: "WidgetSandbox")
+let usesHTML5Parser = ProcessInfo.processInfo.environment["TWIDGET_HTML_PARSER"] == "html5ever"
 let optimizesDebug = !#filePath.contains("/checkouts/") && ProcessInfo.processInfo.environment["TWIDGET_DEBUG_UNOPTIMIZED"] == nil
 
 
@@ -42,9 +43,10 @@ let package = Package(
         // paths: a public headers folder would make SwiftPM wrap them in a Clang module, so it names none.
         .target(
             name: "TwidgetLitehtml",
+            dependencies: usesHTML5Parser ? ["LiteHTMLParser"] : [],
             path: "litehtml",
-            exclude: ["LICENSE", "src/gumbo/LICENSE"],
-            sources: ["src"],
+            exclude: usesHTML5Parser ? ["LICENSE", "src/gumbo"] : ["LICENSE", "src/gumbo/LICENSE"],
+            sources: usesHTML5Parser ? ["src", "html5/compat"] : ["src"],
             publicHeadersPath: "no-public-headers",
             cSettings: [
                 .headerSearchPath("include"),
@@ -59,6 +61,9 @@ let package = Package(
                 .headerSearchPath("gumbo-include"),
             ],
             linkerSettings: [.linkedFramework("CoreFoundation")]),
+        // html5ever (Rust, litehtml/html5) in place of gumbo when TWIDGET_HTML_PARSER=html5ever; its xcframework
+        // is built by litehtml/html5/build-xcframework.sh, not committed.
+    ] + (usesHTML5Parser ? [.binaryTarget(name: "LiteHTMLParser", path: "litehtml/html5/LiteHTMLParser.xcframework")] : []) + [
         .target(
             name: "LiteHTML",
             dependencies: ["TwidgetAssets", "TwidgetLitehtml"],
