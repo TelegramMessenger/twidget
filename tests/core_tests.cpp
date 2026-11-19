@@ -1616,6 +1616,102 @@ int main() {
         check(drawn != 0 && fb.measured_in.size() == 1 && fb.measured_in[0] == drawn, "measureText measures in the font fillText drew with");
     }
 
+    // ── a canvas font hook gets the spelling as written each time, and the renderer caches and releases none of its fonts ──
+#ifndef Renderer  // core_record.cpp renames Renderer to record it, and no recording carries a hook's code to the replay
+    {
+        struct HookBackend : StubBackend {
+            std::vector<std::string> families;
+            std::set<int> made;
+            std::vector<int> deleted;  // canvas fonts only: the document's are released too
+            int create_canvas_font(const std::string& family, float size, int weight, bool italic, FontMetrics& out) override {
+                families.push_back(family);
+                return *made.insert(Backend::create_canvas_font(family, size, weight, italic, out)).first;
+            }
+            void delete_font(int font) override {
+                if (made.count(font)) deleted.push_back(font);
+            }
+        };
+        const std::string page = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},{"op":"el","id":30,"tag":"canvas","attrs":[["width","50"],["height","20"]]},{"op":"ins","parent":4,"id":30,"before":null}]})";
+        auto texts = [](const std::vector<std::string>& fonts) {
+            std::string cmds = R"(["s","textBaseline","top"])";
+            for (const std::string& font : fonts) cmds += R"(,["s","font",")" + font + R"("],["c","fillText","hi",0,10])";
+            return parse(R"({"type":"ops","ops":[{"op":"canvas","id":30,"cmds":[)" + cmds + "]}]}");
+        };
+        auto spellings = [](int from, int count) {
+            std::vector<std::string> out;
+            for (int i = from; i < from + count; i++) out.push_back(std::to_string(i) + "px serif");
+            return out;
+        };
+        auto measured = [](Renderer& r, const std::string& font) {
+            return r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"measureText","font":")" + font + R"(","text":"hi"}})")).back()["result"]["width"].asNumber();
+        };
+        auto drawn = [](const HookBackend& b) {
+            std::vector<std::pair<int, float>> out;
+            if (b.runs.empty()) return out;
+            for (const CanvasOp& op : b.runs.back())
+                if (op.kind == CanvasOp::Text) out.emplace_back(op.font, op.y);
+            return out;
+        };
+        const std::string spelling = "bold 12px  'Fancy  Serif' ,serif";
+
+        // The control, with no hook: one parse and one font per spelling, released once the cache passes 64 and at the end.
+        HookBackend cb;
+        {
+            Renderer c(300, 1, false, cb);
+            c.receive(parse(page));
+            c.receive(texts({spelling, spelling}));
+            const auto texts_drawn = drawn(cb);
+            const double width = measured(c, spelling);
+            check(cb.families == std::vector<std::string>{"'Fancy  Serif' ,serif"} && texts_drawn.size() == 2 && texts_drawn[0].first == texts_drawn[1].first && width == 16,
+                  "without a hook a canvas font is parsed and made once for fillText and measureText alike (" + std::to_string(cb.families.size()) + " made)");
+            check(texts_drawn.size() == 2 && std::fabs(texts_drawn[0].second - 19.59375f) < 1e-4f, "and the renderer gives it the em box the backend did not");
+            c.receive(texts(spellings(1, 64)));
+            check(cb.deleted.empty() && cb.families.size() == 65, "65 spellings are 65 fonts, all kept");
+            c.receive(texts({spelling}));
+            check(cb.deleted.size() == 65 && cb.families.size() == 66, "past 64 the next batch releases them all and makes its own again (" + std::to_string(cb.deleted.size()) + " released)");
+        }
+        check(cb.deleted.size() == 66, "and the renderer releases the one it kept when it goes");
+
+        HookBackend hb;
+        std::vector<std::string> asked;
+        Backend* given = nullptr;
+        int cached = 0, back = 0;
+        {
+            Renderer h(300, 1, false, hb);
+            h.receive(parse(page));
+            h.receive(texts({"10px serif"}));
+            cached = drawn(hb).empty() ? 0 : drawn(hb)[0].first;
+            h.set_canvas_font_hook([&](Backend& backend, const std::string& css, FontMetrics& metrics) {
+                asked.push_back(css);
+                given = &backend;
+                return css.rfind("refused", 0) == 0 ? 0 : backend.create_canvas_font(css, 12, 400, false, metrics);
+            });
+            check(cached != 0 && hb.deleted == std::vector<int>{cached}, "setting a canvas font hook releases the font the renderer cached");
+            h.receive(texts({spelling, spelling}));
+            const auto hooked = drawn(hb);
+            const double width = measured(h, spelling);
+            check(asked == std::vector<std::string>(3, spelling) && given == &hb, "the hook gets the renderer's Backend and the font as the widget wrote it, for each fillText and the measureText (" + std::to_string(asked.size()) + " calls)");
+            check(hb.families == std::vector<std::string>{"serif", spelling, spelling, spelling} && hooked.size() == 2 && hooked[0].first != hooked[1].first && hooked[0].first != cached && width == 16,
+                  "nothing is parsed or cached on the way: each text draws and measures in the font the hook made for it");
+            check(hooked.size() == 2 && hooked[0].second == 10, "and with the metrics the hook gave, em box and all (y " + std::to_string(hooked.empty() ? 0 : hooked[0].second) + ")");
+            h.receive(texts(spellings(1, 70)));
+            check(asked.size() == 73 && hb.deleted.size() == 1, "70 more spellings all reach the hook, and the renderer releases none of its fonts");
+            const size_t runs = hb.runs.size();
+            h.receive(texts({"refused 12px serif"}));
+            const double refused = measured(h, "refused");
+            check(asked.size() == 75 && hb.runs.size() == runs && refused == 0, "a font the hook refuses draws no text and measures 0");
+            h.set_canvas_font_hook({});
+            h.receive(texts({spelling, spelling}));
+            const auto unhooked = drawn(hb);
+            back = unhooked.empty() ? 0 : unhooked[0].first;
+            check(asked.size() == 75 && hb.families.size() == 75 && hb.families.back() == "'Fancy  Serif' ,serif" && unhooked.size() == 2 && unhooked[1].first == back,
+                  "an empty hook gives the cache back: the next spelling is parsed and made once");
+        }
+        check(hb.deleted == std::vector<int>{cached, back}, "at the end the renderer releases only the font it cached itself (" + std::to_string(hb.deleted.size()) + " released)");
+    }
+#endif
+
     // ── what a build in paint() says waits for the next tick ──
     {
         StubBackend pb;

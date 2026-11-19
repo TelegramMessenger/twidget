@@ -41,7 +41,16 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   the backend overrides it to tell them apart, for an allowance of their own. The renderer caches them
   by the CSS spelling of `font`, and releases them all once it holds more than 64 and at its
   destruction: one font in two spellings is two handles, each released once, so a backend that hands
-  out one font for several counts its handles.
+  out one font for several counts its handles. An embedder that keeps canvas fonts its own way sets
+  `set_canvas_font_hook` instead: each time canvas text (fillText, strokeText, measureText) needs a
+  font, the hook gets the renderer's Backend and the spelling unparsed, as the canvas holds it (at
+  most 512 bytes) or measureText names it (any length), and returns a handle, 0 for none, with its
+  metrics. The renderer neither parses nor caches the spelling then, and gives the metrics no em box
+  of its own, so the hook sets one as `set_em_box` does here. The hook's fonts are its own: the
+  renderer releases none of them, neither past 64 nor at its destruction. A canvas batch reaches
+  `canvas_run` after all its texts got their fonts, so a font the hook releases while one is being
+  run must not be one it gave to that batch. Setting a hook releases the fonts the renderer cached
+  before; an empty hook gives the cache back. Without one nothing changes.
 - **A painter** for `DisplayList` (`src/display_list.h`): rectangles, borders, text, images,
   gradients, clips, paths, groups and shadows, in CSS px, and the CSS filters, whose colour matrices
   and whose CPU pass over a painter's own pixels are in `src/filters.h`.
@@ -573,7 +582,10 @@ Its embedder, the process that runs the engine, calls:
 - `renderer()` for what the channel does not carry (the editor, compositing, `trim`, `wheel`, `key`,
   `image_ready`, `stats`), each call followed by `report(the messages it returned)` so that its reports
   go out. Only while the end is not stopped, and never `tick()` or `paint()`, which only a
-  FrameRequest runs. Compositor layers stay on this side: no message carries them.
+  FrameRequest runs. Compositor layers stay on this side: no message carries them. A canvas font
+  hook set through `renderer()` runs in this process, and the Backend it gets is the end's: the
+  fonts it makes and releases there travel as FontRequests and FontReleases, as the renderer's own
+  do, and only while the end lives.
 
 The first failure stops it for good, with `stopped()` and `stop_reason()` for its embedder: a request
 that got no answer, an answer that does not decode, a message or a request past the caps, and a
@@ -637,6 +649,9 @@ ctest:
   into the build tree, about 475 MB, and removed after a passing check. Its own checks are printed,
   not gated, as `twidget_core` gates them; a recording that fails does gate. Its canvas-limit
   sessions send batches past the 32 MiB message cap, so its replay raises `Caps::message` to 256 MiB.
+  Its canvas font hook check is left out there (`#ifndef Renderer`): a hook is the embedder's code,
+  which a recording does not carry, so the replayed renderer, with none, would make other Backend
+  calls. Only `twidget_core` runs it.
 - `twidget_parity_bench`: `tests/bench.cpp`, unchanged, in its seven modes (mixed, transform, swarm,
   css, drag and drag-doc at 60 elements, canvas at 50, 10 frames each), one labelled session each
   (`twidget_bench_record`, `tests/bench_record.cpp`), recorded at test time the same way.

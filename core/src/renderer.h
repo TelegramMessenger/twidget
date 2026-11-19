@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -176,6 +177,11 @@ public:
     /// A backend that decodes images asynchronously (the web) reports the size of image `id` here;
     /// the document is rebuilt with it. Returns renderer → host messages (a `size`, when it changed).
     std::vector<twidget::Json> image_ready(int id, float w, float h);
+
+    /// An embedder's own canvas fonts: given the renderer's Backend and the CSS `font` unparsed, as the canvas holds it or measureText names it, it fills `metrics`, the em box included, and returns a handle, or 0 for none.
+    using CanvasFontHook = std::function<int(Backend& backend, const std::string& css, FontMetrics& metrics)>;
+    /// From now on canvas text takes every font from `hook`, on the renderer's thread, and the renderer caches and releases none of them; the fonts it had cached are released now. An empty hook gives the cache back.
+    void set_canvas_font_hook(CanvasFontHook hook);
 
     /// Where the content went when the document changed height, for a host that keeps part of the
     /// widget still on screen while it resizes (the Swift renderer's WidgetResizeDiff). Edges are in
@@ -655,7 +661,8 @@ private:
     uint64_t next_version_ = 1;
 
     std::unordered_map<int64_t, std::unique_ptr<Canvas>> canvases_;
-    std::unordered_map<std::string, std::pair<int, FontMetrics>> canvas_fonts_;
+    std::unordered_map<std::string, std::pair<int, FontMetrics>> canvas_fonts_;  // empty while the hook is set
+    CanvasFontHook canvas_font_hook_;
     std::string binary_;  // the binary payload of the query being answered (imageData), base64
 };
 

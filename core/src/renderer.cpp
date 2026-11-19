@@ -4338,7 +4338,16 @@ void Renderer::forget_canvas(int64_t id) {
     canvases_.erase(it);
 }
 
+void Renderer::set_canvas_font_hook(CanvasFontHook hook) {
+    if (hook) {
+        for (const auto& [font_css, held] : canvas_fonts_) backend_.delete_font(held.first);
+        canvas_fonts_.clear();
+    }
+    canvas_font_hook_ = std::move(hook);
+}
+
 int Renderer::canvas_font(const std::string& font, FontMetrics& metrics) {
+    if (canvas_font_hook_) return canvas_font_hook_(backend_, font, metrics);
     if (auto it = canvas_fonts_.find(font); it != canvas_fonts_.end()) {
         metrics = it->second.second;
         return it->second.first;
