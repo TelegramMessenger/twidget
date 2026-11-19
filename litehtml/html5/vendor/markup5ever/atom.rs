@@ -56,6 +56,14 @@ impl<S> Atom<S> {
 
 impl<S: StaticAtomSet> Atom<S> {
     #[inline]
+    pub fn static_index(&self) -> Option<u32> {
+        match self.repr {
+            Repr::Static(i) => Some(i),
+            Repr::Dynamic(_) => None,
+        }
+    }
+
+    #[inline]
     fn text(&self) -> &str {
         match &self.repr {
             Repr::Static(i) => S::STRINGS.get(*i as usize).copied().unwrap_or(""),

@@ -51,6 +51,12 @@ def atom_set(kind, setname, macro, strings):
     for s in strings:
         o.append('    (%s) => { $crate::%s };\n' % (rs(s), ident(p, s)))
     o.append('}\n')
+    for i, st in enumerate(strings):
+        o.append('pub const %s: u32 = %d;\n' % (ident(p + '_ID', st), i))
+    o.append('#[macro_export]\nmacro_rules! %s_id {\n' % macro)
+    for st in strings:
+        o.append('    (%s) => { $crate::%s };\n' % (rs(st), ident(p + '_ID', st)))
+    o.append('}\n')
     return ''.join(o)
 
 with open(os.path.join(out, 'atoms.rs'), 'w') as f:

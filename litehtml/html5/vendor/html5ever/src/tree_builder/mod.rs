@@ -1098,15 +1098,28 @@ where
     }
 
     fn html_elem_named(&self, elem: &Handle, name: LocalName) -> bool {
+        self.html_elem_is(elem, &name)
+    }
+
+    #[inline]
+    fn html_elem_is(&self, elem: &Handle, name: &LocalName) -> bool {
         let elem_name = self.sink.elem_name(elem);
-        *elem_name.ns() == ns!(html) && *elem_name.local_name() == name
+        if elem_name.ns().static_index() != Some(markup5ever::namespace_url_id!("http://www.w3.org/1999/xhtml")) {
+            return false;
+        }
+        let local = elem_name.local_name();
+        match (local.static_index(), name.static_index()) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => **local == **name,
+            _ => false,
+        }
     }
 
     fn in_html_elem_named(&self, name: LocalName) -> bool {
         self.open_elems
             .borrow()
             .iter()
-            .any(|elem| self.html_elem_named(elem, name.clone()))
+            .any(|elem| self.html_elem_is(elem, &name))
     }
 
     fn current_node_named(&self, name: LocalName) -> bool {
@@ -1117,7 +1130,7 @@ where
     where
         TagSet: Fn(ExpandedName) -> bool,
     {
-        self.in_scope(scope, |elem| self.html_elem_named(&elem, name.clone()))
+        self.in_scope(scope, |elem| self.html_elem_is(&elem, &name))
     }
 
     /// <https://html.spec.whatwg.org/#generate-implied-end-tags>

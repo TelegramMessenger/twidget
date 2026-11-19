@@ -13,9 +13,13 @@ use crate::ExpandedName;
 use markup5ever::{expanded_name, local_name, ns};
 
 macro_rules! declare_tag_set_impl ( ($param:ident, $b:ident, $supr:ident, $($tag:tt)+) => (
-    match $param {
-        $( expanded_name!(html $tag) => $b, )+
-        p => $supr(p),
+    if $param.ns.static_index() == Some(markup5ever::namespace_url_id!("http://www.w3.org/1999/xhtml")) {
+        match $param.local.static_index() {
+            $( Some(markup5ever::local_name_id!($tag)) => $b, )+
+            _ => $supr($param),
+        }
+    } else {
+        $supr($param)
     }
 ));
 
