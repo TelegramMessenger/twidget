@@ -3,6 +3,11 @@
 import Foundation
 import PackageDescription
 
+let hardenedCFlags: [String] = ["-ftrivial-auto-var-init=zero", "-fstack-protector-strong", "-ftyped-memory-operations"]
+let hardenedCxxFlags: [String] = hardenedCFlags + ["-ftyped-cxx-new-delete", "-ftyped-cxx-delete"]
+let hardenedCSettings: [CSetting] = [.unsafeFlags(hardenedCFlags)]
+let hardenedCxxSettings: [CXXSetting] = [.define("_LIBCPP_HARDENING_MODE", to: "_LIBCPP_HARDENING_MODE_FAST"), .unsafeFlags(hardenedCxxFlags)]
+
 let widgetSandboxSource = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SANDBOX"] ?? "../widget-sandbox"
 let widgetSandboxBranch = ProcessInfo.processInfo.environment["TWIDGET_WIDGET_SANDBOX_BRANCH"] ?? "main"
 let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || widgetSandboxSource.hasPrefix("git@")
@@ -53,13 +58,13 @@ let package = Package(
                 .headerSearchPath("include/litehtml"),
                 .headerSearchPath("src"),
                 .headerSearchPath("gumbo-include"),
-            ],
+            ] + hardenedCSettings,
             cxxSettings: [
                 .headerSearchPath("include"),
                 .headerSearchPath("include/litehtml"),
                 .headerSearchPath("src"),
                 .headerSearchPath("gumbo-include"),
-            ],
+            ] + hardenedCxxSettings,
             linkerSettings: [.linkedFramework("CoreFoundation")]),
         // html5ever (Rust, litehtml/html5) in place of gumbo when TWIDGET_HTML_PARSER=html5ever; its xcframework
         // is built by litehtml/html5/build-xcframework.sh, not committed.
@@ -75,14 +80,14 @@ let package = Package(
                 .headerSearchPath("../../../litehtml/src"),
                 .headerSearchPath("../../../litehtml/gumbo-include"),
                 .headerSearchPath("core"),
-            ],
+            ] + hardenedCSettings,
             cxxSettings: [
                 .headerSearchPath("../../../litehtml/include"),
                 .headerSearchPath("../../../litehtml/include/litehtml"),
                 .headerSearchPath("../../../litehtml/src"),
                 .headerSearchPath("../../../litehtml/gumbo-include"),
                 .headerSearchPath("core"),
-            ],
+            ] + hardenedCxxSettings,
             linkerSettings: [
                 .linkedFramework("Cocoa"),
                 .linkedFramework("CoreText"),
