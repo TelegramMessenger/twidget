@@ -133,6 +133,7 @@ pub struct Tokenizer<Sink> {
 
     /// Current tag attributes.
     current_tag_attrs: RefCell<Vec<Attribute>>,
+    current_tag_attr_names: RefCell<std::collections::HashSet<LocalName>>,
 
     /// Current attribute name.
     current_attr_name: RefCell<StrTendril>,
@@ -185,6 +186,7 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
             current_tag_name: RefCell::new(StrTendril::new()),
             current_tag_self_closing: Cell::new(false),
             current_tag_attrs: RefCell::new(vec![]),
+            current_tag_attr_names: RefCell::new(std::collections::HashSet::new()),
             current_attr_name: RefCell::new(StrTendril::new()),
             current_attr_value: RefCell::new(StrTendril::new()),
             current_comment: RefCell::new(StrTendril::new()),
@@ -437,7 +439,10 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
             kind: self.current_tag_kind.get(),
             name,
             self_closing: self.current_tag_self_closing.get(),
-            attrs: std::mem::take(&mut self.current_tag_attrs.borrow_mut()),
+            attrs: {
+                self.current_tag_attr_names.borrow_mut().clear();
+                std::mem::take(&mut self.current_tag_attrs.borrow_mut())
+            },
         });
 
         match self.process_token(token) {
@@ -480,6 +485,7 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
         self.current_tag_name.borrow_mut().clear();
         self.current_tag_self_closing.set(false);
         *self.current_tag_attrs.borrow_mut() = vec![];
+        self.current_tag_attr_names.borrow_mut().clear();
     }
 
     fn create_tag(&self, kind: TagKind, c: char) {
@@ -511,12 +517,19 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
 
         // Check for a duplicate attribute.
         // FIXME: the spec says we should error as soon as the name is finished.
+        const INDEXED_ATTRS: usize = 16;
         let dup = {
             let name = &*self.current_attr_name.borrow();
-            self.current_tag_attrs
-                .borrow()
-                .iter()
-                .any(|a| *a.name.local == **name)
+            let attrs = self.current_tag_attrs.borrow();
+            if attrs.len() < INDEXED_ATTRS {
+                attrs.iter().any(|a| *a.name.local == **name)
+            } else {
+                let mut names = self.current_tag_attr_names.borrow_mut();
+                if names.is_empty() {
+                    names.extend(attrs.iter().map(|a| a.name.local.clone()));
+                }
+                names.contains(&**name)
+            }
         };
 
         if dup {
@@ -526,6 +539,9 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
         } else {
             let name = LocalName::from(&**self.current_attr_name.borrow());
             self.current_attr_name.borrow_mut().clear();
+            if !self.current_tag_attr_names.borrow().is_empty() {
+                self.current_tag_attr_names.borrow_mut().insert(name.clone());
+            }
             self.current_tag_attrs.borrow_mut().push(Attribute {
                 // The tree builder will adjust the namespace if necessary.
                 // This only happens in foreign elements.
