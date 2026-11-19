@@ -131,6 +131,8 @@ namespace litehtml
         size_t bytes = 0;
     };
     string_id_usage _id_usage();
+    // The names the calling thread added to the table and their bytes, since the thread began.
+    string_id_usage _id_thread_usage();
 
 } // namespace litehtml
 

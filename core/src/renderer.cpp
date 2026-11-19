@@ -3390,7 +3390,7 @@ void Renderer::rebuild(bool patch) {
 Renderer::NameMeter::NameMeter(Renderer& renderer) : r(renderer) {
 #ifdef TW_LITEHTML_TWIDGET
     if (r.name_meter_depth_++ == 0) {
-        const auto usage = litehtml::_id_usage();
+        const auto usage = litehtml::_id_thread_usage();
         names = usage.names;
         bytes = usage.bytes;
     }
@@ -3400,7 +3400,7 @@ Renderer::NameMeter::NameMeter(Renderer& renderer) : r(renderer) {
 Renderer::NameMeter::~NameMeter() {
 #ifdef TW_LITEHTML_TWIDGET
     if (--r.name_meter_depth_ != 0) return;
-    const auto usage = litehtml::_id_usage();
+    const auto usage = litehtml::_id_thread_usage();
     r.stats_.names += usage.names - names;
     r.stats_.name_bytes += usage.bytes - bytes;
     if (r.stats_.names > MAX_NAMES || r.stats_.name_bytes > MAX_NAME_BYTES) r.stop_names();

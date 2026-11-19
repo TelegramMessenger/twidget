@@ -649,9 +649,11 @@ ctest:
   into the build tree, about 475 MB, and removed after a passing check. Its own checks are printed,
   not gated, as `twidget_core` gates them; a recording that fails does gate. Its canvas-limit
   sessions send batches past the 32 MiB message cap, so its replay raises `Caps::message` to 256 MiB.
-  Its canvas font hook check is left out there (`#ifndef Renderer`): a hook is the embedder's code,
-  which a recording does not carry, so the replayed renderer, with none, would make other Backend
-  calls. Only `twidget_core` runs it.
+  Its canvas font hook check and its check of two renderers on two threads at once are left out
+  there (`#ifndef Renderer`). A hook is the embedder's code, which a recording does not carry, so the
+  replayed renderer, with none, would make other Backend calls; and a recording takes one step at a
+  time, so the second renderer would wait for the first, which waits for it. Only `twidget_core`
+  runs them.
 - `twidget_parity_bench`: `tests/bench.cpp`, unchanged, in its seven modes (mixed, transform, swarm,
   css, drag and drag-doc at 60 elements, canvas at 50, 10 frames each), one labelled session each
   (`twidget_bench_record`, `tests/bench_record.cpp`), recorded at test time the same way.

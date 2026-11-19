@@ -17,6 +17,8 @@ namespace litehtml
     static std::map<std::string, string_id>& map = *new std::map<std::string, string_id>;
     static std::deque<std::string>&          array = *new std::deque<std::string>;
     static size_t                            array_bytes = 0;
+    static thread_local size_t               thread_names = 0;
+    static thread_local size_t               thread_bytes = 0;
 
     static int init()
     {
@@ -48,6 +50,8 @@ namespace litehtml
         // else: str not found, add it to the array and the map
         array.push_back(str);
         array_bytes += str.size();
+        thread_names++;
+        thread_bytes += str.size();
         return map[str] = static_cast<string_id>(array.size() - 1);
     }
 
@@ -67,6 +71,11 @@ namespace litehtml
     {
         lock_guard;
         return {array.size(), array_bytes};
+    }
+
+    string_id_usage _id_thread_usage()
+    {
+        return {thread_names, thread_bytes};
     }
 
     const std::string& _s(string_id id)

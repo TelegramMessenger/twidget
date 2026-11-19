@@ -4552,6 +4552,74 @@ int main() {
               "an ordinary widget is not stopped, and 25000 queries for custom properties nobody declared add no names (got " + accent + ", " + std::to_string(width) + ")");
     }
 
+    // ── names: each renderer is charged the names it adds itself, also while another one adds names on another thread ──
+#ifndef Renderer  // core_record.cpp renames Renderer to record it, and its recording takes one step at a time: the second renderer would wait for the first
+    {
+        // A batch of another renderer's, run to its end on a second thread from inside the next text measurement.
+        struct GateBackend : StubBackend {
+            Renderer* next = nullptr;
+            Json batch;
+            bool ran = false;
+            float text_width(int font, const std::string& text) override {
+                if (Renderer* other = next) {
+                    next = nullptr;
+                    std::thread([&] {
+                        other->receive(batch);
+                        other->tick();
+                    }).join();
+                    ran = true;
+                }
+                return StubBackend::text_width(font, text);
+            }
+        };
+        const char* page = R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","warm"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"warm words"},{"op":"ins","parent":10,"id":11,"before":null}]})";
+        auto text_of = [](const std::string& text) {
+            return Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "data").set("id", 11).set("data", text)));
+        };
+        auto class_of = [](const std::string& name) {
+            return Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "attr").set("id", 10).set("name", "class").set("value", name)));
+        };
+        GateBackend ab;
+        StubBackend bb;
+        Renderer a(300, 1, false, ab), b(300, 1, false, bb);
+        a.receive(parse(page));
+        a.tick();
+        b.receive(parse(page));
+        b.tick();
+        auto charges = [&] { return std::vector<size_t>{a.stats().names, a.stats().name_bytes, b.stats().names, b.stats().name_bytes}; };
+        auto since = [&](const std::vector<size_t>& start) {
+            std::vector<size_t> now = charges();
+            for (size_t i = 0; i < now.size(); i++) now[i] -= start[i];
+            return now;
+        };
+        auto shown = [](const std::vector<size_t>& c) {
+            return "A " + std::to_string(c[0]) + " names, " + std::to_string(c[1]) + " bytes; B " + std::to_string(c[2]) + " names, " + std::to_string(c[3]) + " bytes";
+        };
+        // A lays out a text it has not measured on the page it has, B gives its element a class no one has used.
+        const std::string first = "tw-fresh-class-1", second = "tw-fresh-class-2";
+        std::vector<size_t> start = charges();
+        a.receive(text_of("serial words"));
+        a.tick();
+        b.receive(class_of(first));
+        b.tick();
+        const std::vector<size_t> serial = since(start);
+        check(serial == std::vector<size_t>{0, 0, 1, first.size()},
+              "of two renderers taking turns only the one that adds a class is charged its name and bytes (" + shown(serial) + ")");
+        start = charges();
+        ab.next = &b;
+        ab.batch = class_of(second);
+        a.receive(text_of("overlapping words"));
+        a.tick();
+        const std::vector<size_t> overlapped = since(start);
+        check(ab.ran && second.size() == first.size() && overlapped == serial,
+              "a renderer waiting in a text measurement while another adds a class on a second thread is not charged for it (" + shown(overlapped) + ")");
+    }
+#endif
+
     // ── animations: the cache of interpolated value pairs is bounded by the bytes of their text ──
 #if defined(__APPLE__) && defined(__clang__)
 #if !__has_feature(address_sanitizer)

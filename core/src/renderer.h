@@ -303,7 +303,8 @@ private:
         }
     };
     int meter_depth_ = 0;
-    /// Charges the names the outermost call it spans left in litehtml's name table, which never gives one back.
+    /// Charges the names the outermost call it spans left in litehtml's name table, which never gives one back, counted
+    /// on its own thread: a renderer that runs on another thread meanwhile pays for the names it adds itself.
     struct NameMeter {
         Renderer& r;
         size_t names = 0, bytes = 0;
