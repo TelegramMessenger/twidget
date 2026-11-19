@@ -15,6 +15,9 @@ let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || w
     : .package(name: "WidgetSandbox", path: widgetSandboxSource)
 let widgetProtocol: Target.Dependency = .product(name: "WidgetSandboxProtocol", package: "WidgetSandbox")
 let usesHTML5Parser = ProcessInfo.processInfo.environment["TWIDGET_HTML_PARSER"] != "gumbo"
+let litehtmlDependencies: [Target.Dependency] = usesHTML5Parser ? ["LiteHTMLParser"] : []
+let litehtmlExclude: [String] = usesHTML5Parser ? ["LICENSE", "src/gumbo"] : ["LICENSE", "src/gumbo/LICENSE"]
+let litehtmlSources: [String] = usesHTML5Parser ? ["src", "html5/compat"] : ["src"]
 let optimizesDebug = !#filePath.contains("/checkouts/") && ProcessInfo.processInfo.environment["TWIDGET_DEBUG_UNOPTIMIZED"] == nil
 
 
@@ -48,27 +51,24 @@ let package = Package(
         // paths: a public headers folder would make SwiftPM wrap them in a Clang module, so it names none.
         .target(
             name: "TwidgetLitehtml",
-            dependencies: usesHTML5Parser ? ["LiteHTMLParser"] : [],
+            dependencies: litehtmlDependencies,
             path: "litehtml",
-            exclude: usesHTML5Parser ? ["LICENSE", "src/gumbo"] : ["LICENSE", "src/gumbo/LICENSE"],
-            sources: usesHTML5Parser ? ["src", "html5/compat"] : ["src"],
+            exclude: litehtmlExclude,
+            sources: litehtmlSources,
             publicHeadersPath: "no-public-headers",
             cSettings: [
                 .headerSearchPath("include"),
                 .headerSearchPath("include/litehtml"),
                 .headerSearchPath("src"),
                 .headerSearchPath("gumbo-include"),
-            ] + hardenedCSettings,
+            ],
             cxxSettings: [
                 .headerSearchPath("include"),
                 .headerSearchPath("include/litehtml"),
                 .headerSearchPath("src"),
                 .headerSearchPath("gumbo-include"),
-            ] + hardenedCxxSettings,
+            ],
             linkerSettings: [.linkedFramework("CoreFoundation")]),
-        // html5ever (Rust, litehtml/html5) in place of gumbo unless TWIDGET_HTML_PARSER=gumbo; its xcframework
-        // is built by litehtml/html5/build-xcframework.sh, not committed.
-    ] + (usesHTML5Parser ? [.binaryTarget(name: "LiteHTMLParser", path: "litehtml/html5/LiteHTMLParser.xcframework")] : []) + [
         .target(
             name: "LiteHTML",
             dependencies: ["TwidgetAssets", "TwidgetLitehtml"],
@@ -80,14 +80,14 @@ let package = Package(
                 .headerSearchPath("../../../litehtml/src"),
                 .headerSearchPath("../../../litehtml/gumbo-include"),
                 .headerSearchPath("core"),
-            ] + hardenedCSettings,
+            ],
             cxxSettings: [
                 .headerSearchPath("../../../litehtml/include"),
                 .headerSearchPath("../../../litehtml/include/litehtml"),
                 .headerSearchPath("../../../litehtml/src"),
                 .headerSearchPath("../../../litehtml/gumbo-include"),
                 .headerSearchPath("core"),
-            ] + hardenedCxxSettings,
+            ],
             linkerSettings: [
                 .linkedFramework("Cocoa"),
                 .linkedFramework("CoreText"),
@@ -154,6 +154,17 @@ let package = Package(
     ],
     cxxLanguageStandard: .gnucxx17
 )
+
+// html5ever (Rust, litehtml/html5) in place of gumbo unless TWIDGET_HTML_PARSER=gumbo; its xcframework
+// is built by litehtml/html5/build-xcframework.sh, not committed.
+if usesHTML5Parser {
+    package.targets.append(.binaryTarget(name: "LiteHTMLParser", path: "litehtml/html5/LiteHTMLParser.xcframework"))
+}
+
+for target in package.targets where target.name == "TwidgetLitehtml" || target.name == "LiteHTML" {
+    target.cSettings = (target.cSettings ?? []) + hardenedCSettings
+    target.cxxSettings = (target.cxxSettings ?? []) + hardenedCxxSettings
+}
 
 if optimizesDebug {
     for target in package.targets where target.type == .regular {
