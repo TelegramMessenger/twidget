@@ -1,8 +1,8 @@
 #!/bin/sh
 # Builds LiteHTMLParser.xcframework: the html5ever parser (core crate without unsafe)
 # behind lh_html5_parse, prelinked so only lh_html5_* and a weak rust_eh_personality
-# are exported, arm64 from 11.0 and x86_64 from 10.13. litehtml links it when the
-# manifest sees TWIDGET_HTML_PARSER=html5ever.
+# are exported, arm64 from 11.0 and x86_64 from 10.13. litehtml links it unless the
+# manifest sees TWIDGET_HTML_PARSER=gumbo.
 #
 #   litehtml/html5/build-xcframework.sh [BUILD_DIR]
 

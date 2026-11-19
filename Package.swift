@@ -14,7 +14,7 @@ let widgetSandbox: Package.Dependency = widgetSandboxSource.contains("://") || w
     ? .package(name: "WidgetSandbox", url: widgetSandboxSource, .branch(widgetSandboxBranch))
     : .package(name: "WidgetSandbox", path: widgetSandboxSource)
 let widgetProtocol: Target.Dependency = .product(name: "WidgetSandboxProtocol", package: "WidgetSandbox")
-let usesHTML5Parser = ProcessInfo.processInfo.environment["TWIDGET_HTML_PARSER"] == "html5ever"
+let usesHTML5Parser = ProcessInfo.processInfo.environment["TWIDGET_HTML_PARSER"] != "gumbo"
 let optimizesDebug = !#filePath.contains("/checkouts/") && ProcessInfo.processInfo.environment["TWIDGET_DEBUG_UNOPTIMIZED"] == nil
 
 
@@ -66,7 +66,7 @@ let package = Package(
                 .headerSearchPath("gumbo-include"),
             ] + hardenedCxxSettings,
             linkerSettings: [.linkedFramework("CoreFoundation")]),
-        // html5ever (Rust, litehtml/html5) in place of gumbo when TWIDGET_HTML_PARSER=html5ever; its xcframework
+        // html5ever (Rust, litehtml/html5) in place of gumbo unless TWIDGET_HTML_PARSER=gumbo; its xcframework
         // is built by litehtml/html5/build-xcframework.sh, not committed.
     ] + (usesHTML5Parser ? [.binaryTarget(name: "LiteHTMLParser", path: "litehtml/html5/LiteHTMLParser.xcframework")] : []) + [
         .target(
