@@ -72,7 +72,7 @@ elseif(APPLE)
 endif()
 if(MSVC)
     # gumbo expects POSIX strings.h; litehtml is compiled as it comes, without its warnings.
-    target_include_directories(litehtml PRIVATE "$<$<COMPILE_LANGUAGE:C>:${TW_LITEHTML}/src/gumbo/visualc/include>")
+    target_include_directories(litehtml PRIVATE "${TW_LITEHTML}/src/gumbo/visualc/include")
     target_compile_options(litehtml PRIVATE /utf-8 /w)
 else()
     target_compile_options(litehtml PRIVATE -w)
