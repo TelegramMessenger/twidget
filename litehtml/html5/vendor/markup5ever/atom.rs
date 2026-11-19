@@ -11,6 +11,31 @@ pub trait StaticAtomSet: 'static + Clone + PartialEq + Eq {
     fn index(s: &str) -> Option<u32>;
 }
 
+#[inline]
+pub fn fnv(bytes: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in bytes {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+#[inline]
+pub fn probe(s: &str, table: &[u16], strings: &[&str]) -> Option<u32> {
+    let mask = table.len().checked_sub(1)?;
+    let mut i = fnv(s.as_bytes()) as usize & mask;
+    for _ in 0..table.len() {
+        let entry = *table.get(i)?;
+        let index = (entry as usize).checked_sub(1)?;
+        if strings.get(index).copied() == Some(s) {
+            return Some(index as u32);
+        }
+        i = (i + 1) & mask;
+    }
+    None
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum Repr {
     Static(u32),
@@ -179,6 +204,18 @@ mod tests {
         assert_eq!(Namespace::from("http://www.w3.org/1999/xhtml"), ns!(html));
         assert_eq!(&*ns!(svg), "http://www.w3.org/2000/svg");
         assert_eq!(&*LocalName::from(""), "");
+    }
+
+    #[test]
+    fn every_static_atom_round_trips() {
+        use crate::atom::StaticAtomSet;
+        for (i, s) in crate::LocalNameStaticSet::STRINGS.iter().enumerate() {
+            assert_eq!(crate::LocalNameStaticSet::index(s), Some(i as u32), "{s}");
+        }
+        for (i, s) in crate::NamespaceStaticSet::STRINGS.iter().enumerate() {
+            assert_eq!(crate::NamespaceStaticSet::index(s), Some(i as u32), "{s}");
+        }
+        assert_eq!(crate::LocalNameStaticSet::index("not-a-known-name"), None);
     }
 
     #[test]

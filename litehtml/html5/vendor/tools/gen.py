@@ -13,6 +13,13 @@ namespaces = [("", ""), ("*", "*"), ("html", "http://www.w3.org/1999/xhtml"), ("
               ("xmlns", "http://www.w3.org/2000/xmlns/"), ("xlink", "http://www.w3.org/1999/xlink"),
               ("svg", "http://www.w3.org/2000/svg"), ("mathml", "http://www.w3.org/1998/Math/MathML")]
 
+def fnv(data):
+    h = 0x811c9dc5
+    for b in data:
+        h ^= b
+        h = (h * 0x01000193) & 0xffffffff
+    return h
+
 def ident(prefix, s):
     return prefix + '__' + '_'.join('%02X' % b for b in s.encode())
 
@@ -25,10 +32,18 @@ def atom_set(kind, setname, macro, strings):
     o.append('pub type %s = crate::atom::Atom<%s>;\n' % (kind, setname))
     o.append('impl crate::atom::StaticAtomSet for %s {\n' % setname)
     o.append('    const STRINGS: &\'static [&\'static str] = &[%s];\n' % ', '.join(rs(s) for s in strings))
-    o.append('    fn index(s: &str) -> Option<u32> {\n        match s {\n')
-    for i, s in enumerate(strings):
-        o.append('            %s => Some(%d),\n' % (rs(s), i))
-    o.append('            _ => None,\n        }\n    }\n}\n')
+    size = 1
+    while size < 4 * len(strings):
+        size *= 2
+    table = [0] * size
+    for i, st in enumerate(strings):
+        h = fnv(st.encode()) & (size - 1)
+        while table[h]:
+            h = (h + 1) & (size - 1)
+        table[h] = i + 1
+    o.append('    fn index(s: &str) -> Option<u32> {\n')
+    o.append('        static TABLE: [u16; %d] = [%s];\n' % (size, ', '.join(str(x) for x in table)))
+    o.append('        crate::atom::probe(s, &TABLE, Self::STRINGS)\n    }\n}\n')
     p = 'ATOM_' + kind.upper()
     for i, s in enumerate(strings):
         o.append('pub const %s: %s = %s::pack_static(%d);\n' % (ident(p, s), kind, kind, i))

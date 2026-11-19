@@ -4,8 +4,11 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
 
+static ASCII: &str = "\u{0}\u{1}\u{2}\u{3}\u{4}\u{5}\u{6}\u{7}\u{8}\u{9}\u{a}\u{b}\u{c}\u{d}\u{e}\u{f}\u{10}\u{11}\u{12}\u{13}\u{14}\u{15}\u{16}\u{17}\u{18}\u{19}\u{1a}\u{1b}\u{1c}\u{1d}\u{1e}\u{1f} !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u{7f}";
+
 #[derive(Clone)]
 enum Repr {
+    Static(&'static str),
     Owned(String),
     Shared { buf: Rc<str>, start: usize, end: usize },
 }
@@ -38,6 +41,10 @@ impl StrTendril {
 
     #[inline]
     pub fn from_char(c: char) -> Self {
+        let i = c as usize;
+        if let Some(s) = ASCII.get(i..i + 1) {
+            return StrTendril { repr: Repr::Static(s) };
+        }
         let mut s = String::new();
         s.push(c);
         StrTendril { repr: Repr::Owned(s) }
@@ -46,6 +53,7 @@ impl StrTendril {
     #[inline]
     fn as_str(&self) -> &str {
         match &self.repr {
+            Repr::Static(s) => s,
             Repr::Owned(s) => s,
             Repr::Shared { buf, start, end } => buf.get(*start..*end).unwrap_or(""),
         }
@@ -53,13 +61,13 @@ impl StrTendril {
 
     #[inline]
     fn owned(&mut self) -> &mut String {
-        if let Repr::Shared { .. } = self.repr {
+        if !matches!(self.repr, Repr::Owned(_)) {
             let s = String::from(self.as_str());
             self.repr = Repr::Owned(s);
         }
         match &mut self.repr {
             Repr::Owned(s) => s,
-            Repr::Shared { .. } => unreachable!(),
+            _ => unreachable!(),
         }
     }
 
@@ -89,13 +97,17 @@ impl StrTendril {
     pub fn clear(&mut self) {
         match &mut self.repr {
             Repr::Owned(s) => s.clear(),
-            Repr::Shared { .. } => self.repr = Repr::Owned(String::new()),
+            _ => self.repr = Repr::Owned(String::new()),
         }
     }
 
     pub fn pop_front(&mut self, n: u32) {
         let n = n as usize;
         match &mut self.repr {
+            Repr::Static(s) => {
+                let n = n.min(s.len());
+                *s = if s.is_char_boundary(n) { s.get(n..).unwrap_or("") } else { "" };
+            }
             Repr::Owned(s) => {
                 let n = n.min(s.len());
                 if s.is_char_boundary(n) {
@@ -115,7 +127,18 @@ impl StrTendril {
         }
     }
 
+    #[inline]
     pub fn pop_front_char(&mut self) -> Option<char> {
+        if let Repr::Shared { buf, start, end } = &mut self.repr {
+            if *start < *end {
+                if let Some(&b) = buf.as_bytes().get(*start) {
+                    if b.is_ascii() {
+                        *start += 1;
+                        return Some(b as char);
+                    }
+                }
+            }
+        }
         let c = self.as_str().chars().next()?;
         self.pop_front(c.len_utf8() as u32);
         Some(c)
@@ -134,6 +157,10 @@ impl StrTendril {
     pub fn pop_back(&mut self, n: u32) {
         let n = n as usize;
         match &mut self.repr {
+            Repr::Static(s) => {
+                let keep = s.len().saturating_sub(n);
+                *s = if s.is_char_boundary(keep) { s.get(..keep).unwrap_or("") } else { "" };
+            }
             Repr::Owned(s) => {
                 let keep = s.len().saturating_sub(n);
                 if s.is_char_boundary(keep) {
@@ -166,7 +193,8 @@ impl StrTendril {
                     StrTendril::new()
                 }
             }
-            Repr::Owned(s) => {
+            _ => {
+                let s = self.as_str();
                 let from = offset.min(s.len());
                 let to = (from + length).min(s.len());
                 StrTendril::from_slice(s.get(from..to).unwrap_or(""))
@@ -241,7 +269,7 @@ impl From<StrTendril> for String {
     fn from(t: StrTendril) -> String {
         match t.repr {
             Repr::Owned(s) => s,
-            Repr::Shared { .. } => String::from(t.as_str()),
+            _ => String::from(t.as_str()),
         }
     }
 }
@@ -322,6 +350,17 @@ mod tests {
         empty.push_char('z');
         assert_eq!(&*empty, "xyz");
         assert_eq!(empty.len32(), 3);
+    }
+
+    #[test]
+    fn ascii_chars_are_static() {
+        for c in (0u8..128).map(char::from) {
+            assert_eq!(StrTendril::from_char(c).chars().collect::<Vec<_>>(), vec![c]);
+        }
+        let mut t = StrTendril::from_char('a');
+        t.push_char('é');
+        assert_eq!(&*t, "aé");
+        assert_eq!(&*StrTendril::from_char('é'), "é");
     }
 
     #[test]
