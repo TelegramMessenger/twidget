@@ -33,11 +33,12 @@ pub struct Limits {
     pub max_nodes: usize,
     pub max_depth: usize,
     pub max_attrs: usize,
+    pub max_strings: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_input: 32 << 20, max_nodes: 200_000, max_depth: 512, max_attrs: 256 }
+        Limits { max_input: 32 << 20, max_nodes: 200_000, max_depth: 512, max_attrs: 256, max_strings: 64 << 20 }
     }
 }
 

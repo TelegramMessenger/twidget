@@ -117,7 +117,7 @@ extern "C" GumboOutput* gumbo_parse_with_options(const GumboOptions* options, co
     {
         const LhNode& n = p.nodes[i];
         if((n.kind == GUMBO_NODE_ELEMENT || n.kind == GUMBO_NODE_TEMPLATE) && n.tag >= GUMBO_TAG_UNKNOWN &&
-           (n.source.start == kNone || !p.positions))
+           (!p.positions || n.source.start == kNone || !buffer || !span_ok(n.source, length)))
             synth += size_t(n.name.len) + 3;
     }
 
@@ -138,6 +138,7 @@ extern "C" GumboOutput* gumbo_parse_with_options(const GumboOptions* options, co
     auto* attr_ptrs = reinterpret_cast<void**>(block + output_size + nodes_size + children_size + attrs_size);
     char* strings   = block + output_size + nodes_size + children_size + attrs_size + attr_ptr_size;
     char* synth_at  = strings + p.strings_len;
+    char* synth_end = synth_at + synth;
     memcpy(strings, p.strings, p.strings_len);
 
     const size_t limit = p.strings_len;
@@ -205,6 +206,8 @@ extern "C" GumboOutput* gumbo_parse_with_options(const GumboOptions* options, co
             {
                 const char* name = str(n.name);
                 size_t      len  = strlen(name);
+                if(len + 3 > size_t(synth_end - synth_at))
+                    abort();
                 synth_at[0]      = '<';
                 memcpy(synth_at + 1, name, len);
                 synth_at[len + 1] = '>';

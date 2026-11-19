@@ -457,6 +457,7 @@ pub fn flatten(tree: &Tree, spans: &Spans, source: &str, limits: Limits) -> Flat
             _ => &nodes[id].children,
         }
     };
+    let max_strings = limits.max_strings.min((1 << 20) + source.len().saturating_mul(16));
     let mut stack: Vec<(usize, u32, usize)> = vec![(DOCUMENT, NONE, 0)];
     let mut order: Vec<(usize, u32)> = Vec::new();
     while let Some((id, parent, depth)) = stack.pop() {
@@ -492,8 +493,11 @@ pub fn flatten(tree: &Tree, spans: &Spans, source: &str, limits: Limits) -> Flat
                     out.source = ms.tag;
                 }
                 out.first_attr = flat.attrs.len() as u32;
-                out.attr_count = attrs.len() as u32;
                 for attr in attrs {
+                    if flat.strings.len() + attr.name.local.len() + attr.value.len() + 2 > max_strings {
+                        flat.truncated = true;
+                        break;
+                    }
                     let ns = attr_namespace(&attr.name);
                     let raw_name = match &attr.name.prefix {
                         Some(prefix) if !prefix.is_empty() => format!("{}:{}", prefix, attr.name.local),
@@ -507,11 +511,16 @@ pub fn flatten(tree: &Tree, spans: &Spans, source: &str, limits: Limits) -> Flat
                     let value = flat.push_str(&attr.value);
                     flat.attrs.push(FlatAttr { ns, name, value, source });
                 }
+                out.attr_count = flat.attrs.len() as u32 - out.first_attr;
             }
             Kind::Text { text, run, multi } => {
                 out.kind = if is_whitespace(text) { NODE_WHITESPACE } else { NODE_TEXT };
-                out.text = flat.push_str(text);
-                if !*multi {
+                if flat.strings.len() + text.len() + 1 > max_strings {
+                    flat.truncated = true;
+                } else {
+                    out.text = flat.push_str(text);
+                }
+                if out.text.start != NONE && !*multi {
                     if let Some(span) = run.and_then(|r| spans.runs.get(r as usize)) {
                         if let Some(found) = crate::scan::text_span(source, *span, text) {
                             out.source = found;
@@ -521,7 +530,11 @@ pub fn flatten(tree: &Tree, spans: &Spans, source: &str, limits: Limits) -> Flat
             }
             Kind::Comment(text) => {
                 out.kind = NODE_COMMENT;
-                out.text = flat.push_str(text);
+                if flat.strings.len() + text.len() + 1 > max_strings {
+                    flat.truncated = true;
+                } else {
+                    out.text = flat.push_str(text);
+                }
             }
         }
         flat.nodes.push(out);

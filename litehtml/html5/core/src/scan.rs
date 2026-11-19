@@ -6,6 +6,8 @@ use html5ever::tokenizer::{BufferQueue, Token, TokenSink, TokenSinkResult, Token
 use crate::sink::{Mark, MarkKind, Raw};
 use crate::Span;
 
+const MAX_ALIGNED_ATTRS: usize = 256;
+
 #[derive(Debug, Default)]
 pub struct TagSpans {
     pub tag: Span,
@@ -218,7 +220,11 @@ pub fn align(source: &str, marks: &[Mark]) -> Spans {
                 let kind = if end_tag { MarkKind::End } else { MarkKind::Start };
                 let mut ok = kind == mark.kind && name == mark.name;
                 if ok && kind == MarkKind::Start {
-                    ok = mark.attrs.iter().all(|a| attrs.iter().any(|(n, _)| n == a));
+                    ok = if mark.attrs.len() > MAX_ALIGNED_ATTRS || attrs.len() > MAX_ALIGNED_ATTRS {
+                        false
+                    } else {
+                        mark.attrs.iter().all(|a| attrs.iter().any(|(n, _)| n == a))
+                    };
                 }
                 (start, end, ok, Some(TagSpans { tag: span(start, end), attrs }))
             }
