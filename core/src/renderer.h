@@ -145,6 +145,15 @@ public:
     /// The matrix maps the box to where it shows: the CSS transforms around it as last painted, and its
     /// layer's track as of now, so a host lays its selection again while a layer moves. "[]" when none.
     std::string selectable_text_json() const;
+    /// What a screen reader is to find in the widget, in document order, as JSON:
+    /// [{"r": role, "n": name, "x", "y", "w", "h" (document CSS px), "lv": heading level, "st": {states},
+    /// "vn"/"vmin"/"vmax"/"vt": a range's value, "live": "polite"|"assertive", "act": 1 when it takes a press}, ...].
+    /// Roles: "text" (a paragraph of plain text), "heading", "button", "link", "image", "checkbox", "radio",
+    /// "switch", "tab", "menuitem", "option", "slider", "progressbar", "spinbutton". Built from the elements as
+    /// laid out: the role attribute or the element's own (button, summary, a[href], img, h1-h6), an element with
+    /// `cursor: pointer` as a button; the name from aria-label, aria-labelledby, alt, its text, title. What is
+    /// hidden (display: none, visibility: hidden, aria-hidden="true") is left out. "[]" when there is nothing.
+    std::string accessibility_json() const;
     /// One display frame: coalesced move events go out and animations advance. Returns renderer → host messages.
     std::vector<twidget::Json> tick();
     /// Something waits for the next frame: a running animation, a coalesced move, or messages a build in
