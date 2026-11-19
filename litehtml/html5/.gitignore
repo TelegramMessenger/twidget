@@ -1,3 +1,10 @@
 target/
 LiteHTMLParser.xcframework/
 LiteHTMLParser.sha256
+fuzz/target/
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/fuzz-*.log
+fuzz/Cargo.lock
+vendor/tools/expand-rules/target/
+vendor/tools/expand-rules/Cargo.lock

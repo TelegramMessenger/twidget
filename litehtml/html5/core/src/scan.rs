@@ -292,7 +292,7 @@ pub fn text_span(source: &str, s: Span, text: &str) -> Option<Span> {
     }
     let tokenizer = Tokenizer::new(Collect { text: RefCell::new(String::new()) }, TokenizerOpts::default());
     let queue = BufferQueue::default();
-    queue.push_back(StrTendril::from_slice(raw));
+    queue.push_back(StrTendril::shared(raw));
     let _ = tokenizer.feed(&queue);
     tokenizer.end();
     let decoded = tokenizer.sink.text.into_inner();

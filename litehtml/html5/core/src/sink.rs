@@ -70,6 +70,7 @@ pub struct Sink {
     run: Cell<u32>,
     limits: Limits,
     truncated: Cell<bool>,
+    capped: Cell<bool>,
 }
 
 fn blank_name() -> QualName {
@@ -93,6 +94,7 @@ impl Sink {
             run: Cell::new(0),
             limits,
             truncated: Cell::new(false),
+            capped: Cell::new(false),
         }
     }
 
@@ -100,7 +102,7 @@ impl Sink {
         let mut nodes = self.nodes.borrow_mut();
         if nodes.len() >= self.limits.max_nodes {
             self.truncated.set(true);
-            return DISCARD;
+            self.capped.set(true);
         }
         nodes.push(Node { kind, name, parent: None, children: Vec::new() });
         nodes.len() - 1
@@ -164,9 +166,6 @@ impl Sink {
                 let mut kind = Kind::Text { text: text.to_string(), run: None, multi: false };
                 self.note_run(&mut kind);
                 let node = self.add(kind, blank_name());
-                if node == DISCARD {
-                    return;
-                }
                 let mut nodes = self.nodes.borrow_mut();
                 let len = nodes[parent].children.len();
                 let index = at.map(|a| a.min(len)).unwrap_or(len);
@@ -322,6 +321,9 @@ impl TokenSink for Wrap {
     type Handle = usize;
 
     fn process_token(&self, token: Token, line_number: u64) -> TokenSinkResult<usize> {
+        if self.tb.sink.capped.get() {
+            return TokenSinkResult::Continue;
+        }
         let mut start = None;
         match &token {
             Token::TagToken(tag) => {
@@ -383,7 +385,9 @@ impl TokenSink for Wrap {
     }
 
     fn end(&self) {
-        self.tb.end();
+        if !self.tb.sink.capped.get() {
+            self.tb.end();
+        }
     }
 
     fn adjusted_current_node_present_but_not_in_html_namespace(&self) -> bool {
@@ -410,7 +414,7 @@ pub fn run(text: &str, fragment: bool, limits: Limits) -> Tree {
     let tokenizer =
         Tokenizer::new(Wrap { tb, marks: RefCell::new(Vec::new()) }, TokenizerOpts { initial_state, ..Default::default() });
     let queue = BufferQueue::default();
-    queue.push_back(StrTendril::from_slice(text));
+    queue.push_back(StrTendril::shared(text));
     while !matches!(tokenizer.feed(&queue), html5ever::TokenizerResult::Done) {}
     tokenizer.end();
     let wrap = tokenizer.sink;
@@ -461,7 +465,7 @@ pub fn flatten(tree: &Tree, spans: &Spans, source: &str, limits: Limits) -> Flat
     let mut stack: Vec<(usize, u32, usize)> = vec![(DOCUMENT, NONE, 0)];
     let mut order: Vec<(usize, u32)> = Vec::new();
     while let Some((id, parent, depth)) = stack.pop() {
-        if depth > limits.max_depth {
+        if depth > limits.max_depth || flat.nodes.len() >= limits.max_nodes {
             flat.truncated = true;
             continue;
         }
@@ -487,7 +491,11 @@ pub fn flatten(tree: &Tree, spans: &Spans, source: &str, limits: Limits) -> Flat
                 out.kind = if contents.is_some() { NODE_TEMPLATE } else { NODE_ELEMENT };
                 out.ns = namespace_code(&node.name.ns);
                 out.tag = tag_index(&node.name.local);
-                out.name = flat.push_str(&node.name.local);
+                if flat.strings.len() + node.name.local.len() + 1 > max_strings {
+                    flat.truncated = true;
+                } else {
+                    out.name = flat.push_str(&node.name.local);
+                }
                 let mark_spans = mark.and_then(|m| spans.tags.get(m as usize)).and_then(|s| s.as_ref());
                 if let Some(ms) = mark_spans {
                     out.source = ms.tag;
