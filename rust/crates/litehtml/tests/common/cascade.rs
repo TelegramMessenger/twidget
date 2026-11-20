@@ -30,6 +30,7 @@ use twidget_litehtml::cxx;
 use twidget_litehtml::document::{Document, StyleCx, Switches};
 use twidget_litehtml::element::{ElementKind, ElementState, FormLook};
 use twidget_litehtml::font_description::FontDescription;
+use twidget_litehtml::types::{Position, Size};
 
 /// A mark: byte offset, field, element (-1 for a field).
 pub type Mark = (usize, &'static str, i32);
@@ -57,7 +58,8 @@ pub fn mark(o: &Out, what: &'static str, element: i32) {
 }
 
 /// lhdump's `CascadeContainer`: the renderer's answers where the fork asks, every font, width, image and transform
-/// call logged.
+/// call logged; for layout the viewport, image sizes from the source's bytes and text breakers that break between
+/// any two characters, logged too.
 pub struct CascadeContainer {
     pub width: Cell<f32>,
     pub height: Cell<f32>,
@@ -66,6 +68,23 @@ pub struct CascadeContainer {
     pub calls: RefCell<Vec<Call>>,
     sizes: RefCell<BTreeMap<u64, f32>>,
     next: Cell<u64>,
+    /// The breakers made, by handle - 1: their text and font size.
+    breakers: RefCell<Vec<(Vec<u8>, f32)>>,
+}
+
+/// The code points of a text as byte ranges (a lead byte and its continuation bytes).
+fn code_point_ends(text: &[u8], from: usize) -> Vec<usize> {
+    let mut ends = Vec::new();
+    let mut i = from;
+    while i < text.len() {
+        let mut next = i + 1;
+        while next < text.len() && (text[next] & 0xC0) == 0x80 {
+            next += 1;
+        }
+        ends.push(next);
+        i = next;
+    }
+    ends
 }
 
 impl CascadeContainer {
@@ -78,6 +97,7 @@ impl CascadeContainer {
             calls: RefCell::new(Vec::new()),
             sizes: RefCell::new(BTreeMap::new()),
             next: Cell::new(0),
+            breakers: RefCell::new(Vec::new()),
         }
     }
 }
@@ -154,6 +174,58 @@ impl DocumentContainer for CascadeContainer {
     fn load_image(&self, src: &[u8], baseurl: Option<&[u8]>, redraw_on_ready: bool) {
         let n = if baseurl.is_some() { 2 } else { 0 } | u64::from(redraw_on_ready);
         self.calls.borrow_mut().push((b'I', src.to_vec(), baseurl.unwrap_or_default().to_vec(), n));
+    }
+    fn get_viewport(&self) -> Position {
+        self.calls.borrow_mut().push((b'V', Vec::new(), Vec::new(), 0));
+        Position::new(Px(0.0), Px(0.0), Px(self.width.get()), Px(self.height.get()))
+    }
+    fn get_image_size(&self, src: &[u8], baseurl: Option<&[u8]>) -> Size {
+        self.calls.borrow_mut().push((b'S', src.to_vec(), baseurl.unwrap_or_default().to_vec(), u64::from(baseurl.is_some())));
+        if src.is_empty() {
+            return Size::default();
+        }
+        let sum = src.iter().fold(0u32, |sum, &c| sum.wrapping_add(u32::from(c)));
+        Size::new(Px((sum % 200) as f32), Px((sum.wrapping_mul(7).wrapping_add(src.len() as u32) % 150) as f32))
+    }
+    fn create_text_breaker(&self, text: &[u8], font: u64) -> u64 {
+        self.calls.borrow_mut().push((b'B', text.to_vec(), Vec::new(), font));
+        let size = self.sizes.borrow().get(&font).copied().unwrap_or(0.0);
+        let mut breakers = self.breakers.borrow_mut();
+        breakers.push((text.to_vec(), size));
+        breakers.len() as u64
+    }
+    fn text_breaker_fit(&self, breaker: u64, start: usize, width: Px) -> usize {
+        let mut at = (start as u32).to_le_bytes().to_vec();
+        at.extend(width.value().to_le_bytes());
+        self.calls.borrow_mut().push((b'b', at, Vec::new(), breaker));
+        let breakers = self.breakers.borrow();
+        let (text, size) = &breakers[breaker as usize - 1];
+        if start >= text.len() {
+            return start;
+        }
+        let mut end = start;
+        for next in code_point_ends(text, start) {
+            if (next - start) as f32 * size * 0.5 > width.value() {
+                if end == start {
+                    end = next;
+                }
+                break;
+            }
+            end = next;
+        }
+        end
+    }
+    fn text_breaker_minimum_width(&self, breaker: u64) -> Px {
+        self.calls.borrow_mut().push((b'm', Vec::new(), Vec::new(), breaker));
+        let breakers = self.breakers.borrow();
+        let (text, size) = &breakers[breaker as usize - 1];
+        let mut widest = 0.0f32;
+        let mut i = 0;
+        for next in code_point_ends(text, 0) {
+            widest = cxx::max_f32(widest, (next - i) as f32 * size * 0.5);
+            i = next;
+        }
+        Px(widest)
     }
     fn transform_text(&self, text: &mut Vec<u8>, tt: i32) {
         self.calls.borrow_mut().push((b'T', text.clone(), Vec::new(), tt as u64));
@@ -511,6 +583,8 @@ pub enum Step {
     Active(u32),
     Leave(u32),
     Refresh,
+    /// A layout at the width within a budget (`None` the renderer's).
+    Layout(f32, Option<u64>),
 }
 
 /// An `l` record's input.
@@ -536,6 +610,13 @@ pub fn cascade_record(width: f32, height: f32, dpr: f32, master: &[u8], user: &[
             }
             Step::Refresh => {
                 o.u8(b'r');
+            }
+            Step::Layout(w, budget) => {
+                o.u8(b'w').f32(*w);
+                match budget {
+                    Some(boxes) => o.u8(1).u64(*boxes),
+                    None => o.u8(0),
+                };
             }
         }
     }
@@ -686,6 +767,13 @@ pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn F
                 }
                 o.u8(1);
             }
+            b'w' => {
+                let width = i.f32();
+                let budget = if i.u8() != 0 { i.u64() } else { renderer_layout_budget(&doc) };
+                doc.set_layout_budget(budget);
+                let ret = doc.layout_document(&cx, Px(width));
+                o.f32(ret.value());
+            }
             _ => {
                 let k = i.u32();
                 let mut nodes = Vec::new();
@@ -730,6 +818,17 @@ pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn F
         }
     }
     (1, all.take())
+}
+
+/// The renderer's layout budget for a document: 100000 boxes and 50 more per element of the DOM.
+pub fn renderer_layout_budget(doc: &Document) -> u64 {
+    let mut elements = 0u64;
+    let mut pending: Vec<ElementId> = doc.root.into_iter().collect();
+    while let Some(el) = pending.pop() {
+        elements += 1;
+        pending.extend(doc.children(el).iter().copied());
+    }
+    100000 + 50 * elements
 }
 
 /// A container call: its kind, its texts and its number.

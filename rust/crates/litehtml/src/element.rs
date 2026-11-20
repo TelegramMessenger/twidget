@@ -127,6 +127,8 @@ pub struct TextState {
     /// `m_measured_font` and `m_measured_transform`: what `m_size.width` was measured in.
     pub measured_font: u64,
     pub measured_transform: i32,
+    /// `m_breaker`: the container's handle of the text's breaker, 0 for none.
+    pub breaker: u64,
 }
 
 impl Default for TextState {
@@ -138,6 +140,7 @@ impl Default for TextState {
             size: (Px(0.0), Px(0.0)),
             measured_font: 0,
             measured_transform: -1,
+            breaker: 0,
         }
     }
 }

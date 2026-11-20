@@ -948,9 +948,17 @@ pub fn view_box<T: SvgElements>(tree: &T, el: T::Node) -> Option<[f32; 4]> {
 /// box the missing one from its aspect ratio (the width `max_width` when both are missing), without one 300
 /// × 150 for the missing ones.
 pub fn get_content_size<T: SvgElements>(tree: &T, el: T::Node, max_width: Px) -> Size {
-    let b = view_box(tree, el);
-    let w = numbers(tree.get_attr(el, b"width"));
-    let h = numbers(tree.get_attr(el, b"height"));
+    content_size_of(tree.get_attr(el, b"viewbox"), tree.get_attr(el, b"width"), tree.get_attr(el, b"height"), max_width)
+}
+
+/// `el_svg::get_content_size(sz, max_width)` of the `viewBox`, `width` and `height` attributes.
+pub fn content_size_of(viewbox: Option<&[u8]>, width: Option<&[u8]>, height: Option<&[u8]>, max_width: Px) -> Size {
+    let b = {
+        let values = numbers(viewbox);
+        if values.len() != 4 || values[2] <= 0.0 || values[3] <= 0.0 { None } else { Some([values[0], values[1], values[2], values[3]]) }
+    };
+    let w = numbers(width);
+    let h = numbers(height);
     if let Some(b) = b {
         let ratio = b[3] / b[2];
         let width = if let Some(&w) = w.first() {

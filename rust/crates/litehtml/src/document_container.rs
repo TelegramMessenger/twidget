@@ -7,7 +7,7 @@ use crate::Px;
 use crate::css_tokenizer::CssToken;
 use crate::element::ElementId;
 use crate::font_description::FontDescription;
-use crate::types::{FontMetrics, MediaFeatures};
+use crate::types::{FontMetrics, MediaFeatures, Position, Size};
 use crate::utf8_strings::{utf8_to_utf32, utf32_to_utf8};
 use crate::web_color::ResolveColor;
 
@@ -94,6 +94,36 @@ pub trait DocumentContainer: ResolveColor {
 
     /// `trusted_styles(trusted)`: the document parses its master and user sheets between a `true` and a `false`.
     fn trusted_styles(&self, _trusted: bool) {}
+
+    /// `get_viewport(viewport)`: the viewport's place and size. Pure in the C++.
+    fn get_viewport(&self) -> Position {
+        Position::default()
+    }
+
+    /// `get_image_size(src, baseurl, sz)`: an image's size (`baseurl` a null pointer when `None`), left 0 × 0 when
+    /// the container does not know it. Pure in the C++.
+    fn get_image_size(&self, _src: &[u8], _baseurl: Option<&[u8]>) -> Size {
+        Size::default()
+    }
+
+    /// `create_text_breaker(text, font)`: a breaker of the text in the font, as a handle the document keeps and
+    /// passes to `text_breaker_fit` and `text_breaker_minimum_width`; 0 for none (the C++'s null pointer).
+    fn create_text_breaker(&self, _text: &[u8], _font: u64) -> u64 {
+        0
+    }
+
+    /// `text_breaker::fit(start, width)`: where the piece of the text from byte `start` that fits in `width` ends.
+    fn text_breaker_fit(&self, _breaker: u64, start: usize, _width: Px) -> usize {
+        start
+    }
+
+    /// `text_breaker::minimum_width()`: the width of the text's widest piece that cannot be broken.
+    fn text_breaker_minimum_width(&self, _breaker: u64) -> Px {
+        Px(0.0)
+    }
+
+    /// The document no longer keeps the breaker (the C++'s last `shared_ptr` to it goes). No call in the C++.
+    fn drop_text_breaker(&self, _breaker: u64) {}
 }
 
 /// A container as `parse_color` takes it: for the names it resolves.

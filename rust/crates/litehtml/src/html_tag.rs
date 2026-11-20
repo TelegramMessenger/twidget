@@ -1277,6 +1277,8 @@ impl Document {
     /// computed style is a few kilobytes).
     #[inline(never)]
     fn compute_own_style(&mut self, cx: &StyleCx, id: ElementId) {
+        self.layout.style_epoch += 1;
+        self.mark_element_layout_dirty(cx, id);
         let mut eligible = false;
         let mut shared = false;
         let mut share_key = Vec::new();
@@ -1394,13 +1396,29 @@ impl Document {
     /// otherwise now gets its styles again and computed, then its children are looked at. (The boxes it would
     /// have redrawn are stage L6's.)
     pub fn find_styles_changes(&mut self, cx: &StyleCx, id: ElementId) -> bool {
+        self.find_styles_changes_with(cx, id, &mut |_| {})
+    }
+
+    /// `find_styles_changes(redraw_box)`: the boxes an element whose styles change had (its own and its children's
+    /// render items' rendering boxes) told before it is restyled.
+    pub fn find_styles_changes_with(&mut self, cx: &StyleCx, id: ElementId, redraw_box: &mut dyn FnMut(crate::types::Position)) -> bool {
         self.budget_enter();
-        let ret = self.find_styles_changes_scoped(cx, id);
+        let ret = self.find_styles_changes_scoped(cx, id, redraw_box);
         self.budget_exit();
         ret
     }
 
-    fn find_styles_changes_scoped(&mut self, cx: &StyleCx, id: ElementId) -> bool {
+    /// The rendering boxes of the element's render items and its children's, kept out of the walk's frames.
+    #[inline(never)]
+    fn restyled_boxes(&self, cx: &StyleCx, id: ElementId, redraw_box: &mut dyn FnMut(crate::types::Position)) {
+        for el in std::iter::once(id).chain(self.el(id).children.iter().copied()) {
+            for ri in self.live_renders(el) {
+                self.get_rendering_boxes(cx, ri, redraw_box);
+            }
+        }
+    }
+
+    fn find_styles_changes_scoped(&mut self, cx: &StyleCx, id: ElementId, redraw_box: &mut dyn FnMut(crate::types::Position)) -> bool {
         if self.el(id).css.m_display == StyleDisplay::display_inline_text.index() {
             return false;
         }
@@ -1408,6 +1426,7 @@ impl Document {
         let mut ret = false;
 
         if self.requires_styles_update(cx, id) {
+            self.restyled_boxes(cx, id, redraw_box);
             self.refresh_styles(cx, id);
             self.compute_styles(cx, id, true);
             ret = true;
@@ -1415,7 +1434,7 @@ impl Document {
         let mut i = 0;
         while i < self.el(id).children.len() {
             let child = self.el(id).children[i];
-            if self.find_styles_changes(cx, child) {
+            if self.find_styles_changes_with(cx, child, redraw_box) {
                 ret = true;
             }
             i += 1;

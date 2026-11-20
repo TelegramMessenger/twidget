@@ -134,11 +134,29 @@ pub struct Switches {
     pub sibling_index: bool,
     /// `prune_enabled()`: not `LH_NO_DESCENDANT_PRUNE`.
     pub descendant_prune: bool,
+    /// `layout_cache_enabled()`: not `LH_NO_LAYOUT_CACHE`.
+    pub layout_cache: bool,
+    /// `same_resolved_layout_input` may reuse a fixed flex box's layout: not `LH_NO_FIXED_LAYOUT_REUSE` (read on
+    /// every call in the C++).
+    pub fixed_layout_reuse: bool,
+    /// `render` keeps the positioned boxes it fetched while styles and tree stay: not `LH_NO_POSITIONED_REUSE`.
+    pub positioned_reuse: bool,
+    /// `layout_cache_check()`: `LH_LAYOUT_CACHE_CHECK`, a cache hit laid out again and compared.
+    pub layout_cache_check: bool,
 }
 
 impl Default for Switches {
     fn default() -> Switches {
-        Switches { style_sharing: true, id_share: true, sibling_index: true, descendant_prune: true }
+        Switches {
+            style_sharing: true,
+            id_share: true,
+            sibling_index: true,
+            descendant_prune: true,
+            layout_cache: true,
+            fixed_layout_reuse: true,
+            positioned_reuse: true,
+            layout_cache_check: false,
+        }
     }
 }
 
@@ -281,6 +299,8 @@ pub struct Document {
     pub render: crate::render_item::RenderTree,
     /// Slots of `elements` the render tree's anonymous elements left, to be used again by the next ones.
     pub free_elements: Vec<ElementId>,
+    /// What layout keeps of the document.
+    pub layout: crate::layout::DocLayout,
 }
 
 /// `svg_geometry_attribute(name)`: the SVG attributes whose values are holes (unless a selector names them).

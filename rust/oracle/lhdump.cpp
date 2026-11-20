@@ -124,6 +124,37 @@ LHDUMP_ROB_L(ElRenders, element::m_renders)
 LHDUMP_ROB_L(TableGridOf, render_item_table::m_grid)
 LHDUMP_ROB_L(TableSpacingX, render_item_table::m_border_spacing_x)
 LHDUMP_ROB_L(TableSpacingY, render_item_table::m_border_spacing_y)
+LHDUMP_ROB_L(RiLayoutDirty, render_item::m_layout_dirty)
+LHDUMP_ROB_L(RiRelayoutPending, render_item::m_relayout_pending)
+LHDUMP_ROB_L(RiOutOfFlow, render_item::m_out_of_flow)
+LHDUMP_ROB_L(RiLayoutEpoch, render_item::m_layout_epoch)
+LHDUMP_ROB_L(RiLastLayout, render_item::m_last_layout)
+LHDUMP_ROB_L(RiLastPos, render_item::m_last_pos)
+LHDUMP_ROB_L(RiLastX, render_item::m_last_x)
+LHDUMP_ROB_L(RiLastY, render_item::m_last_y)
+LHDUMP_ROB_L(RiLastMargins, render_item::m_last_margins)
+LHDUMP_ROB_L(RiLastPadding, render_item::m_last_padding)
+LHDUMP_ROB_L(RiLastBorders, render_item::m_last_borders)
+LHDUMP_ROB_L(RiMeasured, render_item::m_measured)
+LHDUMP_ROB_L(RiMeasuredNext, render_item::m_measured_next)
+LHDUMP_ROB_L(RiResolvedSafe, render_item::m_resolved_layout_safe)
+LHDUMP_ROB_L(RiPositioned, render_item::m_positioned)
+LHDUMP_ROB_L(InlineBoxes, render_item_inline::m_boxes)
+LHDUMP_ROB_L(BcVaApplied, render_item_block_context::m_va_applied)
+LHDUMP_ROB_L(IcTrailing, render_item_inline_context::m_trailing)
+LHDUMP_ROB_L(IcFragmented, render_item_inline_context::m_fragmented_texts)
+LHDUMP_ROB_L(IcLines, render_item_inline_context::m_line_boxes)
+LHDUMP_ROB_L(IcRendered, render_item_inline_context::m_rendered_width)
+LHDUMP_ROB_L(IcVaApplied, render_item_inline_context::m_va_applied)
+LHDUMP_ROB_L(IcEllipses, render_item_inline_context::m_ellipses)
+LHDUMP_ROB_L(IcCut, render_item_inline_context::m_cut)
+LHDUMP_ROB_L(LbDefaultLineHeight, line_box::m_default_line_height)
+LHDUMP_ROB_L(LbFontMetrics, line_box::m_font_metrics)
+LHDUMP_ROB_L(LbTextAlign, line_box::m_text_align)
+LHDUMP_ROB_L(LbRtl, line_box::m_rtl)
+LHDUMP_ROB_L(LbiMinWidth, line_box_item::m_rendered_min_width)
+LHDUMP_ROB_L(TextBreaker, el_text::m_breaker)
+LHDUMP_ROB_L(DocSize, document::m_size)
 #undef LHDUMP_ROB_L
 } // namespace lhdump_dom
 
@@ -145,6 +176,7 @@ struct In {
     }
     uint8_t u8() { return raw<uint8_t>(); }
     uint32_t u32() { return raw<uint32_t>(); }
+    uint64_t u64() { return raw<uint64_t>(); }
     int32_t i32() { return raw<int32_t>(); }
     float f32() { return raw<float>(); }
     double f64() { return raw<double>(); }
@@ -651,7 +683,7 @@ void clear_switches() {
 
 // ---- Stage L5: the cascade ('l') ----
 
-// The cascade's container: the renderer's answers where the fork asks (fonts with fixed metrics per description, widths per byte, ASCII text transforms, the trusted switch and its sanitize_declaration), its viewport set by the case, and every font, width, image and transform call logged.
+// The cascade's container: the renderer's answers where the fork asks (fonts with fixed metrics per description, widths per byte, ASCII text transforms, the trusted switch and its sanitize_declaration), its viewport set by the case, every font, width, image and transform call logged; for layout the viewport, image sizes from the source's bytes and text breakers that break between any two characters, logged too.
 class CascadeContainer final : public OracleContainer {
 public:
     float width = 375, height = 667, dpr = 2;
@@ -661,9 +693,71 @@ public:
         std::string a, b;
         int64_t n = 0;
     };
-    std::vector<Call> calls;
+    mutable std::vector<Call> calls;
     std::map<uint_ptr, float> sizes;
     uint_ptr next = 0;
+    uint64_t breakers = 0;
+
+    // A breaker of a text in a font: every character, by its bytes, as wide as text_width makes a byte, and a break before any of them.
+    class Breaker final : public text_breaker {
+    public:
+        CascadeContainer* owner;
+        uint64_t id;
+        std::string text;
+        float size;
+        Breaker(CascadeContainer* o, uint64_t i, std::string t, float s) : owner(o), id(i), text(std::move(t)), size(s) {}
+        size_t fit(size_t start, pixel_t width) override {
+            std::string at(8, '\0');
+            const uint32_t s32 = uint32_t(start);
+            const float w = width.value();
+            std::memcpy(at.data(), &s32, 4);
+            std::memcpy(at.data() + 4, &w, 4);
+            owner->calls.push_back({'b', at, {}, int64_t(id)});
+            if (start >= text.size()) return start;
+            size_t end = start;
+            for (size_t i = start; i < text.size();) {
+                size_t next = i + 1;
+                while (next < text.size() && (static_cast<unsigned char>(text[next]) & 0xC0) == 0x80) next++;
+                if (float(next - start) * size * 0.5f > width.value()) {
+                    if (end == start) end = next;
+                    break;
+                }
+                end = next;
+                i = next;
+            }
+            return end;
+        }
+        pixel_t minimum_width() override {
+            owner->calls.push_back({'m', {}, {}, int64_t(id)});
+            float widest = 0;
+            for (size_t i = 0; i < text.size();) {
+                size_t next = i + 1;
+                while (next < text.size() && (static_cast<unsigned char>(text[next]) & 0xC0) == 0x80) next++;
+                widest = std::max(widest, float(next - i) * size * 0.5f);
+                i = next;
+            }
+            return pixel_t(widest);
+        }
+    };
+
+    std::shared_ptr<text_breaker> create_text_breaker(const std::string& text, uint_ptr font) override {
+        calls.push_back({'B', text, {}, int64_t(font)});
+        auto it = sizes.find(font);
+        return std::make_shared<Breaker>(this, ++breakers, text, it == sizes.end() ? 0.f : it->second);
+    }
+    void get_viewport(position& viewport) const override {
+        calls.push_back({'V', {}, {}, 0});
+        viewport = position(0, 0, pixel_t(width), pixel_t(height));
+    }
+    void get_image_size(const char* src, const char* baseurl, litehtml::size& sz) override {
+        const std::string s = src ? src : "";
+        calls.push_back({'S', s, baseurl ? baseurl : "", baseurl ? 1 : 0});
+        if (s.empty()) return;
+        uint32_t sum = 0;
+        for (char c : s) sum += static_cast<unsigned char>(c);
+        sz.width = pixel_t(float(sum % 200));
+        sz.height = pixel_t(float((sum * 7 + uint32_t(s.size())) % 150));
+    }
 
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
         calls.push_back({'F', d.hash(), {}, 0});
@@ -1200,8 +1294,204 @@ void write_render_tree(Out& o, document& doc) {
     o.u8(0);
 }
 
-// f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump (the cascade, or with tree the render tree), 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
-void cascade(In& in, Out& o, bool tree) {
+// ---- Stages L7 and L8: layout ('Y') ----
+
+void write_typed(Out& o, const containing_block_context::typed_pixel& t) {
+    o.f32(t.value.value());
+    o.u8(uint8_t(t.type));
+}
+
+void write_cb(Out& o, const containing_block_context& cb) {
+    for (const auto* t : {&cb.width, &cb.render_width, &cb.min_width, &cb.max_width, &cb.height, &cb.min_height, &cb.max_height}) write_typed(o, *t);
+    o.i32(cb.context_idx);
+    o.u32(cb.size_mode);
+}
+
+template <typename Entry> void write_entry(Out& o, const Entry& e) {
+    o.u8(e.valid ? 1 : 0);
+    o.u8(e.second_pass ? 1 : 0);
+    write_cb(o, e.cb);
+    o.f32(e.ret.natural_width.value());
+    o.f32(e.ret.min_width.value());
+    o.f32(e.outer_height.value());
+}
+
+void write_pos(Out& o, const position& p) {
+    for (pixel_t v : {p.x, p.y, p.width, p.height}) o.f32(v.value());
+}
+
+void write_sides(Out& o, const margins& m) {
+    for (pixel_t v : {m.left, m.right, m.top, m.bottom}) o.f32(v.value());
+}
+
+// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip; its cache and marks; its positioned items; its scroll view; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
+void write_layout(Out& o, document& doc) {
+    using lhdump_dom::field;
+    TreeIndex t;
+    std::vector<std::pair<element::ptr, int32_t>> nodes;
+    if (doc.root()) cascade_walk(doc.root(), -1, nodes);
+    for (size_t k = 0; k < nodes.size(); k++) t.dom[nodes[k].first.get()] = int32_t(k);
+    if (doc.root_render()) t.visit(doc.root_render().get());
+    const auto& tabular = field<lhdump_dom::DocTabular>(doc);
+    for (const auto& item : tabular) t.visit(item.get());
+    std::map<const render_item*, std::pair<int32_t, int32_t>> pieces;
+    for (size_t k = 0; k < t.items.size(); k++)
+        if (auto* text = dynamic_cast<render_text*>(t.items[k]))
+            for (size_t f = 0; f < text->fragments.size(); f++) pieces[text->fragments[f].get()] = {int32_t(k), int32_t(f)};
+    auto item_ref = [&](const render_item* ri) {
+        if (auto it = pieces.find(ri); it != pieces.end()) {
+            o.i32(it->second.first);
+            o.i32(it->second.second);
+        } else {
+            o.i32(t.of(ri));
+            o.i32(-1);
+        }
+    };
+    o.u8(doc.root_render() ? 1 : 0);
+    const litehtml::size& size = field<lhdump_dom::DocSize>(doc);
+    o.f32(size.width.value());
+    o.f32(size.height.value());
+    o.u64(doc.layout_spent());
+    o.u8(doc.layout_exhausted() ? 1 : 0);
+    o.u8(doc.m_has_positioned ? 1 : 0);
+    o.u64(doc.layout_epoch());
+    o.u32(uint32_t(doc.m_relayout_roots.size()));
+    o.u8(doc.m_layout_after_render ? 1 : 0);
+    o.u32(uint32_t(t.items.size()));
+    auto write_inline_boxes = [&](render_item& ri) {
+        const auto& boxes = field<lhdump_dom::InlineBoxes>(static_cast<render_item_inline&>(ri));
+        o.u32(uint32_t(boxes.size()));
+        for (const auto& b : boxes) write_pos(o, b);
+    };
+    for (size_t k = 0; k < t.items.size(); k++) {
+        render_item* ri = t.items[k];
+        const int kind = render_kind(*ri);
+        o.u8(uint8_t(kind));
+        o.i32(t.of_el(ri->src_el().get()));
+        o.i32(t.of(ri->parent().get()));
+        o.u32(uint32_t(ri->children().size()));
+        for (const auto& child : ri->children()) o.i32(t.of(child.get()));
+        write_pos(o, ri->pos());
+        for (const margins* m : {&ri->get_margins(), &ri->get_paddings(), &ri->get_borders()}) write_sides(o, *m);
+        o.u8(ri->skip() ? 1 : 0);
+        o.u8(field<lhdump_dom::RiLayoutDirty>(*ri) ? 1 : 0);
+        o.u8(field<lhdump_dom::RiRelayoutPending>(*ri) ? 1 : 0);
+        o.u8(field<lhdump_dom::RiOutOfFlow>(*ri) ? 1 : 0);
+        o.u64(field<lhdump_dom::RiLayoutEpoch>(*ri));
+        write_entry(o, field<lhdump_dom::RiLastLayout>(*ri));
+        write_pos(o, field<lhdump_dom::RiLastPos>(*ri));
+        o.f32(field<lhdump_dom::RiLastX>(*ri).value());
+        o.f32(field<lhdump_dom::RiLastY>(*ri).value());
+        write_sides(o, field<lhdump_dom::RiLastMargins>(*ri));
+        write_sides(o, field<lhdump_dom::RiLastPadding>(*ri));
+        write_sides(o, field<lhdump_dom::RiLastBorders>(*ri));
+        for (const auto& entry : field<lhdump_dom::RiMeasured>(*ri)) write_entry(o, entry);
+        o.i32(field<lhdump_dom::RiMeasuredNext>(*ri));
+        o.i32(field<lhdump_dom::RiResolvedSafe>(*ri));
+        const auto& positioned = field<lhdump_dom::RiPositioned>(*ri);
+        o.u32(uint32_t(positioned.size()));
+        for (const auto& p : positioned) o.i32(t.of(p.get()));
+        const scroll_view* view = ri->get_scroll_view();
+        o.u8(view ? 1 : 0);
+        if (view) {
+            write_pos(o, view->get_viewport());
+            o.f32(view->get_scroll_size().width.value());
+            o.f32(view->get_scroll_size().height.value());
+            o.f32(view->get_left().value());
+            o.f32(view->get_top().value());
+        }
+        if (kind == 4 || kind == 5) write_inline_boxes(*ri);
+        if (kind == 2) o.f32(field<lhdump_dom::BcVaApplied>(static_cast<render_item_block_context&>(*ri)).value());
+        if (kind == 5) {
+            auto& text = static_cast<render_text&>(*ri);
+            o.u8(text.is_fragment ? 1 : 0);
+            o.str(text.fragment_text);
+            o.i32(text.cut);
+            o.u32(uint32_t(text.fragments.size()));
+            for (const auto& f : text.fragments) {
+                write_pos(o, f->pos());
+                for (const margins* m : {&f->get_margins(), &f->get_paddings(), &f->get_borders()}) write_sides(o, *m);
+                o.u8(f->skip() ? 1 : 0);
+                o.u8(f->is_fragment ? 1 : 0);
+                o.str(f->fragment_text);
+                o.i32(f->cut);
+                o.i32(t.of(f->parent().get()));
+                o.u32(uint32_t(f->fragments.size()));
+                write_inline_boxes(*f);
+            }
+        }
+        if (kind == 3) {
+            auto& ic = static_cast<render_item_inline_context&>(*ri);
+            o.f32(field<lhdump_dom::IcTrailing>(ic).value());
+            const rendered_width& rendered = field<lhdump_dom::IcRendered>(ic);
+            o.f32(rendered.natural_width.value());
+            o.f32(rendered.min_width.value());
+            o.f32(field<lhdump_dom::IcVaApplied>(ic).value());
+            o.u8(field<lhdump_dom::IcCut>(ic) ? 1 : 0);
+            const auto& ellipses = field<lhdump_dom::IcEllipses>(ic);
+            o.u32(uint32_t(ellipses.size()));
+            for (const auto& e : ellipses) write_pos(o, e);
+            const auto& texts = field<lhdump_dom::IcFragmented>(ic);
+            o.u32(uint32_t(texts.size()));
+            for (const auto& text : texts) item_ref(text.get());
+            auto& lines = field<lhdump_dom::IcLines>(ic);
+            o.u32(uint32_t(lines.size()));
+            for (auto& line : lines) {
+                for (pixel_t v : {line->top(), line->left(), line->line_right(), line->height(), line->width(), line->baseline()}) o.f32(v.value());
+                o.i32(int32_t(field<lhdump_dom::LbTextAlign>(*line)));
+                o.u8(field<lhdump_dom::LbRtl>(*line) ? 1 : 0);
+                o.f32(line->get_rendered_width().natural_width.value());
+                o.f32(line->get_rendered_width().min_width.value());
+                const css_line_height_t& lh = field<lhdump_dom::LbDefaultLineHeight>(*line);
+                o.f32(lh.computed_value.value());
+                o.u8(lh.css_value.is_predefined() ? 1 : 0);
+                write_metrics(o, field<lhdump_dom::LbFontMetrics>(*line));
+                o.u32(uint32_t(line->items().size()));
+                for (auto& item : line->items()) {
+                    const auto type = item->get_type();
+                    o.u8(uint8_t(type));
+                    o.u8(type == line_box_item::type_text_part && typeid(*item) != typeid(line_box_item) ? 1 : 0);
+                    item_ref(item->get_el().get());
+                    o.f32(field<lhdump_dom::LbiMinWidth>(*item).value());
+                    o.f32(item->get_items_top().value());
+                    o.f32(item->get_items_bottom().value());
+                    if (type != line_box_item::type_text_part) write_pos(o, item->pos());
+                    for (pixel_t v : {item->left(), item->right(), item->top(), item->bottom(), item->width(), item->height(), item->get_rendered_min_width(), item->get_rendered_natural_width()})
+                        o.f32(v.value());
+                }
+            }
+        }
+    }
+    o.u32(uint32_t(nodes.size()));
+    for (const auto& [el, parent] : nodes) {
+        o.f32(el->css().line_height().computed_value.value());
+        o.i32(t.of(el->get_render_item().get()));
+        const int kind = lhdump_dom::kind_of(*el);
+        if (kind == 25 || kind == 26) o.u8(field<lhdump_dom::TextBreaker>(static_cast<el_text&>(*el)) ? 1 : 0);
+    }
+    o.u32(uint32_t(t.anon.size()));
+    for (element* el : t.anon) {
+        o.f32(el->css().line_height().computed_value.value());
+        o.i32(t.of(el->get_render_item().get()));
+    }
+}
+
+// The renderer's layout budget for the document: 100000 boxes and 50 more per element of the DOM.
+uint64_t renderer_layout_budget(document& doc) {
+    uint64_t elements = 0;
+    std::vector<const element*> pending;
+    if (auto root = doc.root()) pending.push_back(root.get());
+    while (!pending.empty()) {
+        const element* el = pending.back();
+        pending.pop_back();
+        elements++;
+        for (const auto& child : el->children()) pending.push_back(child.get());
+    }
+    return 100000 + 50 * elements;
+}
+
+// f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump (the cascade, with mode 1 the render tree, with mode 2 the layout), 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root, 'w' f32 width and u8 budget (0 the renderer's, 1 a u64 that follows) then render, answered with its f32): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
+void cascade(In& in, Out& o, int mode) {
     const size_t names_before = _id_usage().names;
     CascadeContainer container;
     container.width = in.f32();
@@ -1237,10 +1527,19 @@ void cascade(In& in, Out& o, bool tree) {
     for (uint32_t s = 0; s < steps && in.at < in.s.size(); s++, phases.push_back(container.calls.size())) {
         const uint8_t op = in.u8();
         if (op == 'd') {
-            if (tree)
+            if (mode == 2)
+                write_layout(o, *doc);
+            else if (mode == 1)
                 write_render_tree(o, *doc);
             else
                 write_cascade(o, *doc);
+            continue;
+        }
+        if (op == 'w') {
+            const float width = in.f32();
+            const uint8_t how = in.u8();
+            doc->set_layout_budget(how ? in.u64() : renderer_layout_budget(*doc));
+            o.f32(doc->render(pixel_t(width)).value());
             continue;
         }
         if (op == 'm') {
@@ -1710,7 +2009,7 @@ bool run(int op, std::string_view input) {
     case 'o': { // the renderer's rewrite_color_scheme: u8 dark (0 or 1), the text; or, after an 'r', the render tree: as 'l', each dump step the tree (write_render_tree)
         if (!input.empty() && input[0] == 'r') {
             in.u8();
-            cascade(in, o, true);
+            cascade(in, o, 1);
             answer(1, o.s);
             return true;
         }
@@ -1916,7 +2215,12 @@ bool run(int op, std::string_view input) {
         return true;
     }
     case 'l': { // the cascade: a document finalized under a viewport with master and user sheets, then steps (media changes, :hover and :active flips, refreshes) and every element's computed style after each dump step: cascade() above
-        cascade(in, o, false);
+        cascade(in, o, 0);
+        answer(1, o.s);
+        return true;
+    }
+    case 'Y': { // layout: as 'l', with layout steps ('w'), and each dump step the layout (write_layout)
+        cascade(in, o, 2);
         answer(1, o.s);
         return true;
     }

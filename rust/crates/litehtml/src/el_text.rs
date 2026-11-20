@@ -33,6 +33,7 @@ impl Document {
     /// font or the transform changed.
     #[inline(never)]
     pub fn el_text_compute_styles(&mut self, cx: &StyleCx, id: ElementId) {
+        self.mark_element_layout_dirty(cx, id);
         let el_parent = self.parent(id);
         if let Some(parent) = el_parent {
             let pc = &self.el(parent).css;
@@ -116,11 +117,33 @@ impl Document {
             let state = &mut self.el_mut(id).text_state;
             state.size.1 = fm.height;
             if measured_font != font || measured_transform != transform {
+                let breaker = std::mem::take(&mut state.breaker);
+                if breaker != 0 {
+                    cx.container.drop_text_breaker(breaker);
+                }
+                let state = &mut self.el_mut(id).text_state;
                 state.size.0 = cx.container.text_width(crate::gumbo::c_str(&shown), font);
                 state.measured_font = font;
                 state.measured_transform = transform;
             }
         }
         self.el_mut(id).text_state.draw_spaces = fm.draw_spaces;
+    }
+
+    /// `display_text()`: the text as transformed, or as written.
+    pub fn display_text(&self, id: ElementId) -> &[u8] {
+        let el = self.el(id);
+        if el.text_state.use_transformed { &el.text_state.transformed_text } else { &el.text }
+    }
+
+    /// `breaker()`: the text's breaker, which the container makes once (of the shown text in the text's font) and
+    /// the text keeps until its font or transform changes; 0 when the container makes none.
+    pub fn breaker(&mut self, cx: &StyleCx, id: ElementId) -> u64 {
+        if self.el(id).text_state.breaker == 0 {
+            let font = self.el(id).css.m_font;
+            let made = cx.container.create_text_breaker(self.display_text(id), font);
+            self.el_mut(id).text_state.breaker = made;
+        }
+        self.el(id).text_state.breaker
     }
 }

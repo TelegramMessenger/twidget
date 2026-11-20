@@ -1,9 +1,8 @@
-//! `render_item.h` and `render_item.cpp` as far as the render tree goes (stage L6): the render items, built from
-//! the cascaded DOM (`element::create_render_item`, `el_image`'s and `el_svg`'s, `el_comment`'s none), `init()`
-//! (the base class's here; `render_item_block`'s, `render_item_flex`'s and `render_item_table`'s in their
-//! modules), `split_inlines`, `clone`, and each element's list of its render items (`element::m_renders`,
-//! `add_render`, `get_render_item`). Sizing and placement (`render`, `measure`, `_render` and everything after
-//! them) are later stages'.
+//! `render_item.h` and `render_item.cpp`: the render items, built from the cascaded DOM (stage L6:
+//! `element::create_render_item`, `el_image`'s and `el_svg`'s, `el_comment`'s none), `init()` (the base class's
+//! here; `render_item_block`'s, `render_item_flex`'s and `render_item_table`'s in their modules), `split_inlines`,
+//! `clone`, and each element's list of its render items (`element::m_renders`, `add_render`, `get_render_item`);
+//! and their layout (stages L7 and L8, in `layout.rs`).
 //!
 //! The C++'s `shared_ptr` tree is an arena, [`RenderTree`], of [`RenderItem`]s by [`RenderId`]. What owns an item in
 //! the C++ owns it here, counted: its parent's children, the document's root and its tabular list, a table's grid.
@@ -18,9 +17,10 @@ use crate::Px;
 use crate::css_values::*;
 use crate::document::{Document, StyleCx};
 use crate::element::{ElementId, ElementKind};
+use crate::line_box::LineBox;
 use crate::string_id::*;
 use crate::table::TableGrid;
-use crate::types::{Margins, Position};
+use crate::types::{ContainingBlockContext, Margins, Position, RenderedWidth, Size};
 
 macro_rules! numbers {
     ($($ty:ident :: $name:ident),* $(,)?) => {
@@ -50,8 +50,48 @@ numbers!(
     StyleDisplay::display_grid,
     StyleDisplay::display_inline_grid,
     ElementFloat::float_none,
+    ElementFloat::float_left,
+    ElementFloat::float_right,
+    ElementClear::clear_none,
+    ElementClear::clear_left,
+    ElementClear::clear_right,
+    ElementClear::clear_both,
+    ListStyleType::list_style_type_none,
     ListStyleType::list_style_type_armenian,
+    ListStylePosition::list_style_position_inside,
     BorderCollapse::border_collapse_separate,
+    ElementPosition::element_position_static,
+    ElementPosition::element_position_relative,
+    ElementPosition::element_position_absolute,
+    ElementPosition::element_position_fixed,
+    ElementPosition::element_position_sticky,
+    Overflow::overflow_visible,
+    Overflow::overflow_hidden,
+    Overflow::overflow_scroll,
+    Overflow::overflow_auto,
+    Overflow::overflow_clip,
+    VerticalAlign::va_baseline,
+    VerticalAlign::va_sub,
+    VerticalAlign::va_super,
+    VerticalAlign::va_top,
+    VerticalAlign::va_text_top,
+    VerticalAlign::va_middle,
+    VerticalAlign::va_bottom,
+    VerticalAlign::va_text_bottom,
+    TextAlign::text_align_left,
+    TextAlign::text_align_right,
+    TextAlign::text_align_center,
+    TextAlign::text_align_justify,
+    TextAlign::text_align_start,
+    TextAlign::text_align_end,
+    WhiteSpace::white_space_normal,
+    WhiteSpace::white_space_nowrap,
+    WhiteSpace::white_space_pre,
+    WhiteSpace::white_space_pre_line,
+    WhiteSpace::white_space_pre_wrap,
+    OverflowWrap::overflow_wrap_normal,
+    OverflowWrap::overflow_wrap_anywhere,
+    Direction::direction_rtl,
 );
 
 /// A render item: its slot in [`RenderTree`] and which use of the slot it is.
@@ -88,9 +128,132 @@ pub struct TableData {
     pub border_spacing_y: Px,
 }
 
-/// A render item of any class: what `render_item` holds as far as the tree goes, and a table's grid. Layout's
-/// state (`m_pos` and the caches beside it, `m_positioned`, the scroll view, the ink, a text's fragments, the inline
-/// boxes, the line boxes) is later stages'.
+/// `render_item::layout_entry`: a layout's input and what it gave.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayoutEntry {
+    pub cb: ContainingBlockContext,
+    pub ret: RenderedWidth,
+    pub second_pass: bool,
+    pub valid: bool,
+    pub outer_height: Px,
+}
+
+/// The layout cache of a render item and its marks: `m_layout_dirty`, `m_relayout_pending`, `m_out_of_flow`,
+/// `m_layout_epoch`, the last layout (`m_last_layout` with the place and boxes it left), the two measures
+/// (`m_measured`, `m_measured_next`) and `m_resolved_layout_safe`.
+#[derive(Clone, Copy, Debug)]
+pub struct LayoutState {
+    pub layout_dirty: bool,
+    pub relayout_pending: bool,
+    pub out_of_flow: bool,
+    pub layout_epoch: u64,
+    pub last_layout: LayoutEntry,
+    pub last_pos: Position,
+    pub last_x: Px,
+    pub last_y: Px,
+    pub last_margins: Margins,
+    pub last_padding: Margins,
+    pub last_borders: Margins,
+    pub measured: [LayoutEntry; 2],
+    pub measured_next: i32,
+    pub resolved_layout_safe: i32,
+}
+
+impl Default for LayoutState {
+    fn default() -> LayoutState {
+        LayoutState {
+            layout_dirty: true,
+            relayout_pending: false,
+            out_of_flow: true,
+            layout_epoch: 0,
+            last_layout: LayoutEntry::default(),
+            last_pos: Position::default(),
+            last_x: Px(0.0),
+            last_y: Px(0.0),
+            last_margins: Margins::default(),
+            last_padding: Margins::default(),
+            last_borders: Margins::default(),
+            measured: [LayoutEntry::default(); 2],
+            measured_next: 0,
+            resolved_layout_safe: -1,
+        }
+    }
+}
+
+/// `scroll_view`: the padding box a box with `overflow: scroll`, `auto` or `hidden` shows and what it could scroll
+/// over, with the scroll position.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScrollView {
+    pub viewport: Position,
+    pub scroll_size: Size,
+    pub left: Px,
+    pub top: Px,
+}
+
+impl ScrollView {
+    /// `get_max_h_scroll()`.
+    pub fn get_max_h_scroll(&self) -> Px {
+        Px(0.0).max(self.scroll_size.width - self.viewport.width)
+    }
+
+    /// `get_max_v_scroll()`.
+    pub fn get_max_v_scroll(&self) -> Px {
+        Px(0.0).max(self.scroll_size.height - self.viewport.height)
+    }
+
+    /// `set(viewport, scroll_size)`: the scroll position kept inside the new range.
+    pub fn set(&mut self, viewport: Position, scroll_size: Size) {
+        self.viewport = viewport;
+        self.scroll_size = scroll_size;
+        self.left = clamp_px(self.left, Px(0.0), self.get_max_h_scroll());
+        self.top = clamp_px(self.top, Px(0.0), self.get_max_v_scroll());
+    }
+}
+
+/// `std::clamp(v, lo, hi)` with `pixel_t`'s comparisons.
+pub fn clamp_px(v: Px, lo: Px, hi: Px) -> Px {
+    if v < lo {
+        lo
+    } else if hi < v {
+        hi
+    } else {
+        v
+    }
+}
+
+/// `render_text`'s own: the pieces a wrapped text was cut into (`fragments`, which own them), a piece's text
+/// (`fragment_text`) and whether the item is one (`is_fragment`), and how many bytes `text-overflow: ellipsis`
+/// leaves drawn (`cut`, -1 all).
+#[derive(Clone, Debug)]
+pub struct TextItem {
+    pub fragments: Vec<RenderId>,
+    pub fragment_text: Vec<u8>,
+    pub is_fragment: bool,
+    pub cut: i32,
+}
+
+impl Default for TextItem {
+    fn default() -> TextItem {
+        TextItem { fragments: Vec::new(), fragment_text: Vec::new(), is_fragment: false, cut: -1 }
+    }
+}
+
+/// `render_item_inline_context`'s own: `m_trailing`, the texts it cut into pieces (`m_fragmented_texts`), its line
+/// boxes, `m_rendered_width`, `m_va_applied`, the ellipses it placed and whether its texts may be cut (`m_cut`).
+#[derive(Clone, Debug, Default)]
+pub struct InlineState {
+    pub trailing: Px,
+    pub fragmented_texts: Vec<RenderId>,
+    pub line_boxes: Vec<LineBox>,
+    pub rendered_width: RenderedWidth,
+    pub va_applied: Px,
+    pub ellipses: Vec<Position>,
+    pub cut: bool,
+}
+
+/// A render item of any class: what `render_item` holds, a table's grid, and the layout state of each class (a
+/// block context's `m_va_applied`, an inline's boxes, a text's pieces, an inline context's line boxes). The ink is
+/// painting's (L13).
 #[derive(Clone, Debug)]
 pub struct RenderItem {
     pub kind: RenderKind,
@@ -113,6 +276,20 @@ pub struct RenderItem {
     pub defer_borders: bool,
     /// A `render_item_table`'s own.
     pub table: Option<Box<TableData>>,
+    /// `m_positioned`, which own their items.
+    pub positioned: Vec<RenderId>,
+    /// `m_scroll_view`.
+    pub scroll_view: Option<ScrollView>,
+    /// The layout cache and its marks.
+    pub layout: LayoutState,
+    /// `render_item_block_context::m_va_applied`.
+    pub va_applied: Px,
+    /// `render_item_inline::m_boxes` (and a `render_text`'s).
+    pub inline_boxes: Vec<Position>,
+    /// A `render_text`'s own.
+    pub text: Option<Box<TextItem>>,
+    /// A `render_item_inline_context`'s own.
+    pub inline: Option<Box<InlineState>>,
     /// The owners that hold the item.
     strong: u32,
     generation: u32,
@@ -149,7 +326,7 @@ impl RenderTree {
         self.get(id).expect("a live render item")
     }
 
-    fn item_mut(&mut self, id: RenderId) -> &mut RenderItem {
+    pub(crate) fn item_mut(&mut self, id: RenderId) -> &mut RenderItem {
         self.items.get_mut(id.index as usize).filter(|item| item.live && item.generation == id.generation).expect("a live render item")
     }
 
@@ -200,6 +377,68 @@ impl RenderTree {
     }
 }
 
+impl RenderItem {
+    /// `right()`: the margin box's right edge.
+    pub fn right(&self) -> Px {
+        self.left() + self.width()
+    }
+
+    /// `left()`.
+    pub fn left(&self) -> Px {
+        self.pos.left() - self.margins.left - self.padding.left - self.borders.left
+    }
+
+    /// `top()`.
+    pub fn top(&self) -> Px {
+        self.pos.top() - self.margins.top - self.padding.top - self.borders.top
+    }
+
+    /// `bottom()`.
+    pub fn bottom(&self) -> Px {
+        self.top() + self.height()
+    }
+
+    /// `height()`: the margin box's.
+    pub fn height(&self) -> Px {
+        self.pos.height + self.margins.height() + self.padding.height() + self.borders.height()
+    }
+
+    /// `width()`.
+    pub fn width(&self) -> Px {
+        self.pos.width + self.margins.width() + self.padding.width() + self.borders.width()
+    }
+
+    /// `content_offset_top()`: margin, padding and border above the content.
+    pub fn content_offset_top(&self) -> Px {
+        self.margins.top + self.padding.top + self.borders.top
+    }
+
+    /// `content_offset_bottom()`.
+    pub fn content_offset_bottom(&self) -> Px {
+        self.margins.bottom + self.padding.bottom + self.borders.bottom
+    }
+
+    /// `content_offset_left()`.
+    pub fn content_offset_left(&self) -> Px {
+        self.margins.left + self.padding.left + self.borders.left
+    }
+
+    /// `content_offset_right()`.
+    pub fn content_offset_right(&self) -> Px {
+        self.margins.right + self.padding.right + self.borders.right
+    }
+
+    /// `content_offset_width()`.
+    pub fn content_offset_width(&self) -> Px {
+        self.content_offset_left() + self.content_offset_right()
+    }
+
+    /// `content_offset_height()`.
+    pub fn content_offset_height(&self) -> Px {
+        self.content_offset_top() + self.content_offset_bottom()
+    }
+}
+
 impl Document {
     /// The constructor of a render item of the class: the element's margins, padding and border widths in pixels
     /// (`render_item::render_item`; a table's spacing starts at 0). Kept out of the tree walks' frames.
@@ -232,6 +471,13 @@ impl Document {
             collapse_skip: 0,
             defer_borders: false,
             table,
+            positioned: Vec::new(),
+            scroll_view: None,
+            layout: LayoutState::default(),
+            va_applied: Px(0.0),
+            inline_boxes: Vec::new(),
+            text: (kind == RenderKind::render_text).then(Box::default),
+            inline: (kind == RenderKind::render_item_inline_context).then(Box::default),
             strong: 0,
             generation: 0,
             live: false,
@@ -272,6 +518,10 @@ impl Document {
         item.generation = item.generation.wrapping_add(1);
         let element = item.element;
         pending.append(&mut item.children);
+        pending.append(&mut item.positioned);
+        if let Some(text) = item.text.as_mut() {
+            pending.append(&mut text.fragments);
+        }
         if let Some(table) = item.table.take()
             && let Some(grid) = table.grid
         {
@@ -582,6 +832,7 @@ impl Document {
         let made = self.create_render_item(cx, root, None);
         self.set_root_render(made);
         self.render.serial += 1;
+        self.layout.relayout_roots.clear();
         self.fix_tables_layout(cx);
         if let Some(root_render) = self.render.root {
             let made = self.render_init(cx, root_render);
@@ -597,6 +848,7 @@ impl Document {
         let made = self.create_render_item(cx, root, None);
         self.set_root_render(made);
         self.render.serial += 1;
+        self.layout.relayout_roots.clear();
         if let Some(root_render) = self.render.root {
             let made = self.render_init(cx, root_render);
             self.set_root_render(Some(made));

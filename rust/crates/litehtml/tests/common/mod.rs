@@ -97,6 +97,12 @@
 //!
 //! - `o` `r`, then as `l`: the document finalized, its render tree after each dump step (see `render`). (`o` with a
 //!   first byte 0 or 1 is the colour-scheme rewrite.)
+//!
+//! The layout's record (stages L7 and L8) is the cascade's with layout steps and a dump of the layout:
+//!
+//! - `Y` as `l`, with steps `w` f32 width, u8 budget (0 the renderer's, 1 a u64 that follows): the document laid out,
+//!   its natural width; each dump step the layout, the container's calls with the viewport, image sizes and text
+//!   breakers (see `layout`).
 
 #![allow(dead_code, unused_imports)]
 
@@ -125,6 +131,7 @@ use twidget_litehtml::*;
 pub mod cascade;
 pub mod dom;
 pub mod gumbo;
+pub mod layout;
 pub mod render;
 pub mod svg;
 pub mod values;
