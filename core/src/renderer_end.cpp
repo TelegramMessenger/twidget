@@ -320,7 +320,7 @@ bool RendererEnd::send_frame(const Frame& frame) {
     if (!written.starts.empty()) {
         next = std::make_unique<Painted>();
         next->seq = frame.seq;
-        next->bytes.assign(bytes, written.at, written.size);
+        next->bytes.assign(bytes.data() + written.at, written.size);
         next->bounds.reserve(written.starts.size() + 1);
         next->bounds.push_back(0);
         for (size_t at : written.starts) next->bounds.push_back(uint32_t(at));
