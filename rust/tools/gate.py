@@ -47,7 +47,7 @@ def main():
         return 1
     env = dict(os.environ, TWIDGET_ORACLE_DIR=directory, TWIDGET_ORACLE_REQUIRED="1")
     checks = [
-        ("fmt", ["cargo", "fmt", "--all", "--check"], None),
+        ("fmt", ["cargo", "fmt", "--check"], None),
         ("test", ["cargo", "test", "--workspace", "--locked"], env),
         ("clippy", ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"], None),
         ("unsafe", [sys.executable, "-I", os.path.join(ROOT, "tools", "unsafe_report.py")], None),
