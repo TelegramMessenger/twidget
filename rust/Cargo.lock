@@ -24,6 +24,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_paint"
+version = "0.1.0"
+dependencies = [
+ "twidget_cstd",
+ "twidget_json",
+ "twidget_testkit",
+]
+
+[[package]]
 name = "twidget_remote"
 version = "0.1.0"
 dependencies = [

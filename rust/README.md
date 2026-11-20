@@ -6,6 +6,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | Path | What |
 |---|---|
 | `crates/wire` | `twidget_wire`: the paint values and their binary forms (`core/src/wire.cpp`) |
+| `crates/paint` | `twidget_paint`: heavy boxes, the paint limit and its ledger (`core/src/paint_policy`) |
 | `crates/remote` | `twidget_remote`: the messages between the renderer end and the platform end (`core/src/remote.cpp`) |
 | `crates/json` | `twidget_json`: widget-sandbox's `twidget::Json` (`packages/desktop/sandbox/include/twidget/json.h`) |
 | `crates/css` | `twidget_css`: TwidgetCore's small CSS helpers (`core/src/css.cpp`) |

@@ -153,7 +153,7 @@ parallel with stages 3–5: it shares only stage 1.
 
 - **2.1** core `css.cpp`: colours, `light-dark()`, `var()` substitution, transforms, `parse_font`, theme
   and safe-area variables, `format_number`.
-- **2.2** paint policy (`paint-policy.json`), gesture policy (`gesture-policy.json`).
+- **2.2** paint policy (`paint-policy.json`). The gesture policy is widget-sandbox's and goes with S1.
 - **2.3** compositor functions: `summarize`, `damage_between`, `drop_inert_clips`, `paint_digest`,
   `bake_track`, `resume_track`; `base64`.
 
@@ -213,7 +213,7 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 
 ### S. The sandbox glue (widget-sandbox `packages/rust`)
 
-- **S1** CPU budget, SDK policy, bundle stamp — on the shared fixtures; the stream wire and coding come
+- **S1** CPU budget, SDK policy, gesture policy, bundle stamp — on the shared fixtures; the stream wire and coding come
   from 1.4.
 - **S2** the runtime: one thread per engine with an 8 MiB stack, its task queue and timers, as actors
   that own their state (no shared `this`).
@@ -275,6 +275,7 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 | 1.2 | done: `twidget_json`; widget-sandbox's JSON tests ported, and ~400k cases through json.h and the port with identical answers (its fuzz texts both surrogate modes, depths around the bound, every escape and surrogate order, `quote`, 160k doubles through both number forms and `asInt`, 30k number texts through `strtod`, 37 real JSON files and their mutations); `twidget_testkit` holds what the tests share |
 | 1.3 | done: `twidget_remote` at version 1 as of twidget 5bc9639 (the freeze of 0.4 decides what stage 5 meets); `remote_tests.cpp`'s message checks ported (documented bytes, kinds, pixels, nested caps, value lengths, encoder room, cuts, seeded changes), and ~270k cases through remote.cpp and the port with identical answers (samples and their cuts under default and eight tight caps, their mutations, 20k generated messages and their mutations, encoders under tight caps, `kind_of` of every header, 24k pixel answers against the requests they answer) |
 | 2.1 | done: `twidget_css` (core `css.cpp`: colours, `light-dark()`, `var()`, `:where()`, declarations, names, opaque runs, times, `calc()`, transforms, origin, opacity, fonts, theme and safe-area variables) on `twidget_cstd` (C's `strtod` with its whole grammar, hex floats rounded to even, `atof`, `atoi`, `%.*f`); ~645k answers alike with css.cpp and MSVC's C library (140k numbers, 252k generated values through every helper and their changes, 12k themes and safe areas, 241k from the 2088 style texts and 12947 declarations of widget-sandbox's corpus) |
+| 2.2 | done: `twidget_paint` (core `paint_policy`: the heavy-box rules and `PaintCounter`, the limits and their messages); the shared `paint-policy.json` passes (220 checks, as `paint_policy_tests.cpp` reads it), and 165k answers alike with paint_policy.cpp (generated shadow lists and their changes, styles, keyframe sequences, scripts of counter steps) |
 
 ## Findings
 

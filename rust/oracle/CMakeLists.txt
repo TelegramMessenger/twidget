@@ -34,3 +34,6 @@ target_include_directories(remote_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCL
 
 add_executable(css_oracle css_oracle.cpp "${TW_CORE}/css.cpp")
 target_include_directories(css_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+
+add_executable(paint_oracle paint_oracle.cpp "${TW_CORE}/paint_policy.cpp")
+target_include_directories(paint_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
