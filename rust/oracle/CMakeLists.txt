@@ -18,3 +18,13 @@ endif()
 
 add_executable(wire_oracle wire_oracle.cpp "${TW_CORE}/wire.cpp")
 target_include_directories(wire_oracle PRIVATE "${TW_CORE}")
+
+# widget-sandbox next to twidget, as twidget's own build expects it.
+set(TWIDGET_WIDGET_SANDBOX "${TW_ROOT}/../widget-sandbox" CACHE PATH "widget-sandbox checkout")
+set(TW_SANDBOX_INCLUDE "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/include")
+if (NOT EXISTS "${TW_SANDBOX_INCLUDE}/twidget/json.h")
+    message(FATAL_ERROR "widget-sandbox is not at ${TWIDGET_WIDGET_SANDBOX}: set TWIDGET_WIDGET_SANDBOX.")
+endif()
+
+add_executable(json_oracle json_oracle.cpp)
+target_include_directories(json_oracle PRIVATE "${TW_SANDBOX_INCLUDE}")

@@ -272,3 +272,18 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 | 0.1 | done: workspace, workspace lints, `tools/unsafe_report.py`, `tools/gate.py` |
 | 0.2 | started: `oracle/` with `wire_oracle` (Windows x64, MSVC) |
 | 1.1 | done: `twidget_wire`; `wire_tests.cpp` ported (18 tests: documented bytes, round trips, cuts, count sites, references, enums, masks, flags, forms, defaults, the C++ suite's seeded mutations), and ~165k cases through the C++ and the Rust codec with identical answers (samples and their cuts, mutated samples, generated values, encoders under single caps) |
+| 1.2 | done: `twidget_json`; widget-sandbox's JSON tests ported, and ~400k cases through json.h and the port with identical answers (its fuzz texts both surrogate modes, depths around the bound, every escape and surrogate order, `quote`, 160k doubles through both number forms and `asInt`, 30k number texts through `strtod`, 37 real JSON files and their mutations); `twidget_testkit` holds what the tests share |
+
+## Findings
+
+What the comparisons found about the C++, kept for the stages that meet it again.
+
+- `std::to_chars(double)` (json.h's numbers off Apple) is not "shortest digits": of the fewest characters
+  that read back, it writes the ones nearest the value, a tie to the even digit. A large integer in fixed
+  form gets its exact digits (`…016`, not `…020`), and `X.25` between 2^50 and 2^51 is `X.2`. Rust's `{:e}`
+  breaks such ties upward; `twidget_json::to_chars_shortest` rounds again with `{:.N$e}`, which is exact
+  and ties to even.
+- json.h writes numbers differently on Apple, whose deployment targets have no floating `to_chars`: the
+  shortest of 15, 16 and 17 `%g` digits, so `0.0001` is `0.0001` there and `1e-04` elsewhere. The helper's
+  JSON already differs between macOS and the other platforms; the port keeps both forms, chosen as the
+  C++ chooses them.

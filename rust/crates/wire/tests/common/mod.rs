@@ -2,14 +2,13 @@
 //! a dump of every member with float bits and payload identity (the comparison that does not go through
 //! the codec), and the client of `oracle/wire_oracle`.
 
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::process::{Command as Process, Stdio};
 use std::sync::Arc;
+
+pub use twidget_testkit::{EDGES, Lcg, hex, mutate, unhex};
 
 use twidget_wire::*;
 
@@ -72,103 +71,6 @@ impl Bytes {
         self.s.extend_from_slice(more);
         self
     }
-}
-
-pub fn unhex(digits: &str) -> Vec<u8> {
-    let clean: Vec<u8> = digits.bytes().filter(|c| !c.is_ascii_whitespace()).collect();
-    clean.chunks(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
-}
-
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// The precedent's 64-bit LCG: the high 31 bits of each step.
-#[derive(Clone, Debug)]
-pub struct Lcg {
-    pub state: u64,
-}
-
-impl Lcg {
-    pub fn new(seed: u64) -> Lcg {
-        Lcg { state: seed }
-    }
-    pub fn next(&mut self) -> u32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (self.state >> 33) as u32
-    }
-    pub fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { self.next() as usize % n }
-    }
-    pub fn chance(&mut self, one_in: usize) -> bool {
-        self.below(one_in) == 0
-    }
-}
-
-/// u32 values at the edges of what a count, a length, a reference, a mask or float bits can be.
-pub const EDGES: [u32; 19] = [
-    0, 1, 2, 3, 4, 5, 0x7f, 0x80, 0xff, 0x100, 0xffff, 0x10000, 0x10000000, 0x20000000, 0x40000000, 0x7fffffff, 0x80000000, 0xfffffffe,
-    0xffffffff,
-];
-
-/// One to three random changes to `bytes`, and what they were: tests/decoder_checks.h's `mutate`, the
-/// same draws in the same order, so a seed changes the bytes as it does there.
-pub fn mutate(random: &mut Lcg, bytes: &mut Vec<u8>) -> String {
-    let mut done = String::new();
-    let edits = 1 + random.below(3);
-    for _ in 0..edits {
-        let at = random.below(bytes.len());
-        match random.below(7) {
-            0 => {
-                let _ = write!(done, " flip@{at}");
-                if !bytes.is_empty() {
-                    bytes[at] ^= 1 << random.below(8);
-                }
-            }
-            1 => {
-                let _ = write!(done, " byte@{at}");
-                if !bytes.is_empty() {
-                    bytes[at] = random.next() as u8;
-                }
-            }
-            2 => {
-                if bytes.len() >= 4 {
-                    let p = random.below(bytes.len() - 3);
-                    let v = EDGES[random.below(EDGES.len())];
-                    let _ = write!(done, " u32@{p}={v:#x}");
-                    bytes[p..p + 4].copy_from_slice(&v.to_le_bytes());
-                }
-            }
-            3 => {
-                let n = 1 + random.below(4);
-                let _ = write!(done, " delete@{at}+{n}");
-                if !bytes.is_empty() {
-                    let end = (at + n).min(bytes.len());
-                    bytes.drain(at..end);
-                }
-            }
-            4 => {
-                let p = random.below(bytes.len() + 1);
-                let n = 1 + random.below(4);
-                let _ = write!(done, " insert@{p}+{n}");
-                let added: Vec<u8> = (0..n).map(|_| random.next() as u8).collect();
-                bytes.splice(p..p, added);
-            }
-            5 => {
-                let n = (1 + random.below(8)).min(bytes.len() - at);
-                let _ = write!(done, " repeat@{at}+{n}");
-                if !bytes.is_empty() {
-                    let piece = bytes[at..at + n].to_vec();
-                    bytes.splice(at..at, piece);
-                }
-            }
-            _ => {
-                let _ = write!(done, " cut@{at}");
-                bytes.truncate(at);
-            }
-        }
-    }
-    done
 }
 
 pub const ROUNDS: usize = 3000;
@@ -1528,22 +1430,12 @@ pub enum Case {
 }
 
 pub struct Oracle {
-    program: PathBuf,
+    program: twidget_testkit::Oracle,
 }
 
-/// `oracle/wire_oracle` from `TWIDGET_ORACLE_DIR`; None when it is not set, a failure when
-/// `TWIDGET_ORACLE_REQUIRED` says the run must compare.
+/// `oracle/wire_oracle`, when `TWIDGET_ORACLE_DIR` names where it is.
 pub fn oracle() -> Option<Oracle> {
-    let required = std::env::var_os("TWIDGET_ORACLE_REQUIRED").is_some();
-    let Some(dir) = std::env::var_os("TWIDGET_ORACLE_DIR") else {
-        assert!(!required, "TWIDGET_ORACLE_REQUIRED is set but TWIDGET_ORACLE_DIR is not");
-        eprintln!("TWIDGET_ORACLE_DIR is not set: the comparison with the C++ is skipped");
-        return None;
-    };
-    let name = if cfg!(windows) { "wire_oracle.exe" } else { "wire_oracle" };
-    let program = PathBuf::from(dir).join(name);
-    assert!(program.is_file(), "no oracle at {}", program.display());
-    Some(Oracle { program })
+    twidget_testkit::Oracle::find("wire_oracle").map(|program| Oracle { program })
 }
 
 impl Oracle {
@@ -1560,38 +1452,16 @@ impl Oracle {
                         input.extend_from_slice(&(v as u64).to_le_bytes());
                     }
                 }
-                Case::Same(form, bytes) | Case::Encode(form, bytes) => {
-                    let letter = if matches!(case, Case::Same(..)) { form.letter() } else { form.letter().to_ascii_uppercase() };
-                    input.push(letter);
-                    input.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-                    input.extend_from_slice(bytes);
+                Case::Same(form, bytes) => {
+                    input.extend(twidget_testkit::framed(form.letter(), bytes));
+                    expected += 1;
+                }
+                Case::Encode(form, bytes) => {
+                    input.extend(twidget_testkit::framed(form.letter().to_ascii_uppercase(), bytes));
                     expected += 1;
                 }
             }
         }
-        let mut child = Process::new(&self.program)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|e| panic!("{} starts: {e}", self.program.display()));
-        let mut stdin = child.stdin.take().unwrap();
-        let writer = std::thread::spawn(move || {
-            stdin.write_all(&input).unwrap();
-        });
-        let mut output = Vec::new();
-        child.stdout.take().unwrap().read_to_end(&mut output).unwrap();
-        writer.join().unwrap();
-        let status = child.wait().unwrap();
-        assert!(status.success(), "the oracle ended with {status}");
-        let mut answers = Vec::with_capacity(expected);
-        let mut rest = &output[..];
-        while !rest.is_empty() {
-            let status = rest[0];
-            let n = u32::from_le_bytes(rest[1..5].try_into().unwrap()) as usize;
-            answers.push((status, rest[5..5 + n].to_vec()));
-            rest = &rest[5 + n..];
-        }
-        assert_eq!(answers.len(), expected, "the oracle answers every case");
-        answers
+        self.program.run(input, expected)
     }
 }
