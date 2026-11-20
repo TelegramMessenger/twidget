@@ -150,6 +150,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_renderer"
+version = "0.1.0"
+dependencies = [
+ "twidget_animations",
+ "twidget_base64",
+ "twidget_canvas",
+ "twidget_css",
+ "twidget_cstd",
+ "twidget_ends",
+ "twidget_events",
+ "twidget_gesture",
+ "twidget_json",
+ "twidget_shadow",
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_shadow"
 version = "0.1.0"
 dependencies = [

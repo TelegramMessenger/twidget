@@ -1,0 +1,27 @@
+[package]
+name = "twidget_renderer"
+description = "TwidgetCore's renderer: messages in, the document built and patched from the widget's ops within its layout budget, frozen, and every query answered"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_animations = { path = "../animations" }
+twidget_base64 = { path = "../base64" }
+twidget_canvas = { path = "../canvas" }
+twidget_css = { path = "../css" }
+twidget_cstd = { path = "../cstd" }
+twidget_ends = { path = "../ends" }
+twidget_events = { path = "../events" }
+twidget_gesture = { path = "../../../../widget-sandbox/packages/rust/crates/gesture" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_shadow = { path = "../shadow" }
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

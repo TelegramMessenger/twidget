@@ -234,6 +234,11 @@ pub trait DocumentHost {
     fn call(&mut self, _document: &mut Document, _id: i64, _method: &[u8], _args: &Json, _out: &mut Vec<Json>) {}
     /// The renderer was frozen: it lets go of its touches, coalesced moves and hover.
     fn frozen(&mut self) {}
+    /// The violations the container made while a canvas ran (an `<img>` source it refused), for the document's
+    /// list where the C++ container pushes them.
+    fn take_violations(&mut self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
 }
 
 const HTML: NodeRef = NodeRef(0);
@@ -450,6 +455,13 @@ impl Document {
         &self.canvases
     }
 
+    /// The renderer's `trim`: every canvas drops what it makes again on demand.
+    pub fn trim_canvases(&mut self) {
+        for canvas in self.canvases.values_mut() {
+            canvas.trim();
+        }
+    }
+
     pub fn tree_bytes(&self) -> usize {
         self.tree_bytes
     }
@@ -487,6 +499,11 @@ impl Document {
 
     pub fn layout_stopped(&self) -> bool {
         self.layout_stopped
+    }
+
+    /// Frozen for good (the badge says so), rather than paused.
+    pub fn frozen_fatal(&self) -> bool {
+        self.frozen_fatal
     }
 
     /// The host's `theme` message, or the scheme's defaults; false when the variables did not change.
@@ -1266,6 +1283,7 @@ impl Document {
             };
             canvas.run(&mut adapter, cmds, &mut ops);
         }
+        self.pending_violations.extend(host.take_violations());
         let (cid, w, h) = (canvas.id(), canvas.width(), canvas.height());
         self.canvases.insert(id, canvas);
         if ops.is_empty() {

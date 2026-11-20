@@ -337,6 +337,26 @@ pub trait EventHost {
     fn selectable_key(&mut self) -> [u64; 2];
     /// Whether any displayed element says `user-select: text`.
     fn any_selectable(&mut self) -> bool;
+    /// The control being edited, told before a call that may build (`settle`, `rebuild`, `restyled_by_input`): the
+    /// writer draws its text transparent, and the in-place patch path writes its style.
+    fn editing(&mut self, _id: i64) {}
+    /// What follows the editor's refresh at the end of a `settle` that rebuilt (the rest of the C++'s `rebuild`, its
+    /// meters, then the `size` report): into `out`, or for None the renderer's pending messages.
+    fn settle_ends(&mut self, _doc: &mut Document, _out: Option<&mut Vec<Json>>) {}
+    /// What follows the editor's refresh at the end of a `rebuild` (its meters).
+    fn rebuild_ends(&mut self, _doc: &mut Document) {}
+    /// The violations the container made during the last question (an image it refused while the document loaded
+    /// one), for the input to put in the document's list where the C++ container pushes them.
+    fn take_violations(&mut self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+}
+
+/// `ask` of `host`, then the violations the container made meanwhile into the document's list.
+fn pushed<T>(doc: &mut Document, host: &mut dyn EventHost, ask: impl FnOnce(&mut dyn EventHost) -> T) -> T {
+    let answer = ask(host);
+    doc.pending_violations.extend(host.take_violations());
+    answer
 }
 
 /// The renderer's state before a call into its host that may build: what to follow after it.
@@ -664,10 +684,7 @@ impl Events {
 
     // ── what a host call that may build leaves behind ──
 
-    fn after(&mut self, doc: &mut Document, host: &mut dyn EventHost, before: Before, built: bool) {
-        if built {
-            self.refresh_editor(doc, host);
-        }
+    fn after(&mut self, doc: &mut Document, before: Before) {
         if !before.frozen && doc.frozen() {
             self.on_frozen();
         }
@@ -676,22 +693,30 @@ impl Events {
         }
     }
 
-    fn settle(&mut self, doc: &mut Document, host: &mut dyn EventHost, out: Option<&mut Vec<Json>>) {
+    fn settle(&mut self, doc: &mut Document, host: &mut dyn EventHost, mut out: Option<&mut Vec<Json>>) {
         let before = Before::of(doc);
-        let built = host.settle(doc, out);
-        self.after(doc, host, before, built);
+        host.editing(self.editing.id);
+        if host.settle(doc, out.as_deref_mut()) {
+            self.refresh_editor(doc, host);
+            host.settle_ends(doc, out);
+        }
+        self.after(doc, before);
     }
 
     fn rebuild(&mut self, doc: &mut Document, host: &mut dyn EventHost, patch: bool) {
         let before = Before::of(doc);
+        host.editing(self.editing.id);
         host.rebuild(doc, patch);
-        self.after(doc, host, before, true);
+        self.refresh_editor(doc, host);
+        host.rebuild_ends(doc);
+        self.after(doc, before);
     }
 
     fn restyled_by_input(&mut self, doc: &mut Document, host: &mut dyn EventHost) {
         let before = Before::of(doc);
+        host.editing(self.editing.id);
         host.restyled_by_input(doc);
-        self.after(doc, host, before, false);
+        self.after(doc, before);
     }
 
     // ── events ──
@@ -784,7 +809,7 @@ impl Events {
         if self.selection.pointer == pointer {
             self.selection.pointer = -1;
         }
-        if done.button == 0 && host.mouse(3, done.x, done.y, false) {
+        if done.button == 0 && pushed(doc, host, |h| h.mouse(3, done.x, done.y, false)) {
             self.restyled_by_input(doc, host);
         }
         if done.target != 0 {
@@ -1194,7 +1219,7 @@ impl Events {
                 let ax = self.arbiter_x(host, x);
                 verdict = Some(self.arbiter.down(now, ax, y, claim, if t.mouse { PointerKind::Mouse } else { PointerKind::Touch }, button));
             }
-            if button == 0 && host.mouse(0, x, y, false) {
+            if button == 0 && pushed(doc, host, |h| h.mouse(0, x, y, false)) {
                 self.restyled_by_input(doc, host);
             }
             if t.target != 0 {
@@ -1251,7 +1276,7 @@ impl Events {
             if let Some(t) = self.touches.get_mut(&pointer) {
                 t.moved = true;
             }
-            if host.mouse(1, x, y, false) {
+            if pushed(doc, host, |h| h.mouse(1, x, y, false)) {
                 self.restyled_by_input(doc, host);
                 // A layout past its budget freezes the renderer, and freeze() drops every touch: `t` with them.
                 if !self.touches.contains_key(&pointer) {
@@ -1303,7 +1328,7 @@ impl Events {
         if self.selection.pointer == pointer {
             self.selection.pointer = -1;
         }
-        if done.button == 0 && host.mouse(action, x, y, done.mouse && action == 2) {
+        if done.button == 0 && pushed(doc, host, |h| h.mouse(action, x, y, done.mouse && action == 2)) {
             self.restyled_by_input(doc, host);
         }
         if action == 2 {
@@ -1390,14 +1415,14 @@ impl Events {
             self.hover_y = y;
             i.x = x;
             i.y = y;
-            if host.mouse(1, x, y, false) {
+            if pushed(doc, host, |h| h.mouse(1, x, y, false)) {
                 self.restyled_by_input(doc, host);
             }
             target = host.hit(x, y, None);
         } else {
             i.x = self.hover_x;
             i.y = self.hover_y;
-            if host.leave() {
+            if pushed(doc, host, |h| h.leave()) {
                 self.restyled_by_input(doc, host);
             }
         }
@@ -1469,7 +1494,7 @@ impl Events {
             }
             let Some(src) = src.filter(|s| !s.is_empty()) else { continue };
             // Loaded like the document will load it: a detached <img> (new Image()) loads too, as in a browser.
-            match host.image_of(&src) {
+            match pushed(doc, host, |h| h.image_of(&src)) {
                 None => self.image_event(doc, b"error", id, 0.0, 0.0, out),
                 Some((_, w, h)) if w > 0.0 || h > 0.0 => self.image_event(doc, b"load", id, w, h, out),
                 Some((image, _, _)) => self.waiting_images.entry(image).or_default().push(id),
@@ -1705,7 +1730,7 @@ impl Events {
         doc.document_changed = false;
         let before = Before::of(doc);
         doc.apply_op(&op, &mut EditOp { editing: &mut self.editing, generation: &mut self.editor_generation }, &mut out);
-        self.after(doc, host, before, false);
+        self.after(doc, before);
         self.editing.generation = generation;
         if doc.document_changed {
             self.rebuild(doc, host, true);

@@ -119,3 +119,5 @@ if (MSVC)
 endif()
 # events_oracle: the renderer with probes at its input code (events_oracle.cmake).
 include("${CMAKE_CURRENT_SOURCE_DIR}/events_oracle.cmake")
+# renderer_oracle: the renderer with probes at its calls into the document and stage 4.5's code (renderer_oracle.cmake).
+include("${CMAKE_CURRENT_SOURCE_DIR}/renderer_oracle.cmake")
