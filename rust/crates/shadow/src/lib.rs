@@ -1057,7 +1057,7 @@ impl Document {
                     // A textarea's value is its text, a hole when it is the only content.
                     if !self.get(n).children.is_empty() {
                         self.patch_log.valid = false;
-                    } else if self.attached(Some(n)) {
+                    } else if self.patch_log.valid && self.attached(Some(n)) {
                         let id = self.get(n).id;
                         self.patch_log.texts.insert(id, n);
                     }

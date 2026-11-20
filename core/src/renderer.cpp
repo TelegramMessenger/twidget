@@ -3053,7 +3053,7 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             if (n->tag == "textarea") {
                 // A textarea's value is its text, a hole when it is the only content.
                 if (!n->children.empty()) patch_log_.valid = false;
-                else if (attached(n)) patch_log_.texts.insert(n);
+                else if (patch_log_.valid && attached(n)) patch_log_.texts.insert(n);
                 n->data = v;
                 for (Node* c : n->children) c->parent = nullptr;
                 n->children.clear();
