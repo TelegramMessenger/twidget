@@ -68,3 +68,24 @@ endif()
 add_executable(lhdump lhdump.cpp "${TW_CORE}/css.cpp")
 target_include_directories(lhdump PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
 target_link_libraries(lhdump PRIVATE lhdump_litehtml)
+
+# shadow_oracle: the whole renderer, its sources as twidget's CMakeLists.txt builds twidget_core, on the lhdump_litehtml objects; its UA layer generated from widget-sandbox's profile.json the same way.
+file(READ "${TWIDGET_WIDGET_SANDBOX}/packages/core/profile.json" TW_PROFILE)
+string(JSON TW_UA_STYLESHEET GET "${TW_PROFILE}" tables uaStylesheet)
+set(TW_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(WRITE "${TW_GENERATED}/tw_ua_stylesheet.h.tmp"
+    "#pragma once\n"
+    "inline constexpr const char* TW_UA_STYLESHEET = R\"tw-ua(${TW_UA_STYLESHEET})tw-ua\";\n")
+configure_file("${TW_GENERATED}/tw_ua_stylesheet.h.tmp" "${TW_GENERATED}/tw_ua_stylesheet.h" COPYONLY)
+add_library(oracle_core STATIC
+    "${TW_CORE}/renderer.cpp" "${TW_CORE}/computed_style.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/animations.cpp" "${TW_CORE}/canvas.cpp"
+    "${TW_CORE}/compositor.cpp" "${TW_CORE}/encode.cpp" "${TW_CORE}/filters.cpp" "${TW_CORE}/paint_policy.cpp" "${TW_CORE}/png.cpp"
+    "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/src/gesture_policy.cpp")
+target_include_directories(oracle_core PUBLIC "${TW_CORE}" "${TW_ROOT}/core/include" "${TW_SANDBOX_INCLUDE}" PRIVATE "${TW_GENERATED}")
+target_link_libraries(oracle_core PUBLIC lhdump_litehtml)
+target_compile_definitions(oracle_core PUBLIC TW_LITEHTML_TWIDGET)
+if (MSVC)
+    target_compile_definitions(oracle_core PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+add_executable(shadow_oracle shadow_oracle.cpp "${TW_CORE}/wire.cpp")
+target_link_libraries(shadow_oracle PRIVATE oracle_core)
