@@ -9,6 +9,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | `crates/paint` | `twidget_paint`: heavy boxes, the paint limit and its ledger (`core/src/paint_policy`) |
 | `crates/remote` | `twidget_remote`: the messages between the renderer end and the platform end (`core/src/remote.cpp`) |
 
+| `crates/computed_style` | `twidget_computed_style`: the `cs` query's strings, getComputedStyle as Chromium writes it, from what the fork computed for an element (`core/src/computed_style.cpp`) |
 | `crates/css` | `twidget_css`: TwidgetCore's small CSS helpers (`core/src/css.cpp`) |
 | `crates/cstd` | `twidget_cstd`: the C library behaviours the C++ leans on (`strtod`, `atof`, `atoi`, `%.*f`) |
 | `crates/compositor` | `twidget_compositor`: layers and their baked tracks, paint digests, damage, inert clips (`core/src/compositor.cpp`) |

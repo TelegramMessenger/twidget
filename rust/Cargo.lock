@@ -39,6 +39,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_computed_style"
+version = "0.1.0"
+dependencies = [
+ "twidget_css",
+ "twidget_json",
+ "twidget_litehtml",
+ "twidget_testkit",
+]
+
+[[package]]
 name = "twidget_css"
 version = "0.1.0"
 dependencies = [

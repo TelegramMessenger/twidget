@@ -106,3 +106,7 @@ if (MSVC)
 endif()
 add_executable(shadow_oracle shadow_oracle.cpp "${TW_CORE}/wire.cpp")
 target_link_libraries(shadow_oracle PRIVATE oracle_core)
+# computed_style.cpp included whole, so that its helpers in an unnamed namespace can be called, over the same litehtml as lhdump.
+add_executable(computed_style_oracle computed_style_oracle.cpp "${TW_CORE}/css.cpp")
+target_include_directories(computed_style_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+target_link_libraries(computed_style_oracle PRIVATE lhdump_litehtml)
