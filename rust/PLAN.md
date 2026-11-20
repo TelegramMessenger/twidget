@@ -273,7 +273,7 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 | Stage | State |
 |---|---|
 | 0.1 | done: workspace, workspace lints, `tools/unsafe_report.py`, `tools/gate.py` |
-| 0.2 | started: `oracle/` with the wire, remote, css, paint, compositor, base64 and canvas programs here and widget-sandbox's json, stream, cpu budget, SDK, gesture and stamp ones (Windows x64, MSVC); core and litehtml (`lhdump`) still to come |
+| 0.2 | started: `oracle/` with the wire, remote, css, paint, compositor, base64, canvas and animations programs and `lhdump` (L0, L1) here and widget-sandbox's json, stream, cpu budget, SDK, gesture and stamp ones (Windows x64, MSVC); core and litehtml (`lhdump`) still to come |
 | 1.1 | done: `twidget_wire`; `wire_tests.cpp` ported (18 tests: documented bytes, round trips, cuts, count sites, references, enums, masks, flags, forms, defaults, the C++ suite's seeded mutations), and ~165k cases through the C++ and the Rust codec with identical answers (samples and their cuts, mutated samples, generated values, encoders under single caps) |
 | 1.2 | done: `twidget_json` (in widget-sandbox's `packages/rust` since stage 1.4); widget-sandbox's JSON tests ported, and ~400k cases through json.h and the port with identical answers (its fuzz texts both surrogate modes, depths around the bound, every escape and surrogate order, `quote`, 160k doubles through both number forms and `asInt`, 30k number texts through `strtod`, 37 real JSON files and their mutations); `twidget_testkit` holds what the tests share |
 | 1.3 | done: `twidget_remote` at version 1 as of twidget 5bc9639 (the freeze of 0.4 decides what stage 5 meets); `remote_tests.cpp`'s message checks ported (documented bytes, kinds, pixels, nested caps, value lengths, encoder room, cuts, seeded changes), and ~270k cases through remote.cpp and the port with identical answers (samples and their cuts under default and eight tight caps, their mutations, 20k generated messages and their mutations, encoders under tight caps, `kind_of` of every header, 24k pixel answers against the requests they answer) |
@@ -282,6 +282,9 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 | 1.4 | started: widget-sandbox's stream frames (`twidget_stream`, ~80k cases alike with remote_wire.h) and coding (`twidget_server::coding`, `remote_coding.cpp`, met by the C++ host end on every stream of T6); tgw's hosted wire waits for S6 |
 | 2.3 | done: `twidget_compositor` (layers and tracks, `resume_track`, `paint_digest`, `summarize`, `drop_inert_clips`, `damage_between`, `bake_track`) and `twidget_base64`; core_tests' compositor and damage checks ported (9 tests), ~72k cases alike with compositor.cpp and encode.cpp (12k lists and their edits, 16k damage cases, 6k bakes with their sample times, 12k resumes, 2.4k base64 inputs) |
 | 3.1 | done: `twidget_canvas`, the whole interpreter behind a `CanvasHost` trait with every limit, and the answers of `measureText` and `imageData`; 17 tests, ~19k scripts alike with canvas.cpp (2.8M generated commands and 16k queries, 26 command streams from `corpus.twrec` and ~900 changed or spliced, the stress widget's frames, corpus charts, 62 scripts that each cross a limit): every batch in wire form, every answer, the state after each step and every host call in order |
+| 3.2 | done: `twidget_animations` (timing functions, keyframes, specs, interpolation, Web Animations records, the `Animator` with plans, signatures, the `anims` query and heavy motions; the C++'s per-thread caches as a shared `Caches`, the per-element maps by element id as 0.3 asks); core_tests' animation checks ported (16 tests, 4 more of the port's own), ~138k cases alike with animations.cpp (24k scripts, 20k timings, 40k interpolations, 8.6k pair-cache cases, 16k keyframe rules and specs, 20k Web Animations records, the corpus's 101 animated sheets with their 4342 declarations and value pairs); 467 of 474 branch points reached, the other 7 unreachable in the C++ too |
+| L0 | done: `twidget_litehtml` begun, one module per C++ file: `Px` with its fuzzy comparisons, the name table (`Names`, 383 names at start), `t_strtod`, html.cpp with `t_strtof`, UTF-8 and code points, `num_cvt`, every keyword table and enum, `css_length` with calc, `web_color` (hex, rgb, hsl, names, `darken`) behind a `ResolveColor` trait, `parse_angle`, and `cxx` for what each platform's C++ leaves undefined; `lhdump` (0.2 for litehtml: the fork compiled as twidget builds it, `LH_NO_*` cleared and set per case) with ~470k answers alike (120k number texts, 40k `Px` triples, 60k colour tokens, 20k hsl, 40k clamps, darkens and hex forms, 60k lengths, 22k angles, 30k list markers, 70k UTF-8 and string helpers, the name table) |
+| L1 | done: the CSS tokenizer and the parser's normalizing half (`componentize`, `normalize`, `remove_whitespace` both ways, the nesting limit of 128, comma lists and value checks); ~490k answers alike: 147k from the corpus's 1376 style texts and 25507 declarations, 11k from master_css, UA_EXTRA and the profile's UA layer, 180k from 60k generated texts reaching every token kind, 152k colour and length texts |
 | S1 | done: `twidget_cpu_budget`, `twidget_sdk_policy`, `twidget_gesture`, `twidget_bundle_stamp` (with version.h and `SandboxResources`); the three shared fixtures and the C++ tests ported by name (13 tests), ~1.14M inputs alike with the C++ (246k budget steps, 590k SDK checks and gate steps, 203k gesture claims and steps, 100k stamps and 300 bundle directories) |
 | S2 | done: `twidget_js::JsThread` and `Poster` (8 MiB stack, tasks, timers in deadline order, the sweep); a panic on the thread aborts, as an exception leaving a JSThread task terminates |
 | S3 | done: `twidget_js::NovaContext` on `nova_embed`; test_main.cpp's 8 context tests ported (recursion depth, timers, a string past the limit, host function failures, results that cannot be copied, bundles compiled once, arguments as the C interface gave them, deadlines) |
@@ -292,6 +295,29 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 ## Findings
 
 What the comparisons found about the C++, kept for the stages that meet it again.
+
+- litehtml's CSS tokenizer decides with decoded code points but reads a number's bytes raw: a token that starts with
+  an overlong digit (`C0 B0`, or `.` then `E0 80 B0`) is a number that consumes nothing, and `tokenize()` makes empty
+  tokens until memory runs out (`lhdump` never returns on `.à°`). `parse_stylesheet` and Gumbo decode UTF-8
+  first, `normalize(std::string)` does not. The port loops alike; the comparison keeps such bytes out. A 0.3 fix.
+- `hsl()` with a NaN or infinite hue reaches `std::min({…})` over NaNs, undefined: MSVC's STL skips the NaNs (black),
+  libc++ and libstdc++ do not (white). The port does each platform's; a written-out min in web_color.cpp makes them agree.
+- Out-of-range float→int casts give INT_MIN on x86 and saturate on arm64, float→byte keeps the int's low byte, MSVC
+  prints a NaN as `-nan(ind)`: `twidget_litehtml::cxx` reproduces each platform's.
+- `parse_angle` interns every unit it reads, so `hsl(1foo …)` grows the process-wide name table for good.
+- `remove_whitespace` decides against the tokens kept so far up to 50 tokens and against the originals past 50, so a
+  media query reads `< /**/ /**/ =` as `< =` in a short block and `<=` in a long one.
+- A NUL, or a sequence that decodes to 0 (`C0 80`), ends tokenizing, but a comment's search for `*/` goes past NULs;
+  `url(` followed by a quote keeps all but the last whitespace in the function token's text.
+
+- `Animator::declares_motion` is always false: `update()` keeps only the watched properties that are not animation
+  or transition ones in `bases_`, the only ones it looks at, so renderer.cpp's scripted-layer filter never excludes
+  an element for what it declares.
+- `pair_tokens` keys its per-thread cache `a + '' + b`, so two pairs that join alike share an entry (`("0px",
+  "4px")` then `("0px", "4px")` gets the first's answer), and the cache is shared by every widget on the
+  thread: one widget can change another's interpolations. A 0.3 fix.
+- The animator's unordered maps make the order of events across elements, and of `heavy_motion`'s list, an accident
+  of hashing; the port orders them by element id (0.3) and the comparison sorts the C++'s.
 
 - sandbox_engine.cpp's `wake()` puts the deferred tasks after the one that failed in front of what that failed
   `dispatch` deferred again, which is that same task: a deferred frame or timer then waits in the queue twice.
