@@ -1,19 +1,29 @@
 // lhdump: the litehtml fork's answers on stdin, for each stage of its Rust port (rust/PLAN.md, "L. The litehtml port"); rust/crates/litehtml/tests/common/mod.rs lays out every record and answer.
 #include "codepoint.h"
+#include "css.h"
 #include "css_length.h"
 #include "css_parser.h"
 #include "css_tokenizer.h"
+#include "document.h"
+#include "document_container.h"
+#include "encodings.h"
 #include "html.h"
 #include "master_css.h"
 #include "num_cvt.h"
 #include "string_id.h"
+#include "style.h"
+#include "stylesheet.h"
 #include "utf8_strings.h"
 #include "web_color.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -202,6 +212,168 @@ void write_tokens(Out& o, const css_token_vector& tokens) {
 keep_whitespace_fn keeper(uint8_t mode) {
     if (mode == 0) return nullptr;
     return [](const css_token& left, const css_token& right) { return is_one_of(left.ch, '<', '>') && right.ch == '='; };
+}
+
+// The document of the stylesheet cases: the helper's container as far as a stylesheet asks it (pt, the default font size, the media features of a 375 x 667 screen at 2x), with a few sheets to @import.
+class OracleContainer final : public document_container {
+public:
+    uint_ptr create_font(const font_description&, const document*, font_metrics* fm) override {
+        if (fm) *fm = font_metrics();
+        return 1;
+    }
+    void delete_font(uint_ptr) override {}
+    pixel_t text_width(const char* text, uint_ptr) override { return pixel_t(float(std::strlen(text) * 8)); }
+    void draw_text(uint_ptr, const char*, uint_ptr, web_color, const position&) override {}
+    pixel_t pt_to_px(float pt) const override { return pixel_t(pt * 96.0f / 72.0f); }
+    pixel_t get_default_font_size() const override { return 16; }
+    const char* get_default_font_name() const override { return "sans-serif"; }
+    void draw_list_marker(uint_ptr, const list_marker&) override {}
+    void load_image(const char*, const char*, bool) override {}
+    void get_image_size(const char*, const char*, litehtml::size& sz) override { sz = litehtml::size(); }
+    void draw_image(uint_ptr, const background_layer&, const std::string&, const std::string&) override {}
+    void draw_solid_fill(uint_ptr, const background_layer&, const web_color&) override {}
+    void draw_linear_gradient(uint_ptr, const background_layer&, const background_layer::linear_gradient&) override {}
+    void draw_radial_gradient(uint_ptr, const background_layer&, const background_layer::radial_gradient&) override {}
+    void draw_conic_gradient(uint_ptr, const background_layer&, const background_layer::conic_gradient&) override {}
+    void draw_borders(uint_ptr, const borders&, const position&, bool) override {}
+    void set_caption(const char*) override {}
+    void set_base_url(const char*) override {}
+    void link(const std::shared_ptr<document>&, const element::ptr&) override {}
+    void on_anchor_click(const char*, const element::ptr&) override {}
+    void on_mouse_event(const element::ptr&, mouse_event) override {}
+    void set_cursor(const char*) override {}
+    void transform_text(std::string&, text_transform) override {}
+    void import_css(std::string& text, const std::string& url, std::string& baseurl) override {
+        static const std::map<std::string, std::string> sheets = {
+            {"a.css", "i{color:red}"},
+            {"m.css", "@media print{p{x:y}} q{z:w}"},
+            {"nested.css", "@import 'a.css' screen; r{s:t} @import 'm.css';"},
+            {"layer.css", "@layer{u{v:w}} @supports (color:red){x{y:z}}"},
+        };
+        auto it = sheets.find(url);
+        text = it == sheets.end() ? std::string() : it->second;
+        if (it != sheets.end()) baseurl = "imported/" + url;
+    }
+    void set_clip(const position&, const border_radiuses&) override {}
+    void del_clip() override {}
+    void get_viewport(position& viewport) const override { viewport = position(0, 0, 375, 667); }
+    element::ptr create_element(const char*, const string_map&, const std::shared_ptr<document>&) override { return nullptr; }
+    void get_media_features(media_features& m) const override {
+        m.type = media_type_screen;
+        m.width = m.device_width = 375;
+        m.height = m.device_height = 667;
+        m.color = 8;
+        m.color_index = 256;
+        m.monochrome = 0;
+        m.resolution = 192;
+    }
+    void get_language(std::string& language, std::string& culture) const override {
+        language = "en";
+        culture.clear();
+    }
+};
+
+const document::ptr& stylesheet_document() {
+    static OracleContainer container;
+    static const document::ptr doc = document::createFromString("<!DOCTYPE html><html><head></head><body></body></html>", &container, "", "");
+    return doc;
+}
+
+// The grid media queries are evaluated against, set by a 'g' record.
+std::vector<media_features>& grid() {
+    static std::vector<media_features> features;
+    return features;
+}
+
+css_token_vector read_tokens(In& in) {
+    css_token_vector tokens;
+    const uint32_t n = in.u32();
+    for (uint32_t i = 0; i < n && in.at < in.s.size(); i++) tokens.push_back(read_token(in, 0));
+    return tokens;
+}
+
+void write_declarations(Out& o, const raw_declaration::vector& decls) {
+    o.u32(uint32_t(decls.size()));
+    for (const auto& d : decls) {
+        o.str(d.name);
+        write_tokens(o, d.value);
+        o.u8(d.important ? 1 : 0);
+    }
+}
+
+// A rule, then what is inside its block: a style rule's declarations and rules, an at-rule's block as a sheet of rules.
+void write_rules(Out& o, const raw_rule::vector& rules) {
+    o.u32(uint32_t(rules.size()));
+    for (const auto& rule : rules) {
+        o.u8(uint8_t(rule->type));
+        o.str(rule->name);
+        write_tokens(o, rule->prelude);
+        write_token(o, rule->block);
+        if (rule->type == raw_rule::qualified) {
+            raw_declaration::vector decls;
+            raw_rule::vector nested;
+            css_parser(rule->block.value).consume_style_block_contents(decls, nested);
+            write_declarations(o, decls);
+            write_rules(o, nested);
+        } else if (rule->block.type == CURLY_BLOCK) {
+            write_rules(o, css_parser::parse_stylesheet(rule->block.value, false));
+        }
+    }
+}
+
+void write_condition(Out& o, const media_condition& condition);
+
+void write_in_parens(Out& o, const media_in_parens& item) {
+    if (item.is<media_condition>()) {
+        o.u8(0);
+        write_condition(o, item.get<media_condition>());
+    } else if (item.is<media_feature>()) {
+        const auto& f = item.get<media_feature>();
+        o.u8(1);
+        o.str(f.name);
+        o.f32(f.value);
+        o.f32(f.value2);
+        o.u32(f.op);
+        o.u32(f.op2);
+    } else {
+        o.u8(2);
+    }
+}
+
+void write_condition(Out& o, const media_condition& condition) {
+    o.u32(uint32_t(condition.op));
+    o.u32(uint32_t(condition.m_conditions.size()));
+    for (const auto& item : condition.m_conditions) write_in_parens(o, item);
+}
+
+// The renderer's rewrite_color_scheme (core/src/renderer.cpp), copied as it is: litehtml knows no prefers-color-scheme.
+std::string rewrite_color_scheme(const std::string& css, bool dark) {
+    static constexpr std::string_view KEY = "prefers-color-scheme";
+    std::string out;
+    out.reserve(css.size());
+    size_t pos = 0;
+    for (size_t i = 0; i + KEY.size() <= css.size();) {
+        if (size_t skip = twlite::css::skip_opaque(css, i); skip != i) {
+            i = skip;
+            continue;
+        }
+        if ((i > 0 && twlite::css::ident_char(css[i - 1])) || !twlite::css::iequals(std::string_view(css).substr(i, KEY.size()), KEY) ||
+            (i + KEY.size() < css.size() && twlite::css::ident_char(css[i + KEY.size()]))) {
+            i++;
+            continue;
+        }
+        out.append(css, pos, i - pos);
+        size_t j = i + KEY.size();
+        while (j < css.size() && (css[j] == ' ' || css[j] == '\t' || css[j] == '\n' || css[j] == ':')) j++;
+        size_t k = j;
+        while (k < css.size() && std::isalpha((unsigned char)css[k])) k++;
+        std::string value = twlite::css::lower(css.substr(j, k - j));
+        bool matches = value.empty() ? true : (value == "dark") == dark;
+        out += matches ? "min-width:0px" : "min-width:999999px";
+        pos = i = k;
+    }
+    out.append(css, pos, std::string::npos);
+    return out;
 }
 
 // The LH_NO_* switches are off unless a case sets one: none comes in from the environment.
@@ -540,6 +712,132 @@ bool run(int op, std::string_view input) {
     }
     case 'M': { // litehtml's master_css
         answer(1, master_css);
+        return true;
+    }
+    case 'g': { // a setting: the media features grid, u32 count, each i32 type, f32 width, height, device width and height, i32 color, color index, monochrome, f32 resolution
+        grid().clear();
+        const uint32_t n = in.u32();
+        for (uint32_t i = 0; i < n; i++) {
+            media_features m;
+            m.type = media_type(in.i32());
+            m.width = in.f32();
+            m.height = in.f32();
+            m.device_width = in.f32();
+            m.device_height = in.f32();
+            m.color = in.i32();
+            m.color_index = in.i32();
+            m.monochrome = in.i32();
+            m.resolution = in.f32();
+            grid().push_back(m);
+        }
+        return true;
+    }
+    case 'r': { // css_parser::parse_stylesheet of the text: u8 top level, the text; every rule and what its block holds
+        const bool top_level = in.u8() != 0;
+        write_rules(o, css_parser::parse_stylesheet(in.rest(), top_level));
+        answer(1, o.s);
+        return true;
+    }
+    case 'B': { // a style block's contents from text componentized: its raw declarations and rules, then the declarations as style::add takes them
+        raw_declaration::vector decls;
+        raw_rule::vector rules;
+        css_parser(normalize(std::string(input), f_componentize)).consume_style_block_contents(decls, rules);
+        write_declarations(o, decls);
+        write_rules(o, rules);
+        for (auto& decl : decls) {
+            remove_whitespace(decl.value);
+            if (decl.name.substr(0, 2) != "--") decl.name = lowcase(decl.name);
+        }
+        write_declarations(o, decls);
+        answer(1, o.s);
+        return true;
+    }
+    case 'e': { // parse_media_query_list of the text: every query's structure, then each grid point's trileans and the list's answer
+        const media_query_list list = parse_media_query_list(std::string(input), stylesheet_document());
+        o.u32(uint32_t(list.m_queries.size()));
+        for (const auto& q : list.m_queries) {
+            o.u8(q.m_not ? 1 : 0);
+            o.i32(int32_t(q.m_media_type));
+            o.u32(uint32_t(q.m_conditions.size()));
+            for (const auto& c : q.m_conditions) write_condition(o, c);
+        }
+        for (const auto& features : grid()) {
+            for (const auto& q : list.m_queries) o.u8(uint8_t(q.check(features)));
+            o.u8(list.check(features) ? 1 : 0);
+        }
+        answer(1, o.s);
+        return true;
+    }
+    case 'w': { // css::parse_css_stylesheet of the text: u8 scheme (0 as is, 1 light, 2 dark), the text; every selector's order, layered flag, rule and media list, then each media list over the grid
+        const uint8_t scheme = in.u8();
+        std::string text = in.rest();
+        if (scheme) text = rewrite_color_scheme(text, scheme == 2);
+        css sheet;
+        sheet.parse_css_stylesheet(text, "", stylesheet_document());
+        std::vector<const style*> rules;
+        std::vector<media_query_list_list::ptr> lists;
+        o.u32(uint32_t(sheet.selectors().size()));
+        for (const auto& sel : sheet.selectors()) {
+            auto rule = std::find(rules.begin(), rules.end(), sel->m_style.get());
+            if (rule == rules.end()) rule = rules.insert(rules.end(), sel->m_style.get());
+            int32_t list = -1;
+            if (sel->m_media_query) {
+                auto it = std::find(lists.begin(), lists.end(), sel->m_media_query);
+                if (it == lists.end()) it = lists.insert(lists.end(), sel->m_media_query);
+                list = int32_t(it - lists.begin());
+            }
+            o.i32(sel->m_order);
+            o.u8(sel->m_layered ? 1 : 0);
+            o.i32(int32_t(rule - rules.begin()));
+            o.i32(list);
+        }
+        o.u32(uint32_t(lists.size()));
+        for (const auto& list : lists) {
+            for (const auto& features : grid()) {
+                list->apply_media_features(features);
+                o.u8(list->is_used() ? 1 : 0);
+            }
+        }
+        answer(1, o.s);
+        return true;
+    }
+    case 'o': { // the renderer's rewrite_color_scheme: u8 dark, the text
+        const bool dark = in.u8() != 0;
+        answer(1, rewrite_color_scheme(in.rest(), dark));
+        return true;
+    }
+    case 'Q': { // parse_selector_list of tokens (u32 count, tokens) in strict mode and the document's mode: how many selectors
+        o.u32(uint32_t(parse_selector_list(read_tokens(in), strict_mode, stylesheet_document()->mode()).size()));
+        answer(1, o.s);
+        return true;
+    }
+    case 'Y': { // whether style::add of tokens (u32 count, tokens) keeps a property, as @supports asks it of a declaration
+        style st;
+        st.add(read_tokens(in), "", stylesheet_document()->container());
+        answer(st.empty() ? 0 : 1, {});
+        return true;
+    }
+    case 'U': { // parse_url of a token: the url
+        std::string url;
+        const bool ok = parse_url(read_token(in, 0), url);
+        answer(ok ? 1 : 0, url);
+        return true;
+    }
+    case 'X': { // decode of the bytes as UTF-8 (a BOM may say otherwise)
+        answer(1, decode(std::string(input), encoding::utf_8));
+        return true;
+    }
+    case 'V': { // a length from a token in px: from_token with f_length_percentage, then the document's to_pixels and cvt_units against 16px metrics and a size of 200
+        const css_token tok = read_token(in, 0);
+        css_length len;
+        const bool ok = len.from_token(tok, f_length_percentage);
+        font_metrics fm;
+        fm.font_size = fm.x_height = 16;
+        fm.ch_width = 7;
+        o.f32(stylesheet_document()->to_pixels(len, fm, 200).value());
+        stylesheet_document()->cvt_units(len, fm, 200);
+        write_length(o, len);
+        answer(ok ? 1 : 0, o.s);
         return true;
     }
     case 'x': { // every byte's URL classes: bit 0 reserved, bit 1 scheme, bit 2 ASCII

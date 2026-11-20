@@ -60,6 +60,7 @@ version = "0.1.0"
 name = "twidget_litehtml"
 version = "0.1.0"
 dependencies = [
+ "twidget_css",
  "twidget_cstd",
  "twidget_json",
  "twidget_testkit",

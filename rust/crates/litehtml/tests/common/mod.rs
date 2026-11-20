@@ -42,6 +42,28 @@
 //! - `P` text: componentized, its comma-separated lists, `is_any_value`, `is_declaration_value`,
 //!   `skip_whitespace` from 0 (u8, i32), each token's `ident()`.
 //! - `M`: litehtml's `master_css`.
+//!
+//! The stylesheet records read lhdump's one document (a 375 x 667 screen at 2x, 16 px default font,
+//! `TestContainer`'s imports) and evaluate media queries against the grid of the last `g`:
+//!
+//! - `g` u32 count, each i32 type, f32 width, height, device width and height, i32 color, color index,
+//!   monochrome, f32 resolution: a setting, the grid.
+//! - `r` u8 top_level, text: `css_parser::parse_stylesheet`, u32 count and each rule: u8 type, name, prelude
+//!   tokens, block token, then a style rule's declarations (name, value tokens, u8 important) and nested rules,
+//!   or an at-rule's block as a list of rules.
+//! - `B` text: componentized, a style block's declarations and rules, then the declarations as `style::add`
+//!   takes them.
+//! - `e` text: `parse_media_query_list`, every query (u8 not, i32 type, its conditions: u32 op, u32 count, each
+//!   u8 kind and a condition, or a feature's name, f32 value and value2, u32 op and op2), then for each grid
+//!   point every query's trilean and the list's answer.
+//! - `w` u8 scheme (0 as is, 1 light, 2 dark: the renderer's rewrite first), text: `css::parse_css_stylesheet`,
+//!   u32 count and each selector's i32 order, u8 layered, i32 rule and i32 media list (-1 none, else in order
+//!   of first use), then u32 lists and each over the grid (u8 used).
+//! - `o` u8 dark, text: the renderer's `rewrite_color_scheme`.
+//! - `Q` u32 count and tokens: how many selectors `parse_selector_list` makes of them (stage L4's, asked
+//!   before a run). `Y` u32 count and tokens: status 1 when `style::add` keeps a property of them (L5's).
+//! - `U` a token: `parse_url`. `X` bytes: `decode` as UTF-8. `V` a token: `from_token` with
+//!   f_length_percentage, then the document's `to_pixels` (f32) and `cvt_units` (the length after it).
 
 #![allow(dead_code, unused_imports)]
 
@@ -51,9 +73,19 @@ use std::sync::Arc;
 pub use twidget_testkit::{Comparison, Lcg, Oracle, framed, hex, mutate};
 
 use twidget_litehtml::css_length::*;
-use twidget_litehtml::css_parser::{self, f_componentize, f_remove_whitespace, normalize};
+use twidget_litehtml::css_parser::{self, CssParser, f_componentize, f_remove_whitespace, normalize, normalize_tokens};
 use twidget_litehtml::css_tokenizer::*;
 use twidget_litehtml::css_values::*;
+use twidget_litehtml::document::Units;
+use twidget_litehtml::document_container::DocumentContainer;
+use twidget_litehtml::encodings::{Encoding, decode};
+use twidget_litehtml::html::lowcase;
+use twidget_litehtml::media_query::{MediaCondition, MediaDocument, MediaInParens, MediaQueryListList, parse_media_query_list_text};
+use twidget_litehtml::style::parse_url;
+use twidget_litehtml::stylesheet::{
+    Css, RawDeclaration, RawRule, RuleType, StyleRule, StyleSheetHost, StyleSheetInput, supports_candidates,
+};
+use twidget_litehtml::types::{FontMetrics, MediaFeatures};
 use twidget_litehtml::*;
 
 #[derive(Default)]
@@ -1550,4 +1582,629 @@ pub fn without_overlong_ascii(text: &[u8]) -> (Vec<u8>, bool) {
         }
     }
     (out, changed)
+}
+
+// ---- Stage L2: stylesheets and media queries -------------------------------------------------------
+
+/// lhdump's `OracleContainer` as far as a stylesheet asks it.
+#[derive(Debug, Default)]
+pub struct TestContainer;
+
+impl twidget_litehtml::web_color::ResolveColor for TestContainer {
+    fn resolve_color(&self, _name: &[u8]) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+impl DocumentContainer for TestContainer {
+    fn pt_to_px(&self, pt: f32) -> Px {
+        Px(pt * 96.0 / 72.0)
+    }
+    fn get_default_font_size(&self) -> Px {
+        Px(16.0)
+    }
+    fn import_css(&self, url: &[u8], baseurl: &mut Vec<u8>) -> Vec<u8> {
+        match imported(url) {
+            Some(text) => {
+                *baseurl = [&b"imported/"[..], url].concat();
+                text.to_vec()
+            }
+            None => Vec::new(),
+        }
+    }
+}
+
+/// The sheets lhdump's container gives `@import`.
+pub fn imported(url: &[u8]) -> Option<&'static [u8]> {
+    match url {
+        b"a.css" => Some(b"i{color:red}"),
+        b"m.css" => Some(b"@media print{p{x:y}} q{z:w}"),
+        b"nested.css" => Some(b"@import 'a.css' screen; r{s:t} @import 'm.css';"),
+        b"layer.css" => Some(b"@layer{u{v:w}} @supports (color:red){x{y:z}}"),
+        _ => None,
+    }
+}
+
+/// The media features of lhdump's document: a 375 x 667 screen at 2x.
+pub fn document_media() -> MediaFeatures {
+    MediaFeatures {
+        ty: MediaType::media_type_screen.index(),
+        width: Px(375.0),
+        height: Px(667.0),
+        device_width: Px(375.0),
+        device_height: Px(667.0),
+        color: 8,
+        color_index: 256,
+        monochrome: 0,
+        resolution: Px(192.0),
+    }
+}
+
+/// The grid media queries are evaluated against: viewports from none to huge in both orientations, 1x to
+/// 3x, colour and monochrome devices, screen and print.
+pub fn media_grid() -> Vec<MediaFeatures> {
+    let mut grid = Vec::new();
+    let widths = [0.0f32, 320.0, 375.0, 599.99, 600.0, 768.0, 1024.0, 1e6];
+    let heights = [0.0f32, 400.0, 667.0, 1080.0];
+    for (i, &width) in widths.iter().enumerate() {
+        for (j, &height) in heights.iter().enumerate() {
+            let k = i * heights.len() + j;
+            grid.push(MediaFeatures {
+                ty: [MediaType::media_type_screen, MediaType::media_type_screen, MediaType::media_type_print, MediaType::media_type_all]
+                    [k % 4]
+                    .index(),
+                width: Px(width),
+                height: Px(height),
+                device_width: Px(if k.is_multiple_of(3) { width } else { 1920.0 }),
+                device_height: Px(if k.is_multiple_of(3) { height } else { 1080.0 }),
+                color: if k % 7 == 6 { 0 } else { 8 },
+                color_index: if k % 5 == 4 { 0 } else { 256 },
+                monochrome: if k % 7 == 6 { 8 } else { 0 },
+                resolution: Px([96.0, 192.0, 288.0, 72.0][k % 4]),
+            });
+        }
+    }
+    grid
+}
+
+/// The grid as lhdump's `g` setting.
+pub fn grid_setting(grid: &[MediaFeatures]) -> Vec<u8> {
+    let mut o = Out::default();
+    o.u32(grid.len() as u32);
+    for f in grid {
+        o.i32(f.ty).f32(f.width.value()).f32(f.height.value()).f32(f.device_width.value()).f32(f.device_height.value());
+        o.i32(f.color).i32(f.color_index).i32(f.monochrome).f32(f.resolution.value());
+    }
+    framed(b'g', &o.take())
+}
+
+pub fn token_list_bytes(list: &[CssToken]) -> Vec<u8> {
+    let mut o = Out::default();
+    tokens(&mut o, list);
+    o.take()
+}
+
+fn declarations_out(o: &mut Out, decls: &[RawDeclaration]) {
+    o.u32(decls.len() as u32);
+    for d in decls {
+        o.str(&d.name);
+        tokens(o, &d.value);
+        o.u8(u8::from(d.important));
+    }
+}
+
+/// lhdump's `write_rules`.
+pub fn rules_out(o: &mut Out, rules: &[RawRule]) {
+    o.u32(rules.len() as u32);
+    for rule in rules {
+        o.u8(rule.ty as u8).str(&rule.name);
+        tokens(o, &rule.prelude);
+        o.token(&rule.block);
+        if rule.ty == RuleType::qualified {
+            let mut decls = Vec::new();
+            let mut nested = Vec::new();
+            CssParser::new(rule.block.value.clone()).consume_style_block_contents(&mut decls, &mut nested);
+            declarations_out(o, &decls);
+            rules_out(o, &nested);
+        } else if rule.block.ty == CURLY_BLOCK {
+            rules_out(o, &css_parser::parse_stylesheet_tokens(&rule.block.value, false));
+        }
+    }
+}
+
+fn condition_out(o: &mut Out, condition: &MediaCondition) {
+    o.u32(condition.op.0);
+    o.u32(condition.m_conditions.len() as u32);
+    for item in &condition.m_conditions {
+        match item {
+            MediaInParens::Condition(c) => {
+                o.u8(0);
+                condition_out(o, c);
+            }
+            MediaInParens::Feature(f) => {
+                o.u8(1).str(&f.name).f32(f.value).f32(f.value2).u32(u32::from(f.op)).u32(u32::from(f.op2));
+            }
+            MediaInParens::Unknown => {
+                o.u8(2);
+            }
+        }
+    }
+}
+
+/// What the stylesheet cases need of a run beyond the name table: the grid, and the answers of the stages
+/// not ported yet (selector lists, declarations), learnt from lhdump before the run.
+#[derive(Debug, Default)]
+pub struct Later {
+    pub selector_counts: std::collections::HashMap<Vec<u8>, usize>,
+    pub supported: std::collections::HashMap<Vec<u8>, bool>,
+}
+
+impl Later {
+    /// Every prelude a walk of these sheets may read as a selector list, and every block of an `@supports`
+    /// prelude it may read as a declaration, asked of lhdump once.
+    pub fn learn(&mut self, oracle: &Oracle, sheets: &[Vec<u8>]) {
+        let mut preludes = Vec::new();
+        let mut candidates = Vec::new();
+        fn walk(rules: &[RawRule], preludes: &mut Vec<CssTokenVector>, candidates: &mut Vec<CssTokenVector>) {
+            for rule in rules {
+                if rule.ty == RuleType::qualified {
+                    preludes.push(rule.prelude.clone());
+                    continue;
+                }
+                if lowcase(&rule.name) == b"supports" {
+                    supports_candidates(&normalize_tokens(rule.prelude.clone(), f_componentize, None), candidates);
+                }
+                if rule.block.ty == CURLY_BLOCK {
+                    walk(&css_parser::parse_stylesheet_tokens(&rule.block.value, false), preludes, candidates);
+                }
+            }
+        }
+        let mut texts: Vec<Vec<u8>> = sheets.to_vec();
+        for url in [&b"a.css"[..], b"m.css", b"nested.css", b"layer.css"] {
+            texts.push(imported(url).unwrap_or_default().to_vec());
+        }
+        for text in &texts {
+            for scheme in [None, Some(false), Some(true)] {
+                let text = match scheme {
+                    None => text.clone(),
+                    Some(dark) => twidget_css::rewrite_color_scheme(text, dark),
+                };
+                walk(&css_parser::parse_stylesheet(&text, true), &mut preludes, &mut candidates);
+            }
+        }
+        let mut input = Vec::new();
+        let mut asked_preludes = Vec::new();
+        for prelude in preludes {
+            let key = token_list_bytes(&prelude);
+            if !self.selector_counts.contains_key(&key) && !asked_preludes.contains(&key) {
+                input.extend(framed(b'Q', &key));
+                asked_preludes.push(key);
+            }
+        }
+        let mut asked_candidates = Vec::new();
+        for candidate in candidates {
+            let key = token_list_bytes(&candidate);
+            if !self.supported.contains_key(&key) && !asked_candidates.contains(&key) {
+                input.extend(framed(b'Y', &key));
+                asked_candidates.push(key);
+            }
+        }
+        let answers = oracle.run(input, asked_preludes.len() + asked_candidates.len());
+        let (counts, supported) = answers.split_at(asked_preludes.len());
+        for (key, answer) in asked_preludes.into_iter().zip(counts) {
+            self.selector_counts.insert(key, u32::from_le_bytes(answer.1[..4].try_into().expect("a count")) as usize);
+        }
+        for (key, answer) in asked_candidates.into_iter().zip(supported) {
+            self.supported.insert(key, answer.0 == 1);
+        }
+    }
+}
+
+/// The document a stylesheet case reads, as lhdump's.
+pub struct Sheets<'a> {
+    pub lh: &'a Lh,
+    pub later: &'a Later,
+    pub container: TestContainer,
+}
+
+impl StyleSheetHost for Sheets<'_> {
+    fn names(&self) -> &Names {
+        &self.lh.names
+    }
+    fn container(&self) -> &dyn DocumentContainer {
+        &self.container
+    }
+    fn media_document(&self) -> MediaDocument<'_> {
+        MediaDocument {
+            names: &self.lh.names,
+            units: Units { container: &self.container, media: document_media(), root_font_size: Px(16.0) },
+        }
+    }
+    fn selector_count(&self, prelude: &[CssToken]) -> usize {
+        *self.later.selector_counts.get(&token_list_bytes(prelude)).expect("a prelude the run learnt")
+    }
+    fn supports_declaration(&self, tokens: &[CssToken]) -> bool {
+        *self.later.supported.get(&token_list_bytes(tokens)).expect("a declaration the run learnt")
+    }
+    fn add_media_list(&self, _list: &std::sync::Arc<MediaQueryListList>) {}
+}
+
+impl Lh {
+    /// What lhdump answers to a stylesheet record (`r`, `B`, `e`, `w`, `o`, `U`, `X`, `V`) against `grid`.
+    pub fn sheet_answer(&self, later: &Later, grid: &[MediaFeatures], op: u8, input: &[u8]) -> (u8, Vec<u8>) {
+        let mut i = In::new(input);
+        let mut o = Out::default();
+        let sheets = Sheets { lh: self, later, container: TestContainer };
+        match op {
+            b'r' => {
+                let top_level = i.u8() != 0;
+                rules_out(&mut o, &css_parser::parse_stylesheet(&i.rest(), top_level));
+                (1, o.take())
+            }
+            b'B' => {
+                let mut decls = Vec::new();
+                let mut rules = Vec::new();
+                CssParser::new(normalize(input, f_componentize, None)).consume_style_block_contents(&mut decls, &mut rules);
+                declarations_out(&mut o, &decls);
+                rules_out(&mut o, &rules);
+                for decl in &mut decls {
+                    css_parser::remove_whitespace(&mut decl.value, None);
+                    if !decl.name.starts_with(b"--") {
+                        decl.name = lowcase(&decl.name);
+                    }
+                }
+                declarations_out(&mut o, &decls);
+                (1, o.take())
+            }
+            b'e' => {
+                let list = parse_media_query_list_text(input, &sheets.media_document());
+                o.u32(list.m_queries.len() as u32);
+                for q in &list.m_queries {
+                    o.u8(u8::from(q.m_not)).i32(q.m_media_type).u32(q.m_conditions.len() as u32);
+                    for c in &q.m_conditions {
+                        condition_out(&mut o, c);
+                    }
+                }
+                for features in grid {
+                    for q in &list.m_queries {
+                        o.u8(q.check(&self.names, features) as u8);
+                    }
+                    o.u8(u8::from(list.check(&self.names, features)));
+                }
+                (1, o.take())
+            }
+            b'w' => {
+                let scheme = i.u8();
+                let mut text = i.rest();
+                if scheme != 0 {
+                    text = twidget_css::rewrite_color_scheme(&text, scheme == 2);
+                }
+                let mut sheet = Css::default();
+                sheet.parse_css_stylesheet(StyleSheetInput::Text(&text), b"", &sheets, None, true);
+                let mut rules: Vec<*const StyleRule> = Vec::new();
+                let mut lists: Vec<std::sync::Arc<MediaQueryListList>> = Vec::new();
+                o.u32(sheet.selectors().len() as u32);
+                for sel in sheet.selectors() {
+                    let ptr = std::sync::Arc::as_ptr(&sel.rule);
+                    let rule = rules.iter().position(|r| *r == ptr).unwrap_or_else(|| {
+                        rules.push(ptr);
+                        rules.len() - 1
+                    });
+                    let list = match &sel.media_query {
+                        None => -1,
+                        Some(m) => lists.iter().position(|l| std::sync::Arc::ptr_eq(l, m)).unwrap_or_else(|| {
+                            lists.push(std::sync::Arc::clone(m));
+                            lists.len() - 1
+                        }) as i32,
+                    };
+                    o.i32(sel.order).u8(u8::from(sel.layered)).i32(rule as i32).i32(list);
+                }
+                o.u32(lists.len() as u32);
+                for list in &lists {
+                    for features in grid {
+                        list.apply_media_features(&self.names, features);
+                        o.u8(u8::from(list.is_used()));
+                    }
+                }
+                (1, o.take())
+            }
+            b'o' => {
+                let dark = i.u8() != 0;
+                (1, twidget_css::rewrite_color_scheme(&i.rest(), dark))
+            }
+            b'U' => match parse_url(&i.token(0)) {
+                Some(url) => (1, url),
+                None => (0, Vec::new()),
+            },
+            b'X' => (1, decode(input, Encoding::utf_8)),
+            b'V' => {
+                let tok = i.token(0);
+                let mut len = CssLength::default();
+                let ok = len.from_token(&tok, f_length_percentage, CssValues::default());
+                let fm = FontMetrics { font_size: Px(16.0), x_height: Px(16.0), ch_width: Px(7.0), ..FontMetrics::default() };
+                let units = sheets.media_document().units;
+                o.f32(units.to_pixels(&len, &fm, Px(200.0)).value());
+                units.cvt_units(&mut len, &fm, Px(200.0));
+                length(&mut o, &len);
+                (u8::from(ok), o.take())
+            }
+            other => panic!("no stylesheet record {}", char::from(other)),
+        }
+    }
+}
+
+/// Selectors of every kind and some no selector at all.
+fn any_selector(random: &mut Lcg) -> String {
+    let parts = [
+        "div",
+        "p",
+        "*",
+        ".a",
+        "#b",
+        "a.c",
+        "[x]",
+        "[x=y]",
+        "[x~='z' i]",
+        ":hover",
+        ":not(.a)",
+        ":nth-child(2n+1)",
+        "::before",
+        ":is(p, div)",
+        ":where(.q)",
+        "html",
+        "body",
+        "li:first-child",
+        "input[type=checkbox]",
+        ":root",
+        "svg|a",
+        "!",
+        "1",
+        ".1a",
+        "#",
+        "[",
+        ":unknown(",
+        ":lang(en)",
+        "button:active",
+        "&",
+        "& > a",
+    ];
+    let combinators = [" ", " > ", " + ", " ~ ", ",", ", ", ""];
+    let mut s = String::new();
+    for k in 0..1 + random.below(3) {
+        if k > 0 {
+            s.push_str(pick(random, &combinators));
+        }
+        s.push_str(pick(random, &parts));
+    }
+    s
+}
+
+/// A media query list in every syntax, valid and not.
+pub fn any_media_query_list(random: &mut Lcg) -> String {
+    fn feature(random: &mut Lcg) -> String {
+        let names = [
+            "width",
+            "height",
+            "min-width",
+            "max-width",
+            "min-height",
+            "max-height",
+            "aspect-ratio",
+            "min-aspect-ratio",
+            "orientation",
+            "resolution",
+            "min-resolution",
+            "max-resolution",
+            "color",
+            "min-color",
+            "color-index",
+            "monochrome",
+            "device-width",
+            "max-device-width",
+            "device-height",
+            "device-aspect-ratio",
+            "min-orientation",
+            "hover",
+            "prefers-color-scheme",
+            "prefers-reduced-motion",
+            "WIDTH",
+            "grid",
+        ];
+        let values = [
+            "0",
+            "600px",
+            "40em",
+            "30rem",
+            "50vw",
+            "50vh",
+            "10vmin",
+            "1in",
+            "2.54cm",
+            "72pt",
+            "6pc",
+            "10mm",
+            "1ch",
+            "2ex",
+            "16/9",
+            "4 / 3",
+            "1/0",
+            "0/0",
+            "portrait",
+            "landscape",
+            "2dppx",
+            "2x",
+            "192dpi",
+            "75dpcm",
+            "infinite",
+            "3",
+            "-1",
+            "1.5",
+            "dark",
+            "light",
+            "none",
+            "600",
+            "calc(1px)",
+            "2foo",
+            "-2foo",
+        ];
+        let name = pick(random, &names);
+        match random.below(6) {
+            0 => format!("({name})"),
+            1 | 2 => format!("({name}:{})", pick(random, &values)),
+            3 => format!("({name} {} {})", pick(random, &["<", "<=", ">", ">=", "=", "< =", "=>"]), pick(random, &values)),
+            4 => format!("({} {} {name})", pick(random, &values), pick(random, &["<", "<=", ">", ">=", "="])),
+            _ => {
+                let op = pick(random, &["<", "<=", ">", ">="]);
+                format!("({} {op} {name} {op} {})", pick(random, &values), pick(random, &values))
+            }
+        }
+    }
+    fn condition(random: &mut Lcg, depth: u32) -> String {
+        let mut s = String::new();
+        if random.chance(5) {
+            s.push_str("not ");
+        }
+        let joiner = pick(random, &[" and ", " or ", " and ", " AND "]);
+        for k in 0..1 + random.below(3) {
+            if k > 0 {
+                s.push_str(joiner);
+            }
+            if depth < 3 && random.chance(5) {
+                s.push_str(&format!("({})", condition(random, depth + 1)));
+            } else if random.chance(10) {
+                s.push_str(pick(random, &["fn(x)", "(x y)", "(!)", "([)", "()"]));
+            } else {
+                s.push_str(&feature(random));
+            }
+        }
+        s
+    }
+    let mut queries = Vec::new();
+    for _ in 0..1 + random.below(3) {
+        let q = match random.below(4) {
+            0 => condition(random, 0),
+            1 => pick(
+                random,
+                &["screen", "print", "all", "tv", "speech", "SCREEN", "only screen", "not print", "unknown", "not", "and", "layer", ""],
+            )
+            .to_string(),
+            _ => {
+                let ty = pick(random, &["screen", "print", "all", "only screen", "not screen", "not all", "tv"]);
+                format!("{ty} and {}", condition(random, 1))
+            }
+        };
+        queries.push(q);
+    }
+    queries.join(pick(random, &[", ", ","]))
+}
+
+/// A stylesheet of every rule kind: style rules with declarations, `@media`, `@supports`, `@layer`,
+/// `@import`, `@charset`, unknown at-rules, nested rules, comments, CDO and CDC, and broken ones.
+pub fn any_stylesheet(random: &mut Lcg, depth: u32) -> String {
+    fn declarations(random: &mut Lcg) -> String {
+        let props = [
+            "color",
+            "COLOR",
+            "width",
+            "margin",
+            "--x",
+            "--X",
+            "display",
+            "background",
+            "font-size",
+            "-webkit-x",
+            "x",
+            "1x",
+            "transform",
+            "opacity",
+        ];
+        let values = [
+            "red",
+            "1px",
+            "calc(1px + 2%)",
+            "0",
+            "var(--x)",
+            "rgb(1 2 3)",
+            "none !important",
+            "a b c",
+            "1px ! important",
+            "\"s\"",
+            "url(a.png)",
+            "",
+            "  2em  ",
+            "{x}",
+            "(a;b)",
+            "!important",
+        ];
+        let mut s = String::new();
+        for k in 0..random.below(5) {
+            if k > 0 {
+                s.push_str(pick(random, &[";", "; ", ";;", "\n"]));
+            }
+            let sep = if random.chance(12) { " " } else { ":" };
+            s.push_str(&format!("{}{sep}{}", pick(random, &props), pick(random, &values)));
+        }
+        if random.chance(2) {
+            s.push(';');
+        }
+        s
+    }
+    let mut s = String::new();
+    for _ in 0..1 + random.below(5) {
+        match random.below(14) {
+            0..=5 => s.push_str(&format!("{}{{{}}}", any_selector(random), declarations(random))),
+            6 if depth < 4 => s.push_str(&format!("@media {}{{{}}}", any_media_query_list(random), any_stylesheet(random, depth + 1))),
+            7 if depth < 4 => {
+                let condition = pick(
+                    random,
+                    &[
+                        "(color: red)",
+                        "(display: grid)",
+                        "not (x: y)",
+                        "(color:red) and (width:1px)",
+                        "(color:red) or (nope:1)",
+                        "selector(a)",
+                        "(color:red) and (a:b) or (c:d)",
+                        "((color: red))",
+                        "(color: red; width: 1px)",
+                        "",
+                        "x",
+                        "(--v: 1)",
+                        "not ((a))",
+                    ],
+                );
+                s.push_str(&format!("@supports {condition}{{{}}}", any_stylesheet(random, depth + 1)));
+            }
+            8 if depth < 4 => {
+                let name = pick(random, &["", " base", " a.b", " x, y"]);
+                if random.chance(3) {
+                    s.push_str(&format!("@layer{name};"));
+                } else {
+                    s.push_str(&format!("@layer{name}{{{}}}", any_stylesheet(random, depth + 1)));
+                }
+            }
+            9 => {
+                let url =
+                    pick(random, &["'a.css'", "\"m.css\"", "url(nested.css)", "url('layer.css')", "url( \"a.css\" )", "'x.css'", "a.css"]);
+                let media = pick(random, &["", " screen", " print", " (min-width: 600px)", " screen and (orientation: portrait)"]);
+                s.push_str(&format!("@import {url}{media};"));
+            }
+            10 => s.push_str(pick(
+                random,
+                &[
+                    "@charset \"utf-8\";",
+                    "@font-face{font-family:x}",
+                    "@page{margin:0}",
+                    "@keyframes k{from{x:y}}",
+                    "@x;",
+                    "@MEDIA all{a{b:c}}",
+                ],
+            )),
+            11 => s.push_str(&format!("a{{{}{{{}}}}}", pick(random, &["& b", "&:hover", "@media print", "b"]), declarations(random))),
+            12 => s.push_str(pick(random, &["/* c */", "<!--", "-->", " ", "}", "{", ";", "a{", "@media screen{a{b:c}"])),
+            _ => s.push_str(&format!("@media (prefers-color-scheme: {}){{a{{b:c}}}}", pick(random, &["dark", "light", "Dark", ""]))),
+        }
+        s.push_str(pick(random, &["", " ", "\n"]));
+    }
+    s
 }

@@ -64,5 +64,7 @@ if (MSVC)
 else()
     target_compile_options(lhdump_litehtml PRIVATE -w)
 endif()
-add_executable(lhdump lhdump.cpp)
+# The renderer's colour-scheme rewrite, copied into lhdump, reads the core's CSS helpers.
+add_executable(lhdump lhdump.cpp "${TW_CORE}/css.cpp")
+target_include_directories(lhdump PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
 target_link_libraries(lhdump PRIVATE lhdump_litehtml)

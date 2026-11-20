@@ -14,5 +14,6 @@ workspace = true
 twidget_cstd = { path = "../cstd" }
 
 [dev-dependencies]
+twidget_css = { path = "../css" }
 twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
 twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

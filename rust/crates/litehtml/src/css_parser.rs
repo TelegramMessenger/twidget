@@ -1,12 +1,14 @@
-//! `css_parser.h` and `css_parser.cpp`, as far as the ported stages need them: the normalizing of a text or
-//! of tokens into component values (https://www.w3.org/TR/css-syntax-3/#normalize-into-a-token-stream), the
-//! whitespace removal that comes with it, and the list and value checks on component values. Rules,
-//! declarations and stylesheets come with stage L2.
+//! `css_parser.h` and `css_parser.cpp`: the normalizing of a text or of tokens into component values
+//! (https://www.w3.org/TR/css-syntax-3/#normalize-into-a-token-stream) and the whitespace removal that comes
+//! with it, the parse of a stylesheet into rules, of a style block into declarations and nested rules, and
+//! the list and value checks on component values.
 
 use crate::css_tokenizer::{
-    BAD_STRING, BAD_URL, COMMA, CV_FUNCTION, CssToken, CssTokenVector, EOF, FUNCTION, LEFT_BRACE, LEFT_BRACKET, LEFT_PAREN, WHITESPACE,
-    mirror, tokenize,
+    AMPERSAND, AT_KEYWORD, BAD_STRING, BAD_URL, CDC, CDO, COLON, COMMA, CURLY_BLOCK, CV_FUNCTION, CssToken, CssTokenVector, EOF, FUNCTION,
+    IDENT, LEFT_BRACE, LEFT_BRACKET, LEFT_PAREN, SEMICOLON, WHITESPACE, mirror, tokenize,
 };
+use crate::encodings::{Encoding, decode};
+use crate::stylesheet::{RawDeclaration, RawRule, RuleType};
 
 /// `filter_code_points(input)` (https://www.w3.org/TR/css-syntax-3/#css-filter-code-points): `\r\n`, `\r` and
 /// `\f` become `\n`, a NUL becomes U+FFFD.
@@ -177,6 +179,33 @@ pub struct CssParser {
     depth: i32,
 }
 
+/// `css_parser::parse_stylesheet(input, top_level)` (https://www.w3.org/TR/css-syntax-3/#parse-stylesheet) of
+/// bytes: decoded as UTF-8 (a BOM may say UTF-16), normalized without componentizing, then as
+/// [`parse_stylesheet_tokens`].
+pub fn parse_stylesheet(input: &[u8], top_level: bool) -> Vec<RawRule> {
+    // 1. Decode: UTF-8 is always assumed, broken UTF-8 made valid.
+    let str = decode(input, Encoding::utf_8);
+    // 2. Normalize.
+    let tokens = normalize(&str, 0, None);
+    parse_stylesheet_tokens(&tokens, top_level)
+}
+
+/// `css_parser::parse_stylesheet(input, top_level)` of tokens: the list of rules, the top-level flag set
+/// or not (https://www.w3.org/TR/css-syntax-3/#consume-list-of-rules).
+pub fn parse_stylesheet_tokens(input: &[CssToken], top_level: bool) -> Vec<RawRule> {
+    CssParser::new(input.to_vec()).consume_list_of_rules(top_level)
+}
+
+/// `trim_whitespace(tokens)`: whitespace tokens off both ends.
+pub fn trim_whitespace(tokens: &mut CssTokenVector) {
+    while tokens.first().is_some_and(|t| t.ty == WHITESPACE) {
+        tokens.remove(0);
+    }
+    while tokens.last().is_some_and(|t| t.ty == WHITESPACE) {
+        tokens.pop();
+    }
+}
+
 impl CssParser {
     pub fn new(tokens: CssTokenVector) -> CssParser {
         CssParser { tokens, index: 0, depth: 0 }
@@ -189,6 +218,188 @@ impl CssParser {
         }
         self.index += 1;
         self.tokens[self.index - 1].clone()
+    }
+
+    /// `peek_token()`: the next token, EOF past the end.
+    fn peek_token(&self) -> CssToken {
+        if self.index == self.tokens.len() {
+            return CssToken::new(EOF);
+        }
+        self.tokens[self.index].clone()
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-list-of-rules: CDO and CDC are skipped at the top level.
+    pub fn consume_list_of_rules(&mut self, top_level: bool) -> Vec<RawRule> {
+        let mut rules = Vec::new();
+
+        loop {
+            let token = self.next_token();
+
+            match token.ty {
+                WHITESPACE => {}
+                EOF => return rules,
+                CDO | CDC if top_level => {}
+                AT_KEYWORD => {
+                    // Reconsume the current input token and consume an at-rule.
+                    self.index -= 1;
+                    if let Some(rule) = self.consume_at_rule() {
+                        rules.push(rule);
+                    }
+                }
+                _ => {
+                    // Reconsume the current input token and consume a qualified rule.
+                    self.index -= 1;
+                    if let Some(rule) = self.consume_qualified_rule() {
+                        rules.push(rule);
+                    }
+                }
+            }
+        }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-qualified-rule: none when the input ends before its block.
+    pub fn consume_qualified_rule(&mut self) -> Option<RawRule> {
+        let mut rule = RawRule::new(RuleType::qualified, Vec::new());
+
+        loop {
+            let token = self.next_token();
+
+            match token.ty {
+                // eof in qualified rule
+                EOF => return None,
+                LEFT_BRACE => {
+                    rule.block = self.consume_simple_block(b'{');
+                    return Some(rule);
+                }
+                CURLY_BLOCK => {
+                    rule.block = token;
+                    return Some(rule);
+                }
+                _ => {
+                    // Reconsume the current input token and append a component value to the prelude.
+                    self.index -= 1;
+                    let value = self.consume_component_value();
+                    rule.prelude.push(value);
+                }
+            }
+        }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-at-rule: always a rule, ended by `;`, a block or the input.
+    pub fn consume_at_rule(&mut self) -> Option<RawRule> {
+        let token = self.next_token();
+        let mut rule = RawRule::new(RuleType::at, token.str);
+
+        loop {
+            let token = self.next_token();
+
+            match token.ty {
+                SEMICOLON => return Some(rule),
+                // eof in at-rule
+                EOF => return Some(rule),
+                LEFT_BRACE => {
+                    rule.block = self.consume_simple_block(b'{');
+                    return Some(rule);
+                }
+                CURLY_BLOCK => {
+                    rule.block = token;
+                    return Some(rule);
+                }
+                _ => {
+                    self.index -= 1;
+                    let value = self.consume_component_value();
+                    rule.prelude.push(value);
+                }
+            }
+        }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-declaration, the next token an IDENT: its name, `:`, and the
+    /// value with `!important` taken off and the whitespace of both ends (the leading one too, unlike the
+    /// standard); a declaration without a name (as the C++ returns `{}`) when no `:` follows the name.
+    pub fn consume_declaration(&mut self) -> RawDeclaration {
+        let token = self.next_token();
+        let mut decl = RawDeclaration { name: token.str, value: Vec::new(), important: false };
+
+        // 1. Whitespace.
+        while self.peek_token().ty == WHITESPACE {
+            self.next_token();
+        }
+
+        // 2. Anything but `:` is a parse error.
+        if self.peek_token().ch() != COLON {
+            return RawDeclaration::default();
+        }
+        self.next_token();
+
+        // 3. Whitespace.
+        while self.peek_token().ty == WHITESPACE {
+            self.next_token();
+        }
+
+        // 4. Component values to the end.
+        while self.peek_token().ty != EOF {
+            let value = self.consume_component_value();
+            decl.value.push(value);
+        }
+
+        // 5. `!` `important` at the end.
+        trim_whitespace(&mut decl.value);
+        let n = decl.value.len();
+        if n >= 1 && decl.value[n - 1].ident() == b"important" && n >= 2 && decl.value[n - 2].ch() == i32::from(b'!') {
+            decl.value.truncate(n - 2);
+            decl.important = true;
+        }
+
+        // 6. Whitespace at the end.
+        trim_whitespace(&mut decl.value);
+
+        decl
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-style-block: the declarations and the rules (`@` rules and
+    /// `&` nested ones) of a style block, apart.
+    pub fn consume_style_block_contents(&mut self, decls: &mut Vec<RawDeclaration>, rules: &mut Vec<RawRule>) {
+        loop {
+            let token = self.next_token();
+
+            match token.ty {
+                WHITESPACE | SEMICOLON => {}
+                EOF => return,
+                AT_KEYWORD => {
+                    self.index -= 1;
+                    if let Some(rule) = self.consume_at_rule() {
+                        rules.push(rule);
+                    }
+                }
+                IDENT => {
+                    // The token and every component value to `;` or the end, then a declaration of them.
+                    let mut temp = vec![token];
+                    while !matches!(self.peek_token().ty, SEMICOLON | EOF) {
+                        let value = self.consume_component_value();
+                        temp.push(value);
+                    }
+
+                    let decl = CssParser::new(temp).consume_declaration();
+                    if decl.is_some() {
+                        decls.push(decl);
+                    }
+                }
+                AMPERSAND => {
+                    self.index -= 1;
+                    if let Some(rule) = self.consume_qualified_rule() {
+                        rules.push(rule);
+                    }
+                }
+                _ => {
+                    // unexpected token in a style block: component values to `;` or the end, thrown away
+                    self.index -= 1;
+                    while !matches!(self.peek_token().ty, SEMICOLON | EOF) {
+                        self.consume_component_value();
+                    }
+                }
+            }
+        }
     }
 
     /// `skip_block(closing_bracket)`: past the block's end, nested blocks and functions included.

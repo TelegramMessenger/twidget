@@ -1641,3 +1641,45 @@ pub fn unwrap_where(css: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&css[i..]);
     out
 }
+
+/// The renderer's `rewrite_color_scheme(css, dark)` (core/src/renderer.cpp): litehtml knows no
+/// `prefers-color-scheme`, so each such media feature (the whole identifier, outside strings, comments, escapes
+/// and urls), with the `:` and the letters of its value after it, becomes `min-width:0px` when it matches
+/// the scheme (or has no value) and `min-width:999999px` when it does not.
+pub fn rewrite_color_scheme(css: &[u8], dark: bool) -> Vec<u8> {
+    const KEY: &[u8] = b"prefers-color-scheme";
+    let mut out = Vec::with_capacity(css.len());
+    let mut pos = 0;
+    let mut i = 0;
+    while i + KEY.len() <= css.len() {
+        let skip = skip_opaque(css, i);
+        if skip != i {
+            i = skip;
+            continue;
+        }
+        if (i > 0 && ident_char(css[i - 1]))
+            || !iequals(&css[i..i + KEY.len()], KEY)
+            || (i + KEY.len() < css.len() && ident_char(css[i + KEY.len()]))
+        {
+            i += 1;
+            continue;
+        }
+        out.extend_from_slice(&css[pos..i]);
+        let mut j = i + KEY.len();
+        while j < css.len() && matches!(css[j], b' ' | b'\t' | b'\n' | b':') {
+            j += 1;
+        }
+        let mut k = j;
+        while k < css.len() && css[k].is_ascii_alphabetic() {
+            k += 1;
+        }
+        let value = lower(&css[j..k]);
+        // a bare `(prefers-color-scheme)` holds
+        let matches = if value.is_empty() { true } else { (value == b"dark") == dark };
+        out.extend_from_slice(if matches { b"min-width:0px" } else { b"min-width:999999px" });
+        pos = k;
+        i = k;
+    }
+    out.extend_from_slice(&css[pos..]);
+    out
+}
