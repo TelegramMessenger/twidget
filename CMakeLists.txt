@@ -16,6 +16,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Every a*b+c rounds twice, as Rust and MSVC's default /fp:precise compute it: clang and GCC would fuse it where the CPU
+# has FMA (arm64 always), and a layout, a paint or a recording would then differ by platform.
+if(NOT MSVC)
+    add_compile_options(-ffp-contract=off)
+endif()
+
 option(TWIDGET_BUILD_TESTS "Build the TwidgetCore checks" ${PROJECT_IS_TOP_LEVEL})
 option(TWIDGET_QT "Build twidget_qt, the QPainter backend (needs Qt 6)" OFF)
 option(TWIDGET_LITEHTML_NO_CORE_FOUNDATION "Build litehtml without CoreFoundation, using a fixed date pattern" OFF)
