@@ -273,16 +273,36 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 | Stage | State |
 |---|---|
 | 0.1 | done: workspace, workspace lints, `tools/unsafe_report.py`, `tools/gate.py` |
-| 0.2 | started: `oracle/` with `wire_oracle` (Windows x64, MSVC) |
+| 0.2 | started: `oracle/` with the wire, remote, css, paint, compositor, base64 and canvas programs here and widget-sandbox's json, stream, cpu budget, SDK, gesture and stamp ones (Windows x64, MSVC); core and litehtml (`lhdump`) still to come |
 | 1.1 | done: `twidget_wire`; `wire_tests.cpp` ported (18 tests: documented bytes, round trips, cuts, count sites, references, enums, masks, flags, forms, defaults, the C++ suite's seeded mutations), and ~165k cases through the C++ and the Rust codec with identical answers (samples and their cuts, mutated samples, generated values, encoders under single caps) |
 | 1.2 | done: `twidget_json` (in widget-sandbox's `packages/rust` since stage 1.4); widget-sandbox's JSON tests ported, and ~400k cases through json.h and the port with identical answers (its fuzz texts both surrogate modes, depths around the bound, every escape and surrogate order, `quote`, 160k doubles through both number forms and `asInt`, 30k number texts through `strtod`, 37 real JSON files and their mutations); `twidget_testkit` holds what the tests share |
 | 1.3 | done: `twidget_remote` at version 1 as of twidget 5bc9639 (the freeze of 0.4 decides what stage 5 meets); `remote_tests.cpp`'s message checks ported (documented bytes, kinds, pixels, nested caps, value lengths, encoder room, cuts, seeded changes), and ~270k cases through remote.cpp and the port with identical answers (samples and their cuts under default and eight tight caps, their mutations, 20k generated messages and their mutations, encoders under tight caps, `kind_of` of every header, 24k pixel answers against the requests they answer) |
 | 2.1 | done: `twidget_css` (core `css.cpp`: colours, `light-dark()`, `var()`, `:where()`, declarations, names, opaque runs, times, `calc()`, transforms, origin, opacity, fonts, theme and safe-area variables) on `twidget_cstd` (C's `strtod` with its whole grammar, hex floats rounded to even, `atof`, `atoi`, `%.*f`); ~645k answers alike with css.cpp and MSVC's C library (140k numbers, 252k generated values through every helper and their changes, 12k themes and safe areas, 241k from the 2088 style texts and 12947 declarations of widget-sandbox's corpus) |
 | 2.2 | done: `twidget_paint` (core `paint_policy`: the heavy-box rules and `PaintCounter`, the limits and their messages); the shared `paint-policy.json` passes (220 checks, as `paint_policy_tests.cpp` reads it), and 165k answers alike with paint_policy.cpp (generated shadow lists and their changes, styles, keyframe sequences, scripts of counter steps) |
+| 1.4 | started: widget-sandbox's stream frames (`twidget_stream`, ~80k cases alike with remote_wire.h) and coding (`twidget_server::coding`, `remote_coding.cpp`, met by the C++ host end on every stream of T6); tgw's hosted wire waits for S6 |
+| 2.3 | done: `twidget_compositor` (layers and tracks, `resume_track`, `paint_digest`, `summarize`, `drop_inert_clips`, `damage_between`, `bake_track`) and `twidget_base64`; core_tests' compositor and damage checks ported (9 tests), ~72k cases alike with compositor.cpp and encode.cpp (12k lists and their edits, 16k damage cases, 6k bakes with their sample times, 12k resumes, 2.4k base64 inputs) |
+| 3.1 | done: `twidget_canvas`, the whole interpreter behind a `CanvasHost` trait with every limit, and the answers of `measureText` and `imageData`; 17 tests, ~19k scripts alike with canvas.cpp (2.8M generated commands and 16k queries, 26 command streams from `corpus.twrec` and ~900 changed or spliced, the stress widget's frames, corpus charts, 62 scripts that each cross a limit): every batch in wire form, every answer, the state after each step and every host call in order |
+| S1 | done: `twidget_cpu_budget`, `twidget_sdk_policy`, `twidget_gesture`, `twidget_bundle_stamp` (with version.h and `SandboxResources`); the three shared fixtures and the C++ tests ported by name (13 tests), ~1.14M inputs alike with the C++ (246k budget steps, 590k SDK checks and gate steps, 203k gesture claims and steps, 100k stamps and 300 bundle directories) |
+| S2 | done: `twidget_js::JsThread` and `Poster` (8 MiB stack, tasks, timers in deadline order, the sweep); a panic on the thread aborts, as an exception leaving a JSThread task terminates |
+| S3 | done: `twidget_js::NovaContext` on `nova_embed`; test_main.cpp's 8 context tests ported (recursion depth, timers, a string past the limit, host function failures, results that cannot be copied, bundles compiled once, arguments as the C interface gave them, deadlines) |
+| S4 | done: `twidget_engine` (sandbox_engine.cpp: boot, every host call kind, the quota and the main-thread window, deferrals, timers, frames, scripts, the bridge, storage, requests and the wallet, the query guard, stats, the kill texts) and `TrustedValidator`; 4 engine and 6 validator tests in process on the shipped bundles, the rest through T6 |
+| S5 | done: `twidget_server` (`SandboxRemoteServer`, the serving loop with its Output, SyncSlot, EngineSink and routes) and `twidget_engine_ffi` (the C ABI, 29 `unsafe`; `nova-c-api` adds Nova's C interface for a C++ program that drives Nova). T6 in process through the C ABI rather than in a child: widget-sandbox `-DTW_RUST_ENGINE_END=ON`, `TW_ENGINE_STREAM=1 TW_ENGINE_END=rust`: 230 tests, 13728 checks, 0 failures, 128 of 128 fixture engines over the stream, per-test times alike (116.4 s, the C++ end 116.5 s); 133 attacks, 0 leaks, 7 killed, compat 19/19 and generated 20/20 with every per-file row the C++ end's; the end dropping diagnostics failed 34 of 36 `sdk_` tests |
 
 ## Findings
 
 What the comparisons found about the C++, kept for the stages that meet it again.
+
+- sandbox_engine.cpp's `wake()` puts the deferred tasks after the one that failed in front of what that failed
+  `dispatch` deferred again, which is that same task: a deferred frame or timer then waits in the queue twice.
+  The port keeps it; a fix belongs in the C++ first (0.3).
+- `CpuBudget::slot` converts a bucket to `int` before indexing, undefined for a time that is not finite (a
+  `record` at NaN or infinity); the port takes slot 0 there, the comparison keeps such times out.
+- NaN payloads and signs differ between compilers where two NaNs meet or LLVM folds `-w / 2` into `w / -2`:
+  MSVC, clang and Rust debug and release give different bits. The canvas comparison treats computed NaNs as one;
+  reproducible NaN bits on the wire would be a 0.3 fix in the C++.
+- `paint_digest` hashes filter lists, path ops, points and dashes without their lengths, so no filters and an
+  empty filter list digest alike; `bake_track` keeps one key more than the two ends of a final run of equal
+  keys. Both harmless, both kept.
 
 - `std::to_chars(double)` (json.h's numbers off Apple) is not "shortest digits": of the fewest characters
   that read back, it writes the ones nearest the value, a tie to the even digit. A large integer in fixed
