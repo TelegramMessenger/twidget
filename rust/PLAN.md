@@ -274,6 +274,7 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 |---|---|
 | 0.1 | done: workspace, workspace lints, `tools/unsafe_report.py`, `tools/gate.py` |
 | 0.2 | started: `oracle/` with the wire, remote, css, paint, compositor, base64, canvas, animations and `shadow_oracle` (the whole core) programs and `lhdump` (L0–L4) here and widget-sandbox's json, stream, cpu budget, SDK, gesture and stamp ones (Windows x64, MSVC); core and litehtml (`lhdump`) still to come |
+| 0.3 | done but the recording: the animator's events, transitions, overrides and heavy motions and the renderer's canvas and font releases come in id or creation order; `pair_tokens`' key is length-prefixed (no cross-pair or cross-widget collision); `paint_signature` names selectors by sheet and order (`css_selector::place()`) and `PatchLog` keys by node id; `-ffp-contract=off` on every non-MSVC target (MSVC's `/fp:precise` does not contract); numbers parsed and printed in the C locale (`litehtml/c_locale.h`) at every site that reaches an output, since Telegram sets `LC_ALL` itself; sort ties checked unique. Each its own commit with a test (the same widget under de-DE and C gives the same HTML, display list, answers and canvas calls); the Rust ports and oracles follow. Left: `tests/recordings/corpus.twrec` must be recorded again on macOS (`tools/record` builds only there; on Windows it stops at step 130 on the canvas-font release order, as it did before). tdesktop needs `-ffp-contract=off` in `lib_widget_renderer.cmake` and `lib_litehtml.cmake`'s non-MSVC options too |
 | 1.1 | done: `twidget_wire`; `wire_tests.cpp` ported (18 tests: documented bytes, round trips, cuts, count sites, references, enums, masks, flags, forms, defaults, the C++ suite's seeded mutations), and ~165k cases through the C++ and the Rust codec with identical answers (samples and their cuts, mutated samples, generated values, encoders under single caps) |
 | 1.2 | done: `twidget_json` (in widget-sandbox's `packages/rust` since stage 1.4); widget-sandbox's JSON tests ported, and ~400k cases through json.h and the port with identical answers (its fuzz texts both surrogate modes, depths around the bound, every escape and surrogate order, `quote`, 160k doubles through both number forms and `asInt`, 30k number texts through `strtod`, 37 real JSON files and their mutations); `twidget_testkit` holds what the tests share |
 | 1.3 | done: `twidget_remote` at version 1 as of twidget 5bc9639 (the freeze of 0.4 decides what stage 5 meets); `remote_tests.cpp`'s message checks ported (documented bytes, kinds, pixels, nested caps, value lengths, encoder room, cuts, seeded changes), and ~270k cases through remote.cpp and the port with identical answers (samples and their cuts under default and eight tight caps, their mutations, 20k generated messages and their mutations, encoders under tight caps, `kind_of` of every header, 24k pixel answers against the requests they answer) |
@@ -308,8 +309,7 @@ What the comparisons found about the C++, kept for the stages that meet it again
   wrap. `[attr~=word]` splits with `split_string`, which keeps a quoted run as one word. `||` is not implemented.
 - The renderer's tree-byte limit checks its per-op bound (a quarter of the limit) only once the running count reaches
   the limit, so a first op of 16 MiB + 1 is taken. Adopted roots keep attribute names an `attr` op refuses, which the
-  writer then leaves out. The patch log is keyed by node pointer, so in-place hole changes follow allocation
-  addresses (0.3; the port keys by arena slot).
+  writer then leaves out. The patch log was keyed by node pointer; since 0.3 both key it by node id.
 
 - WidgetHost matches a renderer's `result` to the pending query and resolves it in two locked steps: a query that
   times out between them and the next query that starts meanwhile gets the old answer.
@@ -340,11 +340,10 @@ What the comparisons found about the C++, kept for the stages that meet it again
 - `Animator::declares_motion` is always false: `update()` keeps only the watched properties that are not animation
   or transition ones in `bases_`, the only ones it looks at, so renderer.cpp's scripted-layer filter never excludes
   an element for what it declares.
-- `pair_tokens` keys its per-thread cache `a + '' + b`, so two pairs that join alike share an entry (`("0px",
-  "4px")` then `("0px", "4px")` gets the first's answer), and the cache is shared by every widget on the
-  thread: one widget can change another's interpolations. A 0.3 fix.
-- The animator's unordered maps make the order of events across elements, and of `heavy_motion`'s list, an accident
-  of hashing; the port orders them by element id (0.3) and the comparison sorts the C++'s.
+- `pair_tokens` keyed its per-thread cache `a + '' + b`, so two pairs that joined alike shared an entry and one
+  widget could change another's interpolations; fixed in 0.3 (length-prefixed key, C++ and Rust).
+- The animator's unordered maps made the order of events across elements, and of `heavy_motion`'s list, an accident
+  of hashing; since 0.3 both order by element id.
 
 - sandbox_engine.cpp's `wake()` puts the deferred tasks after the one that failed in front of what that failed
   `dispatch` deferred again, which is that same task: a deferred frame or timer then waits in the queue twice.
