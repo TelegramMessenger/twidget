@@ -110,6 +110,12 @@ pub trait DocumentContainer: ResolveColor {
         Size::default()
     }
 
+    /// `get_image_aspect(src)`: how an image fits its box when no `object-fit` says (an SVG's `preserveAspectRatio`,
+    /// such as `xMinYMid slice`; `slice` covers, anything else contains), empty for none, as the C++'s body answers.
+    fn get_image_aspect(&self, _src: &[u8]) -> Vec<u8> {
+        Vec::new()
+    }
+
     /// `create_text_breaker(text, font)`: a breaker of the text in the font, as a handle the document keeps and
     /// passes to `text_breaker_fit` and `text_breaker_minimum_width`; 0 for none (the C++'s null pointer).
     fn create_text_breaker(&self, _text: &[u8], _font: u64) -> u64 {
@@ -216,10 +222,6 @@ pub trait DocumentContainer: ResolveColor {
     fn control_accent(&self) -> WebColor {
         WebColor::rgba(0, 122, 255, 255)
     }
-
-    /// No call in the C++: painting reached what a later stage ports (`"image"`, L15: an `<img>`'s image after its
-    /// box) and drew nothing there.
-    fn paint_unported(&self, _hdc: u64, _what: &'static str) {}
 
     // ---- The pointer (stage L16) ---------------------------------------------------------------------------------
 

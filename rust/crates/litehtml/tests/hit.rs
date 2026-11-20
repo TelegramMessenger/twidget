@@ -38,7 +38,6 @@ struct Run {
     bytes: usize,
     cases: usize,
     steps: usize,
-    skipped_calls: usize,
     tally: HitTally,
     oracle: Option<Oracle>,
 }
@@ -54,7 +53,6 @@ impl Run {
             bytes: 0,
             cases: 0,
             steps: 0,
-            skipped_calls: 0,
             tally: HitTally::default(),
             oracle: Oracle::find("lhdump"),
         }
@@ -115,7 +113,7 @@ impl Run {
             let (rust_body, _) = split_answer(&rust.1);
             if cpp.0 != rust.0 || cpp_body != rust_body {
                 differences.push(explain(self.switches, case, &(cpp.0, cpp_body), &(rust.0, rust_body), what));
-            } else if let Some(calls) = compare_paint_calls(&cpp.1, &rust.1, &mut self.skipped_calls) {
+            } else if let Some(calls) = compare_paint_calls(&cpp.1, &rust.1) {
                 differences.push(format!("{calls}\n  in {}", what.chars().take(3000).collect::<String>()));
             }
             if differences.len() >= 3 {
@@ -128,14 +126,7 @@ impl Run {
     fn finish(mut self) -> HitTally {
         self.flush();
         let compared = if self.oracle.is_some() { "alike with lhdump" } else { "pointed (no oracle)" };
-        eprintln!(
-            "{}: {} cases, {} steps {compared} ({} C++ calls of later stages' paint skipped); {}",
-            self.name,
-            self.cases,
-            self.steps,
-            self.skipped_calls,
-            self.tally.report()
-        );
+        eprintln!("{}: {} cases, {} steps {compared}; {}", self.name, self.cases, self.steps, self.tally.report());
         std::mem::take(&mut self.tally)
     }
 }

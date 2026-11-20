@@ -13,8 +13,9 @@
 //! documents, the `LH_NO_*` switches, and a deep document on a small stack. SVG (stage L14) is compared in every case
 //! and on its own: the corpus's SVGs, written SVG shapes for each branch, generated SVG documents, the group cache's
 //! and late cache's switches, the container's cache answering as one (`draw_cached` with its keys), each `<svg>`'s
-//! `paint_shapes`, and a deep SVG on a small stack. A later stage's paint (an `<img>`'s image, L15) is the port's
-//! seam, standing for the C++'s call there, and counted.
+//! `paint_shapes`, and a deep SVG on a small stack. Images (stage L15) are compared in every case and on their own:
+//! `<img>`, `<canvas>` and generated images with and without sizes, broken and empty sources, `object-fit` and
+//! `object-position`, the container's aspect, inside transforms, clips and groups. Nothing stands behind a seam.
 
 mod common;
 
@@ -37,7 +38,6 @@ struct Run {
     bytes: usize,
     cases: usize,
     compared: usize,
-    skipped_calls: usize,
     tally: PaintTally,
     oracle: Option<Oracle>,
 }
@@ -53,7 +53,6 @@ impl Run {
             bytes: 0,
             cases: 0,
             compared: 0,
-            skipped_calls: 0,
             tally: PaintTally::default(),
             oracle: Oracle::find("lhdump"),
         }
@@ -113,7 +112,7 @@ impl Run {
             let (rust_body, _) = split_answer(&rust.1);
             if cpp.0 != rust.0 || cpp_body != rust_body {
                 differences.push(explain(self.switches, case, &(cpp.0, cpp_body), &(rust.0, rust_body), what));
-            } else if let Some(calls) = compare_paint_calls(&cpp.1, &rust.1, &mut self.skipped_calls) {
+            } else if let Some(calls) = compare_paint_calls(&cpp.1, &rust.1) {
                 differences.push(format!("{calls}\n  in {}", what.chars().take(3000).collect::<String>()));
             }
             if differences.len() >= 3 {
@@ -126,14 +125,7 @@ impl Run {
     fn finish(mut self) -> PaintTally {
         self.flush();
         let compared = if self.oracle.is_some() { "alike with lhdump" } else { "painted (no oracle)" };
-        eprintln!(
-            "{}: {} cases, {} {compared} ({} C++ calls of later stages' paint skipped); {}",
-            self.name,
-            self.cases,
-            self.compared,
-            self.skipped_calls,
-            self.tally.report()
-        );
+        eprintln!("{}: {} cases, {} {compared}; {}", self.name, self.cases, self.compared, self.tally.report());
         std::mem::take(&mut self.tally)
     }
 }
@@ -888,6 +880,328 @@ fn written_paint_shapes_paint_alike() {
     for style in (0..10).filter(|&s| s != 1) {
         assert!(tally.counts.contains_key(&format!("border sides of style {style}")), "no border style {style}");
     }
+}
+
+// ---- Images (stage L15) --------------------------------------------------------------------------------------
+
+/// Images for each branch of `el_image::draw` and `fitted`: the test container sizes an image by its source's bytes
+/// (`a.png` 68 × 131, `bb.png` 167 × 75, `photo.png` 125 × 34, `dd` 0 × 52, `hu99.png` 106 × 0) and gives the text
+/// after a `#` as its aspect.
+fn written_image_documents() -> Vec<(&'static str, String)> {
+    let page = |body: &str| format!("<!DOCTYPE html><html><head></head><body>{body}</body></html>");
+    let styled = |css: &str, body: &str| format!("<!DOCTYPE html><html><head><style>{css}</style></head><body>{body}</body></html>");
+    let images = |src: &str, styles: &[&str]| -> String { styles.iter().map(|s| format!("<img src=\"{src}\" style=\"{s}\">")).collect() };
+    let fits = [
+        "fill",
+        "contain",
+        "cover",
+        "none",
+        "scale-down",
+        "CONTAIN",
+        "Cover",
+        "foo",
+        "inherit",
+        "var(--fit)",
+        "contain !important",
+        "cover cover",
+    ];
+    let mut fitted = String::new();
+    for src in ["a.png", "bb.png", "photo.png"] {
+        for fit in fits {
+            for size in ["width:60px;height:60px", "width:20px;height:90px", "width:300px;height:10px"] {
+                fitted += &format!("<img src=\"{src}\" style=\"{size};object-fit:{fit}\">");
+            }
+        }
+    }
+    let positions = [
+        "left top",
+        "right bottom",
+        "top",
+        "bottom",
+        "left",
+        "right",
+        "center",
+        "top left",
+        "bottom right",
+        "center top",
+        "top center",
+        "bottom 20%",
+        "25% 75%",
+        "-10% 110%",
+        "100% 0%",
+        "10px 5px",
+        "1e1px 2.5px",
+        "-3px",
+        "10px",
+        "50%",
+        "calc(10px + 5%) 0",
+        "left 10px top 5px",
+        "&quot;left top&quot;",
+        "  RIGHT   BOTTOM ",
+        "x y z",
+        "0 0",
+        ".5em 1in",
+        "nan% 5px",
+        "1e40px 1e40%",
+        "var(--where)",
+    ];
+    let mut placed = String::new();
+    for (k, place) in positions.iter().enumerate() {
+        let fit = ["contain", "cover", "none", "scale-down", "fill"][k % 5];
+        let src = ["a.png", "bb.png", "photo.png"][k % 3];
+        placed += &format!("<img src=\"{src}\" style=\"width:50px;height:40px;object-fit:{fit};object-position:{place}\">");
+        placed += &format!("<img src=\"{src}\" style=\"width:50px;height:40px;object-position:{place}\">");
+    }
+    let aspects = [
+        "a.png#xMinYMin slice",
+        "bb.png#xminymin slice",
+        "bb.png#xmaxymax meet",
+        "photo.png#none",
+        "photo.png#xmidymin",
+        "a.png#ymax xmin slice",
+        "a.png#",
+        "dd#slice",
+        "hu99.png#xmaxymin",
+        "x9.png#SLICE",
+        "m.png#xmaxyminslice",
+        "#xminymax",
+    ];
+    let mut aspected = String::new();
+    for src in aspects {
+        for decls in [
+            "width:60px;height:60px",
+            "width:60px;height:60px;object-fit:fill;object-position:right",
+            "width:30px;height:80px;object-fit:contain",
+            "width:80px;height:30px;object-fit:FILL",
+        ] {
+            aspected += &format!("<img src=\"{src}\" style=\"{decls}\">");
+        }
+    }
+    vec![
+        (
+            "images with and without sizes",
+            page(
+                "<img src=\"a.png\"><img src=\"bb.png\" width=\"50\"><img src=\"photo.png\" height=\"20\"><img src=\"x9.png\" width=\"40\" height=\"30\"><img src=\"m.png\" style=\"width:80px;height:20px\"><img src=\"a.png\" style=\"max-width:20px\"><img src=\"a.png\" width=\"50%\"><img src=\"bb.png\" style=\"width:auto;height:10px\"><img src=\"a.png\" style=\"display:block;width:100%\"><img src=\"bb.png\" style=\"width:33.3px;margin-left:0.3px;height:10.6px\"><img src=\"photo.png\" style=\"min-width:200px\"><img src=\"a.png\" width=\"20\" height=\"20\" style=\"box-sizing:border-box;padding:3px\">",
+            ),
+        ),
+        (
+            "images with padding, borders and radii",
+            page(&images(
+                "photo.png",
+                &[
+                    "padding:4px;border:3px solid red",
+                    "padding:2px 6px;border:1px dashed;border-radius:50%",
+                    "border-radius:10px 20%/5px;border-width:4px 1px;border-style:solid",
+                    "padding:10%;border-radius:100px",
+                    "border:5px double;border-radius:3px;object-fit:cover;width:40px;height:40px",
+                    "box-shadow:0 0 4px red, inset 0 0 3px;border-radius:6px",
+                    "outline:2px solid blue;background:yellow url(bb.png)",
+                ],
+            )),
+        ),
+        (
+            "broken and unloaded images",
+            page(
+                "<img><img src><img src=\"\"><img src=\"\" width=\"30\" height=\"20\"><img src=\"dd\" width=\"20\"><img src=\"dd\" style=\"object-fit:contain;width:30px;height:30px\"><img src=\"hu99.png\" style=\"object-fit:cover;width:30px;height:30px\"><img alt=\"alt text\" src=\"kz.png\"><img src=\"a.png\" width=\"0\"><img src=\"a.png\" height=\"0\"><img src=\"a.png\" style=\"width:0.4px\"><img src=\"a.png\" style=\"height:0.00004px;width:5px\"><img src=\"  spaced .png \" style=\"object-fit:contain;width:9px;height:9px\">",
+            ),
+        ),
+        ("object-fit", styled(":root{--fit:cover}", &fitted)),
+        ("object-position", styled(":root{--where:right top}", &placed)),
+        ("aspects from the container", page(&aspected)),
+        (
+            "canvases",
+            page(
+                "<canvas></canvas><canvas width=\"30\" height=\"20\"></canvas><canvas src=\"tw-canvas:1/30x20\" width=\"30\" height=\"20\"></canvas><canvas width=\"300\" height=\"150\" style=\"width:100px;object-fit:contain\"></canvas><canvas style=\"width:40px;height:40px;border:2px solid;object-position:right\" src=\"bb.png\"></canvas><canvas src=\"a.png#xmaxymax slice\" style=\"width:50px;height:20px\">fallback <b>text</b></canvas><canvas style=\"display:block;width:100%;height:30px;border-radius:50%\" src=\"photo.png\"></canvas>",
+            ),
+        ),
+        (
+            "generated images",
+            styled(
+                "p::before{content:url(a.png)}p.b::after{content:url(bb.png#xmaxymin slice) \" text\"}p.c::before{content:url(\"\")}p.d::before{content:url(dd) url(photo.png)}p.e::before{content:url(hu99.png);display:block;width:20px;height:20px;overflow:hidden}",
+                "<p>one</p><p class=\"b\">two</p><p class=\"c\">three</p><p class=\"d\">four</p><p class=\"e\">five</p>",
+            ),
+        ),
+        (
+            "images in transforms, clips and groups",
+            page(
+                "<div style=\"transform:rotate(15deg);width:60px\"><img src=\"a.png\" style=\"width:50px;height:50px;object-fit:cover\"></div><img src=\"bb.png\" style=\"transform:scale(1.5) translate(3px,2px);object-fit:contain;width:40px;height:40px\"><div style=\"overflow:hidden;width:30px;height:30px;border-radius:8px\"><img src=\"photo.png\" style=\"width:80px;height:80px;margin:-10px\"></div><img src=\"a.png\" style=\"opacity:.5;width:20px\"><img src=\"a.png\" style=\"filter:blur(2px);width:20px\"><img src=\"a.png\" style=\"clip-path:circle(40%);width:40px;height:40px\"><div style=\"opacity:.7;filter:grayscale(1)\"><img src=\"bb.png\"></div><div style=\"backdrop-filter:blur(3px)\"><img src=\"photo.png\" style=\"object-fit:none;width:30px;height:30px;object-position:-20px -5px\"></div><div style=\"transform:rotate(45deg) scale(.5);overflow:hidden;width:40px;height:40px\"><img src=\"bb.png\" style=\"width:100px;height:100px;object-fit:cover\"></div><div style=\"overflow:hidden;height:10px\"><img src=\"a.png\" style=\"margin-top:-30px\"></div><div style=\"transform:translateX(-500px)\"><img src=\"a.png\"></div>",
+            ),
+        ),
+        (
+            "images positioned, floated, in flex, grid and tables",
+            page(
+                "<img src=\"a.png\" style=\"position:absolute;left:-20px;top:-20px;width:40px;height:40px\"><img src=\"m.png\" style=\"position:fixed;right:0;bottom:0;width:30px\"><img src=\"m.png\" style=\"position:relative;z-index:-1;width:30px\"><img src=\"bb.png\" style=\"float:right;width:50px\"><p>text <img src=\"a.png\" style=\"vertical-align:middle;height:1em\"> more <a href=\"#\"><img src=\"photo.png\" style=\"border:2px solid\"></a></p><div style=\"display:flex;width:200px\"><img src=\"a.png\" style=\"flex:1;object-fit:cover;height:40px\"><img src=\"bb.png\" style=\"align-self:stretch\"></div><div style=\"display:grid;grid-template-columns:50px 1fr\"><img src=\"photo.png\" style=\"width:100%;height:100%;object-fit:contain\"><img src=\"a.png\"></div><table><tr><td><img src=\"bb.png\" width=\"30\"></td><td style=\"vertical-align:bottom\"><img src=\"a.png\" style=\"object-fit:none;width:20px;height:20px\"></td></tr></table><div dir=\"rtl\"><img src=\"a.png\" width=\"20\"> <img src=\"bb.png\" width=\"20\"></div><div style=\"height:2000px\"></div><img src=\"a.png\">",
+            ),
+        ),
+        (
+            "images hidden and under hover",
+            styled(
+                "img:hover{object-fit:cover;object-position:left top;width:30px;height:30px}div:hover img{object-fit:contain}",
+                "<img src=\"a.png\" style=\"width:20px;height:20px\"><img src=\"bb.png\" style=\"visibility:hidden\"><div style=\"visibility:hidden\"><img src=\"bb.png\" style=\"visibility:visible\"></div><img src=\"a.png\" style=\"display:none\"><div><img src=\"photo.png\" style=\"width:30px;height:30px\"></div><img src=\"x9.png\">",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn written_images_paint_alike() {
+    let mut run = Run::new("written images");
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    let docs = written_image_documents();
+    for (k, (what, html)) in docs.iter().enumerate() {
+        for (sheet, theme) in [(&master, "master"), (&light, "light")] {
+            for width in [375.0, 160.0] {
+                run.case(
+                    paint_record(375.0, 667.0, 2.0, sheet, b"", html.as_bytes(), &shape_steps(width, k as u32)),
+                    format!("{what} ({theme}, {width} px)"),
+                );
+            }
+        }
+    }
+    let tally = run.finish();
+    assert_eq!(tally.documents, docs.len() * 4);
+    for what in
+        ["images drawn", "image aspects asked", "image aspects given", "groups", "clip paths", "filtered paints", "transformed groups"]
+    {
+        assert!(tally.counts.contains_key(what), "no {what}");
+    }
+}
+
+/// A generated document of images and canvases in boxes that transform, clip, group, position, float or lay them
+/// out, with sizes, fits, positions and aspects drawn from the written ones.
+fn image_document(random: &mut Lcg) -> Vec<u8> {
+    fn image(random: &mut Lcg, out: &mut String) {
+        let src = pick(
+            random,
+            &[
+                "a.png",
+                "bb.png",
+                "photo.png",
+                "",
+                "dd",
+                "hu99.png",
+                "a.png#xminymax slice",
+                "bb.png#xmaxymid",
+                "photo.png#slice",
+                "x9.png#",
+            ],
+        );
+        let tag = pick(random, &["img", "img", "img", "canvas"]);
+        out.push_str(&format!("<{tag} src=\"{src}\""));
+        if random.chance(3) {
+            out.push_str(&format!(" width=\"{}\"", pick(random, &["0", "20", "45", "50%", "120"])));
+        }
+        if random.chance(3) {
+            out.push_str(&format!(" height=\"{}\"", pick(random, &["0", "15", "40", "90"])));
+        }
+        let mut decls = Vec::new();
+        for _ in 0..random.below(5) {
+            decls.push(match random.below(9) {
+                0 => format!("object-fit:{}", pick(random, &["fill", "contain", "cover", "none", "scale-down", "bogus"])),
+                1 => format!(
+                    "object-position:{}",
+                    pick(
+                        random,
+                        &["left top", "right", "bottom", "top right", "30% 70%", "-5px 12px", "center bottom", "110% -10%", "1px 2px 3px"]
+                    )
+                ),
+                2 => format!("width:{}", pick(random, &["30px", "61.5px", "100%", "auto", "0"])),
+                3 => format!("height:{}", pick(random, &["30px", "17.25px", "auto", "200px"])),
+                4 => format!("padding:{}", pick(random, &["3px", "10%", "1px 7px"])),
+                5 => format!("border:{} solid", pick(random, &["1px", "4px", "0"])),
+                6 => format!("border-radius:{}", pick(random, &["50%", "6px", "10px 0", "100px"])),
+                7 => format!("display:{}", pick(random, &["block", "inline", "none", "inline-block"])),
+                _ => pick(
+                    random,
+                    &[
+                        "opacity:.5",
+                        "transform:rotate(20deg)",
+                        "filter:blur(1px)",
+                        "vertical-align:middle",
+                        "float:left",
+                        "position:relative;left:-30px",
+                    ],
+                )
+                .to_string(),
+            });
+        }
+        if !decls.is_empty() {
+            out.push_str(&format!(" style=\"{}\"", decls.join(";")));
+        }
+        out.push('>');
+        if tag == "canvas" {
+            out.push_str("</canvas>");
+        }
+    }
+    fn holder(random: &mut Lcg, depth: u32, out: &mut String) {
+        let style = pick(
+            random,
+            &[
+                "",
+                "overflow:hidden;width:40px;height:40px",
+                "overflow:hidden;border-radius:12px;width:60px",
+                "transform:rotate(30deg)",
+                "transform:scale(.5) translate(10px,4px)",
+                "opacity:.6",
+                "filter:grayscale(1)",
+                "clip-path:inset(4px)",
+                "display:flex;width:120px",
+                "display:grid;grid-template-columns:1fr 30px",
+                "position:absolute;left:-10px;top:5px",
+                "float:right;width:50px",
+                "margin-top:-20px",
+                "display:inline-block;padding:3px",
+            ],
+        );
+        out.push_str(&format!("<div style=\"{style}\">"));
+        for _ in 0..1 + random.below(3) {
+            if depth < 3 && random.chance(3) {
+                holder(random, depth + 1, out);
+            } else if random.chance(6) {
+                out.push_str("text ");
+            } else {
+                image(random, out);
+            }
+        }
+        out.push_str("</div>");
+    }
+    let mut out = String::from("<!DOCTYPE html><html><head><style>");
+    if random.chance(3) {
+        out.push_str(pick(
+            random,
+            &["img{object-fit:cover}", "canvas{object-position:right}", "p::before{content:url(a.png)}", "img:hover{object-fit:none}"],
+        ));
+    }
+    out.push_str("</style></head><body>");
+    for _ in 0..1 + random.below(4) {
+        holder(random, 0, &mut out);
+    }
+    if random.chance(4) {
+        out.push_str("<p>generated</p>");
+    }
+    out.push_str("</body></html>");
+    out.into_bytes()
+}
+
+#[test]
+fn generated_images_paint_alike() {
+    let mut run = Run::new("generated images");
+    let master = master_css();
+    let mut random = Lcg::new(0x1D_0015);
+    for k in 0..1200u32 {
+        let html = image_document(&mut random);
+        let width = [320.0, 375.0, 200.0][k as usize % 3];
+        let mut steps = paint_steps(width, 600.0, k);
+        steps.extend([Step::Hover(k), Step::Layout(width, None), paint(PaintStep::viewport(width, 600.0)), Step::Dump]);
+        run.case(
+            paint_record(width, 600.0, 2.0, &master, b"", &html, &steps),
+            format!("generated images {k}: {}", String::from_utf8_lossy(&html)),
+        );
+    }
+    let tally = run.finish();
+    assert_eq!(tally.documents, 1200);
+    assert!(tally.counts.get("images drawn").copied().unwrap_or(0) > 10000);
 }
 
 // ---- Generated documents -------------------------------------------------------------------------------------

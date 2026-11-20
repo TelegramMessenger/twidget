@@ -66,7 +66,7 @@ pub fn mark(o: &Out, what: &'static str, element: i32) {
 
 /// lhdump's `CascadeContainer`: the renderer's answers where the fork asks, every font, width, image and transform
 /// call logged; for layout the viewport, image sizes from the source's bytes and text breakers that break between
-/// any two characters, logged too.
+/// any two characters, logged too; for painting an image's aspect, what follows a `#` in its source, logged too.
 pub struct CascadeContainer {
     pub width: Cell<f32>,
     pub height: Cell<f32>,
@@ -372,8 +372,9 @@ impl DocumentContainer for CascadeContainer {
         self.log(b'q', b"", Vec::new(), 0);
         self.paint.accent.get()
     }
-    fn paint_unported(&self, hdc: u64, what: &'static str) {
-        self.log(b'Z', what.as_bytes(), Vec::new(), hdc);
+    fn get_image_aspect(&self, src: &[u8]) -> Vec<u8> {
+        self.calls.borrow_mut().push((b'N', src.to_vec(), Vec::new(), 0));
+        src.iter().position(|&c| c == b'#').map_or_else(Vec::new, |at| src[at + 1..].to_vec())
     }
     fn point_in_clip_path(&self, path: &VectorPath, x: Px, y: Px) -> bool {
         let p = &path.points;

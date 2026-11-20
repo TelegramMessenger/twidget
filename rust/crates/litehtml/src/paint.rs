@@ -5,12 +5,8 @@
 //! elements it skips or paints bare, the scroller it leaves unclipped, the paint trace), and the element classes'
 //! `draw` dispatch. Each class's own drawing is in its module: `html_tag.rs` (backgrounds, shadows, borders,
 //! outlines, list markers), `el_text.rs`, `el_form.rs`, `render_inline_context.rs` (ellipses), `render_table.rs`
-//! (rows, cells and collapsed borders), `background.rs` (the layers), `el_svg.rs` (what an `<svg>` draws, L14).
-//!
-//! Not yet ported, and where the seam is: an `<img>`'s image after its box (L15). Reaching it tells the container
-//! ([`DocumentContainer::paint_unported`]) and draws nothing there.
-//!
-//! [`DocumentContainer::paint_unported`]: crate::document_container::DocumentContainer::paint_unported
+//! (rows, cells and collapsed borders), `background.rs` (the layers), `el_svg.rs` (what an `<svg>` draws, L14),
+//! `el_image.rs` (an `<img>`'s or `<canvas>`'s image over its box, L15).
 
 use std::collections::BTreeSet;
 

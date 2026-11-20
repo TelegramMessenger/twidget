@@ -26,8 +26,8 @@
 //! `X` filtered (a filter paint) then the paint into hdc * 2 + 1 then `x`, `K` backdrop (a filter paint), `p` path,
 //! `E` group's end, `A` cached (box, u64 key; answered false, or while caching true, a key not drawn before painted
 //! into hdc * 2 + 1 then `a`), `O` isolated (box) then the paint into hdc * 2 + 1 then `o`, `Q` controls active, `q`
-//! the accent. A layer is its border box, radii, clip box, origin box, i32 attachment, i32 repeat, u8 root. The port's
-//! seam (a later stage's paint) is `Z` with the stage's name: an image stands for the C++'s one `g`.
+//! the accent. A layer is its border box, radii, clip box, origin box, i32 attachment, i32 repeat, u8 root. Among them
+//! the container's other calls: an `<img>`'s draw asks `N` its aspect and `S` its size (stage L15).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -526,7 +526,6 @@ pub struct PaintTally {
     pub documents: usize,
     pub paints: usize,
     pub calls: usize,
-    pub seams: BTreeMap<&'static str, usize>,
     pub counts: BTreeMap<String, usize>,
 }
 
@@ -541,9 +540,6 @@ impl PaintTally {
         self.documents += other.documents;
         self.paints += other.paints;
         self.calls += other.calls;
-        for (k, n) in other.seams {
-            *self.seams.entry(k).or_default() += n;
-        }
         for (k, n) in other.counts {
             *self.counts.entry(k).or_default() += n;
         }
@@ -551,15 +547,7 @@ impl PaintTally {
 
     pub fn report(&self) -> String {
         let counts: Vec<String> = self.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        let seams: Vec<String> = self.seams.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        format!(
-            "{} documents, {} paints, {} container calls; later stages' paint met (their C++ calls skipped): {}; {}",
-            self.documents,
-            self.paints,
-            self.calls,
-            if seams.is_empty() { "none".to_string() } else { seams.join(", ") },
-            counts.join(", ")
-        )
+        format!("{} documents, {} paints, {} container calls; {}", self.documents, self.paints, self.calls, counts.join(", "))
     }
 
     /// The paint calls of an answer, counted by kind and by what their arguments show.
@@ -613,8 +601,9 @@ impl PaintTally {
                     b'O' => "isolated paints",
                     b'Q' => "controls asked active",
                     b'q' => "accents asked",
-                    b'Z' => {
-                        *self.seams.entry(if a == b"image" { "image (L15)" } else { "unknown" }).or_default() += 1;
+                    b'N' => {
+                        self.count("image aspects asked", 1);
+                        self.count("image aspects given", usize::from(a.contains(&b'#')));
                         continue;
                     }
                     _ => continue,
@@ -706,9 +695,8 @@ pub fn paint_record(width: f32, height: f32, dpr: f32, master: &[u8], user: &[u8
     cascade_record(width, height, dpr, master, user, html, steps)
 }
 
-/// Where the paint calls of the two sides part, `None` when they are alike: each phase call by call, a seam of the
-/// port's (`Z`) standing for the C++'s calls of that later stage (an image's one `g`), which are counted in `skipped`.
-pub fn compare_paint_calls(cpp: &[u8], rust: &[u8], skipped: &mut usize) -> Option<String> {
+/// Where the paint calls of the two sides part, `None` when they are alike: each phase call by call.
+pub fn compare_paint_calls(cpp: &[u8], rust: &[u8]) -> Option<String> {
     let (_, c) = split_answer(cpp);
     let (_, r) = split_answer(rust);
     if c.len() != r.len() {
@@ -725,19 +713,6 @@ pub fn compare_paint_calls(cpp: &[u8], rust: &[u8], skipped: &mut usize) -> Opti
         let (mut i, mut j) = (0, 0);
         while i < cp.len() && j < rp.len() {
             let rc = &rp[j];
-            if rc.0 == b'Z' {
-                if rc.1 != b"image" || cp[i].0 != b'g' {
-                    return Some(format!(
-                        "phase {p}: the port's {} seam at {j} meets C++ {:?}",
-                        String::from_utf8_lossy(&rc.1),
-                        shown(&cp[i..])
-                    ));
-                }
-                i += 1;
-                *skipped += 1;
-                j += 1;
-                continue;
-            }
             if cp[i] != *rc {
                 let (cc, rr) = (&cp[i], rc);
                 if cc.0 == rr.0 && cc.1 == rr.1 && cc.3 == rr.3 {

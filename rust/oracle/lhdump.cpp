@@ -686,7 +686,7 @@ void clear_switches() {
 
 // ---- Stage L5: the cascade ('l') ----
 
-// The cascade's container: the renderer's answers where the fork asks (fonts with fixed metrics per description, widths per byte, ASCII text transforms, the trusted switch and its sanitize_declaration), its viewport set by the case, every font, width, image and transform call logged; for layout the viewport, image sizes from the source's bytes and text breakers that break between any two characters, logged too.
+// The cascade's container: the renderer's answers where the fork asks (fonts with fixed metrics per description, widths per byte, ASCII text transforms, the trusted switch and its sanitize_declaration), its viewport set by the case, every font, width, image and transform call logged; for layout the viewport, image sizes from the source's bytes and text breakers that break between any two characters, logged too; for painting an image's aspect, what follows a '#' in its source, logged too.
 class CascadeContainer final : public lhdump_paint::Painting<OracleContainer> {
 public:
     float width = 375, height = 667, dpr = 2;
@@ -763,6 +763,13 @@ public:
         for (char c : s) sum += static_cast<unsigned char>(c);
         sz.width = pixel_t(float(sum % 200));
         sz.height = pixel_t(float((sum * 7 + uint32_t(s.size())) % 150));
+    }
+    // Stage L15: an image's aspect is what follows a '#' in its source.
+    std::string get_image_aspect(const char* src) override {
+        const std::string s = src ? src : "";
+        calls.push_back({'N', s, {}, 0});
+        const size_t hash = s.find('#');
+        return hash == std::string::npos ? std::string() : s.substr(hash + 1);
     }
 
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
