@@ -23,6 +23,7 @@ pub mod document;
 pub mod document_container;
 pub mod encodings;
 pub mod gradient;
+pub mod gumbo;
 pub mod html;
 pub mod html_tag;
 pub mod media_query;

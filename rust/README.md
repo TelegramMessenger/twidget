@@ -17,10 +17,12 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | `crates/animations` | `twidget_animations`: the animator, CSS animations, transitions and Web Animations: declarations and times in, style overrides and events out (`core/src/animations.cpp`) |
 | `crates/shadow` | `twidget_shadow`: the renderer's shadow tree, the render ops applied to it with their limits and the canvases they make, and the HTML it is written as (`core/src/renderer.cpp`) |
 | `crates/litehtml` | `twidget_litehtml`: the litehtml fork a stage at a time, one module per C++ file (`litehtml/src`); so far `pixel_t`, the name table, strtod, `web_color`, `css_length`, the keyword tables, the CSS tokenizer and parser, stylesheets with their at-rules and media queries, selectors and their matching |
+| `crates/litehtml/src/gumbo` | `twidget_litehtml::gumbo`: Gumbo, the HTML parser the fork parses with (`litehtml/src/gumbo`), one module per C file: the UTF-8 reader, character references with char_ref.c's Ragel machine, the tokenizer, tree construction and its limits |
 
 | `oracle/` | the C++ the port is compared with: small programs built from twidget's sources, cases on stdin; `lhdump` answers for the litehtml fork, stage by stage |
 | `tools/gate.py` | the gate: oracle build, `cargo test` with the comparison required, clippy, rustfmt, `unsafe` report |
 | `tools/unsafe_report.py` | `unsafe` in the workspace and in every crate it links; `#![forbid(unsafe_code)]` on every root |
+| `tools/gen_gumbo_tables.py` | writes `gumbo/tables.rs` and `tag_enum.rs` from Gumbo's C sources (the tag tables and char_ref.c's machine); `tests/gumbo.rs` checks them against the C |
 
 ```sh
 python -I tools/gate.py            # add --release to run the tests optimized too

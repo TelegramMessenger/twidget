@@ -9,6 +9,7 @@
 #include "encodings.h"
 #include "html.h"
 #include "html_tag.h"
+#include "lhdump_gumbo.h"
 #include "master_css.h"
 #include "num_cvt.h"
 #include "string_id.h"
@@ -956,6 +957,11 @@ bool run(int op, std::string_view input) {
                 tags[t]->on_mouse_leave();
             }
         }
+        answer(1, o.s);
+        return true;
+    }
+    case 'j': { // Gumbo's parse of a text: lhdump_gumbo.h
+        lhdump_gumbo::parse(in, o);
         answer(1, o.s);
         return true;
     }

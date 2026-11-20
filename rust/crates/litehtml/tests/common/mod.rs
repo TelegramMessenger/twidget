@@ -71,6 +71,7 @@
 //!   against every node, `select` with pseudo-classes (u8) and without (u8); with flips, on every k-th
 //!   element (at most 48) `:hover`, then `:active` too, set up the chain, and every selector that reads them
 //!   against every node (u8).
+//! - `j` options, text: Gumbo's parse of the text, every node and error (see `gumbo`).
 
 #![allow(dead_code, unused_imports)]
 
@@ -96,6 +97,8 @@ use twidget_litehtml::stylesheet::{
 };
 use twidget_litehtml::types::{FontMetrics, MediaFeatures};
 use twidget_litehtml::*;
+
+pub mod gumbo;
 
 #[derive(Default)]
 pub struct Out {
