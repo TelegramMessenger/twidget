@@ -10,6 +10,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_canvas"
+version = "0.1.0"
+dependencies = [
+ "twidget_base64",
+ "twidget_css",
+ "twidget_json",
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_compositor"
 version = "0.1.0"
 dependencies = [

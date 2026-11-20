@@ -13,6 +13,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | `crates/cstd` | `twidget_cstd`: the C library behaviours the C++ leans on (`strtod`, `atof`, `atoi`, `%.*f`) |
 | `crates/compositor` | `twidget_compositor`: layers and their baked tracks, paint digests, damage, inert clips (`core/src/compositor.cpp`) |
 | `crates/base64` | `twidget_base64`: the base64 of canvas pixels (`core/src/encode.cpp`) |
+| `crates/canvas` | `twidget_canvas`: the 2D canvas interpreter, commands in and canvas ops out through a `CanvasHost` (`core/src/canvas.cpp`) |
 
 | `oracle/` | the C++ the port is compared with: small programs built from twidget's sources, cases on stdin |
 | `tools/gate.py` | the gate: oracle build, `cargo test` with the comparison required, clippy, rustfmt, `unsafe` report |
