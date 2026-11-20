@@ -35,3 +35,9 @@ target_include_directories(css_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE
 
 add_executable(paint_oracle paint_oracle.cpp "${TW_CORE}/paint_policy.cpp")
 target_include_directories(paint_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+
+add_executable(compositor_oracle compositor_oracle.cpp "${TW_CORE}/compositor.cpp" "${TW_CORE}/wire.cpp")
+target_include_directories(compositor_oracle PRIVATE "${TW_CORE}")
+
+add_executable(base64_oracle base64_oracle.cpp "${TW_CORE}/encode.cpp")
+target_include_directories(base64_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")

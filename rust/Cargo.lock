@@ -3,6 +3,21 @@
 version = 4
 
 [[package]]
+name = "twidget_base64"
+version = "0.1.0"
+dependencies = [
+ "twidget_testkit",
+]
+
+[[package]]
+name = "twidget_compositor"
+version = "0.1.0"
+dependencies = [
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_css"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,17 @@
+[package]
+name = "twidget_compositor"
+description = "TwidgetCore's compositor layers and baked tracks, paint digests, damage and inert clips"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }
