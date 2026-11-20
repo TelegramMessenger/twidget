@@ -238,3 +238,30 @@ fn binary_value(mantissa: u128, sticky: bool, exponent: i64) -> f64 {
         f64::from_bits(significand as u64)
     }
 }
+
+/// `strtol(text, &end, 10)` on a C string: the value and how many bytes it took, 0 bytes (and 0) when it
+/// read no digit. Past the range of C's `long` it is `LONG_MAX` or `LONG_MIN`; `long` is 32 bits on Windows
+/// and 64 elsewhere.
+pub fn strtol(text: &[u8]) -> (i64, usize) {
+    let (min, max) = if cfg!(windows) { (i64::from(i32::MIN), i64::from(i32::MAX)) } else { (i64::MIN, i64::MAX) };
+    let at = |i: usize| text.get(i).copied().unwrap_or(0);
+    let mut i = 0;
+    while is_space(at(i)) {
+        i += 1;
+    }
+    let negative = at(i) == b'-';
+    if matches!(at(i), b'-' | b'+') {
+        i += 1;
+    }
+    let start = i;
+    let mut value: i128 = 0;
+    while at(i).is_ascii_digit() {
+        value = (value * 10 + i128::from(at(i) - b'0')).min(i128::from(i64::MAX) + 1);
+        i += 1;
+    }
+    if i == start {
+        return (0, 0);
+    }
+    let value = if negative { -value } else { value };
+    (value.clamp(i128::from(min), i128::from(max)) as i64, i)
+}

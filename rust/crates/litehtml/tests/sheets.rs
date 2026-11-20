@@ -94,10 +94,10 @@ impl SheetRun {
             self.c.case(&framed(op, &input), answer, what);
         }
         let total = self.c.len();
-        let learnt = (self.later.selector_counts.len(), self.later.supported.len());
+        let learnt = self.later.supported.len();
         self.c.check(&oracle);
         let counts: Vec<String> = self.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        eprintln!("{name}: {total} answers alike ({} preludes and {} declarations learnt); {}", learnt.0, learnt.1, counts.join(", "));
+        eprintln!("{name}: {total} answers alike ({learnt} @supports declarations learnt); {}", counts.join(", "));
     }
 
     fn tally(&mut self, op: u8, input: &[u8], answer: &(u8, Vec<u8>)) {
@@ -403,7 +403,7 @@ fn declarations_keep_their_parts() {
 fn media(text: &str) -> twidget_litehtml::media_query::MediaQueryList {
     let lh = Lh::new();
     let later = Later::default();
-    let sheets = Sheets { lh: &lh, later: &later, container: TestContainer };
+    let sheets = Sheets { lh: &lh, later: &later, container: TestContainer, mode: Default::default() };
     use twidget_litehtml::stylesheet::StyleSheetHost;
     twidget_litehtml::media_query::parse_media_query_list_text(text.as_bytes(), &sheets.media_document())
 }
@@ -445,21 +445,14 @@ fn a_walk_orders_selectors_under_their_rules() {
     let lh = Lh::new();
     let mut later = Later::default();
     let sheet = b"@import 'a.css' print; a, b {c:d} @media screen{e{f:g}} @layer{h{}} @import 'm.css'; @supports not (x:y){i{}}";
-    for (prelude, count) in [(&b"a, b "[..], 2), (b"e", 1), (b"h", 1), (b"i", 1), (b"i", 1)] {
-        let tokens = parse_stylesheet(&[prelude, b"{}"].concat(), true)[0].prelude.clone();
-        later.selector_counts.insert(token_list_bytes(&tokens), count);
-    }
     later.supported.insert(token_list_bytes(&normalize(b"x:y", f_componentize, None)), false);
-    let sheets = Sheets { lh: &lh, later: &later, container: TestContainer };
+    let sheets = Sheets { lh: &lh, later: &later, container: TestContainer, mode: Default::default() };
     let mut css = Css::default();
     css.parse_css_stylesheet(StyleSheetInput::Text(sheet), b"", &sheets, None, true);
-    let walked: Vec<(i32, bool, bool, usize)> =
-        css.selectors().iter().map(|s| (s.order, s.layered, s.media_query.is_some(), s.index)).collect();
+    let walked: Vec<(i32, bool, bool)> = css.selectors().iter().map(|s| (s.m_order, s.m_layered, s.m_media_query.is_some())).collect();
     // a.css's i, then a and b, e under @media, h layered, i under @supports; m.css comes after a rule: not imported.
-    assert_eq!(
-        walked,
-        [(0, false, true, 0), (1, false, false, 0), (2, false, false, 1), (3, false, true, 0), (4, true, false, 0), (5, false, false, 0)]
-    );
-    assert!(std::sync::Arc::ptr_eq(&css.selectors()[1].rule, &css.selectors()[2].rule));
-    assert_eq!(css.selectors()[0].rule.baseurl, b"imported/a.css");
+    assert_eq!(walked, [(0, false, true), (1, false, false), (2, false, false), (3, false, true), (4, true, false), (5, false, false)]);
+    let style = |k: usize| css.selectors()[k].m_style.clone().expect("a style");
+    assert!(std::sync::Arc::ptr_eq(&style(1), &style(2)));
+    assert_eq!(style(0).baseurl, b"imported/a.css");
 }

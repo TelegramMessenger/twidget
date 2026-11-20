@@ -8,6 +8,7 @@
 #include "document_container.h"
 #include "encodings.h"
 #include "html.h"
+#include "html_tag.h"
 #include "master_css.h"
 #include "num_cvt.h"
 #include "string_id.h"
@@ -374,6 +375,82 @@ std::string rewrite_color_scheme(const std::string& css, bool dark) {
     }
     out.append(css, pos, std::string::npos);
     return out;
+}
+
+void write_selector(Out& o, const css_selector& sel);
+
+void write_selector_list(Out& o, const css_selector::vector& list) {
+    o.u32(uint32_t(list.size()));
+    for (const auto& sel : list) write_selector(o, *sel);
+}
+
+void write_selector(Out& o, const css_selector& sel) {
+    for (int v : {sel.m_specificity.a, sel.m_specificity.b, sel.m_specificity.c, sel.m_specificity.d, sel.m_order}) o.i32(v);
+    o.u8(sel.m_layered ? 1 : 0);
+    o.u8(uint8_t(sel.m_combinator));
+    o.str(_s(sel.m_right.m_prefix));
+    o.str(_s(sel.m_right.m_tag));
+    o.u32(uint32_t(sel.m_right.m_attrs.size()));
+    for (const auto& attr : sel.m_right.m_attrs) {
+        o.u8(uint8_t(attr.type));
+        o.str(_s(attr.prefix));
+        o.str(_s(attr.name));
+        o.str(attr.value);
+        o.u8(uint8_t(attr.matcher));
+        o.u8(attr.caseless_match ? 1 : 0);
+        o.i32(attr.a);
+        o.i32(attr.b);
+        write_selector_list(o, attr.selector_list);
+    }
+    o.u8(sel.m_left ? 1 : 0);
+    if (sel.m_left) write_selector(o, *sel.m_left);
+}
+
+// Whether a selector reads :hover or :active anywhere, nested lists included.
+bool is_dynamic(const css_selector& sel) {
+    for (const auto& attr : sel.m_right.m_attrs) {
+        if (attr.type == select_pseudo_class && (attr.name == _hover_ || attr.name == _active_)) return true;
+        for (const auto& nested : attr.selector_list)
+            if (is_dynamic(*nested)) return true;
+    }
+    return sel.m_left && is_dynamic(*sel.m_left);
+}
+
+void collect_nodes(const element::ptr& el, int parent, std::vector<std::pair<element::ptr, int>>& nodes) {
+    const int index = int(nodes.size());
+    nodes.emplace_back(el, parent);
+    for (const auto& child : el->children()) collect_nodes(child, index, nodes);
+}
+
+// The pseudo-classes a document may set on an element, as names.
+const char* const PSEUDO_FLAGS[] = {"root", "hover", "active", "focus", "focus-visible", "focus-within", "link", "visited", "any-link", "local-link", "target", "target-within", "scope", "host"};
+
+// The fork's DOM of a document: each node in tree order with its parent, kind, tag, id, classes, attributes and pseudo-class flags.
+void write_dom(Out& o, const std::vector<std::pair<element::ptr, int>>& nodes) {
+    o.u32(uint32_t(nodes.size()));
+    for (const auto& [el, parent] : nodes) {
+        const auto* tag = dynamic_cast<const html_tag*>(el.get());
+        o.i32(parent);
+        o.u8(tag ? 1 : 0);
+        o.u8(el->is_comment() ? 1 : 0);
+        o.u8(el->css().get_display() == display_inline_text ? 1 : 0);
+        o.str(_s(el->tag()));
+        o.str(tag ? _s(tag->id()) : std::string());
+        o.u32(tag ? uint32_t(tag->classes().size()) : 0);
+        if (tag)
+            for (string_id cls : tag->classes()) o.str(_s(cls));
+        o.u32(tag ? uint32_t(tag->attributes().size()) : 0);
+        if (tag)
+            for (const auto& [name, value] : tag->attributes()) {
+                o.str(name);
+                o.str(value);
+            }
+        std::vector<std::string> flags;
+        for (const char* name : PSEUDO_FLAGS)
+            if (el->has_pseudo_class(_id(name))) flags.emplace_back(name);
+        o.u32(uint32_t(flags.size()));
+        for (const auto& flag : flags) o.str(flag);
+    }
 }
 
 // The LH_NO_* switches are off unless a case sets one: none comes in from the environment.
@@ -806,11 +883,6 @@ bool run(int op, std::string_view input) {
         answer(1, rewrite_color_scheme(in.rest(), dark));
         return true;
     }
-    case 'Q': { // parse_selector_list of tokens (u32 count, tokens) in strict mode and the document's mode: how many selectors
-        o.u32(uint32_t(parse_selector_list(read_tokens(in), strict_mode, stylesheet_document()->mode()).size()));
-        answer(1, o.s);
-        return true;
-    }
     case 'Y': { // whether style::add of tokens (u32 count, tokens) keeps a property, as @supports asks it of a declaration
         style st;
         st.add(read_tokens(in), "", stylesheet_document()->container());
@@ -838,6 +910,53 @@ bool run(int op, std::string_view input) {
         stylesheet_document()->cvt_units(len, fm, 200);
         write_length(o, len);
         answer(ok ? 1 : 0, o.s);
+        return true;
+    }
+    case 'h': { // u8 flips, the html, u32 sheets and their texts: the fork's DOM of the html, then each sheet's selectors (structure, specificity, order) and each selector against each node as select with and without pseudo-classes; with flips, :hover and :active set on every k-th element (at most 48) and the selectors that read them against each node
+        static OracleContainer container;
+        const bool flips = in.u8() != 0;
+        const std::string html = in.str();
+        std::vector<std::string> sheets(in.u32());
+        for (auto& sheet : sheets) sheet = in.str();
+        const document::ptr doc = document::createFromString(html, &container);
+        std::vector<std::pair<element::ptr, int>> nodes;
+        if (doc->root()) collect_nodes(doc->root(), -1, nodes);
+        o.u8(uint8_t(doc->mode()));
+        write_dom(o, nodes);
+        std::vector<css_selector::ptr> selectors;
+        for (const auto& text : sheets) {
+            css sheet;
+            sheet.parse_css_stylesheet(text, "", doc);
+            o.u32(uint32_t(sheet.selectors().size()));
+            for (const auto& sel : sheet.selectors()) {
+                write_selector(o, *sel);
+                selectors.push_back(sel);
+            }
+        }
+        for (const auto& sel : selectors)
+            for (const auto& [el, parent] : nodes) {
+                o.u8(uint8_t(el->select(*sel, true)));
+                o.u8(uint8_t(el->select(*sel, false)));
+            }
+        if (flips) {
+            std::vector<css_selector::ptr> dynamic;
+            for (const auto& sel : selectors)
+                if (is_dynamic(*sel)) dynamic.push_back(sel);
+            std::vector<element::ptr> tags;
+            for (const auto& [el, parent] : nodes)
+                if (dynamic_cast<const html_tag*>(el.get())) tags.push_back(el);
+            const size_t step = std::max<size_t>(1, (tags.size() + 47) / 48);
+            for (size_t t = 0; t < tags.size(); t += step) {
+                tags[t]->on_mouse_over();
+                for (int pass = 0; pass < 2; pass++) {
+                    if (pass == 1) tags[t]->on_lbutton_down();
+                    for (const auto& sel : dynamic)
+                        for (const auto& [el, parent] : nodes) o.u8(uint8_t(el->select(*sel, true)));
+                }
+                tags[t]->on_mouse_leave();
+            }
+        }
+        answer(1, o.s);
         return true;
     }
     case 'x': { // every byte's URL classes: bit 0 reserved, bit 1 scheme, bit 2 ASCII

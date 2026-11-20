@@ -15,7 +15,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | `crates/base64` | `twidget_base64`: the base64 of canvas pixels (`core/src/encode.cpp`) |
 | `crates/canvas` | `twidget_canvas`: the 2D canvas interpreter, commands in and canvas ops out through a `CanvasHost` (`core/src/canvas.cpp`) |
 | `crates/animations` | `twidget_animations`: the animator, CSS animations, transitions and Web Animations: declarations and times in, style overrides and events out (`core/src/animations.cpp`) |
-| `crates/litehtml` | `twidget_litehtml`: the litehtml fork a stage at a time, one module per C++ file (`litehtml/src`); so far `pixel_t`, the name table, strtod, `web_color`, `css_length`, the keyword tables, the CSS tokenizer and parser, stylesheets with their at-rules and media queries |
+| `crates/litehtml` | `twidget_litehtml`: the litehtml fork a stage at a time, one module per C++ file (`litehtml/src`); so far `pixel_t`, the name table, strtod, `web_color`, `css_length`, the keyword tables, the CSS tokenizer and parser, stylesheets with their at-rules and media queries, selectors and their matching |
 
 | `oracle/` | the C++ the port is compared with: small programs built from twidget's sources, cases on stdin; `lhdump` answers for the litehtml fork, stage by stage |
 | `tools/gate.py` | the gate: oracle build, `cargo test` with the comparison required, clippy, rustfmt, `unsafe` report |

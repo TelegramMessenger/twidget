@@ -15,6 +15,7 @@
 pub mod codepoint;
 pub mod css_length;
 pub mod css_parser;
+pub mod css_selector;
 pub mod css_tokenizer;
 pub mod css_values;
 pub mod cxx;
@@ -23,6 +24,7 @@ pub mod document_container;
 pub mod encodings;
 pub mod gradient;
 pub mod html;
+pub mod html_tag;
 pub mod media_query;
 pub mod num_cvt;
 pub mod pixel_type;

@@ -60,10 +60,17 @@
 //!   u32 count and each selector's i32 order, u8 layered, i32 rule and i32 media list (-1 none, else in order
 //!   of first use), then u32 lists and each over the grid (u8 used).
 //! - `o` u8 dark, text: the renderer's `rewrite_color_scheme`.
-//! - `Q` u32 count and tokens: how many selectors `parse_selector_list` makes of them (stage L4's, asked
-//!   before a run). `Y` u32 count and tokens: status 1 when `style::add` keeps a property of them (L5's).
+//! - `Y` u32 count and tokens: status 1 when `style::add` keeps a property of them (stage L5's, asked before
+//!   a run).
 //! - `U` a token: `parse_url`. `X` bytes: `decode` as UTF-8. `V` a token: `from_token` with
 //!   f_length_percentage, then the document's `to_pixels` (f32) and `cvt_units` (the length after it).
+//! - `h` u8 flips, the html, u32 sheets and their texts: a document of the html (litehtml's master CSS), then
+//!   u8 mode and its DOM in tree order (i32 parent, u8 html_tag, u8 comment, u8 inline-text, tag, id, u32
+//!   classes, u32 attributes as names and values, u32 pseudo-class flags as names); each sheet's selectors
+//!   as `css::parse_css_stylesheet` keeps them (u32 count, each as `selector_out` writes it); every selector
+//!   against every node, `select` with pseudo-classes (u8) and without (u8); with flips, on every k-th
+//!   element (at most 48) `:hover`, then `:active` too, set up the chain, and every selector that reads them
+//!   against every node (u8).
 
 #![allow(dead_code, unused_imports)]
 
@@ -74,12 +81,14 @@ pub use twidget_testkit::{Comparison, Lcg, Oracle, framed, hex, mutate};
 
 use twidget_litehtml::css_length::*;
 use twidget_litehtml::css_parser::{self, CssParser, f_componentize, f_remove_whitespace, normalize, normalize_tokens};
+use twidget_litehtml::css_selector::{CssSelector, DocumentMode};
 use twidget_litehtml::css_tokenizer::*;
 use twidget_litehtml::css_values::*;
 use twidget_litehtml::document::Units;
 use twidget_litehtml::document_container::DocumentContainer;
 use twidget_litehtml::encodings::{Encoding, decode};
 use twidget_litehtml::html::lowcase;
+use twidget_litehtml::html_tag::{Matcher, SelectElements};
 use twidget_litehtml::media_query::{MediaCondition, MediaDocument, MediaInParens, MediaQueryListList, parse_media_query_list_text};
 use twidget_litehtml::style::parse_url;
 use twidget_litehtml::stylesheet::{
@@ -1735,27 +1744,24 @@ fn condition_out(o: &mut Out, condition: &MediaCondition) {
 /// not ported yet (selector lists, declarations), learnt from lhdump before the run.
 #[derive(Debug, Default)]
 pub struct Later {
-    pub selector_counts: std::collections::HashMap<Vec<u8>, usize>,
     pub supported: std::collections::HashMap<Vec<u8>, bool>,
 }
 
 impl Later {
-    /// Every prelude a walk of these sheets may read as a selector list, and every block of an `@supports`
-    /// prelude it may read as a declaration, asked of lhdump once.
+    /// Every block of an `@supports` prelude a walk of these sheets may read as a declaration, asked of lhdump
+    /// once (stage L5's question).
     pub fn learn(&mut self, oracle: &Oracle, sheets: &[Vec<u8>]) {
-        let mut preludes = Vec::new();
         let mut candidates = Vec::new();
-        fn walk(rules: &[RawRule], preludes: &mut Vec<CssTokenVector>, candidates: &mut Vec<CssTokenVector>) {
+        fn walk(rules: &[RawRule], candidates: &mut Vec<CssTokenVector>) {
             for rule in rules {
                 if rule.ty == RuleType::qualified {
-                    preludes.push(rule.prelude.clone());
                     continue;
                 }
                 if lowcase(&rule.name) == b"supports" {
                     supports_candidates(&normalize_tokens(rule.prelude.clone(), f_componentize, None), candidates);
                 }
                 if rule.block.ty == CURLY_BLOCK {
-                    walk(&css_parser::parse_stylesheet_tokens(&rule.block.value, false), preludes, candidates);
+                    walk(&css_parser::parse_stylesheet_tokens(&rule.block.value, false), candidates);
                 }
             }
         }
@@ -1769,18 +1775,10 @@ impl Later {
                     None => text.clone(),
                     Some(dark) => twidget_css::rewrite_color_scheme(text, dark),
                 };
-                walk(&css_parser::parse_stylesheet(&text, true), &mut preludes, &mut candidates);
+                walk(&css_parser::parse_stylesheet(&text, true), &mut candidates);
             }
         }
         let mut input = Vec::new();
-        let mut asked_preludes = Vec::new();
-        for prelude in preludes {
-            let key = token_list_bytes(&prelude);
-            if !self.selector_counts.contains_key(&key) && !asked_preludes.contains(&key) {
-                input.extend(framed(b'Q', &key));
-                asked_preludes.push(key);
-            }
-        }
         let mut asked_candidates = Vec::new();
         for candidate in candidates {
             let key = token_list_bytes(&candidate);
@@ -1789,12 +1787,11 @@ impl Later {
                 asked_candidates.push(key);
             }
         }
-        let answers = oracle.run(input, asked_preludes.len() + asked_candidates.len());
-        let (counts, supported) = answers.split_at(asked_preludes.len());
-        for (key, answer) in asked_preludes.into_iter().zip(counts) {
-            self.selector_counts.insert(key, u32::from_le_bytes(answer.1[..4].try_into().expect("a count")) as usize);
+        if asked_candidates.is_empty() {
+            return;
         }
-        for (key, answer) in asked_candidates.into_iter().zip(supported) {
+        let answers = oracle.run(input, asked_candidates.len());
+        for (key, answer) in asked_candidates.into_iter().zip(&answers) {
             self.supported.insert(key, answer.0 == 1);
         }
     }
@@ -1805,6 +1802,7 @@ pub struct Sheets<'a> {
     pub lh: &'a Lh,
     pub later: &'a Later,
     pub container: TestContainer,
+    pub mode: DocumentMode,
 }
 
 impl StyleSheetHost for Sheets<'_> {
@@ -1820,8 +1818,8 @@ impl StyleSheetHost for Sheets<'_> {
             units: Units { container: &self.container, media: document_media(), root_font_size: Px(16.0) },
         }
     }
-    fn selector_count(&self, prelude: &[CssToken]) -> usize {
-        *self.later.selector_counts.get(&token_list_bytes(prelude)).expect("a prelude the run learnt")
+    fn mode(&self) -> DocumentMode {
+        self.mode
     }
     fn supports_declaration(&self, tokens: &[CssToken]) -> bool {
         *self.later.supported.get(&token_list_bytes(tokens)).expect("a declaration the run learnt")
@@ -1834,7 +1832,7 @@ impl Lh {
     pub fn sheet_answer(&self, later: &Later, grid: &[MediaFeatures], op: u8, input: &[u8]) -> (u8, Vec<u8>) {
         let mut i = In::new(input);
         let mut o = Out::default();
-        let sheets = Sheets { lh: self, later, container: TestContainer };
+        let sheets = Sheets { lh: self, later, container: TestContainer, mode: DocumentMode::no_quirks_mode };
         match op {
             b'r' => {
                 let top_level = i.u8() != 0;
@@ -1885,19 +1883,19 @@ impl Lh {
                 let mut lists: Vec<std::sync::Arc<MediaQueryListList>> = Vec::new();
                 o.u32(sheet.selectors().len() as u32);
                 for sel in sheet.selectors() {
-                    let ptr = std::sync::Arc::as_ptr(&sel.rule);
+                    let ptr = std::sync::Arc::as_ptr(sel.m_style.as_ref().expect("a style rule's selector"));
                     let rule = rules.iter().position(|r| *r == ptr).unwrap_or_else(|| {
                         rules.push(ptr);
                         rules.len() - 1
                     });
-                    let list = match &sel.media_query {
+                    let list = match &sel.m_media_query {
                         None => -1,
                         Some(m) => lists.iter().position(|l| std::sync::Arc::ptr_eq(l, m)).unwrap_or_else(|| {
                             lists.push(std::sync::Arc::clone(m));
                             lists.len() - 1
                         }) as i32,
                     };
-                    o.i32(sel.order).u8(u8::from(sel.layered)).i32(rule as i32).i32(list);
+                    o.i32(sel.m_order).u8(u8::from(sel.m_layered)).i32(rule as i32).i32(list);
                 }
                 o.u32(lists.len() as u32);
                 for list in &lists {
@@ -2207,4 +2205,501 @@ pub fn any_stylesheet(random: &mut Lcg, depth: u32) -> String {
         s.push_str(pick(random, &["", " ", "\n"]));
     }
     s
+}
+
+// ---- Stage L4: selectors and the match matrix -----------------------------------------------------
+
+/// A node of the fork's DOM as lhdump dumps it.
+#[derive(Debug)]
+pub struct TestNode {
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
+    pub is_tag: bool,
+    pub is_comment: bool,
+    pub inline_text: bool,
+    pub tag: twidget_litehtml::StringId,
+    pub id: twidget_litehtml::StringId,
+    pub classes: Vec<twidget_litehtml::StringId>,
+    pub attrs: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    pub pseudo: Vec<twidget_litehtml::StringId>,
+}
+
+/// The fork's DOM of a document, as a tree the matcher reads. Its document's language and culture are
+/// empty, as a document's are until `lang_changed`.
+#[derive(Debug, Default)]
+pub struct TestTree {
+    pub nodes: Vec<TestNode>,
+}
+
+impl SelectElements for TestTree {
+    type Node = usize;
+    fn parent(&self, el: usize) -> Option<usize> {
+        self.nodes[el].parent
+    }
+    fn children(&self, el: usize) -> &[usize] {
+        &self.nodes[el].children
+    }
+    fn is_html_tag(&self, el: usize) -> bool {
+        self.nodes[el].is_tag
+    }
+    fn tag(&self, el: usize) -> twidget_litehtml::StringId {
+        self.nodes[el].tag
+    }
+    fn id(&self, el: usize) -> twidget_litehtml::StringId {
+        self.nodes[el].id
+    }
+    fn classes(&self, el: usize) -> &[twidget_litehtml::StringId] {
+        &self.nodes[el].classes
+    }
+    fn get_attr(&self, el: usize, name: &[u8]) -> Option<&[u8]> {
+        self.nodes[el].attrs.get(name).map(|v| &v[..])
+    }
+    fn is_comment(&self, el: usize) -> bool {
+        self.nodes[el].is_comment
+    }
+    fn is_inline_text(&self, el: usize) -> bool {
+        self.nodes[el].inline_text
+    }
+    fn has_pseudo_class(&self, el: usize, cls: twidget_litehtml::StringId) -> bool {
+        self.nodes[el].pseudo.contains(&cls)
+    }
+    fn match_lang(&self, lang: &[u8]) -> bool {
+        lang.is_empty()
+    }
+}
+
+impl TestTree {
+    /// `set_pseudo_class(cls, add)` on the element and its ancestors, as the mouse sets them.
+    pub fn set_up_the_chain(&mut self, el: usize, cls: twidget_litehtml::StringId, add: bool) {
+        let mut cur = Some(el);
+        while let Some(e) = cur {
+            let pseudo = &mut self.nodes[e].pseudo;
+            if add {
+                if !pseudo.contains(&cls) {
+                    pseudo.push(cls);
+                }
+            } else if let Some(at) = pseudo.iter().position(|c| *c == cls) {
+                pseudo.remove(at);
+            }
+            cur = self.nodes[e].parent;
+        }
+    }
+}
+
+/// The document mode and the DOM at the start of an `h` answer, and how many bytes they took.
+pub fn read_dom(names: &Names, answer: &[u8]) -> (DocumentMode, TestTree, usize) {
+    let mut i = In::new(answer);
+    let mode = match i.u8() {
+        0 => DocumentMode::no_quirks_mode,
+        1 => DocumentMode::quirks_mode,
+        _ => DocumentMode::limited_quirks_mode,
+    };
+    let mut tree = TestTree::default();
+    let count = i.u32() as usize;
+    for index in 0..count {
+        let parent = i.i32();
+        let is_tag = i.u8() != 0;
+        let is_comment = i.u8() != 0;
+        let inline_text = i.u8() != 0;
+        let tag = names.id(&i.str());
+        let id = names.id(&i.str());
+        let mut node = TestNode {
+            parent: (parent >= 0).then_some(parent as usize),
+            children: Vec::new(),
+            is_tag,
+            is_comment,
+            inline_text,
+            tag,
+            id,
+            classes: Vec::new(),
+            attrs: std::collections::BTreeMap::new(),
+            pseudo: Vec::new(),
+        };
+        for _ in 0..i.u32() {
+            node.classes.push(names.id(&i.str()));
+        }
+        for _ in 0..i.u32() {
+            let name = i.str();
+            let value = i.str();
+            node.attrs.insert(name, value);
+        }
+        for _ in 0..i.u32() {
+            node.pseudo.push(names.id(&i.str()));
+        }
+        if let Some(p) = node.parent {
+            tree.nodes[p].children.push(index);
+        }
+        tree.nodes.push(node);
+    }
+    (mode, tree, i.at)
+}
+
+/// lhdump's `write_selector`.
+pub fn selector_out(o: &mut Out, names: &Names, sel: &CssSelector) {
+    let s = sel.m_specificity;
+    o.i32(s.a).i32(s.b).i32(s.c).i32(s.d).i32(sel.m_order);
+    o.u8(u8::from(sel.m_layered)).u8(sel.m_combinator.ch());
+    o.str(&names.s(sel.m_right.m_prefix)).str(&names.s(sel.m_right.m_tag));
+    o.u32(sel.m_right.m_attrs.len() as u32);
+    for attr in &sel.m_right.m_attrs {
+        o.u8(attr.ty as u8).str(&names.s(attr.prefix)).str(&names.s(attr.name)).str(&attr.value);
+        o.u8(attr.matcher.ch()).u8(u8::from(attr.caseless_match)).i32(attr.a).i32(attr.b);
+        o.u32(attr.selector_list.len() as u32);
+        for nested in attr.selector_list.iter() {
+            selector_out(o, names, nested);
+        }
+    }
+    o.u8(u8::from(sel.m_left.is_some()));
+    if let Some(left) = &sel.m_left {
+        selector_out(o, names, left);
+    }
+}
+
+/// lhdump's `is_dynamic`: the selector reads `:hover` or `:active` somewhere.
+pub fn is_dynamic(sel: &CssSelector) -> bool {
+    use twidget_litehtml::css_selector::AttrSelectType;
+    use twidget_litehtml::string_id::{_active_, _hover_};
+    for attr in &sel.m_right.m_attrs {
+        if attr.ty == AttrSelectType::select_pseudo_class && (attr.name == _hover_ || attr.name == _active_) {
+            return true;
+        }
+        if attr.selector_list.iter().any(|nested| is_dynamic(nested)) {
+            return true;
+        }
+    }
+    sel.m_left.as_ref().is_some_and(|left| is_dynamic(left))
+}
+
+/// An `h` record: flips, the html and the sheets.
+pub fn match_input(flips: bool, html: &[u8], sheets: &[Vec<u8>]) -> Vec<u8> {
+    let mut o = Out::default();
+    o.u8(u8::from(flips)).str(html).u32(sheets.len() as u32);
+    for sheet in sheets {
+        o.str(sheet);
+    }
+    o.take()
+}
+
+/// What the Rust side answers to an `h` record, given the DOM lhdump answered with (which the Rust side
+/// cannot build before stage L3): that DOM as it came, then the selectors and the matrix.
+pub fn match_answer(lh: &Lh, later: &Later, input: &[u8], cpp: &[u8], counts: &mut std::collections::BTreeMap<String, usize>) -> Vec<u8> {
+    let mut i = In::new(input);
+    let flips = i.u8() != 0;
+    let _html = i.str();
+    let sheet_texts: Vec<Vec<u8>> = (0..i.u32()).map(|_| i.str()).collect();
+    let (mode, mut tree, dom_len) = read_dom(&lh.names, cpp);
+    let mut o = Out::default();
+    o.s.extend_from_slice(&cpp[..dom_len.min(cpp.len())]);
+    let sheets = Sheets { lh, later, container: TestContainer, mode };
+    let mut selectors = Vec::new();
+    for text in &sheet_texts {
+        let mut sheet = Css::default();
+        sheet.parse_css_stylesheet(StyleSheetInput::Text(text), b"", &sheets, None, true);
+        o.u32(sheet.selectors().len() as u32);
+        for sel in sheet.selectors() {
+            selector_out(&mut o, &lh.names, sel);
+            selectors.push(std::sync::Arc::clone(sel));
+        }
+    }
+    *counts.entry("elements".into()).or_default() += tree.nodes.iter().filter(|n| n.is_tag).count();
+    *counts.entry("selectors".into()).or_default() += selectors.len();
+    {
+        let matcher = Matcher::new(&tree, &lh.names);
+        for sel in &selectors {
+            for el in 0..tree.nodes.len() {
+                let with = matcher.select(el, sel, true);
+                let without = matcher.select(el, sel, false);
+                if with != 0 {
+                    *counts.entry("matches".into()).or_default() += 1;
+                    if with & twidget_litehtml::html_tag::select_match_with_before != 0 {
+                        *counts.entry("matches ::before".into()).or_default() += 1;
+                    }
+                    if with & twidget_litehtml::html_tag::select_match_with_after != 0 {
+                        *counts.entry("matches ::after".into()).or_default() += 1;
+                    }
+                }
+                if without & twidget_litehtml::html_tag::select_match_pseudo_class != 0 {
+                    *counts.entry("matches pending a pseudo-class".into()).or_default() += 1;
+                }
+                o.u8(with as u8).u8(without as u8);
+            }
+        }
+    }
+    if flips {
+        use twidget_litehtml::string_id::{_active_, _hover_};
+        let dynamic: Vec<_> = selectors.iter().filter(|s| is_dynamic(s)).cloned().collect();
+        let tags: Vec<usize> = (0..tree.nodes.len()).filter(|&n| tree.nodes[n].is_tag).collect();
+        let step = tags.len().div_ceil(48).max(1);
+        for &target in tags.iter().step_by(step) {
+            tree.set_up_the_chain(target, _hover_, true);
+            for pass in 0..2 {
+                if pass == 1 {
+                    tree.set_up_the_chain(target, _active_, true);
+                }
+                let matcher = Matcher::new(&tree, &lh.names);
+                for sel in &dynamic {
+                    for el in 0..tree.nodes.len() {
+                        let with = matcher.select(el, sel, true);
+                        if with != 0 {
+                            *counts.entry("matches with :hover/:active set".into()).or_default() += 1;
+                        }
+                        o.u8(with as u8);
+                    }
+                }
+            }
+            tree.set_up_the_chain(target, _hover_, false);
+            tree.set_up_the_chain(target, _active_, false);
+            *counts.entry("hover/active flips".into()).or_default() += 1;
+        }
+    }
+    o.take()
+}
+
+/// Runs `h` records through lhdump and compares each answer with the Rust one; returns what they reached.
+pub fn check_matches(name: &str, cases: Vec<(Vec<u8>, String)>, sheets: &[Vec<u8>]) {
+    let Some(oracle) = Oracle::find("lhdump") else { return };
+    let lh = Lh::new();
+    let mut later = Later::default();
+    later.learn(&oracle, sheets);
+    let mut input = Vec::new();
+    for (case, _) in &cases {
+        input.extend(framed(b'h', case));
+    }
+    let answers = oracle.run(input, cases.len());
+    let mut counts = std::collections::BTreeMap::new();
+    let mut differences = Vec::new();
+    for ((case, what), cpp) in cases.iter().zip(&answers) {
+        let rust = match_answer(&lh, &later, case, &cpp.1, &mut counts);
+        if rust != cpp.1 {
+            let at = rust.iter().zip(&cpp.1).position(|(a, b)| a != b).unwrap_or(rust.len().min(cpp.1.len()));
+            differences.push(format!("{what}: {} / {} bytes, first difference at byte {at}", cpp.1.len(), rust.len()));
+        }
+    }
+    assert!(
+        differences.is_empty(),
+        "{} of {} documents differ:\n{}",
+        differences.len(),
+        cases.len(),
+        differences.iter().take(10).cloned().collect::<Vec<_>>().join("\n")
+    );
+    let counts: Vec<String> = counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
+    eprintln!("{name}: {} documents alike; {}", cases.len(), counts.join(", "));
+}
+
+/// The `<style>` blocks of an html text.
+pub fn style_blocks(html: &[u8]) -> Vec<Vec<u8>> {
+    let mut blocks = Vec::new();
+    between(html, b"<style", b"</style>", &mut blocks);
+    blocks.into_iter().filter_map(|b| b.iter().position(|c| *c == b'>').map(|end| b[end + 1..].to_vec())).collect()
+}
+
+/// The html files of widget-sandbox's corpus, in path order.
+pub fn corpus_documents() -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::new();
+    html_files(&widget_sandbox().join("corpus"), &mut files);
+    files.into_iter().filter_map(|path| std::fs::read(&path).ok().map(|text| (path.display().to_string(), text))).collect()
+}
+
+/// A document of every structure selectors read: nesting, siblings of one type and of many, text and
+/// whitespace and comments between them, ids, classes in either case, attributes of every kind (`lang`,
+/// `type`, `checked`, `disabled`, values with spaces and quotes), form controls, empty elements; quirks or
+/// not.
+pub fn any_document(random: &mut Lcg) -> String {
+    fn element(random: &mut Lcg, depth: u32, out: &mut String) {
+        let tags = [
+            "div", "p", "span", "a", "li", "ul", "ol", "input", "button", "option", "select", "section", "b", "em", "h1", "table", "tr",
+            "td", "img", "label", "textarea", "fieldset", "x-item",
+        ];
+        let tag = pick(random, &tags);
+        out.push('<');
+        out.push_str(tag);
+        for _ in 0..random.below(4) {
+            let attr = match random.below(12) {
+                0 => format!(" id=\"{}\"", pick(random, &["a", "b", "A", "main", "x y"])),
+                1 | 2 => format!(" class=\"{}\"", pick(random, &["a", "b", "a b", "A", "c  d", " a ", "item active", "x-y"])),
+                3 => format!(" lang=\"{}\"", pick(random, &["en", "en-US", "fr", "EN", "", "en-"])),
+                4 => format!(" type=\"{}\"", pick(random, &["checkbox", "radio", "TEXT", "text"])),
+                5 => " checked".to_string(),
+                6 => " disabled".to_string(),
+                7 => " selected".to_string(),
+                8 => format!(" title=\"{}\"", pick(random, &["one two", "a-b", "x", "", "\"q\" r", "ab cd ef"])),
+                9 => format!(" data-x=\"{}\"", pick(random, &["1", "10", "a1", "z"])),
+                10 => format!(" href=\"{}\"", pick(random, &["#", "a.html", "https://x"])),
+                _ => format!(" dir=\"{}\"", pick(random, &["rtl", "ltr", "RTL"])),
+            };
+            out.push_str(&attr);
+        }
+        out.push('>');
+        let n = if depth > 3 { 0 } else { random.below(5) };
+        for _ in 0..n {
+            match random.below(6) {
+                0 => out.push_str(pick(random, &["text", " ", "\n  ", "a b"])),
+                1 => out.push_str("<!-- c -->"),
+                _ => element(random, depth + 1, out),
+            }
+        }
+        if !matches!(tag, "input" | "img") {
+            out.push_str(&format!("</{tag}>"));
+        }
+    }
+    let mut out = String::new();
+    if !random.chance(4) {
+        out.push_str("<!DOCTYPE html>");
+    }
+    out.push_str("<html><head></head><body>");
+    for _ in 0..1 + random.below(4) {
+        element(random, 0, &mut out);
+    }
+    out.push_str("</body></html>");
+    out
+}
+
+/// A sheet of selectors of every kind, each with an empty block.
+pub fn any_selector_sheet(random: &mut Lcg) -> String {
+    fn compound(random: &mut Lcg, depth: u32) -> String {
+        let types = [
+            "",
+            "",
+            "div",
+            "p",
+            "li",
+            "*",
+            "A",
+            "input",
+            "option",
+            "span",
+            "ns|div",
+            "*|p",
+            "|a",
+            "body",
+            "html",
+            "x-item",
+            "lh-placeholder",
+        ];
+        let mut s = pick(random, &types).to_string();
+        for _ in 0..random.below(3) {
+            let part = match random.below(16) {
+                0 => format!("#{}", pick(random, &["a", "b", "A", "main", "1x"])),
+                1 | 2 => format!(".{}", pick(random, &["a", "b", "A", "item", "active", "x-y"])),
+                3 => format!(
+                    "[{}{}]",
+                    pick(random, &["id", "class", "lang", "type", "title", "data-x", "href", "dir", "TYPE", "x|title", "|title", "*|lang"]),
+                    pick(
+                        random,
+                        &[
+                            "",
+                            "=a",
+                            "~=one",
+                            "|=en",
+                            "^=a",
+                            "$=b",
+                            "*=b",
+                            "=\"two words\"",
+                            "=\"\" i",
+                            "=A i",
+                            "=RTL s",
+                            "=checkbox",
+                            "~=\"\"",
+                            " = a b",
+                            "=x junk"
+                        ]
+                    )
+                ),
+                4 => format!(
+                    ":{}",
+                    pick(
+                        random,
+                        &[
+                            "hover",
+                            "active",
+                            "root",
+                            "empty",
+                            "first-child",
+                            "last-child",
+                            "only-child",
+                            "first-of-type",
+                            "last-of-type",
+                            "only-of-type",
+                            "checked",
+                            "disabled",
+                            "enabled",
+                            "focus",
+                            "link",
+                            "host",
+                            "HOVER",
+                            "unknown"
+                        ]
+                    )
+                ),
+                5 => format!(
+                    ":nth-child({})",
+                    pick(
+                        random,
+                        &[
+                            "2n+1",
+                            "odd",
+                            "even",
+                            "3",
+                            "-n+2",
+                            "n",
+                            "0n+0",
+                            "2n of .a",
+                            " 2N + 1 ",
+                            "+5",
+                            "- n+1",
+                            "2n-",
+                            "a",
+                            "1 of p, .b",
+                            "999999999999",
+                            "-2147483649n"
+                        ]
+                    )
+                ),
+                6 => format!(":nth-last-child({})", pick(random, &["1", "2n", "odd of div"])),
+                7 => format!(":nth-of-type({})", pick(random, &["1", "2n+1", "even"])),
+                8 => format!(":nth-last-of-type({})", pick(random, &["1", "n+2"])),
+                9 if depth < 2 => format!(":is({})", list(random, depth + 1)),
+                10 if depth < 2 => format!(":where({})", list(random, depth + 1)),
+                11 if depth < 2 => format!(":not({})", list(random, depth + 1)),
+                12 => format!(":lang({})", pick(random, &["en", "EN", "fr", "", "en-US"])),
+                13 => pick(
+                    random,
+                    &[
+                        "::before",
+                        "::after",
+                        ":before",
+                        "::marker",
+                        "::placeholder",
+                        "::-webkit-slider-thumb",
+                        "::-webkit-slider-runnable-track",
+                        "::selection",
+                        ":first-line",
+                        "::bogus",
+                    ],
+                )
+                .to_string(),
+                _ => pick(random, &[":hover", ":active", ".a", "#a"]).to_string(),
+            };
+            s.push_str(&part);
+        }
+        if s.is_empty() { "*".into() } else { s }
+    }
+    fn complex(random: &mut Lcg, depth: u32) -> String {
+        let mut s = compound(random, depth);
+        for _ in 0..random.below(3) {
+            s.push_str(pick(random, &[" ", " > ", " + ", " ~ ", ">", "  ", " || "]));
+            s.push_str(&compound(random, depth));
+        }
+        s
+    }
+    fn list(random: &mut Lcg, depth: u32) -> String {
+        let n = 1 + random.below(3);
+        (0..n).map(|_| complex(random, depth)).collect::<Vec<_>>().join(", ")
+    }
+    let mut sheet = String::new();
+    for _ in 0..1 + random.below(8) {
+        sheet.push_str(&list(random, 0));
+        sheet.push_str("{}\n");
+    }
+    sheet
 }

@@ -2,15 +2,16 @@
 //! walks a sheet's rules into style rules under their `@media` lists, `@supports` conditions, `@layer`
 //! blocks and `@import`ed sheets.
 //!
-//! What a style rule becomes needs later stages: its prelude is a selector list (stage L4) and its block a
-//! style (stage L5). Until then the walk asks a [`StyleSheetHost`] how many selectors a prelude parses to
-//! and whether a declaration is supported, and keeps each rule's declarations as `style::add` takes them.
+//! A style rule's prelude is a selector list; its block becomes a style with stage L5, until when the walk
+//! asks a [`StyleSheetHost`] whether a declaration is supported and keeps each rule's declarations as
+//! `style::add` takes them.
 
 use std::sync::Arc;
 
 use crate::css_parser::{
     CssParser, f_componentize, normalize_tokens, parse_stylesheet, parse_stylesheet_tokens, remove_whitespace, skip_whitespace,
 };
+use crate::css_selector::{CssSelector, DocumentMode, parse_selector_list, sort_selectors, strict_mode};
 use crate::css_tokenizer::{CURLY_BLOCK, CV_FUNCTION, CssToken, CssTokenVector, ROUND_BLOCK, SEMICOLON, STRING};
 use crate::document_container::DocumentContainer;
 use crate::html::lowcase;
@@ -69,8 +70,8 @@ pub trait StyleSheetHost {
     /// The document as media queries read it.
     fn media_document(&self) -> MediaDocument<'_>;
 
-    /// `parse_selector_list(prelude, strict_mode, doc->mode()).size()`: stage L4's.
-    fn selector_count(&self, prelude: &[CssToken]) -> usize;
+    /// `doc->mode()`.
+    fn mode(&self) -> DocumentMode;
 
     /// Whether `style::add(tokens, "", container)` keeps a property: stage L5's.
     fn supports_declaration(&self, tokens: &[CssToken]) -> bool;
@@ -89,21 +90,6 @@ pub struct StyleRule {
     pub baseurl: Vec<u8>,
 }
 
-/// A selector of a style rule, as the walk orders and places it (`css_selector` but its selector).
-#[derive(Clone, Debug)]
-pub struct SelectorEntry {
-    /// Which of the rule's selectors.
-    pub index: usize,
-    /// `m_order`: its place among the sheet's selectors.
-    pub order: i32,
-    /// `m_layered`: from an `@layer` block.
-    pub layered: bool,
-    /// `m_media_query`: the lists of the `@media` rules around it.
-    pub media_query: Option<Arc<MediaQueryListList>>,
-    /// `m_style`.
-    pub rule: Arc<StyleRule>,
-}
-
 /// What `css::parse_css_stylesheet` reads: a text, or the component values of a block.
 #[derive(Clone, Copy, Debug)]
 pub enum StyleSheetInput<'a> {
@@ -114,21 +100,26 @@ pub enum StyleSheetInput<'a> {
 /// `css`: a stylesheet's selectors in sheet order.
 #[derive(Clone, Debug, Default)]
 pub struct Css {
-    m_selectors: Vec<SelectorEntry>,
+    m_selectors: Vec<Arc<CssSelector>>,
     /// Inside an `@layer` block.
     m_layer_depth: i32,
 }
 
 impl Css {
-    pub fn selectors(&self) -> &[SelectorEntry] {
+    pub fn selectors(&self) -> &[Arc<CssSelector>] {
         &self.m_selectors
     }
 
+    /// `sort_selectors()`: by specificity, then order.
+    pub fn sort_selectors(&mut self) {
+        sort_selectors(&mut self.m_selectors);
+    }
+
     /// `add_selector(selector)`.
-    fn add_selector(&mut self, mut selector: SelectorEntry) {
-        selector.order = self.m_selectors.len() as i32;
-        selector.layered = self.m_layer_depth > 0;
-        self.m_selectors.push(selector);
+    fn add_selector(&mut self, mut selector: CssSelector) {
+        selector.m_order = self.m_selectors.len() as i32;
+        selector.m_layered = self.m_layer_depth > 0;
+        self.m_selectors.push(Arc::new(selector));
     }
 
     /// `parse_css_stylesheet(input, baseurl, doc, media, top_level)`
@@ -252,7 +243,8 @@ impl Css {
     }
 
     /// `parse_style_rule(rule, baseurl, doc, media)` (https://www.w3.org/TR/css-syntax-3/#style-rules): false
-    /// when the prelude is no selector list.
+    /// when the prelude is no selector list; else each selector, with the rule's style and media lists, its
+    /// specificity reckoned.
     fn parse_style_rule(
         &mut self,
         rule: &RawRule,
@@ -260,8 +252,8 @@ impl Css {
         doc: &dyn StyleSheetHost,
         media: Option<&Arc<MediaQueryListList>>,
     ) -> bool {
-        let count = doc.selector_count(&rule.prelude);
-        if count == 0 {
+        let list = parse_selector_list(doc.names(), &rule.prelude, strict_mode, doc.mode());
+        if list.is_empty() {
             // invalid selector
             return false;
         }
@@ -272,8 +264,12 @@ impl Css {
             baseurl: baseurl.to_vec(),
         });
 
-        for index in 0..count {
-            self.add_selector(SelectorEntry { index, order: 0, layered: false, media_query: media.cloned(), rule: Arc::clone(&style) });
+        for sel in list {
+            let mut sel = Arc::try_unwrap(sel).unwrap_or_else(|shared| (*shared).clone());
+            sel.m_style = Some(Arc::clone(&style));
+            sel.m_media_query = media.cloned();
+            sel.calc_specificity();
+            self.add_selector(sel);
         }
         true
     }
