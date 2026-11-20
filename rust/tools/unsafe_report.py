@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""What the helper's Rust build leaves to trust: `unsafe` in the workspace and in every crate it links.
+"""What the helper's Rust build leaves to trust: `unsafe` in the workspace and in every crate it links
+(proc-macro crates and what only they use run in the compiler, not in the process, and are left out).
 
 Counts the `unsafe` keyword outside comments and literals in each package's .rs files (the workspace's
 own in all its targets, a dependency's without tests/, benches/ and examples/), checks that every
@@ -101,6 +102,9 @@ def linked_packages(metadata):
         pid = todo.pop()
         if pid in seen:
             continue
+        # A proc-macro and what only it uses run in the compiler, not in the process (nova-safe's safe/TCB.md method).
+        if any("proc-macro" in t["kind"] for t in packages[pid]["targets"]):
+            continue
         seen.add(pid)
         for dep in nodes[pid]["deps"]:
             kinds = [k["kind"] for k in dep["dep_kinds"]]
@@ -108,6 +112,13 @@ def linked_packages(metadata):
                 if any(k is None for k in kinds):
                     todo.append(dep["pkg"])
     return [packages[p] for p in sorted(seen)]
+
+
+def shown(path):
+    try:
+        return os.path.relpath(path, ROOT)
+    except ValueError:
+        return path
 
 
 def main():
@@ -128,7 +139,7 @@ def main():
                 if set(target["kind"]) & {"lib", "bin", "staticlib", "cdylib", "rlib"}:
                     with open(target["src_path"], encoding="utf-8") as f:
                         if not FORBID.search(f.read()) and package["name"] not in ALLOWED:
-                            missing.append(os.path.relpath(target["src_path"], ROOT))
+                            missing.append(shown(target["src_path"]))
         allowed = package["name"] in ALLOWED
         bad = (total and not allowed) or missing
         failed = failed or bool(bad)
@@ -138,7 +149,7 @@ def main():
             print(f"{package['name']}: {root} has no #![forbid(unsafe_code)]")
         if show_files or (total and not allowed):
             for path, number in places:
-                print(f"  {os.path.relpath(path, ROOT)}:{number}")
+                print(f"  {shown(path)}:{number}")
     width = max(len(r[0]) for r in rows)
     print(f"{'crate':<{width}}  version   source     unsafe  state")
     for name, version, source, total, state in rows:
