@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <clocale>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -4726,6 +4727,58 @@ int main() {
               "a renderer waiting in a text measurement while another adds a class on a second thread is not charged for it (" + shown(overlapped) + ")");
     }
 #endif
+    // ── numbers are read and written as the C locale has them, whatever LC_NUMERIC the process chose ──
+    {
+        const char* page = R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0.5px"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":"@keyframes m{from{margin-left:0px}to{margin-left:3px}} .m{animation:m 2s linear infinite} .s{background:linear-gradient(red,blue);background-size:20px 10px;background-position:12.5px 0}"},
+            {"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","m"],["style","margin:1.5em;height:10.5px;box-shadow:0 0 0.5px red;opacity:.5"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["class","s"],["style","width:40px;height:10px"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"input","attrs":[["size","7"],["value","x"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"input","attrs":[["type","range"],["min","0"],["max","3"],["value","1"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"svg","svg":true,"attrs":[["width","40.5"],["height","20"],["viewBox","0 0 20.5 10"]]},{"op":"ins","parent":4,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"path","svg":true,"attrs":[["d","M0.5 0.5L10.25 9.75"],["stroke","red"],["stroke-width","1.5"],["opacity","0.5"]]},{"op":"ins","parent":14,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"canvas","attrs":[["width","40"],["height","20"]]},{"op":"ins","parent":4,"id":16,"before":null},
+            {"op":"canvas","id":16,"cmds":[["s","font","12.5px serif"],["c","fillText","hi",0,10]]}]})J";
+        auto run = [&] {
+            StubBackend lb;
+            Renderer l(300, 1, false, lb);
+            l.receive(parse(page));
+            std::string out = l.last_html() + "\n" + to_json(l.paint());
+            for (const char* query : {R"J({"q":"cs","id":10})J", R"J({"q":"rect","id":12})J", R"J({"q":"rect","id":13})J", R"J({"q":"matchMedia","query":"(min-width: 299.5px)"})J",
+                                      R"J({"q":"matchMedia","query":"(min-width: 300.5px)"})J", R"J({"q":"measureText","font":"12.5px serif","text":"hi"})J"})
+                for (const Json& m : l.receive(parse(std::string(R"({"type":"query","qid":1,"query":)") + query + "}")))
+                    out += "\n" + m.dump();
+            // Json writes its numbers in no locale.
+            Json values = Json::array();
+            for (const auto& canvas_run : lb.runs)
+                for (const CanvasOp& op : canvas_run) values.push(Json(double(op.y)));
+            values.push(Json(css::format_number(1.25, 2))).push(Json(css::format_number(2.0 / 3, 4))).push(Json(css::number("1.5").value_or(-1)));
+            values.push(Json(double(css::parse_font("12.5px serif").size))).push(Json(interpolate("0px", "3px", 0.5)));
+            values.push(Json(paint::box_shadow_blurred("0 0 0.5px red")));
+            return out + "\n" + values.dump();
+        };
+        const std::string in_c = run();
+        const char* chosen = nullptr;
+        for (const char* name : {"de-DE", "de_DE.UTF-8", "de_DE.utf8", "de_DE", "ru_RU.UTF-8", "fr_FR.UTF-8", "German"})
+            if (std::setlocale(LC_NUMERIC, name) && std::localeconv()->decimal_point[0] == ',') {
+                chosen = name;
+                break;
+            }
+        if (!chosen) {
+            std::setlocale(LC_NUMERIC, "C");
+            check(css::ends_with(in_c, R"(,"1.25","0.6667",1.5,12.5,"1.5px",true])"), "numbers in the C locale (no locale with a decimal comma here to try)");
+        } else {
+            char text[16];
+            std::snprintf(text, sizeof text, "%.1f", 1.5);
+            const std::string in_comma = run();
+            std::setlocale(LC_NUMERIC, "C");
+            check(std::string(text) == "1,5" && in_comma == in_c, std::string("a widget renders, answers and counts alike under ") + chosen + ", whose decimal point is a comma");
+            check(css::ends_with(in_c, R"(,"1.25","0.6667",1.5,12.5,"1.5px",true])"), "and its numbers are the C locale's");
+        }
+    }
+
     // ── animations: two value pairs whose texts join alike keep their own entries in the pair cache ──
     {
         const std::string first = interpolate("0px\x01", "4px\x01", 0.5), second = interpolate("0px", "\x01" "4px\x01", 0.5);

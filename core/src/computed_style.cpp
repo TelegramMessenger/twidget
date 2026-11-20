@@ -2,6 +2,7 @@
 
 #include "css.h"
 
+#include <litehtml/c_locale.h>
 #include <litehtml/el_before_after.h>
 #include <litehtml/el_svg.h>
 #include <litehtml/html_tag.h>
@@ -170,7 +171,7 @@ Json computed_style(const litehtml::element::ptr& element, std::string_view pseu
         const auto& declared = css.get_margins();
         const litehtml::css_length* dm[4] = {&declared.top, &declared.right, &declared.bottom, &declared.left};
         for (int i = 0; i < 4; i++)
-            if (!dm[i]->is_predefined() && dm[i]->units() != litehtml::css_units_percentage) ms[i] = std::stod(length(*dm[i], font_size, "0px"));
+            if (!dm[i]->is_predefined() && dm[i]->units() != litehtml::css_units_percentage) ms[i] = litehtml::c_strtod(length(*dm[i], font_size, "0px").c_str(), nullptr);
         double ps[4] = {double(p.top), double(p.right), double(p.bottom), double(p.left)};
         double bs[4] = {double(b.top), double(b.right), double(b.bottom), double(b.left)};
         for (int i = 0; i < 4; i++) {

@@ -1,4 +1,5 @@
 #include "html.h"
+#include "c_locale.h"
 #include "el_image.h"
 #include "render_image.h"
 #include "document_container.h"
@@ -124,7 +125,7 @@ litehtml::position litehtml::el_image::fitted(const position& box)
             return room;
         if(value.empty() || value == "center")
             return room / 2;
-        float v = std::strtof(value.c_str(), nullptr);
+        float v = c_strtof(value.c_str(), nullptr);
         return value.back() == '%' ? room * v / 100 : v;
     };
     const float dx = offset(parts.size() >= 2 ? parts[0] : "center", box.width.value() - w);

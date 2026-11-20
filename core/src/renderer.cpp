@@ -6,6 +6,7 @@
 #include "tw_ua_stylesheet.h"
 
 #include <litehtml.h>
+#include <litehtml/c_locale.h>
 #include <litehtml/html_tag.h>
 #include <litehtml/render_inline_context.h>
 #include <litehtml/render_item.h>
@@ -436,7 +437,7 @@ std::optional<float> shimmer_x(const std::string& value, const Rect& area, const
         if (token == "center") return room / 2;
         if (token == "right" || token == "bottom") return room;
         char* end = nullptr;
-        float v = std::strtof(token.c_str(), &end);
+        float v = litehtml::c_strtof(token.c_str(), &end);
         if (end == token.c_str()) return std::nullopt;
         std::string unit(end);
         if (unit == "%") return room * v / 100;
@@ -5025,7 +5026,7 @@ bool Renderer::match_media(const std::string& query) const {
         if (i == std::string::npos) return NAN;
         size_t j = i + std::strlen(key);
         while (j < q.size() && (q[j] == ' ' || q[j] == ':')) j++;
-        return std::atof(q.c_str() + j);
+        return litehtml::c_atof(q.c_str() + j);
     };
     double v;
     if (!std::isnan(v = px("max-width"))) return width_ <= v;

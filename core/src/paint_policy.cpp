@@ -1,5 +1,7 @@
 #include "paint_policy.h"
 
+#include <litehtml/c_locale.h>
+
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -63,7 +65,7 @@ bool length_token(std::string_view t, double& out) {
     }
     for (size_t j = i; j < t.size(); j++)
         if (!std::isalpha(static_cast<unsigned char>(t[j])) && t[j] != '%') return false;
-    out = std::strtod(std::string(t).c_str(), nullptr);
+    out = litehtml::c_strtod(std::string(t).c_str(), nullptr);
     return true;
 }
 
@@ -109,7 +111,7 @@ bool transparent(std::string_view v) {
     if (v.empty()) return false;
     std::string text(v);
     char* end = nullptr;
-    double n = std::strtod(text.c_str(), &end);
+    double n = litehtml::c_strtod(text.c_str(), &end);
     if (end == text.c_str()) return false;
     if (!text.empty() && text.back() == '%') n /= 100;
     return n < 1;

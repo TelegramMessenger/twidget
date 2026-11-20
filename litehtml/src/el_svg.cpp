@@ -6,6 +6,7 @@
 #include <cctype>
 #include <functional>
 #include "html.h"
+#include "c_locale.h"
 #include "el_svg.h"
 #include "render_item.h"
 #include "render_image.h"
@@ -87,7 +88,7 @@ namespace litehtml
                     }
                 }
             }
-            value = std::strtof(std::string(start, p).c_str(), nullptr);
+            value = c_strtof(std::string(start, p).c_str(), nullptr);
             s     = p;
             return true;
         }
@@ -1225,7 +1226,7 @@ namespace litehtml
                     float opacity = child->css().get_opacity();
                     if(const char* attr = child->get_attr("opacity"))
                     {
-                        opacity *= std::max(0.f, std::min(1.f, std::strtof(attr, nullptr)));
+                        opacity *= std::max(0.f, std::min(1.f, c_strtof(attr, nullptr)));
                     }
                     paint_group group;
                     const auto tag = std::dynamic_pointer_cast<html_tag>(child);

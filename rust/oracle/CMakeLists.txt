@@ -31,10 +31,10 @@ add_executable(remote_oracle remote_oracle.cpp "${TW_CORE}/remote.cpp" "${TW_COR
 target_include_directories(remote_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
 
 add_executable(css_oracle css_oracle.cpp "${TW_CORE}/css.cpp")
-target_include_directories(css_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+target_include_directories(css_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}" "${TW_ROOT}/litehtml/include")
 
 add_executable(paint_oracle paint_oracle.cpp "${TW_CORE}/paint_policy.cpp")
-target_include_directories(paint_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+target_include_directories(paint_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}" "${TW_ROOT}/litehtml/include")
 
 add_executable(compositor_oracle compositor_oracle.cpp "${TW_CORE}/compositor.cpp" "${TW_CORE}/wire.cpp")
 target_include_directories(compositor_oracle PRIVATE "${TW_CORE}")
@@ -43,10 +43,10 @@ add_executable(base64_oracle base64_oracle.cpp "${TW_CORE}/encode.cpp")
 target_include_directories(base64_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
 
 add_executable(canvas_oracle canvas_oracle.cpp "${TW_CORE}/canvas.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/wire.cpp" "${TW_CORE}/encode.cpp")
-target_include_directories(canvas_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+target_include_directories(canvas_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}" "${TW_ROOT}/litehtml/include")
 
 add_executable(animations_oracle animations_oracle.cpp "${TW_CORE}/animations.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/paint_policy.cpp")
-target_include_directories(animations_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+target_include_directories(animations_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}" "${TW_ROOT}/litehtml/include")
 
 # lhdump: the litehtml fork compiled as twidget's CMakeLists.txt compiles it, every source with no definitions and its warnings off; the linker takes the objects the dump reaches.
 enable_language(C)
