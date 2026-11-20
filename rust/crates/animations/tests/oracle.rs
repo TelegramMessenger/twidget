@@ -117,7 +117,7 @@ fn shift(step: Step, by: f64) -> Step {
 fn mutated(random: &mut Lcg, bytes: &[u8]) -> Vec<u8> {
     let mut changed = bytes.to_vec();
     mutate(random, &mut changed);
-    without_separator(changed)
+    changed
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn pair_cache_alike() {
             format!("pair {:?} {:?} {t}", String::from_utf8_lossy(a), String::from_utf8_lossy(b)),
         );
     };
-    // Two pairs that join to one key: the second finds the first's tokens until the cache is cleared.
+    // Two pairs that joined to one key while it was a, 0x01 and b: each keeps its own entry.
     for round in 0..40 {
         let k = round % 7;
         let (first, second) = ((format!("{k}px\u{1}"), format!("{}px\u{1}", k + 4)), (format!("{k}px"), format!("\u{1}{}px\u{1}", k + 4)));
@@ -286,7 +286,7 @@ fn pair_cache_alike() {
         (0..n).map(|_| format!("{}px ", random.below(20))).collect()
     };
     for _ in 0..3000 {
-        // (x, y 0x01 z) and (x 0x01 y, z) join to the same key.
+        // (x, y 0x01 z) and (x 0x01 y, z) joined to the same key too.
         let (x, y, z) = (list(&mut random), list(&mut random), list(&mut random));
         let (one, two) = ((x.clone(), format!("{y}\u{1}{z}")), (format!("{x}\u{1}{y}"), z));
         let t = *pick(&mut random, &[0.25, 0.5, 0.75]);

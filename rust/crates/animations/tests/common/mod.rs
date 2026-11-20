@@ -1343,17 +1343,6 @@ pub fn any_script(r: &mut Lcg) -> Vec<Step> {
     steps
 }
 
-/// `bytes` with every 0x01 made a 0x02: the pair cache joins a pair with a 0x01, and the two sides visit
-/// elements in different orders, so a value holding one could find another pair's tokens on one side only.
-pub fn without_separator(mut bytes: Vec<u8>) -> Vec<u8> {
-    for c in &mut bytes {
-        if *c == 1 {
-            *c = 2;
-        }
-    }
-    bytes
-}
-
 // ---- The corpus ---------------------------------------------------------------------------------
 
 pub fn widget_sandbox() -> std::path::PathBuf {

@@ -4704,6 +4704,13 @@ int main() {
               "a renderer waiting in a text measurement while another adds a class on a second thread is not charged for it (" + shown(overlapped) + ")");
     }
 #endif
+    // ── animations: two value pairs whose texts join alike keep their own entries in the pair cache ──
+    {
+        const std::string first = interpolate("0px\x01", "4px\x01", 0.5), second = interpolate("0px", "\x01" "4px\x01", 0.5);
+        const std::string third = interpolate("10px", "20px", 0.5), fourth = interpolate("1", "0px20px", 0.5);
+        check(first == "2px\x01" && second == "\x01" "4px\x01", "a pair after one whose a, 0x01 and b join alike gets its own tokens: it flips, as it does alone");
+        check(third == "15px" && fourth == "0px20px", "and so does a pair whose a and b join alike with no separator at all");
+    }
 
     // ── animations: the cache of interpolated value pairs is bounded by the bytes of their text ──
 #if defined(__APPLE__) && defined(__clang__)

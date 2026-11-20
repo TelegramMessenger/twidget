@@ -407,12 +407,15 @@ fn events_come_by_element() {
 }
 
 #[test]
-fn two_pairs_that_join_alike_share_a_cache_entry() {
-    // As the C++'s pair cache keys a pair by a, 0x01 and b: the second pair gets the first's tokens.
+fn two_pairs_that_join_alike_keep_their_own_cache_entries() {
+    // The cache keys a pair by the length of a, a colon, a and b: pairs that join alike are told apart.
     let mut pairs = PairCache::default();
     assert_eq!(interpolate(&mut pairs, b"0px\x01", b"4px\x01", 0.5), b"2px\x01");
-    assert_eq!(interpolate(&mut pairs, b"0px", b"\x014px\x01", 0.5), b"2px\x01");
-    assert_eq!(interpolate(&mut PairCache::default(), b"0px", b"\x014px\x01", 0.5), b"\x014px\x01", "alone it flips");
+    assert_eq!(interpolate(&mut pairs, b"0px", b"\x014px\x01", 0.5), b"\x014px\x01", "the second pair flips, as it does alone");
+    assert_eq!(interpolate(&mut pairs, b"10px", b"20px", 0.5), b"15px");
+    assert_eq!(interpolate(&mut pairs, b"1", b"0px20px", 0.5), b"0px20px", "nor do pairs whose texts join alike without a separator");
+    assert_eq!(pairs.len(), 4);
+    assert_eq!(pairs.bytes(), 4 * 10, "each key is its length prefix, a colon and both texts");
 }
 
 #[test]

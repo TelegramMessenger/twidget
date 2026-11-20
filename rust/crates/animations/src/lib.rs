@@ -504,9 +504,9 @@ fn scaled_translations(text: &[u8], factor: f64) -> Vec<u8> {
 
 type TokenPair = (Vec<Token>, Vec<Token>);
 
-/// The C++'s per-thread cache of tokenised value pairs (`pair_tokens`): keyed by `a`, a 0x01 byte and
-/// `b`, so two pairs that join to the same key share an entry, as they do there; cleared at 2048
-/// entries or 256 KiB of keys, a key past 4096 bytes never kept.
+/// The C++'s per-thread cache of tokenised value pairs (`pair_tokens`): keyed by the length of `a` in
+/// decimal, a colon, `a` and `b`, so no two pairs share an entry; cleared at 2048 entries or 256 KiB of
+/// keys, a key past 4096 bytes never kept.
 #[derive(Debug, Default)]
 pub struct PairCache {
     pairs: HashMap<Vec<u8>, Option<TokenPair>>,
@@ -528,7 +528,7 @@ impl PairCache {
     }
 
     fn tokens(&mut self, a: &[u8], b: &[u8]) -> Option<TokenPair> {
-        let key = concat(&[a, b"\x01", b]);
+        let key = concat(&[a.len().to_string().as_bytes(), b":", a, b]);
         if let Some(found) = self.pairs.get(&key) {
             return found.clone();
         }

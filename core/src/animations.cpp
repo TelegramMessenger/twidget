@@ -306,7 +306,8 @@ std::string scaled_translations(std::string_view text, double factor) {
 std::optional<std::pair<std::vector<Token>, std::vector<Token>>> pair_tokens(const std::string& a, const std::string& b) {
     thread_local std::unordered_map<std::string, std::optional<std::pair<std::vector<Token>, std::vector<Token>>>> cache;
     thread_local size_t cached_bytes = 0;
-    std::string key = a + '\x01' + b;
+    // Led by the length of `a`: no two pairs share a key, so what one widget cached is what any other would compute.
+    std::string key = std::to_string(a.size()) + ':' + a + b;
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     std::string from = css::normalize_colors(a), to = css::normalize_colors(b);
     if (css::iequals(from, "none") && to.find('(') != std::string::npos) from = identity(to);
