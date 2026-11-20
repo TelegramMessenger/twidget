@@ -960,7 +960,8 @@ fn parse_list_style_image(tok: &CssToken) -> Option<Vec<u8>> {
 
 // ---- The element side -----------------------------------------------------------------------------------
 
-/// What `style::subst_vars` asks of the element whose style it is (the cascade's, stage L5's second half).
+/// What `style::subst_vars` asks past the style it substitutes (the element's parent chain), and what `subst_vars_`
+/// asks of an element; the cascade's is `html_tag::ElementVars`.
 pub trait VarElement {
     /// `get_custom_property(name, result, invalid)`: the tokens of the custom property where the element or an
     /// ancestor declares it; false when none does, with `invalid` set when the nearest declares the
@@ -969,6 +970,34 @@ pub trait VarElement {
 
     /// `get_document()->container()`.
     fn container(&self) -> Option<&dyn DocumentContainer>;
+}
+
+/// The element whose style is being substituted, as `get_custom_property` reads it: the style itself (as it is
+/// so far), then what `el` gives (the parent's chain).
+struct OwnFirst<'a> {
+    own: &'a BTreeMap<StringId, PropertyValue>,
+    el: &'a dyn VarElement,
+}
+
+impl VarElement for OwnFirst<'_> {
+    fn get_custom_property(&self, name: StringId, result: &mut CssTokenVector, invalid: &mut bool) -> bool {
+        match self.own.get(&name).map(|p| &p.value) {
+            Some(Value::Tokens(tokens)) => {
+                *result = tokens.clone();
+                true
+            }
+            Some(Value::CssWideKeyword(_)) => {
+                // invalid at computed-value time
+                *invalid = true;
+                false
+            }
+            _ => self.el.get_custom_property(name, result, invalid),
+        }
+    }
+
+    fn container(&self) -> Option<&dyn DocumentContainer> {
+        self.el.container()
+    }
 }
 
 /// A declaration may grow to this many tokens (nested ones included) through `var()`; past it the
@@ -2545,7 +2574,8 @@ impl Style {
     }
 
     /// `subst_vars(el)`: each property waiting for `var()`, in the order of declaration, with its `var()`s
-    /// replaced and parsed again (a shorthand's longhands take its place in the order; a later declaration of
+    /// replaced (a custom property looked up in this style as it is so far, then through `el`, which stands for
+    /// the element's parent chain) and parsed again (a shorthand's longhands take its place in the order; a later declaration of
     /// one keeps it). One budget for all of the element's declarations; past it, or for a missing variable
     /// without fallback, a property is `unset` and a custom property the guaranteed-invalid value.
     pub fn subst_vars(&mut self, names: &Names, el: &dyn VarElement) {
@@ -2563,7 +2593,7 @@ impl Style {
             let mut chain = BTreeSet::from([name]);
             budget.invalid = budget.exhausted;
             if !budget.exhausted {
-                resolve_vars(names, &mut value, el, &mut chain, 0, &mut budget);
+                resolve_vars(names, &mut value, &OwnFirst { own: &self.m_properties, el }, &mut chain, 0, &mut budget);
             }
             if budget.invalid {
                 if custom {

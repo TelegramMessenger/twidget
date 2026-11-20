@@ -2,18 +2,23 @@
 //! fork computed for an element, written out as Chromium writes it, since widgets and widget-sandbox's
 //! conformance set compare against the browser's strings.
 //!
-//! The C++ reads an element of the fork; until the cascade and layout come to Rust (stage L5 on), what it
-//! reads is an [`Element`]: every computed value, the layout box, the raw declarations and the
-//! ancestors' ones `computed_style` looks at, the SVG paints and the `::before` and `::after` children, as
-//! the fork has them. The helpers (`px`, `color`, `length`, …) are the C++'s, by name.
+//! The C++ reads an element of the fork; what it reads is an [`Element`]: every computed value, the layout box,
+//! the raw declarations and the ancestors' ones `computed_style` looks at, the SVG paints and the `::before` and
+//! `::after` children, as the fork has them. [`Element::of_cascade`] makes one of an element of the Rust
+//! litehtml after its cascade (stage L5); the layout box is later stages'. The helpers (`px`, `color`,
+//! `length`, …) are the C++'s, by name.
 
 #![forbid(unsafe_code)]
 
 use twidget_css::{format_number, parse_color, parse_transform, trim};
 use twidget_json::Json;
 use twidget_litehtml::css_length::CssLength;
+use twidget_litehtml::css_properties::CssBorder;
 use twidget_litehtml::css_tokenizer::CssToken;
 use twidget_litehtml::css_values::*;
+use twidget_litehtml::document::{Document, StyleCx};
+use twidget_litehtml::element::{ElementId, ElementKind};
+use twidget_litehtml::gradient::ImageType;
 use twidget_litehtml::web_color::WebColor;
 
 /// A `css_length` as computed_style reads it: keyword or value, its unit, and `val()` (a calc length's
@@ -163,6 +168,170 @@ pub struct Element {
 impl Element {
     fn raw_declaration(&self, name: &str) -> &[u8] {
         self.raw.iter().find(|(n, _)| n == name.as_bytes()).map_or(&[][..], |(_, v)| v)
+    }
+}
+
+/// The names whose `-lh-raw-` twins computed_style reads, in the order [`Element::raw`] keeps them.
+pub const RAW_NAMES: [&str; 11] = [
+    "touch-action",
+    "font-variant-numeric",
+    "filter",
+    "backdrop-filter",
+    "box-shadow",
+    "translate",
+    "rotate",
+    "scale",
+    "transform",
+    "fill",
+    "stroke",
+];
+
+impl Element {
+    /// What computed_style reads of an element of the Rust litehtml after its cascade (stage L5): everything but
+    /// the layout, which later stages give (no render item, a placement of none).
+    pub fn of_cascade(doc: &Document, cx: &StyleCx, id: ElementId) -> Element {
+        Element::of_cascade_at(doc, cx, id, 0)
+    }
+
+    fn of_cascade_at(doc: &Document, cx: &StyleCx, id: ElementId, depth: i32) -> Element {
+        let el = doc.el(id);
+        let css = &el.css;
+        let is_tag = el.kind.is_html_tag();
+        let border = |b: &CssBorder| Border { style: b.style, width: Length::of(&b.width), color: b.color };
+        let b = &css.m_css_borders;
+        let r = &b.radius;
+        let m = &css.m_css_margins;
+        let p = &css.m_css_padding;
+        let o = &css.m_css_offsets;
+        let mut chain = Vec::new();
+        let mut cur = Some(id);
+        while let Some(e) = cur {
+            let tag = doc.kind(e).is_html_tag();
+            let raw = |name: &[u8]| if tag { doc.raw_declaration(cx.names, e, name) } else { Vec::new() };
+            chain.push((tag, raw(b"pointer-events"), raw(b"quotes")));
+            cur = doc.parent(e);
+        }
+        let (fill, fill_color) = doc.svg_paint_color(cx, id, true);
+        let (stroke, stroke_color) = doc.svg_paint_color(cx, id, false);
+        let mut before = None;
+        let mut after = None;
+        if is_tag && depth == 0 {
+            for &child in doc.children(id) {
+                if before.is_none() && doc.kind(child) == ElementKind::el_before {
+                    before = Some(child);
+                }
+                if after.is_none() && doc.kind(child) == ElementKind::el_after {
+                    after = Some(child);
+                }
+            }
+        }
+        let pseudo = |child: Option<ElementId>| child.map(|c| Box::new(Element::of_cascade_at(doc, cx, c, depth + 1)));
+        Element {
+            is_tag,
+            display: css.m_display,
+            position: css.m_el_position,
+            float: css.m_float,
+            clear: css.m_clear,
+            box_sizing: css.m_box_sizing,
+            visibility: css.m_visibility,
+            z_index: css.get_z_index(),
+            direction: css.m_direction,
+            borders: [border(&b.top), border(&b.right), border(&b.bottom), border(&b.left)],
+            radius: [
+                Length::of(&r.top_left_x),
+                Length::of(&r.top_left_y),
+                Length::of(&r.top_right_x),
+                Length::of(&r.top_right_y),
+                Length::of(&r.bottom_right_x),
+                Length::of(&r.bottom_right_y),
+                Length::of(&r.bottom_left_x),
+                Length::of(&r.bottom_left_y),
+            ],
+            margins: [Length::of(&m.top), Length::of(&m.right), Length::of(&m.bottom), Length::of(&m.left)],
+            padding: [Length::of(&p.top), Length::of(&p.right), Length::of(&p.bottom), Length::of(&p.left)],
+            width: Length::of(&css.m_css_width),
+            height: Length::of(&css.m_css_height),
+            border_collapse: css.m_border_collapse,
+            border_spacing_x: Length::of(&css.m_css_border_spacing_x),
+            border_spacing_y: Length::of(&css.m_css_border_spacing_y),
+            caption_side: css.m_caption_side,
+            min_width: Length::of(&css.m_css_min_width),
+            min_height: Length::of(&css.m_css_min_height),
+            max_width: Length::of(&css.m_css_max_width),
+            max_height: Length::of(&css.m_css_max_height),
+            offsets: [Length::of(&o.top), Length::of(&o.right), Length::of(&o.bottom), Length::of(&o.left)],
+            overflow_x: css.m_overflow_x,
+            overflow_y: css.m_overflow_y,
+            white_space: css.m_white_space,
+            overflow_wrap: css.m_overflow_wrap,
+            word_break: css.m_word_break,
+            color: css.m_color,
+            font_size: css.get_font_size().value(),
+            font_weight: css.m_font_weight.val(),
+            font_style: css.m_font_style,
+            font_family: css.m_font_family.clone(),
+            line_height_predefined: css.m_line_height.css_value.is_predefined(),
+            line_height: css.m_line_height.computed_value.value(),
+            text_align: css.m_text_align,
+            text_indent: Length::of(&css.m_css_text_indent),
+            text_transform: css.m_text_transform,
+            letter_spacing: css.m_letter_spacing.val(),
+            word_spacing: css.m_word_spacing.val(),
+            vertical_align: css.m_vertical_align,
+            text_decoration_line: css.m_text_decoration_line,
+            text_decoration_style: css.m_text_decoration_style,
+            text_decoration_color: css.m_text_decoration_color,
+            user_select: css.m_user_select,
+            list_style_type: css.m_list_style_type,
+            list_style_position: css.m_list_style_position,
+            list_style_image: css.m_list_style_image.clone(),
+            bg_color: css.m_bg.m_color,
+            bg_images: css
+                .m_bg
+                .m_image
+                .iter()
+                .map(|img| Image {
+                    kind: img.ty as i32,
+                    url: img.url.clone(),
+                    gradient: if img.ty == ImageType::type_gradient { cx.names.s(img.m_gradient.m_type).to_vec() } else { Vec::new() },
+                })
+                .collect(),
+            bg_sizes: css.m_bg.m_size.iter().map(|s| (Length::of(&s.width), Length::of(&s.height))).collect(),
+            bg_position_x: css.m_bg.m_position_x.iter().map(Length::of).collect(),
+            bg_position_y: css.m_bg.m_position_y.iter().map(Length::of).collect(),
+            bg_repeat: css.m_bg.m_repeat.clone(),
+            opacity: css.m_opacity,
+            cursor: css.m_cursor.clone(),
+            transform_origin_x: Length::of(&css.m_transform_origin_x),
+            transform_origin_y: Length::of(&css.m_transform_origin_y),
+            outline: border(&css.m_outline),
+            outline_offset: css.m_outline_offset.val(),
+            flex_direction: css.m_flex_direction,
+            flex_wrap: css.m_flex_wrap,
+            justify_content: css.m_flex_justify_content,
+            align_items: css.m_flex_align_items,
+            align_self: css.m_flex_align_self,
+            align_content: css.m_flex_align_content,
+            flex_grow: css.m_flex_grow,
+            flex_shrink: css.m_flex_shrink,
+            flex_basis: Length::of(&css.m_flex_basis),
+            order: css.m_order,
+            row_gap: Length::of(&css.m_row_gap),
+            column_gap: Length::of(&css.m_column_gap),
+            aspect_ratio: css.m_aspect_ratio,
+            content: css.m_content.clone(),
+            layout: None,
+            placement: (0.0, 0.0),
+            raw: RAW_NAMES
+                .iter()
+                .map(|n| (n.as_bytes().to_vec(), if is_tag { doc.raw_declaration(cx.names, id, n.as_bytes()) } else { Vec::new() }))
+                .collect(),
+            chain,
+            fill_paint: Some(fill_color).filter(|_| fill),
+            stroke_paint: Some(stroke_color).filter(|_| stroke),
+            before: pseudo(before),
+            after: pseudo(after),
+        }
     }
 }
 

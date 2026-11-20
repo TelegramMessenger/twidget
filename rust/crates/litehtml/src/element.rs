@@ -5,17 +5,24 @@
 //! (`el_script`'s, `el_style`'s, `el_table`'s) and the `parse_attributes` dispatch; the others have a module each.
 //! What a class does in layout and painting (`el_text`'s measuring, `el_image`'s drawing) is later stages'.
 //!
-//! What the cascade computes (`m_css`, `m_style`'s declarations from style sheets) is stage L5's: an element
-//! keeps the declarations its attributes add ([`Element::declarations`]) for the cascade to add to its style, and
-//! the display its class starts with. A `::before` or `::after` box is made here ([`Document::add_before_after`]);
-//! the content its style gives it (`el_before_after_base::add_style`) is the cascade's and stage L6's.
+//! The cascade's state of an element is here too: `m_style` and `m_style_base`, the selectors it matched
+//! (`m_used_styles`), its counters (`element.cpp`'s counter functions) and its computed `m_css`, with what
+//! `el_text`, the form controls and `el_image` keep of their computed style. An element records the declarations
+//! its attributes add ([`Element::declarations`]) as `parse_attributes` makes them, and the cascade adds them to its
+//! style ([`Document::flush_declarations`]).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use crate::Px;
+use crate::css_properties::CssProperties;
+use crate::css_selector::CssSelector;
 use crate::css_tokenizer::CssToken;
 use crate::css_values::StyleDisplay;
 use crate::document::{Document, Env};
+use crate::html::{is_number, join_string, trim};
 use crate::string_id::*;
+use crate::style::Style;
 use crate::web_color::WebColor;
 use crate::{Names, StringId};
 
@@ -99,6 +106,50 @@ pub enum ElementState {
     Generated { generations: i32, boxes: i32, bytes: usize },
 }
 
+/// `used_selector`: a selector that matched the element when a sheet was applied, and whether its style is in the
+/// element's (a pseudo-class may not hold now; a `::before` or `::after` one styles that box).
+#[derive(Clone, Debug)]
+pub struct UsedSelector {
+    pub selector: Arc<CssSelector>,
+    pub used: bool,
+}
+
+/// What `el_text` keeps of its computed style and measure.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextState {
+    /// `m_transformed_text` and `m_use_transformed`.
+    pub transformed_text: Vec<u8>,
+    pub use_transformed: bool,
+    /// `m_draw_spaces`.
+    pub draw_spaces: bool,
+    /// `m_size`: width and height.
+    pub size: (Px, Px),
+    /// `m_measured_font` and `m_measured_transform`: what `m_size.width` was measured in.
+    pub measured_font: u64,
+    pub measured_transform: i32,
+}
+
+impl Default for TextState {
+    fn default() -> TextState {
+        TextState {
+            transformed_text: Vec::new(),
+            use_transformed: false,
+            draw_spaces: true,
+            size: (Px(0.0), Px(0.0)),
+            measured_font: 0,
+            measured_transform: -1,
+        }
+    }
+}
+
+/// `form_look`: what a form control's computed style decides about how it is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FormLook {
+    pub dark: bool,
+    pub disabled: bool,
+    pub native: bool,
+}
+
 /// An element of any class: what `element` holds, what `html_tag` adds, and the class's own.
 #[derive(Clone, Debug)]
 pub struct Element {
@@ -128,9 +179,31 @@ pub struct Element {
     pub text: Vec<u8>,
     /// `el_style`'s own `m_children`, which hides `element::m_children`: its text, with no parent set.
     pub own_children: Vec<ElementId>,
-    /// `css().get_display()` as the class's constructor leaves it.
-    pub display: StyleDisplay,
     pub state: ElementState,
+    /// How many of `declarations` the style has.
+    pub declarations_applied: usize,
+    /// The master sheet was applied as `master_sheet` asks.
+    pub master_applied: bool,
+    /// `m_css`: the computed style; before the cascade, what the class's constructor sets (its display).
+    pub css: CssProperties,
+    /// `m_style`, `m_style_base` and `m_has_style_base`: the cascaded declarations, and what they were before the
+    /// `style` attribute was added.
+    pub style: Style,
+    pub style_base: Style,
+    pub has_style_base: bool,
+    /// `m_counter_changes`: how many times `counter-increment` changed the counters.
+    pub counter_changes: i32,
+    /// `m_anonymous_style`.
+    pub anonymous_style: bool,
+    /// `m_used_styles`.
+    pub used_styles: Vec<UsedSelector>,
+    /// `m_counter_values`.
+    pub counter_values: BTreeMap<StringId, i32>,
+    /// `el_text`'s computed state.
+    pub text_state: TextState,
+    /// A form control's `m_look`, and `el_select`'s `m_arrow`.
+    pub look: FormLook,
+    pub arrow: bool,
 }
 
 impl Element {
@@ -149,8 +222,20 @@ impl Element {
             master_sheet: false,
             text: Vec::new(),
             own_children: Vec::new(),
-            display: StyleDisplay::display_inline,
             state: ElementState::None,
+            declarations_applied: 0,
+            master_applied: false,
+            css: CssProperties::default(),
+            style: Style::default(),
+            style_base: Style::default(),
+            has_style_base: false,
+            counter_changes: 0,
+            anonymous_style: false,
+            used_styles: Vec::new(),
+            counter_values: BTreeMap::new(),
+            text_state: TextState::default(),
+            look: FormLook::default(),
+            arrow: false,
         }
     }
 }
@@ -161,14 +246,14 @@ impl Document {
     pub fn new_element(&mut self, kind: ElementKind) -> ElementId {
         let mut el = Element::new(kind);
         match kind {
-            ElementKind::el_text | ElementKind::el_space => el.display = StyleDisplay::display_inline_text,
+            ElementKind::el_text | ElementKind::el_space => el.css.m_display = StyleDisplay::display_inline_text.index(),
             ElementKind::el_image => {
-                el.display = StyleDisplay::display_inline_block;
+                el.css.m_display = StyleDisplay::display_inline_block.index();
                 el.state = ElementState::Image { src: Vec::new(), loaded: false };
             }
             ElementKind::el_svg => {
                 self.has_svg = true;
-                el.display = StyleDisplay::display_inline_block;
+                el.css.m_display = StyleDisplay::display_inline_block.index();
             }
             ElementKind::el_input => {
                 el.state = ElementState::Input { ty: Vec::new(), checked: false, fraction: 0.5, swatch: WebColor::BLACK }
@@ -255,10 +340,18 @@ impl Document {
         self.kind(id) == ElementKind::el_body
     }
 
-    /// `is_break()` before the cascade: an `el_break`. (An `el_space` is one in a `pre` white-space, which
-    /// stage L5 computes.)
+    /// `is_break()`: an `el_break`, and an `el_space` of a newline in a `pre`, `pre-line` or `pre-wrap` white-space.
     pub fn is_break(&self, id: ElementId) -> bool {
-        self.kind(id) == ElementKind::el_break
+        match self.kind(id) {
+            ElementKind::el_break => true,
+            ElementKind::el_space => self.el_space_is_break(id),
+            _ => false,
+        }
+    }
+
+    /// `is_white_space()`: an `el_space` in a `normal`, `nowrap` or `pre-line` white-space.
+    pub fn is_white_space(&self, id: ElementId) -> bool {
+        self.kind(id) == ElementKind::el_space && self.el_space_is_white_space(id)
     }
 
     /// `is_replaced()`: `el_image` and `el_svg`.
@@ -370,5 +463,116 @@ impl Document {
             ElementKind::el_script | ElementKind::el_text | ElementKind::el_space | ElementKind::el_comment | ElementKind::el_cdata => {}
             _ => self.html_tag_parse_attributes(env, id),
         }
+    }
+}
+
+// ---- Counters (element.cpp) -----------------------------------------------------------------------------
+
+impl Document {
+    /// `find_counter(counter_name_id)`: the element holding the counter: the element, else each previous sibling
+    /// from the nearest, then the same from the parent up. An element its parent does not list has every child
+    /// of the parent before it.
+    pub fn find_counter(&self, id: ElementId, name: StringId) -> Option<ElementId> {
+        let mut current = Some(id);
+        while let Some(cur) = current {
+            if self.el(cur).counter_values.contains_key(&name) {
+                return Some(cur);
+            }
+            // on each level, search previous siblings too
+            let el_parent = self.parent(cur);
+            if let Some(parent) = el_parent {
+                let siblings = self.children(parent);
+                let at = siblings.iter().position(|&s| s == cur).unwrap_or(siblings.len());
+                for &sibling in siblings[..at].iter().rev() {
+                    if self.el(sibling).counter_values.contains_key(&name) {
+                        return Some(sibling);
+                    }
+                }
+            }
+            current = el_parent;
+        }
+        None
+    }
+
+    /// `get_counter_value(counter_name)`: the counter's value, "0" when there is none.
+    pub fn get_counter_value(&self, names: &Names, id: ElementId, counter_name: &[u8]) -> Vec<u8> {
+        match self.find_counter(id, names.id(counter_name)) {
+            Some(holder) => self.el(holder).counter_values[&names.id(counter_name)].to_string().into_bytes(),
+            None => b"0".to_vec(),
+        }
+    }
+
+    /// `get_counters_value(parameters)`: a name and a separator: the counter's values from the outermost element
+    /// that has it to this one, joined; "0" (and the counter made here) when none has it.
+    pub fn get_counters_value(&mut self, names: &Names, id: ElementId, parameters: &[Vec<u8>]) -> Vec<u8> {
+        let mut result = Vec::new();
+        if parameters.len() >= 2 {
+            let counter_name_id = names.id(&parameters[0]);
+            let delims = trim(&parameters[1], b"\"'");
+
+            let mut values = Vec::new();
+            let mut current = Some(id);
+            while let Some(cur) = current {
+                if let Some(value) = self.el(cur).counter_values.get(&counter_name_id) {
+                    values.push(value.to_string().into_bytes());
+                }
+                current = self.parent(cur);
+            }
+            if values.is_empty() {
+                // if no counter is found, instance one with value '0'
+                self.el_mut(id).counter_values.insert(counter_name_id, 0);
+                result = b"0".to_vec();
+            } else {
+                values.reverse();
+                result = join_string(&values, &delims);
+            }
+        }
+        result
+    }
+
+    /// `parse_counter_tokens(tokens, default_value, handler)`: names, each with the number after it or the default,
+    /// at most 16.
+    pub fn parse_counter_tokens(names: &Names, tokens: &[Vec<u8>], default_value: i32) -> Vec<(StringId, i32)> {
+        // Each name is looked up through all the previous siblings: 16 keep 2000 siblings cheap.
+        const max_names: i32 = 16;
+        let mut out = Vec::new();
+        let mut pos = 0;
+        let mut count = 0;
+        while pos < tokens.len() && {
+            let ok = count < max_names;
+            count += 1;
+            ok
+        } {
+            let name = &tokens[pos];
+            let mut value = default_value;
+            if pos + 1 < tokens.len() && is_number(&tokens[pos + 1], false) {
+                value = twidget_cstd::atoi(crate::gumbo::c_str(&tokens[pos + 1]));
+                pos += 2;
+            } else {
+                pos += 1;
+            }
+            out.push((names.id(name), value));
+        }
+        out
+    }
+
+    /// `increment_counter(counter_name_id, increment)`: the counter where `find_counter` finds it, saturating, or a
+    /// new one here.
+    pub fn increment_counter(&mut self, id: ElementId, name: StringId, increment: i32) {
+        match self.find_counter(id, name) {
+            Some(holder) => {
+                let value = self.el_mut(holder).counter_values.get_mut(&name).expect("the counter found");
+                *value = (i64::from(*value) + i64::from(increment)).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+            }
+            None => {
+                // if counter is not found, initialize one on this element
+                self.el_mut(id).counter_values.insert(name, increment);
+            }
+        }
+    }
+
+    /// `reset_counter(counter_name_id, value)`.
+    pub fn reset_counter(&mut self, id: ElementId, name: StringId, value: i32) {
+        self.el_mut(id).counter_values.insert(name, value);
     }
 }

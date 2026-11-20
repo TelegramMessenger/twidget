@@ -1,12 +1,13 @@
 //! `document_container.h` and `document_container.cpp`: what litehtml asks of the program that renders with
 //! it, as far as the ported stages ask it. Later stages add the rest of the C++ interface here. A method with a
 //! body here has that body in the C++ too, but those the C++ leaves pure, which do here what the renderer's
-//! container does (core/src/renderer.cpp: nothing).
+//! container does where that is nothing (core/src/renderer.cpp), or answer as a container without fonts would.
 
 use crate::Px;
 use crate::css_tokenizer::CssToken;
 use crate::element::ElementId;
-use crate::types::MediaFeatures;
+use crate::font_description::FontDescription;
+use crate::types::{FontMetrics, MediaFeatures};
 use crate::utf8_strings::{utf8_to_utf32, utf32_to_utf8};
 use crate::web_color::ResolveColor;
 
@@ -61,6 +62,38 @@ pub trait DocumentContainer: ResolveColor {
 
     /// `link(doc, el)`: a `<link>` that brought no style sheet. Pure in the C++.
     fn link(&self, _el: ElementId) {}
+
+    /// `create_font(descr, doc, fm)`: a font handle (0 for none) and its metrics (left as they were, the default,
+    /// when the container sets none). Pure in the C++.
+    fn create_font(&self, _descr: &FontDescription) -> (u64, FontMetrics) {
+        (0, FontMetrics::default())
+    }
+
+    /// `text_width(text, font)`: the width of the text (up to its first NUL) in the font. Pure in the C++.
+    fn text_width(&self, _text: &[u8], _font: u64) -> Px {
+        Px(0.0)
+    }
+
+    /// `get_default_font_name()`. Pure in the C++; the renderer's.
+    fn get_default_font_name(&self) -> Vec<u8> {
+        b"-apple-system, system-ui, sans-serif".to_vec()
+    }
+
+    /// `load_image(src, baseurl, redraw_on_ready)`: an image the document will draw (`baseurl` a null pointer when
+    /// `None`). Pure in the C++.
+    fn load_image(&self, _src: &[u8], _baseurl: Option<&[u8]>, _redraw_on_ready: bool) {}
+
+    /// `transform_text(text, tt)`: the text as a `text-transform` value (`text_transform_*`) makes it. Pure in the
+    /// C++.
+    fn transform_text(&self, _text: &mut Vec<u8>, _tt: i32) {}
+
+    /// `get_language(language, culture)`. Pure in the C++; the renderer's.
+    fn get_language(&self) -> (Vec<u8>, Vec<u8>) {
+        (b"en".to_vec(), Vec::new())
+    }
+
+    /// `trusted_styles(trusted)`: the document parses its master and user sheets between a `true` and a `false`.
+    fn trusted_styles(&self, _trusted: bool) {}
 }
 
 /// A container as `parse_color` takes it: for the names it resolves.

@@ -202,6 +202,9 @@ pub struct CssSelector {
     pub m_style: Option<Arc<StyleRule>>,
     /// From an `@layer` block.
     pub m_layered: bool,
+    /// `m_sheet`: which of the document's sheets holds it; with `m_order`, it tells it from every other selector
+    /// of the document.
+    pub m_sheet: i32,
 }
 
 impl CssSelector {
@@ -228,6 +231,11 @@ impl CssSelector {
             left.calc_specificity();
             self.m_specificity += left.m_specificity;
         }
+    }
+
+    /// `place()`: the sheet and the order, as one number.
+    pub fn place(&self) -> u64 {
+        u64::from(self.m_sheet as u32) << 32 | u64::from(self.m_order as u32)
     }
 
     /// `is_media_valid()`: no media lists, or lists in use.

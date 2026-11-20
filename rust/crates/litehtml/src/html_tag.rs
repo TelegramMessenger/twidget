@@ -1,23 +1,31 @@
 //! `html_tag.cpp`: what an `html_tag` keeps of its tag and attributes (`set_tagName`, `set_attr` with its classes
 //! and id, `set_class`, the pseudo-classes, `appendChild`, `parse_attributes` with the presentational mappings) on
-//! the document's elements, and its selector matching: `select` of a complex selector, a compound, a pseudo-class
+//! the document's elements, its selector matching (`select` of a complex selector, a compound, a pseudo-class
 //! and an attribute selector, the ancestor and sibling searches the combinators make, the structural counts of the
-//! `:nth-*` pseudo-classes, `select_all` and `select_one`. Matching works on any tree that answers what
-//! `css_selector.cpp` and `html_tag.cpp` ask of an element ([`SelectElements`]); the document is one.
+//! `:nth-*` pseudo-classes, `select_all` and `select_one`, the selector budget), and its part of the cascade:
+//! `apply_stylesheet` and `apply_selector` with the `::before` and `::after` boxes, `add_style` with the counters,
+//! `refresh_styles`, `compute_styles` with style sharing, `get_property`'s `revert` (`ua_property`),
+//! `get_custom_property` and `raw_declaration`, and `find_styles_changes`. Matching works on any tree that answers
+//! what `css_selector.cpp` and `html_tag.cpp` ask of an element ([`SelectElements`]); the document is one.
 
 use std::cell::Cell;
+use std::sync::Arc;
 
+use crate::css_properties::Get;
 use crate::css_selector::{
     AttrMatcher, AttrSelectType, CssAttributeSelector, CssCombinator, CssElementSelector, CssSelector, DocumentMode,
 };
-use crate::css_tokenizer::{CssNumberType, CssToken, CssTokenType, DIMENSION, PERCENTAGE};
-use crate::document::{Document, Env};
-use crate::element::{AttributeDeclaration, AttributeValue, ElementId};
+use crate::css_tokenizer::{CssNumberType, CssToken, CssTokenType, CssTokenVector, DIMENSION, PERCENTAGE, get_repr};
+use crate::css_values::StyleDisplay;
+use crate::document::{Document, Env, StyleCx};
+use crate::document_container::DocumentContainer;
+use crate::element::{AttributeDeclaration, AttributeValue, ElementId, ElementKind, ElementState, UsedSelector};
 use crate::html::{WHITESPACE, join_string, lowcase, match_at, split_string};
 use crate::html_microsyntaxes::{
     HtmlDimensionType, html_parse_dimension_value, html_parse_non_negative_integer, html_parse_nonzero_dimension_value,
 };
 use crate::string_id::*;
+use crate::style::{PropertyValue, Style, Value, VarElement, raw_declaration_id};
 use crate::{Names, StringId};
 
 /// `select_result`.
@@ -70,6 +78,9 @@ pub struct Matcher<'a, T: SelectElements> {
     /// The selector budget while a stylesheet is applied or a `selector_budget` lives: the steps taken. Outside
     /// those the C++ counts nothing.
     pub budget: Option<&'a Cell<i64>>,
+    /// While a stylesheet is applied (and not `LH_NO_SIBLING_INDEX`), `find_adjacent_sibling` of a parent of more
+    /// than 16 children reads an index of them, which gives the same answer and charges no step for the walk.
+    pub indexed: bool,
 }
 
 impl<T: SelectElements> std::fmt::Debug for Matcher<'_, T> {
@@ -80,7 +91,7 @@ impl<T: SelectElements> std::fmt::Debug for Matcher<'_, T> {
 
 impl<'a, T: SelectElements> Matcher<'a, T> {
     pub fn new(tree: &'a T, names: &'a Names) -> Matcher<'a, T> {
-        Matcher { tree, names, prune: true, budget: None }
+        Matcher { tree, names, prune: true, budget: None, indexed: false }
     }
 
     fn is_generated(&self, el: T::Node) -> bool {
@@ -227,6 +238,7 @@ impl<'a, T: SelectElements> Matcher<'a, T> {
     }
 
     /// `select_pseudoclass(sel)`: the structural, logical, language, input and state pseudo-classes.
+    #[inline(never)]
     pub fn select_pseudoclass(&self, el: T::Node, sel: &CssAttributeSelector) -> i32 {
         let tree = self.tree;
         let el_parent = tree.parent(el);
@@ -342,6 +354,7 @@ impl<'a, T: SelectElements> Matcher<'a, T> {
 
     /// `select_attribute(sel)` (https://www.w3.org/TR/selectors-4/#attribute-selectors); the value as a C
     /// string, lower-case for a caseless match. An empty value matches nothing but with `=` and `|=`.
+    #[inline(never)]
     pub fn select_attribute(&self, el: T::Node, sel: &CssAttributeSelector) -> i32 {
         let Some(value) = self.tree.get_attr(el, &self.names.s(sel.name)) else { return select_no_match };
         let value = c_str(value);
@@ -395,7 +408,7 @@ impl<'a, T: SelectElements> Matcher<'a, T> {
 
     /// `find_adjacent_sibling(el, selector, apply_pseudo, is_pseudo)` on `parent`: the counted sibling just
     /// before `el`, when the selector matches it. (The C++'s index of siblings while a sheet is applied gives
-    /// the same answers and is not taken here.)
+    /// the same answers; only its charge is kept.)
     pub fn find_adjacent_sibling(
         &self,
         parent: T::Node,
@@ -407,7 +420,9 @@ impl<'a, T: SelectElements> Matcher<'a, T> {
             return None;
         }
         let children = self.tree.children(parent);
-        self.charge_children(children.len());
+        if !(self.indexed && children.len() > 16) {
+            self.charge_children(children.len());
+        }
         let mut ret = None;
         for &e in children {
             if self.counted(e) {
@@ -823,8 +838,9 @@ impl Document {
 }
 
 /// The document's elements as matching reads them. `tag()` is the class's (`script` and `style` too), the
-/// children are `element::m_children` (an `el_style` has none), text is `inline-text` (no tag computes to it),
-/// and the language is the document's (empty until `lang_changed`, which the renderer never calls).
+/// children are `element::m_children` (an `el_style` has none), `inline-text` is the computed display (text's, as
+/// no tag computes to it), and the language is the document's (empty until `lang_changed`, which the renderer never
+/// calls).
 impl SelectElements for Document {
     type Node = ElementId;
 
@@ -855,7 +871,7 @@ impl SelectElements for Document {
         Document::is_comment(self, el)
     }
     fn is_inline_text(&self, el: ElementId) -> bool {
-        self.is_text(el)
+        self.el(el).css.m_display == crate::css_values::StyleDisplay::display_inline_text.index()
     }
     fn has_pseudo_class(&self, el: ElementId, cls: StringId) -> bool {
         let el = self.el(el);
@@ -863,5 +879,526 @@ impl SelectElements for Document {
     }
     fn match_lang(&self, lang: &[u8]) -> bool {
         lang == &self.lang[..] || lang == &self.culture[..]
+    }
+}
+
+// ---- The cascade ----------------------------------------------------------------------------------------------
+
+/// `max_used_styles`: selectors an element keeps once they matched it.
+pub const max_used_styles: usize = 256;
+
+/// `get_custom_property` from an element up: what `style::subst_vars` asks past the style it substitutes, and what
+/// `subst_vars_` asks of an element.
+pub struct ElementVars<'a> {
+    pub doc: &'a Document,
+    pub cx: &'a StyleCx<'a>,
+    /// The element to start from (`None`: nothing is declared).
+    pub start: Option<ElementId>,
+}
+
+impl std::fmt::Debug for ElementVars<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElementVars").field("start", &self.start).finish_non_exhaustive()
+    }
+}
+
+impl VarElement for ElementVars<'_> {
+    fn get_custom_property(&self, name: StringId, result: &mut CssTokenVector, invalid: &mut bool) -> bool {
+        let mut cur = self.start;
+        while let Some(el) = cur {
+            if !self.doc.kind(el).is_html_tag() {
+                return false;
+            }
+            match &self.doc.el(el).style.get_property(name).value {
+                Value::Tokens(tokens) => {
+                    *result = tokens.clone();
+                    return true;
+                }
+                Value::CssWideKeyword(_) => {
+                    // invalid at computed-value time (style::subst_vars)
+                    *invalid = true;
+                    return false;
+                }
+                _ => {}
+            }
+            cur = self.doc.parent(el);
+        }
+        false
+    }
+
+    fn container(&self) -> Option<&dyn DocumentContainer> {
+        Some(self.cx.container)
+    }
+}
+
+impl Document {
+    /// Matching as the C++ does it now: the budget counts while a sheet is applied or a `selector_budget` lives,
+    /// and the sibling index is read while a sheet is applied.
+    pub fn matcher<'a>(&'a self, cx: &'a StyleCx) -> Matcher<'a, Document> {
+        let in_scope = self.apply_depth.get() > 0 || self.budget_depth.get() > 0;
+        Matcher {
+            tree: self,
+            names: cx.names,
+            prune: cx.switches.descendant_prune,
+            budget: if in_scope { Some(&self.selector_steps) } else { None },
+            indexed: self.apply_depth.get() > 0 && cx.switches.sibling_index,
+        }
+    }
+
+    /// `apply_scope`'s constructor: the first one starts the steps at 0 unless a budget is open.
+    fn apply_scope_enter(&self) {
+        if self.apply_depth.get() == 0 && self.budget_depth.get() == 0 {
+            self.selector_steps.set(0);
+        }
+        self.apply_depth.set(self.apply_depth.get() + 1);
+    }
+
+    fn apply_scope_exit(&self) {
+        self.apply_depth.set(self.apply_depth.get() - 1);
+    }
+
+    /// `selector_budget()`: the first one starts the steps at 0 unless a sheet is being applied.
+    pub fn budget_enter(&self) {
+        if self.budget_depth.get() == 0 && self.apply_depth.get() == 0 {
+            self.selector_steps.set(0);
+        }
+        self.budget_depth.set(self.budget_depth.get() + 1);
+    }
+
+    pub fn budget_exit(&self) {
+        self.budget_depth.set(self.budget_depth.get() - 1);
+    }
+
+    /// `apply_stylesheet(stylesheet)`: each selector of the sheet, then the children that are not text; an element
+    /// that is no tag takes none, an anchor with an `href` is a `:link` first.
+    pub fn apply_stylesheet(&mut self, cx: &StyleCx, id: ElementId, selectors: &[Arc<CssSelector>]) {
+        if !self.kind(id).is_html_tag() {
+            return;
+        }
+        if self.kind(id) == ElementKind::el_anchor {
+            self.el_anchor_apply_stylesheet(id);
+        }
+        self.apply_scope_enter();
+        for sel in selectors {
+            self.apply_selector(cx, id, sel);
+        }
+        let mut i = 0;
+        while i < self.el(id).children.len() {
+            let child = self.el(id).children[i];
+            if self.el(child).css.m_display != StyleDisplay::display_inline_text.index() {
+                self.apply_stylesheet(cx, child, selectors);
+            }
+            i += 1;
+        }
+        self.apply_scope_exit();
+    }
+
+    /// `apply_selector(sel)`: past 256 kept selectors, or a type or first class that differs, nothing; else the
+    /// selector's match without pseudo-classes, and when it matches its style is added (to the element, or to its
+    /// `::before` or `::after`, made when the rule gives content) where its media hold and its pseudo-classes do, and
+    /// the selector kept.
+    #[inline(never)]
+    pub fn apply_selector(&mut self, cx: &StyleCx, id: ElementId, sel: &Arc<CssSelector>) {
+        if self.el(id).used_styles.len() >= max_used_styles {
+            return;
+        }
+        let r = &sel.m_right;
+        if r.m_tag != star_id && r.m_tag != self.el(id).tag {
+            return;
+        }
+        if let Some(attr) = r.m_attrs.first()
+            && attr.ty == AttrSelectType::select_class
+            && !self.el(id).classes.contains(&attr.name)
+        {
+            return;
+        }
+
+        let apply = self.matcher(cx).select(id, sel, false);
+
+        if apply != select_no_match {
+            let mut used = false;
+            if sel.is_media_valid() {
+                let style = &sel.m_style.as_ref().expect("a sheet's selector has its rule's style").style;
+                if apply & select_match_pseudo_class != 0 {
+                    if self.matcher(cx).select(id, sel, true) != 0 {
+                        if apply & (select_match_with_after | select_match_with_before) != 0 {
+                            used = self.apply_before_after(cx, id, sel, apply);
+                        } else {
+                            self.add_style(cx, id, style);
+                            used = true;
+                        }
+                    }
+                } else if apply & (select_match_with_after | select_match_with_before) != 0 {
+                    used = self.apply_before_after(cx, id, sel, apply);
+                } else {
+                    self.add_style(cx, id, style);
+                    used = true;
+                }
+            }
+            self.el_mut(id).used_styles.push(UsedSelector { selector: Arc::clone(sel), used });
+        }
+    }
+
+    /// `apply_selector`'s `apply_before_after`: the style goes to the `::after` or `::before` box (made when the
+    /// rule is more than a bare pseudo-element and gives content other than `none`, which removes the box), or to
+    /// the element itself when it has none; whether it was used.
+    fn apply_before_after(&mut self, cx: &StyleCx, id: ElementId, sel: &Arc<CssSelector>, apply: i32) -> bool {
+        let style = &sel.m_style.as_ref().expect("a sheet's selector has its rule's style").style;
+        let content_none = matches!(&style.get_property(_content_).value, Value::String(s) if s == b"none");
+        let create = !content_none && (sel.m_right.m_attrs.len() > 1 || sel.m_right.m_tag != star_id);
+
+        let el = if apply & select_match_with_after != 0 {
+            self.get_element_after(id, create)
+        } else if apply & select_match_with_before != 0 {
+            self.get_element_before(id, create)
+        } else {
+            return false;
+        };
+        match el {
+            Some(el) => {
+                if !content_none {
+                    self.add_style(cx, el, style);
+                } else if let Some(parent) = self.parent(el) {
+                    self.remove_child(parent, el);
+                    // The box goes with its last owner, and gives its generated content back.
+                    if let ElementState::Generated { boxes, bytes, .. } = self.el(el).state {
+                        self.release_generated(boxes, bytes);
+                    }
+                }
+            }
+            None => {
+                if !content_none {
+                    self.add_style(cx, id, style);
+                }
+            }
+        }
+        true
+    }
+
+    /// `get_element_before(style, create)`: the first child when it is a `::before`, or a new one.
+    pub fn get_element_before(&mut self, id: ElementId, create: bool) -> Option<ElementId> {
+        if let Some(&front) = self.el(id).children.first()
+            && self.tag(front) == __tag_before_
+        {
+            return Some(front);
+        }
+        if create {
+            return Some(self.add_before_after(id, 0));
+        }
+        None
+    }
+
+    /// `get_element_after(style, create)`: the last child when it is an `::after`, or a new one.
+    pub fn get_element_after(&mut self, id: ElementId, create: bool) -> Option<ElementId> {
+        if let Some(&back) = self.el(id).children.last()
+            && self.tag(back) == __tag_after_
+        {
+            return Some(back);
+        }
+        if create {
+            return Some(self.add_before_after(id, 1));
+        }
+        None
+    }
+
+    /// `add_style(style)`, as the element's class has it: a `::before` or `::after` makes its content too.
+    pub fn add_style(&mut self, cx: &StyleCx, id: ElementId, style: &Style) {
+        match self.kind(id) {
+            ElementKind::el_before | ElementKind::el_after => self.before_after_add_style(cx, id, style),
+            kind if kind.is_html_tag() => self.html_tag_add_style(cx, id, style),
+            _ => {}
+        }
+    }
+
+    /// `html_tag::add_style(style)`: the style combined into the element's, then its counters reset or (when the
+    /// style brings another `counter-increment`) incremented.
+    pub fn html_tag_add_style(&mut self, cx: &StyleCx, id: ElementId, style: &Style) {
+        let added = style.get_property(_counter_increment_);
+        let counted = self.el(id).style.get_property(_counter_increment_);
+        let changed = match (&added.value, &counted.value) {
+            (Value::Strings(a), Value::Strings(c)) => a != c,
+            (Value::Strings(_), _) => true,
+            _ => false,
+        };
+        self.el_mut(id).style.combine(style);
+        self.handle_counter_properties(cx, id, changed);
+    }
+
+    /// `handle_counter_properties(increment)`: a `counter-reset` resets; else a `counter-increment`, when asked and
+    /// at most twice, increments.
+    fn handle_counter_properties(&mut self, cx: &StyleCx, id: ElementId, increment: bool) {
+        let reset = match &self.el(id).style.get_property(_counter_reset_).value {
+            Value::Strings(tokens) => Some(Document::parse_counter_tokens(cx.names, tokens, 0)),
+            _ => None,
+        };
+        if let Some(counters) = reset {
+            for (name, value) in counters {
+                self.reset_counter(id, name, value);
+            }
+            return;
+        }
+
+        if increment
+            && self.el(id).counter_changes < 2
+            && let Value::Strings(tokens) = &self.el(id).style.get_property(_counter_increment_).value
+        {
+            let tokens = tokens.clone();
+            self.el_mut(id).counter_changes += 1;
+            for (name, value) in Document::parse_counter_tokens(cx.names, &tokens, 1) {
+                self.increment_counter(id, name, value);
+            }
+        }
+    }
+
+    /// `refresh_styles()`: the children's first (but text), then the element's style again from the selectors it
+    /// kept, as each matches now, under one selector budget; the attributes' declarations are not added again.
+    pub fn refresh_styles(&mut self, cx: &StyleCx, id: ElementId) {
+        if !self.kind(id).is_html_tag() {
+            return;
+        }
+        self.budget_enter();
+        self.el_mut(id).has_style_base = false;
+        let mut i = 0;
+        while i < self.el(id).children.len() {
+            let child = self.el(id).children[i];
+            if self.el(child).css.m_display != StyleDisplay::display_inline_text.index() {
+                self.refresh_styles(cx, child);
+            }
+            i += 1;
+        }
+
+        self.refresh_own_styles(cx, id);
+        self.budget_exit();
+    }
+
+    /// `refresh_styles()`'s own part, after the children's: kept out of the recursion's frames.
+    #[inline(never)]
+    fn refresh_own_styles(&mut self, cx: &StyleCx, id: ElementId) {
+        self.el_mut(id).style.clear();
+        self.el_mut(id).counter_changes = 0;
+
+        for k in 0..self.el(id).used_styles.len() {
+            self.el_mut(id).used_styles[k].used = false;
+            let sel = Arc::clone(&self.el(id).used_styles[k].selector);
+            if !sel.is_media_valid() {
+                continue;
+            }
+            let apply = self.matcher(cx).select(id, &sel, false);
+            if apply == select_no_match {
+                continue;
+            }
+            let style = &sel.m_style.as_ref().expect("a sheet's selector has its rule's style").style;
+            if apply & select_match_pseudo_class != 0 {
+                if self.matcher(cx).select(id, &sel, true) != 0 {
+                    if apply & select_match_with_after != 0 {
+                        if let Some(el) = self.get_element_after(id, false) {
+                            self.add_style(cx, el, style);
+                        }
+                    } else if apply & select_match_with_before != 0 {
+                        if let Some(el) = self.get_element_before(id, false) {
+                            self.add_style(cx, el, style);
+                        }
+                    } else {
+                        self.add_style(cx, id, style);
+                        self.el_mut(id).used_styles[k].used = true;
+                    }
+                }
+            } else if apply & select_match_with_after != 0 {
+                if let Some(el) = self.get_element_after(id, false) {
+                    self.add_style(cx, el, style);
+                }
+            } else if apply & select_match_with_before != 0 {
+                if let Some(el) = self.get_element_before(id, false) {
+                    self.add_style(cx, el, style);
+                }
+            } else {
+                self.add_style(cx, id, style);
+                self.el_mut(id).used_styles[k].used = true;
+            }
+        }
+    }
+
+    /// `compute_styles(recursive)`, as each class has it.
+    pub fn compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        match self.kind(id) {
+            ElementKind::el_text | ElementKind::el_space => self.el_text_compute_styles(cx, id),
+            ElementKind::el_style => self.el_mut(id).css.m_display = StyleDisplay::display_none.index(),
+            ElementKind::el_image => self.el_image_compute_styles(cx, id, recursive),
+            ElementKind::el_input => self.el_input_compute_styles(cx, id, recursive),
+            ElementKind::el_select => self.el_select_compute_styles(cx, id, recursive),
+            ElementKind::el_button => self.el_button_compute_styles(cx, id, recursive),
+            ElementKind::el_textarea => self.el_textarea_compute_styles(cx, id, recursive),
+            ElementKind::el_meter => self.el_meter_compute_styles(cx, id, recursive),
+            ElementKind::el_fieldset => self.el_fieldset_compute_styles(cx, id, recursive),
+            kind if kind.is_html_tag() => self.html_tag_compute_styles(cx, id, recursive),
+            _ => {}
+        }
+    }
+
+    /// `html_tag::compute_styles(recursive)`: an element with no pseudo-class, `style` attribute, `var()`,
+    /// selectable id or attribute but `class` and `data-*` takes the computed style of an element of the same
+    /// tag, parent style and matched selectors when there was one; else its `style` attribute is added (the style
+    /// before it kept), its `var()`s substituted and its style computed. Then its children's.
+    pub fn html_tag_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        self.compute_own_style(cx, id);
+
+        if recursive {
+            let mut i = 0;
+            while i < self.el(id).children.len() {
+                let child = self.el(id).children[i];
+                self.compute_styles(cx, child, true);
+                i += 1;
+            }
+        }
+    }
+
+    /// `html_tag::compute_styles`'s own part, before the children's: kept out of the recursion's frames (a
+    /// computed style is a few kilobytes).
+    #[inline(never)]
+    fn compute_own_style(&mut self, cx: &StyleCx, id: ElementId) {
+        let mut eligible = false;
+        let mut shared = false;
+        let mut share_key = Vec::new();
+
+        {
+            let el = self.el(id);
+            if cx.switches.style_sharing
+                && !el.anonymous_style
+                && el.pseudo_classes.is_empty()
+                && !el.attrs.contains_key(&b"style"[..])
+                && !el.style.has_var_property()
+                && (el.id == empty_id || !self.ids_selectable(cx))
+            {
+                eligible = true;
+                for name in el.attrs.keys() {
+                    if name != b"class" && !name.starts_with(b"data-") && (name != b"id" || self.ids_selectable(cx)) {
+                        eligible = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if eligible {
+            let parent_id = self.parent(id).map_or(0, |p| self.el(p).css.m_shared_id);
+            share_key = format!("{parent_id}#{}", self.el(id).tag.0).into_bytes();
+            for us in &self.el(id).used_styles {
+                share_key.push(if us.used { b'|' } else { b'!' });
+                share_key.extend(us.selector.place().to_string().into_bytes());
+            }
+            if let Some(hit) = self.share_cache.get(&share_key) {
+                self.el_mut(id).css = hit.clone();
+                shared = true;
+            }
+        }
+
+        if !shared {
+            if let Some(style) = self.el(id).attrs.get(&b"style"[..]).cloned() {
+                let el = self.el_mut(id);
+                if !el.has_style_base {
+                    el.style_base = el.style.clone();
+                    el.has_style_base = true;
+                }
+                el.style.add_text(cx.names, cx.cache, &style, b"", Some(cx.container));
+            }
+            let mut style = std::mem::take(&mut self.el_mut(id).style);
+            style.subst_vars(cx.names, &ElementVars { doc: self, cx, start: self.parent(id) });
+            self.el_mut(id).style = style;
+            let mut css = std::mem::take(&mut self.el_mut(id).css);
+            css.compute(&Get { doc: self, cx, id });
+            css.m_shared_id = self.next_share_id();
+            if eligible {
+                self.share_cache.insert(share_key, css.clone());
+            }
+            self.el_mut(id).css = css;
+        }
+    }
+
+    /// `ua_property(name)`: what the master sheet alone gives the element (its unlayered rules, sorted, the last
+    /// that matches and holds winning unless an earlier one is important); invalid when nothing.
+    pub fn ua_property(&self, cx: &StyleCx, id: ElementId, name: StringId) -> PropertyValue {
+        let none = PropertyValue::default();
+        let mut found = &none;
+        let matcher = self.matcher(cx);
+        for sel in self.master_css.selectors() {
+            if sel.m_layered {
+                continue;
+            }
+            let Some(rule) = &sel.m_style else { continue };
+            let value = rule.style.get_property(name);
+            if matches!(value.value, Value::Invalid) || (found.m_important && !value.m_important) || !sel.is_media_valid() {
+                continue;
+            }
+            let matched = matcher.select(id, sel, true);
+            if matched & select_match == 0 || matched & (select_match_with_before | select_match_with_after) != 0 {
+                continue;
+            }
+            found = value;
+        }
+        found.clone()
+    }
+
+    /// `raw_declaration(name)`: the tokens of the property's `-lh-raw-` twin as written, spaced; empty when none.
+    pub fn raw_declaration(&self, names: &Names, id: ElementId, name: &[u8]) -> Vec<u8> {
+        let raw = raw_declaration_id(names, names.id(name));
+        if raw == empty_id || !self.kind(id).is_html_tag() {
+            return Vec::new();
+        }
+        match &self.el(id).style.get_property(raw).value {
+            Value::Tokens(tokens) => get_repr(tokens, 0, -1, true),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `requires_styles_update()`: a kept selector whose match changed: it matches plainly now and was not used, or
+    /// matches nothing and was.
+    #[inline(never)]
+    pub fn requires_styles_update(&self, cx: &StyleCx, id: ElementId) -> bool {
+        if !self.kind(id).is_html_tag() {
+            return false;
+        }
+        let matcher = self.matcher(cx);
+        for used in &self.el(id).used_styles {
+            if used.selector.is_media_valid() {
+                let res = matcher.select(id, &used.selector, true);
+                if (res == select_no_match && used.used) || (res == select_match && !used.used) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// `find_styles_changes(redraw_box)`: under one selector budget, an element (not text) whose selectors match
+    /// otherwise now gets its styles again and computed, then its children are looked at. (The boxes it would
+    /// have redrawn are stage L6's.)
+    pub fn find_styles_changes(&mut self, cx: &StyleCx, id: ElementId) -> bool {
+        self.budget_enter();
+        let ret = self.find_styles_changes_scoped(cx, id);
+        self.budget_exit();
+        ret
+    }
+
+    fn find_styles_changes_scoped(&mut self, cx: &StyleCx, id: ElementId) -> bool {
+        if self.el(id).css.m_display == StyleDisplay::display_inline_text.index() {
+            return false;
+        }
+
+        let mut ret = false;
+
+        if self.requires_styles_update(cx, id) {
+            self.refresh_styles(cx, id);
+            self.compute_styles(cx, id, true);
+            ret = true;
+        }
+        let mut i = 0;
+        while i < self.el(id).children.len() {
+            let child = self.el(id).children[i];
+            if self.find_styles_changes(cx, child) {
+                ret = true;
+            }
+            i += 1;
+        }
+        ret
     }
 }

@@ -13,7 +13,13 @@ use std::path::{Path, PathBuf};
 use twidget_computed_style::*;
 use twidget_litehtml::css_parser::{f_componentize, f_remove_whitespace, normalize};
 use twidget_litehtml::css_values::*;
+use twidget_litehtml::document::{Document, StyleCx, Switches};
+use twidget_litehtml::document_container::DocumentContainer;
+use twidget_litehtml::font_description::FontDescription;
+use twidget_litehtml::style::DeclarationCache;
+use twidget_litehtml::types::{FontMetrics, MediaFeatures};
 use twidget_litehtml::web_color::WebColor;
+use twidget_litehtml::{ElementId, Names, Px};
 use twidget_testkit::{Comparison, Fields, Lcg, Oracle, framed};
 
 // ---- The helpers ------------------------------------------------------------------------------------
@@ -331,19 +337,6 @@ impl Reader<'_> {
     }
 }
 
-const RAW_NAMES: [&str; 11] = [
-    "touch-action",
-    "font-variant-numeric",
-    "filter",
-    "backdrop-filter",
-    "box-shadow",
-    "translate",
-    "rotate",
-    "scale",
-    "transform",
-    "fill",
-    "stroke",
-];
 const PSEUDOS: [&str; 5] = ["::before", ":after", "::marker", ":before", "::after"];
 
 fn animated_for(index: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -540,6 +533,116 @@ fn any_document(random: &mut Lcg) -> Vec<u8> {
     out.into_bytes()
 }
 
+// ---- The cascade's elements ---------------------------------------------------------------------------
+
+/// The oracle's container: fonts 16 px with fixed metrics (every font handle 1), 8 px a byte of text, a 375 x 667
+/// screen at 2x, no imports.
+struct CsContainer;
+
+impl twidget_litehtml::web_color::ResolveColor for CsContainer {
+    fn resolve_color(&self, _name: &[u8]) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+impl DocumentContainer for CsContainer {
+    fn pt_to_px(&self, pt: f32) -> Px {
+        Px(pt * 96.0 / 72.0)
+    }
+    fn get_default_font_size(&self) -> Px {
+        Px(16.0)
+    }
+    fn import_css(&self, _url: &[u8], _baseurl: &mut Vec<u8>) -> Vec<u8> {
+        Vec::new()
+    }
+    fn get_media_features(&self) -> MediaFeatures {
+        MediaFeatures {
+            ty: MediaType::media_type_screen.index(),
+            width: Px(375.0),
+            height: Px(667.0),
+            device_width: Px(375.0),
+            device_height: Px(667.0),
+            color: 8,
+            color_index: 256,
+            monochrome: 0,
+            resolution: Px(192.0),
+        }
+    }
+    fn create_font(&self, d: &FontDescription) -> (u64, FontMetrics) {
+        let size = d.size;
+        let fm = FontMetrics {
+            font_size: size,
+            ascent: size * 0.75,
+            descent: size * 0.25,
+            height: size * 1.25,
+            x_height: size * 0.5,
+            ch_width: size * 0.5,
+            ..FontMetrics::default()
+        };
+        (1, fm)
+    }
+    fn text_width(&self, text: &[u8], _font: u64) -> Px {
+        Px((text.len() * 8) as f32)
+    }
+    fn get_default_font_name(&self) -> Vec<u8> {
+        b"sans-serif".to_vec()
+    }
+}
+
+/// litehtml's `master_css` (litehtml/include/litehtml/master_css.h), the raw string's text.
+fn master_css() -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../litehtml/include/litehtml/master_css.h");
+    let text = std::fs::read(&path).expect("master_css.h");
+    let text = String::from_utf8_lossy(&text).replace("\r\n", "\n");
+    let start = text.find("R\"##(").expect("the raw string") + 5;
+    let end = text[start..].find(")##\"").expect("its end") + start;
+    text.as_bytes()[start..end].to_vec()
+}
+
+/// A document as the oracle builds it (createFromString with litehtml's master sheet), cascaded by the port,
+/// and its elements in the oracle's order (the tree from the root, 300 at most).
+fn cascade(names: &Names, cache: &DeclarationCache, master: &[u8], html: &[u8]) -> (Document, Vec<ElementId>) {
+    let cx = StyleCx { names, container: &CsContainer, cache, switches: Switches::default() };
+    let (mut doc, root) = Document::build(html, &cx.env());
+    doc.finalize_from_external_root(&cx, root, master, b"");
+    fn collect(doc: &Document, id: ElementId, out: &mut Vec<ElementId>) {
+        if out.len() >= 300 {
+            return;
+        }
+        out.push(id);
+        for &child in doc.children(id) {
+            collect(doc, child, out);
+        }
+    }
+    let mut nodes = Vec::new();
+    if let Some(root) = doc.root {
+        collect(&doc, root, &mut nodes);
+    }
+    (doc, nodes)
+}
+
+/// What layout gave the C++'s element, taken into the cascade's: the boxes and placement, a table cell's width
+/// (its column's, set by the table's grid) and an image's line height (its height); how many fields were taken.
+fn with_layout(ours: &mut Element, theirs: &Element, replaced: bool) -> usize {
+    ours.layout = theirs.layout;
+    ours.placement = theirs.placement;
+    let mut taken = 0;
+    if ours.display == StyleDisplay::display_table_cell.index() && ours.width != theirs.width {
+        ours.width = theirs.width;
+        taken += 1;
+    }
+    if replaced && ours.line_height != theirs.line_height {
+        ours.line_height = theirs.line_height;
+        taken += 1;
+    }
+    for (o, t) in [(&mut ours.before, &theirs.before), (&mut ours.after, &theirs.after)] {
+        if let (Some(o), Some(t)) = (o, t) {
+            taken += with_layout(o, t, false);
+        }
+    }
+    taken
+}
+
 /// Runs the documents through the oracle and compares every element's answers with the port's.
 fn documents_alike(oracle: &Oracle, documents: &[(String, Vec<u8>)]) -> (usize, usize) {
     let mut input = Vec::new();
@@ -550,19 +653,53 @@ fn documents_alike(oracle: &Oracle, documents: &[(String, Vec<u8>)]) -> (usize, 
         input.extend(o.framed(b'S'));
     }
     let answers = oracle.run(input, documents.len());
+    let master = master_css();
     let mut elements = 0;
     let mut answers_alike = 0;
+    let mut cascaded = 0;
+    let mut layout_taken = 0;
     let mut differences = Vec::new();
     let mut differing = 0;
-    for ((name, _), (status, bytes)) in documents.iter().zip(&answers) {
+    for ((name, html), (status, bytes)) in documents.iter().zip(&answers) {
         if *status != 1 {
             continue;
         }
+        // The oracle's createFromString decodes as the text says; the port's build reads UTF-8.
+        let utf8 = std::str::from_utf8(html).is_ok() && !html.starts_with(b"\xEF\xBB\xBF");
+        let (names, cache) = (Names::new(), DeclarationCache::default());
+        let (doc, nodes) = if utf8 { cascade(&names, &cache, &master, html) } else { (Document::new(), Vec::new()) };
+        let cx = StyleCx { names: &names, container: &CsContainer, cache: &cache, switches: Switches::default() };
         let mut r = Reader { s: bytes, at: 0 };
-        for index in 0..r.u32() as usize {
+        let count = r.u32() as usize;
+        if utf8 && nodes.len() != count {
+            differences.push(format!("{name}: the C++ has {count} elements, the port's cascade {}", nodes.len()));
+            break;
+        }
+        for index in 0..count {
             let inputs = r.str();
-            let el = Reader { s: &inputs, at: 0 }.element();
+            let theirs = Reader { s: &inputs, at: 0 }.element();
             elements += 1;
+            // The element computed_style reads: the cascade's, with what layout gave the C++'s.
+            let el = if utf8 {
+                let mut ours = Element::of_cascade(&doc, &cx, nodes[index]);
+                layout_taken += with_layout(&mut ours, &theirs, doc.is_replaced(nodes[index]));
+                cascaded += 1;
+                if ours != theirs {
+                    differing += 1;
+                    if differences.len() < 5 {
+                        let (a, b) = (format!("{theirs:?}"), format!("{ours:?}"));
+                        let at = a.bytes().zip(b.bytes()).position(|(x, y)| x != y).unwrap_or(0).saturating_sub(120);
+                        differences.push(format!(
+                            "{name}, element {index}: the cascade's differs\n C++  …{}\n Rust …{}",
+                            &a[at.min(a.len())..(at + 400).min(a.len())],
+                            &b[at.min(b.len())..(at + 400).min(b.len())]
+                        ));
+                    }
+                }
+                ours
+            } else {
+                theirs
+            };
             let animated = animated_for(index);
             let extras = if animated.is_empty() { None } else { Some(&animated[..]) };
             let mut ours = vec![computed_style(&el, b"", extras).dump()];
@@ -589,6 +726,7 @@ fn documents_alike(oracle: &Oracle, documents: &[(String, Vec<u8>)]) -> (usize, 
         }
     }
     assert!(differences.is_empty(), "{differing} answers differ, the first:\n{}", differences.join("\n"));
+    eprintln!("{cascaded} elements from the port's cascade alike with the C++'s ({layout_taken} fields of layout taken from the C++)");
     (elements, answers_alike)
 }
 

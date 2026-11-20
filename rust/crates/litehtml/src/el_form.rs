@@ -1,14 +1,17 @@
-//! `el_form.cpp` as a document is built: what the form controls take from their attributes and the boxes they
-//! make for what they show (`lh-input-text`, `lh-input-spin`, `lh-range-track` and `lh-range-thumb`,
-//! `lh-select-value`, `lh-placeholder`), each an `html_tag` with an inline style. Their look, computed style and
-//! painting are later stages'.
+//! `el_form.cpp`: what the form controls take from their attributes and the boxes they make for what they show
+//! (`lh-input-text`, `lh-input-spin`, `lh-range-track` and `lh-range-thumb`, `lh-select-value`,
+//! `lh-placeholder`), each an `html_tag` with an inline style, and their look as their computed style decides it
+//! (with what it changes of that style). Their painting is a later stage's.
 
+use crate::css_length::CssLength;
 use crate::css_parser::{f_componentize, f_remove_whitespace, normalize};
+use crate::css_properties::{Background, CssBorders, CssProperties};
+use crate::css_values::*;
 use crate::cxx;
-use crate::document::{Document, Env};
+use crate::document::{Document, Env, StyleCx};
 use crate::element::{ElementId, ElementKind, ElementState};
 use crate::html::{WHITESPACE, lowcase, trim};
-use crate::string_id::{_optgroup_, _option_};
+use crate::string_id::{_legend_, _optgroup_, _option_};
 use crate::web_color::{WebColor, parse_color};
 
 /// What a control shows when it would show nothing: a zero-width space, so that its line has a height.
@@ -152,7 +155,7 @@ impl Document {
     }
 
     /// `remove_generated(parent)`: the generated children taken out.
-    fn remove_generated(&mut self, env: &Env, parent: ElementId) {
+    pub fn remove_generated(&mut self, env: &Env, parent: ElementId) {
         let generated: Vec<ElementId> =
             self.children(parent).iter().copied().filter(|&child| is_generated_tag(&self.get_tag_name(env.names, child))).collect();
         for child in generated {
@@ -304,6 +307,368 @@ impl Document {
         {
             let placeholder = self.append_content(env, id, b"lh-placeholder", b"display:inline", &hint);
             self.el_mut(placeholder).master_sheet = true;
+        }
+    }
+}
+
+// ---- The look: what the controls make of their computed style ------------------------------------------------
+
+/// `palette`: the colours a control is drawn in, light or dark (the ones its computed style reads).
+struct Palette {
+    field: WebColor,
+    text: WebColor,
+    control_text: WebColor,
+    disabled_text: WebColor,
+    button_face: WebColor,
+    button_border: WebColor,
+    legacy_field_border: WebColor,
+}
+
+/// `colors(dark)`.
+fn colors(dark: bool) -> Palette {
+    let c = WebColor::rgba;
+    if dark {
+        Palette {
+            field: c(30, 30, 30, 255),
+            text: c(255, 255, 255, 255),
+            control_text: c(255, 255, 255, 216),
+            disabled_text: c(255, 255, 255, 64),
+            button_face: c(90, 90, 90, 255),
+            button_border: c(90, 90, 90, 255),
+            legacy_field_border: c(128, 128, 128, 255),
+        }
+    } else {
+        Palette {
+            field: c(255, 255, 255, 255),
+            text: c(0, 0, 0, 255),
+            control_text: c(0, 0, 0, 216),
+            disabled_text: c(0, 0, 0, 64),
+            button_face: c(192, 192, 192, 255),
+            button_border: c(192, 192, 192, 255),
+            legacy_field_border: c(128, 128, 128, 255),
+        }
+    }
+}
+
+/// `sentinel_border`, `sentinel_back` and `sentinel_text`: the colours that mean a control's box and text are
+/// the UA's.
+const sentinel_border: WebColor = WebColor::rgba(1, 2, 3, 1);
+const sentinel_back: WebColor = WebColor::rgba(3, 2, 1, 1);
+const sentinel_text: WebColor = WebColor::rgba(2, 3, 1, 1);
+
+/// `make_flex(css, direction, justify, align)`: a block a flex box, an inline or inline block an inline flex one,
+/// with the layout; any other display stays.
+fn make_flex(css: &mut CssProperties, direction: i32, justify: i32, align: i32) {
+    if css.m_display == StyleDisplay::display_block.index() {
+        css.m_display = StyleDisplay::display_flex.index();
+    } else if css.m_display == StyleDisplay::display_inline.index() || css.m_display == StyleDisplay::display_inline_block.index() {
+        css.m_display = StyleDisplay::display_inline_flex.index();
+    } else {
+        return;
+    }
+    css.set_flex_layout(direction, justify, align);
+}
+
+/// A flex row from the start, centred across: what the fields and the select lay out in.
+fn make_flex_row(css: &mut CssProperties) {
+    make_flex(
+        css,
+        FlexDirection::flex_direction_row.index(),
+        FlexJustifyContent::flex_justify_content_flex_start.index(),
+        FlexAlignItems::flex_align_items_center.index(),
+    );
+}
+
+/// `radius_set(borders, ua)`: a horizontal radius other than the UA's.
+fn radius_set(borders: &CssBorders, ua: f32) -> bool {
+    let r = &borders.radius;
+    [&r.top_left_x, &r.top_right_x, &r.bottom_right_x, &r.bottom_left_x].iter().any(|len| (len.val() - ua).abs() > 0.01)
+}
+
+/// `has_image(bg)`.
+fn has_image(bg: &Background) -> bool {
+    bg.m_image.iter().any(|img| !img.is_empty())
+}
+
+/// `authored_box(css, ua_radius)`: a border colour, background or radius the page gave.
+fn authored_box(css: &CssProperties, ua_radius: f32) -> bool {
+    let b = &css.m_css_borders;
+    if [&b.top, &b.right, &b.bottom, &b.left].iter().any(|side| side.color != sentinel_border) {
+        return true;
+    }
+    let bg = &css.m_bg;
+    bg.m_color != sentinel_back || has_image(bg) || radius_set(b, ua_radius)
+}
+
+/// `resolve_box(css, native, border, back)`: the UA's border colours and background as the look has them.
+fn resolve_box(css: &mut CssProperties, native: bool, border: WebColor, back: WebColor) {
+    let borders = &mut css.m_css_borders;
+    for side in [&mut borders.top, &mut borders.right, &mut borders.bottom, &mut borders.left] {
+        if native || side.color == sentinel_border {
+            side.color = if native { WebColor::TRANSPARENT } else { border };
+        }
+    }
+    if native || css.m_bg.m_color == sentinel_back {
+        css.m_bg.m_color = if native { WebColor::TRANSPARENT } else { back };
+    }
+}
+
+/// `resolve_text(css, color)`.
+fn resolve_text(css: &mut CssProperties, color: WebColor) {
+    if css.m_color == sentinel_text {
+        css.m_color = color;
+    }
+}
+
+/// `add_padding(css, top, right, bottom, left, replace)`: px added to each side (to 0 when `replace` or a %).
+fn add_padding(css: &mut CssProperties, top: f32, right: f32, bottom: f32, left: f32, replace: bool) {
+    let bump = |len: &mut CssLength, v: f32| {
+        let base = if replace || len.units() == CssUnits::css_units_percentage { 0.0 } else { len.val() };
+        len.set_value(base + v, CssUnits::css_units_px);
+    };
+    let padding = &mut css.m_css_padding;
+    bump(&mut padding.top, top);
+    bump(&mut padding.right, right);
+    bump(&mut padding.bottom, bottom);
+    bump(&mut padding.left, left);
+}
+
+/// A length of `v` px, as the UA's paddings are told apart.
+fn is_px(len: &CssLength, v: f32) -> bool {
+    len.units() == CssUnits::css_units_px && (len.val() - v).abs() < 0.0001
+}
+
+/// `ua_padding(css)`: the UA's field padding.
+fn ua_padding(css: &CssProperties) -> bool {
+    let p = &css.m_css_padding;
+    is_px(&p.top, 1.01) && is_px(&p.bottom, 1.01) && is_px(&p.left, 2.01) && (is_px(&p.right, 2.01) || is_px(&p.right, 2.02))
+}
+
+/// `button_padding(css, native)`: the UA's button padding as the look has it.
+fn button_padding(css: &mut CssProperties, native: bool) {
+    let p = &css.m_css_padding;
+    if !is_px(&p.top, 0.01) || !is_px(&p.right, 6.01) || !is_px(&p.bottom, 1.01) || !is_px(&p.left, 6.01) {
+        return;
+    }
+    let padding = &mut css.m_css_padding;
+    padding.top.set_value(if native { 0.0 } else { 2.0 }, CssUnits::css_units_px);
+    padding.bottom.set_value(if native { 1.0 } else { 3.0 }, CssUnits::css_units_px);
+    padding.left.set_value(6.0, CssUnits::css_units_px);
+    padding.right.set_value(6.0, CssUnits::css_units_px);
+}
+
+/// `field_padding(css, native, number)`: the UA's field padding as the look has it.
+fn field_padding(css: &mut CssProperties, native: bool, number: bool) {
+    if !ua_padding(css) {
+        return;
+    }
+    let size = css.get_font_size().value();
+    let v = if native { (size * 0.2).round() } else { 1.0 };
+    let h = if native { (size * 0.5).floor() } else { 1.0 };
+    let padding = &mut css.m_css_padding;
+    padding.top.set_value(v, CssUnits::css_units_px);
+    padding.bottom.set_value(v, CssUnits::css_units_px);
+    padding.left.set_value(h, CssUnits::css_units_px);
+    padding.right.set_value(if number && native { 2.0 } else { h }, CssUnits::css_units_px);
+}
+
+impl Document {
+    fn compute_children(&mut self, cx: &StyleCx, id: ElementId) {
+        let mut i = 0;
+        while i < self.el(id).children.len() {
+            let child = self.el(id).children[i];
+            self.compute_styles(cx, child, true);
+            i += 1;
+        }
+    }
+
+    /// `el_input::compute_styles(recursive)`: a text-like field's or button's look (native unless the page styled
+    /// its box), padding, box and text colours, a field a flex row; a checkbox, radio, range or colour's look, a
+    /// range a flex row when not native, a native one's background transparent; then the children (a native
+    /// range's hidden).
+    pub fn el_input_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        self.html_tag_compute_styles(cx, id, false);
+        let ty = match &self.el(id).state {
+            ElementState::Input { ty, .. } => ty.clone(),
+            _ => Vec::new(),
+        };
+        let disabled = self.get_attr(id, b"disabled").is_some();
+        let mut look = self.el(id).look;
+        let c = &mut self.el_mut(id).css;
+        look.dark = c.m_dark_scheme != 0;
+        look.disabled = disabled;
+        let appearance = c.m_appearance != Appearance::appearance_none.index();
+        let p = colors(look.dark);
+        if is_text_like(&ty) {
+            look.native = appearance && !authored_box(c, 0.0);
+            field_padding(c, look.native, ty == b"number");
+            resolve_box(c, look.native, p.legacy_field_border, p.field);
+            resolve_text(c, if look.disabled { p.disabled_text } else { p.text });
+            make_flex_row(c);
+        } else if is_button_like(&ty) {
+            look.native = appearance && !authored_box(c, 0.0);
+            button_padding(c, look.native);
+            resolve_box(c, look.native, p.button_border, p.button_face);
+            resolve_text(c, if look.disabled { p.disabled_text } else { p.control_text });
+            c.m_center_content = true;
+        } else {
+            look.native = appearance;
+            if ty == b"range" && !look.native {
+                make_flex_row(c);
+            }
+            resolve_box(c, false, WebColor::TRANSPARENT, WebColor::TRANSPARENT);
+            resolve_text(c, p.text);
+            if look.native && [&b"checkbox"[..], b"radio", b"range", b"color"].contains(&&ty[..]) && !has_image(&c.m_bg) {
+                c.m_bg.m_color = WebColor::TRANSPARENT;
+            }
+        }
+        self.el_mut(id).look = look;
+        if recursive {
+            self.compute_children(cx, id);
+        }
+        if ty == b"range" && look.native {
+            for child in self.el(id).children.clone() {
+                self.el_mut(child).css.m_display = StyleDisplay::display_none.index();
+            }
+        }
+    }
+
+    /// `el_select::compute_styles(recursive)`: native unless the page styled its box, the arrow with any
+    /// appearance, box and text colours, padding for the arrow, a flex row; then the children.
+    pub fn el_select_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        self.html_tag_compute_styles(cx, id, false);
+        let disabled = self.get_attr(id, b"disabled").is_some();
+        let mut look = self.el(id).look;
+        let c = &mut self.el_mut(id).css;
+        let p = colors(c.m_dark_scheme != 0);
+        look.dark = c.m_dark_scheme != 0;
+        look.disabled = disabled;
+        let appearance = c.m_appearance != Appearance::appearance_none.index();
+        look.native = appearance && !authored_box(c, 5.0);
+        let arrow = appearance;
+        resolve_box(c, look.native, p.control_text, p.field);
+        resolve_text(c, if look.disabled { p.disabled_text } else { p.control_text });
+        if look.native {
+            add_padding(c, 2.5, 22.7, 2.5, 8.5, false);
+        } else if appearance {
+            let v = c.get_font_size().value() * 0.1;
+            add_padding(c, v, 22.7, v, 8.5, true);
+        }
+        make_flex_row(c);
+        self.el_mut(id).look = look;
+        self.el_mut(id).arrow = arrow;
+        if recursive {
+            self.compute_children(cx, id);
+        }
+    }
+
+    /// `el_button::compute_styles(recursive)`.
+    pub fn el_button_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        self.html_tag_compute_styles(cx, id, false);
+        let disabled = self.get_attr(id, b"disabled").is_some();
+        let mut look = self.el(id).look;
+        let c = &mut self.el_mut(id).css;
+        let p = colors(c.m_dark_scheme != 0);
+        look.dark = c.m_dark_scheme != 0;
+        look.disabled = disabled;
+        look.native = c.m_appearance != Appearance::appearance_none.index() && !authored_box(c, 0.0);
+        button_padding(c, look.native);
+        resolve_box(c, look.native, p.button_border, p.button_face);
+        resolve_text(c, if look.disabled { p.disabled_text } else { p.control_text });
+        c.m_center_content = true;
+        self.el_mut(id).look = look;
+        if recursive {
+            self.compute_children(cx, id);
+        }
+    }
+
+    /// `el_textarea::compute_styles(recursive)`: the placeholder box gone once there is text, then the look.
+    pub fn el_textarea_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        let env = cx.env();
+        if self.has_generated(&env, id) && !self.textarea_text(&env, id).is_empty() {
+            self.remove_generated(&env, id);
+        }
+        self.html_tag_compute_styles(cx, id, false);
+        let disabled = self.get_attr(id, b"disabled").is_some();
+        let mut look = self.el(id).look;
+        let c = &mut self.el_mut(id).css;
+        let p = colors(c.m_dark_scheme != 0);
+        look.dark = c.m_dark_scheme != 0;
+        look.disabled = disabled;
+        look.native = c.m_appearance != Appearance::appearance_none.index() && !authored_box(c, 0.0);
+        resolve_box(c, look.native, p.legacy_field_border, p.field);
+        resolve_text(c, if look.disabled { p.disabled_text } else { p.text });
+        self.el_mut(id).look = look;
+        if recursive {
+            self.compute_children(cx, id);
+        }
+    }
+
+    /// `el_meter::compute_styles(recursive)`.
+    pub fn el_meter_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        self.html_tag_compute_styles(cx, id, recursive);
+        let c = &self.el(id).css;
+        let (dark, native) = (c.m_dark_scheme != 0, c.m_appearance != Appearance::appearance_none.index());
+        let look = &mut self.el_mut(id).look;
+        look.dark = dark;
+        look.native = native;
+    }
+
+    /// `el_fieldset::legend()`: the first child when it is a `<legend>` in flow, past spaces and comments.
+    fn legend(&self, id: ElementId) -> Option<ElementId> {
+        for &child in self.children(id) {
+            if self.tag(child) == _legend_ {
+                let lc = &self.el(child).css;
+                if lc.m_display == StyleDisplay::display_none.index()
+                    || lc.m_float != ElementFloat::float_none.index()
+                    || lc.m_el_position == ElementPosition::element_position_absolute.index()
+                    || lc.m_el_position == ElementPosition::element_position_fixed.index()
+                {
+                    return None;
+                }
+                return Some(child);
+            }
+            if !self.is_white_space(child) && !self.is_comment(child) {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// `el_fieldset::compute_styles(recursive)`: the legend's margins set so that it sits on the border.
+    pub fn el_fieldset_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        self.html_tag_compute_styles(cx, id, recursive);
+        let Some(first) = self.legend(id) else { return };
+        let c = &self.el(id).css;
+        let hidden = BorderStyle::border_style_hidden.index();
+        let border = if c.m_css_borders.top.style > hidden { c.m_css_borders.top.width.val() } else { 0.0 };
+        let padding = if c.m_css_padding.top.units() == CssUnits::css_units_percentage { 0.0 } else { c.m_css_padding.top.val() };
+        let lc = &mut self.el_mut(first).css;
+        let lh = lc.m_line_height.computed_value.value();
+        let px = |len: &CssLength| if len.units() == CssUnits::css_units_percentage { 0.0 } else { len.val() };
+        let lp = &lc.m_css_padding;
+        let lb = &lc.m_css_borders;
+        let legend_h = lh
+            + px(&lp.top)
+            + px(&lp.bottom)
+            + if lb.top.style > hidden { lb.top.width.val() } else { 0.0 }
+            + if lb.bottom.style > hidden { lb.bottom.width.val() } else { 0.0 };
+        lc.m_css_margins.top.set_value(-(border + padding), CssUnits::css_units_px);
+        lc.m_css_margins.bottom.set_value(padding + cxx::max_f32(0.0, border - legend_h), CssUnits::css_units_px);
+    }
+
+    /// `el_image::compute_styles(recursive)`: a tag's, then the image loaded the first time (to redraw when ready
+    /// when both its width and height are given).
+    pub fn el_image_compute_styles(&mut self, cx: &StyleCx, id: ElementId, recursive: bool) {
+        self.html_tag_compute_styles(cx, id, recursive);
+        let css = &self.el(id).css;
+        let redraw = !css.m_css_height.is_predefined() && !css.m_css_width.is_predefined();
+        if let ElementState::Image { src, loaded } = &mut self.el_mut(id).state
+            && !src.is_empty()
+            && !*loaded
+        {
+            *loaded = true;
+            cx.container.load_image(crate::gumbo::c_str(src), None, redraw);
         }
     }
 }

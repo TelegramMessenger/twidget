@@ -96,9 +96,16 @@ pub struct Css {
     m_selectors: Vec<Arc<CssSelector>>,
     /// Inside an `@layer` block.
     m_layer_depth: i32,
+    /// `m_sheet`: which of the document's sheets this is (0 the master CSS, 1 the document's own, 2 the user's).
+    m_sheet: i32,
 }
 
 impl Css {
+    /// `css(sheet)`.
+    pub fn with_sheet(sheet: i32) -> Css {
+        Css { m_sheet: sheet, ..Css::default() }
+    }
+
     pub fn selectors(&self) -> &[Arc<CssSelector>] {
         &self.m_selectors
     }
@@ -111,6 +118,7 @@ impl Css {
     /// `add_selector(selector)`.
     fn add_selector(&mut self, mut selector: CssSelector) {
         selector.m_order = self.m_selectors.len() as i32;
+        selector.m_sheet = self.m_sheet;
         selector.m_layered = self.m_layer_depth > 0;
         self.m_selectors.push(Arc::new(selector));
     }

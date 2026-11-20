@@ -198,7 +198,7 @@ fn element_out(o: &mut Out, names: &Names, doc: &Document, w: &Walk, id: Element
     for flag in [doc.is_text(id), doc.is_space(id), doc.is_comment(id), doc.is_body(id), doc.is_break(id), doc.is_replaced(id)] {
         o.u8(u8::from(flag));
     }
-    o.u8(el.display as u8);
+    o.u8(el.css.m_display as u8);
     if el.kind.is_html_tag() {
         o.str(&names.s(el.id));
         o.u32(el.str_classes.len() as u32);

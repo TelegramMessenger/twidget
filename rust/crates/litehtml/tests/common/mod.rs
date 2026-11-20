@@ -86,6 +86,12 @@
 //!   value the style keeps as tokens (0 box-shadow, 1 filter, 2 transform, 3 transform-origin, 4 clip-path,
 //!   5 grid track list, 6 grid placement), the fast transform tokens of the text (7), or `fold_math` (8);
 //!   status 1 when it holds, and what it made (see `effects_answer`).
+//!
+//! The cascade's record (stage L5) builds its own document with `CascadeContainer`, its fonts, widths and images
+//! logged, over the process's name table and declaration cache:
+//!
+//! - `l` f32 width, height, dpr, master, user, html, steps: the document finalized, every element's computed style
+//!   after each dump step, the container's calls by phase (see `cascade`).
 
 #![allow(dead_code, unused_imports)]
 
@@ -111,9 +117,11 @@ use twidget_litehtml::stylesheet::{Css, RawDeclaration, RawRule, RuleType, Style
 use twidget_litehtml::types::{FontMetrics, MediaFeatures};
 use twidget_litehtml::*;
 
+pub mod cascade;
 pub mod dom;
 pub mod gumbo;
 pub mod svg;
+pub mod values;
 
 #[derive(Default)]
 pub struct Out {
@@ -196,6 +204,9 @@ impl<'a> In<'a> {
     }
     pub fn i32(&mut self) -> i32 {
         i32::from_le_bytes(self.raw())
+    }
+    pub fn u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.raw())
     }
     pub fn f32(&mut self) -> f32 {
         f32::from_bits(self.u32())
@@ -2916,7 +2927,7 @@ pub fn effects_input(which: u8, container: u8, text: &[u8]) -> Vec<u8> {
     [&[which, container][..], text].concat()
 }
 
-fn gradient_out(o: &mut Out, names: &Names, g: &twidget_litehtml::gradient::Gradient) {
+pub fn gradient_out(o: &mut Out, names: &Names, g: &twidget_litehtml::gradient::Gradient) {
     o.str(&names.s(g.m_type)).u32(g.m_side).f32(g.angle).u32(g.m_colors.len() as u32);
     for stop in &g.m_colors {
         o.u8(u8::from(stop.is_color_hint)).color(&stop.color);

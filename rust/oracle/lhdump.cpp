@@ -27,6 +27,7 @@
 #include <cctype>
 #include <cstring>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -58,6 +59,56 @@ void filter_code_points(std::string& input);
 } // namespace litehtml
 
 using namespace litehtml;
+
+// The members the 'l' record dumps that the fork keeps private, robbed as lhdump_dom.h robs its own.
+namespace lhdump_dom {
+#define LHDUMP_ROB_L(Name, Member) \
+    struct Name {}; \
+    auto robbed(Name); \
+    template struct Rob<&Member, Name>;
+LHDUMP_ROB_L(CssZIndex, css_properties::m_z_index)
+LHDUMP_ROB_L(CssLineHeightRaw, css_properties::m_css_line_height)
+LHDUMP_ROB_L(CssFontSize, css_properties::m_font_size)
+LHDUMP_ROB_L(CssFontSmoothing, css_properties::m_font_smoothing)
+LHDUMP_ROB_L(CssLetterSpacing, css_properties::m_letter_spacing)
+LHDUMP_ROB_L(CssWordSpacing, css_properties::m_word_spacing)
+LHDUMP_ROB_L(CssVariantNumeric, css_properties::m_font_variant_numeric)
+LHDUMP_ROB_L(CssFeatureSettings, css_properties::m_font_feature_settings)
+LHDUMP_ROB_L(CssBackface, css_properties::m_backface_hidden)
+LHDUMP_ROB_L(CssOutlineOffset, css_properties::m_outline_offset)
+LHDUMP_ROB_L(CssDarkScheme, css_properties::m_dark_scheme)
+LHDUMP_ROB_L(CssKeywordSize, css_properties::m_keyword_size)
+LHDUMP_ROB_L(CssGenericMono, css_properties::m_generic_mono)
+LHDUMP_ROB_L(ElCounterValues, element::m_counter_values)
+LHDUMP_ROB_L(ElUsedStyles, element::m_used_styles)
+LHDUMP_ROB_L(TagStyleBase, html_tag::m_style_base)
+LHDUMP_ROB_L(TagHasStyleBase, html_tag::m_has_style_base)
+LHDUMP_ROB_L(TagCounterChanges, html_tag::m_counter_changes)
+LHDUMP_ROB_L(TagAnonymous, html_tag::m_anonymous_style)
+LHDUMP_ROB_L(TagAttrs, html_tag::m_attrs)
+LHDUMP_ROB_L(TextTransformed, el_text::m_transformed_text)
+LHDUMP_ROB_L(TextUseTransformed, el_text::m_use_transformed)
+LHDUMP_ROB_L(TextDrawSpaces, el_text::m_draw_spaces)
+LHDUMP_ROB_L(TextSize, el_text::m_size)
+LHDUMP_ROB_L(TextMeasuredFont, el_text::m_measured_font)
+LHDUMP_ROB_L(TextMeasuredTransform, el_text::m_measured_transform)
+LHDUMP_ROB_L(GenGenerations, el_before_after_base::m_generations)
+LHDUMP_ROB_L(GenBoxes, el_before_after_base::m_generated_boxes)
+LHDUMP_ROB_L(GenBytes, el_before_after_base::m_generated_bytes)
+LHDUMP_ROB_L(InputLook, el_input::m_look)
+LHDUMP_ROB_L(SelectLook, el_select::m_look)
+LHDUMP_ROB_L(SelectArrow, el_select::m_arrow)
+LHDUMP_ROB_L(ButtonLook, el_button::m_look)
+LHDUMP_ROB_L(TextareaLook, el_textarea::m_look)
+LHDUMP_ROB_L(MeterLook, el_meter::m_look)
+LHDUMP_ROB_L(DocFonts, document::m_fonts)
+LHDUMP_ROB_L(DocShareCache, document::m_share_cache)
+LHDUMP_ROB_L(DocMediaLists, document::m_media_lists)
+LHDUMP_ROB_L(DocIdsSelectable, document::m_ids_selectable)
+LHDUMP_ROB_L(DocGeneratedBoxes, document::m_generated_boxes)
+LHDUMP_ROB_L(DocGeneratedBytes, document::m_generated_bytes)
+#undef LHDUMP_ROB_L
+} // namespace lhdump_dom
 
 namespace {
 
@@ -579,6 +630,504 @@ void clear_switches() {
 #else
     for (const auto& name : names) unsetenv(name.c_str());
 #endif
+}
+
+// ---- Stage L5: the cascade ('l') ----
+
+// The cascade's container: the renderer's answers where the fork asks (fonts with fixed metrics per description, widths per byte, ASCII text transforms, the trusted switch and its sanitize_declaration), its viewport set by the case, and every font, width, image and transform call logged.
+class CascadeContainer final : public OracleContainer {
+public:
+    float width = 375, height = 667, dpr = 2;
+    bool trusted = false;
+    struct Call {
+        char kind;
+        std::string a, b;
+        int64_t n = 0;
+    };
+    std::vector<Call> calls;
+    std::map<uint_ptr, float> sizes;
+    uint_ptr next = 0;
+
+    uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
+        calls.push_back({'F', d.hash(), {}, 0});
+        const uint_ptr id = ++next;
+        sizes[id] = d.size.value();
+        if (fm) {
+            const float size = d.size.value();
+            const float ascent = size * (d.family.size() % 3 == 0 ? 0.75f : 0.8f);
+            const float descent = size * 0.25f;
+            const float height = size * 1.15f + (d.weight >= 600 ? 1.0f : 0.0f);
+            const float x_height = d.style == font_style_italic ? 0.f : ascent * 0.6f;
+            const float zero_width = size * 0.5f + float(d.weight) / 1000.f;
+            fm->font_size = d.size;
+            fm->ascent = pixel_t(ascent);
+            fm->descent = pixel_t(descent);
+            fm->height = pixel_t(std::max(height, ascent + descent));
+            fm->x_height = pixel_t(x_height > 0 ? x_height : ascent * 0.5f);
+            fm->ch_width = pixel_t(zero_width);
+            fm->draw_spaces = d.decoration_line != text_decoration_line_none;
+            fm->sub_shift = pixel_t(size / 5);
+            fm->super_shift = pixel_t(size / 3);
+        }
+        return id;
+    }
+    pixel_t text_width(const char* text, uint_ptr font) override {
+        calls.push_back({'W', text ? text : "", {}, int64_t(font)});
+        auto it = sizes.find(font);
+        if (it == sizes.end() || !text) return 0;
+        return pixel_t(float(std::strlen(text)) * it->second * 0.5f);
+    }
+    const char* get_default_font_name() const override { return "-apple-system, system-ui, sans-serif"; }
+    void load_image(const char* src, const char* baseurl, bool redraw_on_ready) override {
+        calls.push_back({'I', src ? src : "", baseurl ? baseurl : "", (baseurl ? 2 : 0) | (redraw_on_ready ? 1 : 0)});
+    }
+    void transform_text(std::string& text, text_transform tt) override {
+        calls.push_back({'T', text, {}, int64_t(tt)});
+        switch (tt) {
+        case text_transform_uppercase:
+            for (auto& c : text) c = char(std::toupper((unsigned char)c));
+            break;
+        case text_transform_lowercase:
+            for (auto& c : text) c = char(std::tolower((unsigned char)c));
+            break;
+        case text_transform_capitalize: {
+            bool start = true;
+            for (auto& c : text) {
+                if (start) c = char(std::toupper((unsigned char)c));
+                start = c == ' ';
+            }
+            break;
+        }
+        default: break;
+        }
+    }
+    void trusted_styles(bool t) override { trusted = t; }
+    bool sanitize_declaration(const std::string& name, const css_token_vector& value) override {
+        if (trusted || value.size() != 1 || (name != "position" && name != "display")) return true;
+        const std::string keyword = value[0].ident();
+        return name == "position" ? keyword != "sticky" : keyword != "list-item" && keyword != "inline-text";
+    }
+    void get_media_features(media_features& m) const override {
+        m.type = media_type_screen;
+        m.width = m.device_width = pixel_t(width);
+        m.height = m.device_height = pixel_t(height);
+        m.color = 8;
+        m.color_index = 256;
+        m.monochrome = 0;
+        m.resolution = pixel_t(96.0f * dpr);
+    }
+};
+
+// A computed length, shorter than write_length: keyword or value, unit, val(), and a calc's value against two sizes and its text.
+void write_len(Out& o, const css_length& len) {
+    o.u8(len.is_predefined() ? 1 : 0);
+    o.i32(len.predef());
+    o.u8(uint8_t(len.units()));
+    o.f32(len.val());
+    o.u8(len.calc() ? 1 : 0);
+    if (len.calc()) {
+        o.f32(len.calc_percent(100).value());
+        o.f32(len.calc_percent(-37.5f).value());
+        o.str(len.to_string());
+    }
+}
+
+void write_margins(Out& o, const css_margins& m) {
+    for (const css_length* l : {&m.left, &m.right, &m.top, &m.bottom}) write_len(o, *l);
+}
+
+void write_border(Out& o, const css_border& b) {
+    write_len(o, b.width);
+    o.i32(int32_t(b.style));
+    write_color(o, b.color);
+}
+
+void write_track_list(Out& o, const grid_track_list& list) {
+    for (const auto* sizes : {&list.tracks, &list.repeat}) {
+        o.u32(uint32_t(sizes->size()));
+        for (const auto& t : *sizes) {
+            o.i32(int32_t(t.min_type));
+            o.i32(int32_t(t.max_type));
+            write_len(o, t.min_len);
+            write_len(o, t.max_len);
+            o.f32(t.fr);
+        }
+    }
+    o.i32(list.repeat_at);
+    o.u8(list.auto_fit ? 1 : 0);
+}
+
+void write_shadows(Out& o, const box_shadow_vector& shadows) {
+    o.u32(uint32_t(shadows.size()));
+    for (const auto& s : shadows) {
+        for (const css_length* len : {&s.x, &s.y, &s.blur, &s.spread}) write_len(o, *len);
+        write_color(o, s.color);
+        o.u8(s.inset ? 1 : 0);
+    }
+}
+
+void write_filters(Out& o, const filter_vector& filters) {
+    o.u32(uint32_t(filters.size()));
+    for (const auto& f : filters) {
+        o.i32(int32_t(f.kind));
+        o.f32(f.amount);
+        for (const css_length* len : {&f.x, &f.y, &f.radius}) write_len(o, *len);
+        write_color(o, f.color);
+    }
+}
+
+void write_metrics(Out& o, const font_metrics& fm) {
+    for (pixel_t v : {fm.font_size, fm.height, fm.ascent, fm.descent, fm.x_height, fm.ch_width}) o.f32(v.value());
+    o.u8(fm.draw_spaces ? 1 : 0);
+    o.f32(fm.sub_shift.value());
+    o.f32(fm.super_shift.value());
+}
+
+// Every field of a computed style, in css_properties.h's order; the share id as the walk's first element that has it.
+void write_css(Out& o, const css_properties& css, int32_t shared) {
+    using lhdump_dom::field;
+    auto& c = const_cast<css_properties&>(css);
+    for (int v : {int(css.get_position()), int(css.get_text_align()), int(css.get_direction()), int(css.get_overflow()), int(css.get_overflow_x()), int(css.get_overflow_y()),
+                  int(css.get_white_space()), int(css.get_overflow_wrap()), int(css.get_word_break()), int(css.get_user_select()), int(css.get_display()), int(css.get_visibility()),
+                  int(css.get_appearance()), int(css.get_resize()), int(css.get_box_sizing())})
+        o.i32(v);
+    write_len(o, field<lhdump_dom::CssZIndex>(c));
+    for (int v : {int(css.get_vertical_align()), int(css.get_float()), int(css.get_clear())}) o.i32(v);
+    write_margins(o, css.get_margins());
+    write_margins(o, css.get_padding());
+    const css_borders& b = css.get_borders();
+    for (const css_border* side : {&b.left, &b.top, &b.right, &b.bottom}) write_border(o, *side);
+    const auto& r = b.radius;
+    for (const css_length* l : {&r.top_left_x, &r.top_left_y, &r.top_right_x, &r.top_right_y, &r.bottom_right_x, &r.bottom_right_y, &r.bottom_left_x, &r.bottom_left_y}) write_len(o, *l);
+    for (const css_length* l : {&css.get_width(), &css.get_cell_width(), &css.get_height(), &css.get_min_width(), &css.get_min_height(), &css.get_max_width(), &css.get_max_height()})
+        write_len(o, *l);
+    const css_offsets& off = css.get_offsets();
+    for (const css_length* l : {&off.left, &off.right, &off.top, &off.bottom}) write_len(o, *l);
+    write_len(o, css.get_text_indent());
+    write_len(o, field<lhdump_dom::CssLineHeightRaw>(c));
+    write_len(o, css.line_height().css_value);
+    o.f32(css.line_height().computed_value.value());
+    o.i32(int32_t(css.get_list_style_type()));
+    o.i32(int32_t(css.get_list_style_position()));
+    o.str(css.get_list_style_image());
+    o.str(css.get_list_style_image_baseurl());
+    const background& bg = css.get_bg();
+    o.u32(uint32_t(bg.m_image.size()));
+    for (const auto& img : bg.m_image) {
+        o.u8(uint8_t(img.type));
+        o.str(img.url);
+        write_gradient(o, img.m_gradient);
+    }
+    o.str(bg.m_baseurl);
+    write_color(o, bg.m_color);
+    o.u32(uint32_t(bg.m_attachment.size()));
+    for (int v : bg.m_attachment) o.i32(v);
+    for (const auto* list : {&bg.m_position_x, &bg.m_position_y}) {
+        o.u32(uint32_t(list->size()));
+        for (const auto& l : *list) write_len(o, l);
+    }
+    o.u32(uint32_t(bg.m_size.size()));
+    for (const auto& s : bg.m_size) {
+        write_len(o, s.width);
+        write_len(o, s.height);
+    }
+    for (const auto* list : {&bg.m_repeat, &bg.m_clip, &bg.m_origin}) {
+        o.u32(uint32_t(list->size()));
+        for (int v : *list) o.i32(v);
+    }
+    o.u64(uint64_t(css.get_font()));
+    write_len(o, field<lhdump_dom::CssFontSize>(c));
+    o.str(css.font_family());
+    write_len(o, css.font_weight());
+    o.i32(int32_t(css.font_style_value()));
+    o.i32(css.get_text_decoration_line());
+    o.i32(int32_t(css.get_text_decoration_style()));
+    write_len(o, css.get_text_decoration_thickness());
+    write_color(o, css.get_text_decoration_color());
+    o.str(css.get_text_emphasis_style());
+    write_color(o, css.get_text_emphasis_color());
+    o.i32(css.get_text_emphasis_position());
+    write_metrics(o, css.get_font_metrics());
+    o.i32(shared);
+    o.i32(int32_t(css.get_text_transform()));
+    o.i32(int32_t(field<lhdump_dom::CssFontSmoothing>(c)));
+    write_color(o, css.get_color());
+    o.str(css.get_cursor());
+    o.str(css.get_content());
+    o.i32(int32_t(css.get_border_collapse()));
+    o.i32(int32_t(css.get_table_layout()));
+    write_len(o, css.get_border_spacing_x());
+    write_len(o, css.get_border_spacing_y());
+    o.f32(css.get_flex_grow());
+    o.f32(css.get_flex_shrink());
+    write_len(o, css.get_flex_basis());
+    for (int v : {int(css.get_flex_direction()), int(css.get_flex_wrap()), int(css.get_flex_justify_content()), int(css.get_flex_align_items()), int(css.get_flex_align_self()),
+                  int(css.get_flex_align_content()), int(css.get_caption_side()), css.get_order()})
+        o.i32(v);
+    write_len(o, css.get_row_gap());
+    write_len(o, css.get_column_gap());
+    o.i32(int32_t(css.get_justify_items()));
+    o.i32(int32_t(css.get_justify_self()));
+    write_track_list(o, css.get_grid_template_columns());
+    write_track_list(o, css.get_grid_template_rows());
+    write_track_list(o, css.get_grid_auto_rows());
+    for (const grid_placement* p : {&css.get_grid_column(), &css.get_grid_row()}) {
+        o.i32(p->start);
+        o.i32(p->end);
+        o.i32(p->span);
+    }
+    o.f32(css.get_opacity());
+    o.f32(css.get_aspect_ratio());
+    o.u8(css.get_center_content() ? 1 : 0);
+    write_len(o, field<lhdump_dom::CssLetterSpacing>(c));
+    write_len(o, field<lhdump_dom::CssWordSpacing>(c));
+    o.str(field<lhdump_dom::CssVariantNumeric>(c));
+    o.str(field<lhdump_dom::CssFeatureSettings>(c));
+    write_shadows(o, css.get_text_shadows());
+    write_shadows(o, css.get_box_shadows());
+    write_filters(o, css.get_filter());
+    write_filters(o, css.get_backdrop_filter());
+    const clip_path_shape& clip = css.get_clip_path();
+    o.i32(int32_t(clip.kind));
+    o.u32(uint32_t(clip.values.size()));
+    for (const auto& v : clip.values) write_len(o, v);
+    o.u8(clip.evenodd ? 1 : 0);
+    o.u32(uint32_t(css.get_transform().size()));
+    for (const auto& f : css.get_transform()) {
+        o.i32(int32_t(f.kind));
+        write_len(o, f.x);
+        write_len(o, f.y);
+        for (float v : f.v) o.f32(v);
+    }
+    write_len(o, css.get_transform_origin_x());
+    write_len(o, css.get_transform_origin_y());
+    o.u8(css.get_transform_fill_box() ? 1 : 0);
+    o.i32(field<lhdump_dom::CssBackface>(c));
+    o.i32(css.get_contain());
+    write_border(o, css.get_outline());
+    write_len(o, field<lhdump_dom::CssOutlineOffset>(c));
+    write_color(o, css.get_accent_color());
+    o.i32(field<lhdump_dom::CssDarkScheme>(c));
+    o.u8(field<lhdump_dom::CssKeywordSize>(c) ? 1 : 0);
+    o.u8(field<lhdump_dom::CssGenericMono>(c) ? 1 : 0);
+}
+
+// A style's properties in id order: u32 count, each u32 id, its name and write_property's value.
+void write_style_map(Out& o, const style& st) {
+    const auto& props = lhdump_dom::field<lhdump_dom::StyleProperties>(const_cast<style&>(st));
+    o.u32(uint32_t(props.size()));
+    for (const auto& [name, value] : props) {
+        o.u32(uint32_t(name));
+        o.str(_s(name));
+        write_property(o, value);
+    }
+}
+
+void write_look(Out& o, const form_look& look) {
+    o.u8(look.native ? 1 : 0);
+    o.u8(look.dark ? 1 : 0);
+    o.u8(look.disabled ? 1 : 0);
+}
+
+void cascade_walk(const element::ptr& el, int32_t parent, std::vector<std::pair<element::ptr, int32_t>>& out) {
+    const int32_t index = int32_t(out.size());
+    out.emplace_back(el, parent);
+    for (const auto& child : el->children()) cascade_walk(child, index, out);
+}
+
+// What the render tree (stage L6) writes into the elements, taken out again so that the cascade is compared without it: list_index in the attributes of the list items it numbers (an attribute but class and data-* keeps an element from sharing a style), and a table column's width in its cells' computed width (compute leaves the width the cell width too).
+void undo_render_tree(document& doc, const std::set<const element*>& had) {
+    std::vector<std::pair<element::ptr, int32_t>> nodes;
+    if (doc.root()) cascade_walk(doc.root(), -1, nodes);
+    for (const auto& [el, parent] : nodes) {
+        if (auto* tag = dynamic_cast<html_tag*>(el.get()); tag && !had.count(tag)) lhdump_dom::field<lhdump_dom::TagAttrs>(*tag).erase("list_index");
+        el->css_w().set_width(el->css().get_cell_width());
+    }
+}
+
+// The document after a step: every element of the tree from the root (its class, parent, tag, computed style, a tag's matched selectors and styles and counters, and its class's computed state), then the document's fonts, sharing, media lists and generated content.
+void write_cascade(Out& o, document& doc) {
+    using lhdump_dom::field;
+    std::vector<std::pair<element::ptr, int32_t>> nodes;
+    if (doc.root()) cascade_walk(doc.root(), -1, nodes);
+    std::map<int, int32_t> shared;
+    for (size_t k = 0; k < nodes.size(); k++) shared.emplace(nodes[k].first->css().get_shared_id(), int32_t(k));
+    o.u32(uint32_t(nodes.size()));
+    for (const auto& [el, parent] : nodes) {
+        const int kind = lhdump_dom::kind_of(*el);
+        o.u8(uint8_t(kind));
+        o.i32(parent);
+        o.str(_s(el->tag()));
+        write_css(o, el->css(), shared[el->css().get_shared_id()]);
+        auto* tag = dynamic_cast<html_tag*>(el.get());
+        if (tag) {
+            const auto& used = field<lhdump_dom::ElUsedStyles>(static_cast<element&>(*tag));
+            o.u32(uint32_t(used.size()));
+            for (const auto& us : used) {
+                o.u64(us->m_selector->place());
+                o.u8(us->m_used ? 1 : 0);
+            }
+            write_style_map(o, field<lhdump_dom::TagStyle>(*tag));
+            o.u8(field<lhdump_dom::TagHasStyleBase>(*tag) ? 1 : 0);
+            write_style_map(o, field<lhdump_dom::TagStyleBase>(*tag));
+            o.i32(field<lhdump_dom::TagCounterChanges>(*tag));
+            o.u8(field<lhdump_dom::TagAnonymous>(*tag) ? 1 : 0);
+        }
+        const auto& counters = field<lhdump_dom::ElCounterValues>(*el);
+        o.u32(uint32_t(counters.size()));
+        for (const auto& [name, value] : counters) {
+            o.str(_s(name));
+            o.i32(value);
+        }
+        if (kind == 25 || kind == 26) {
+            auto& text = static_cast<el_text&>(*el);
+            o.str(field<lhdump_dom::TextTransformed>(text));
+            o.u8(field<lhdump_dom::TextUseTransformed>(text) ? 1 : 0);
+            o.u8(field<lhdump_dom::TextDrawSpaces>(text) ? 1 : 0);
+            o.f32(field<lhdump_dom::TextSize>(text).width.value());
+            o.f32(field<lhdump_dom::TextSize>(text).height.value());
+            o.u64(uint64_t(field<lhdump_dom::TextMeasuredFont>(text)));
+            o.i32(field<lhdump_dom::TextMeasuredTransform>(text));
+            o.u8(el->is_white_space() ? 1 : 0);
+            o.u8(el->is_break() ? 1 : 0);
+        } else if (kind == 21 || kind == 22) {
+            auto& gen = static_cast<el_before_after_base&>(*el);
+            o.i32(field<lhdump_dom::GenGenerations>(gen));
+            o.i32(field<lhdump_dom::GenBoxes>(gen));
+            o.u64(uint64_t(field<lhdump_dom::GenBytes>(gen)));
+        } else if (kind == 15) {
+            write_look(o, field<lhdump_dom::InputLook>(static_cast<el_input&>(*el)));
+        } else if (kind == 16) {
+            write_look(o, field<lhdump_dom::SelectLook>(static_cast<el_select&>(*el)));
+            o.u8(field<lhdump_dom::SelectArrow>(static_cast<el_select&>(*el)) ? 1 : 0);
+        } else if (kind == 17) {
+            write_look(o, field<lhdump_dom::ButtonLook>(static_cast<el_button&>(*el)));
+        } else if (kind == 18) {
+            write_look(o, field<lhdump_dom::TextareaLook>(static_cast<el_textarea&>(*el)));
+        } else if (kind == 20) {
+            write_look(o, field<lhdump_dom::MeterLook>(static_cast<el_meter&>(*el)));
+        } else if (kind == 7) {
+            o.u8(field<lhdump_dom::ImageLoaded>(static_cast<el_image&>(*el)) ? 1 : 0);
+        }
+    }
+    const auto& fonts = field<lhdump_dom::DocFonts>(doc);
+    o.u32(uint32_t(fonts.size()));
+    for (const auto& [key, item] : fonts) {
+        o.str(key);
+        o.u64(uint64_t(item.font));
+        write_metrics(o, item.metrics);
+    }
+    o.u32(uint32_t(field<lhdump_dom::DocShareCache>(doc).size()));
+    const auto& lists = field<lhdump_dom::DocMediaLists>(doc);
+    o.u32(uint32_t(lists.size()));
+    for (const auto& list : lists) o.u8(list->is_used() ? 1 : 0);
+    o.i32(field<lhdump_dom::DocIdsSelectable>(doc));
+    o.u8(doc.has_backdrop ? 1 : 0);
+    o.i32(field<lhdump_dom::DocGeneratedBoxes>(doc));
+    o.u64(uint64_t(field<lhdump_dom::DocGeneratedBytes>(doc)));
+    o.u8(doc.generated_limited() ? 1 : 0);
+}
+
+// f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump, 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
+void cascade(In& in, Out& o) {
+    // The render tree's anonymous table cells take the tag table_cell (stage L6's): it is in the table before any case looks.
+    _id("table_cell");
+    const size_t names_before = _id_usage().names;
+    CascadeContainer container;
+    container.width = in.f32();
+    container.height = in.f32();
+    container.dpr = in.f32();
+    const std::string master = in.str();
+    const std::string user = in.str();
+    const std::string html = in.str();
+    auto doc = std::make_shared<document>(&container);
+    lhdump_dom::field<lhdump_dom::DocText>(*doc) = html;
+    const std::string& text = lhdump_dom::field<lhdump_dom::DocText>(*doc);
+    GumboOutput* output = gumbo_parse_with_options(&kGumboDefaultOptions, text.data(), text.size());
+    if (output->truncated) {
+        container.sanitizer_limit("elements");
+        lhdump_dom::field<lhdump_dom::DocBuildLimited>(*doc) = true;
+    }
+    switch (output->document->v.document.doc_type_quirks_mode) {
+    case GUMBO_DOCTYPE_NO_QUIRKS: doc->set_document_mode(no_quirks_mode); break;
+    case GUMBO_DOCTYPE_QUIRKS: doc->set_document_mode(quirks_mode); break;
+    case GUMBO_DOCTYPE_LIMITED_QUIRKS: doc->set_document_mode(limited_quirks_mode); break;
+    }
+    lhdump_dom::field<lhdump_dom::DocTrackNodes>(*doc) = true;
+    elements_list root_elements;
+    ((*doc).*robbed(lhdump_dom::DocCreateNode{}))(output->root, root_elements, true, true);
+    lhdump_dom::field<lhdump_dom::DocTrackNodes>(*doc) = false;
+    element::ptr root = root_elements.empty() ? nullptr : root_elements.back();
+    lhdump_dom::field<lhdump_dom::DocGumbo>(*doc) = output;
+    std::set<const element*> had;
+    if (root) {
+        std::vector<std::pair<element::ptr, int32_t>> built;
+        cascade_walk(root, -1, built);
+        for (const auto& [el, parent] : built)
+            if (el->get_attr("list_index")) had.insert(el.get());
+    }
+    doc->finalize_from_external_root(root, master, user);
+    undo_render_tree(*doc, had);
+    ((*doc).*robbed(lhdump_dom::DocBuildTemplate{}))();
+    o.u8(uint8_t(doc->mode()));
+    std::vector<size_t> phases{container.calls.size()};
+    const uint32_t steps = in.u32();
+    for (uint32_t s = 0; s < steps && in.at < in.s.size(); s++, phases.push_back(container.calls.size())) {
+        const uint8_t op = in.u8();
+        if (op == 'd') {
+            write_cascade(o, *doc);
+            continue;
+        }
+        if (op == 'm') {
+            container.width = in.f32();
+            container.height = in.f32();
+            o.u8(doc->root() && doc->media_changed() ? 1 : 0);
+            undo_render_tree(*doc, had);
+            continue;
+        }
+        if (op == 'r') {
+            if (doc->root()) {
+                doc->root()->refresh_styles();
+                doc->root()->compute_styles();
+            }
+            o.u8(1);
+            continue;
+        }
+        const uint32_t k = in.u32();
+        std::vector<std::pair<element::ptr, int32_t>> nodes;
+        if (doc->root()) cascade_walk(doc->root(), -1, nodes);
+        std::vector<element::ptr> tags;
+        for (const auto& [el, parent] : nodes)
+            if (dynamic_cast<html_tag*>(el.get())) tags.push_back(el);
+        if (tags.empty()) {
+            o.u8(0);
+            continue;
+        }
+        const element::ptr& el = tags[k % tags.size()];
+        bool changed = op == 'h' ? el->on_mouse_over() : op == 'a' ? el->on_lbutton_down() : el->on_mouse_leave();
+        const bool styles = doc->root()->find_styles_changes([](const position&) {});
+        o.u8(uint8_t((changed ? 1 : 0) | (styles ? 2 : 0)));
+    }
+    const size_t names_after = _id_usage().names;
+    o.u32(uint32_t(names_after - names_before));
+    for (size_t k = names_before; k < names_after; k++) o.str(_s(string_id(k)));
+    Out log;
+    log.u32(uint32_t(phases.size()));
+    for (size_t p = 0; p < phases.size(); p++) {
+        const size_t from = p == 0 ? 0 : phases[p - 1];
+        log.u32(uint32_t(phases[p] - from));
+        for (size_t k = from; k < phases[p]; k++) {
+            const auto& call = container.calls[k];
+            log.u8(uint8_t(call.kind));
+            log.str(call.a);
+            log.str(call.b);
+            log.u64(uint64_t(call.n));
+        }
+    }
+    Out all;
+    all.str(o.s);
+    all.s += log.s;
+    o.s = std::move(all.s);
 }
 
 bool run(int op, std::string_view input) {
@@ -1193,6 +1742,11 @@ bool run(int op, std::string_view input) {
     }
     case 'I': { // the declarations parse_attributes adds to each tag's style, against the port's: lhdump_dom.h
         lhdump_dom::replay<In, Out, OracleContainer>(in, o, [](In& in) { return read_token(in, 0); });
+        answer(1, o.s);
+        return true;
+    }
+    case 'l': { // the cascade: a document finalized under a viewport with master and user sheets, then steps (media changes, :hover and :active flips, refreshes) and every element's computed style after each dump step: cascade() above
+        cascade(in, o);
         answer(1, o.s);
         return true;
     }

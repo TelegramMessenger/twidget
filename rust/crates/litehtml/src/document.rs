@@ -1,20 +1,34 @@
 //! `document.cpp`, as far as the ported stages need it: a document built from Gumbo's tree as the renderer builds
 //! one (`createUpdatableFromString`: `create_node`, the element classes by tag, text split into words and spaces,
-//! the build limits, the source template with its holes), and lengths in pixels (`to_pixels`, `cvt_units`). What
-//! lengths read of the document (its media features, its root's font size, its container) is a [`Units`] until
-//! the cascade is ported.
+//! the build limits, the source template with its holes), `finalize_from_external_root`'s cascade (the master
+//! sheet, the presentational attributes, the document's sheets under their media, the user sheet, then every
+//! element's computed style), `media_changed`, the fonts the computed styles ask the container for, style
+//! sharing's cache, and lengths in pixels (`to_pixels`, `cvt_units`, through a [`Units`] of what they read of the
+//! document).
+//!
+//! What the C++ keeps per thread or per process for the cascade is explicit: the selector budget's steps and its
+//! scopes are the document's (each scope that opens first starts them at 0, so nothing carries over from another
+//! document), the `LH_NO_*` switches it reads once per process are a [`Switches`], and the caches of parsed master
+//! and document sheets, which give what a parse gives, are not kept.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::Names;
 use crate::Px;
 use crate::css_length::{CssLength, calc_evaluate, calc_resolve_units, clamp_length};
+use crate::css_properties::CssProperties;
 use crate::css_selector::DocumentMode;
 use crate::css_values::CssUnits;
 use crate::cxx;
 use crate::document_container::DocumentContainer;
 use crate::element::{ElementId, ElementKind, StringMap};
+use crate::font_description::FontDescription;
 use crate::gumbo::*;
+use crate::media_query::{MediaDocument, MediaQueryListList, parse_media_query_list_text};
+use crate::style::DeclarationCache;
+use crate::stylesheet::{Css, StyleSheetHost, StyleSheetInput};
 use crate::types::{FontMetrics, MediaFeatures};
 
 /// What `document::to_pixels` reads of its document.
@@ -108,6 +122,55 @@ impl std::fmt::Debug for Env<'_> {
     }
 }
 
+/// The `LH_NO_*` switches the cascade reads, each once per process in the C++ (a function-local static): all on
+/// unless the variable is set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Switches {
+    /// `style_sharing_enabled()`: not `LH_NO_STYLE_SHARING`.
+    pub style_sharing: bool,
+    /// `ids_selectable()` looks at the sheets: not `LH_NO_ID_SHARE` (which makes ids always selectable).
+    pub id_share: bool,
+    /// `find_adjacent_sibling`'s index of a long child list while a sheet is applied: not `LH_NO_SIBLING_INDEX`.
+    pub sibling_index: bool,
+    /// `prune_enabled()`: not `LH_NO_DESCENDANT_PRUNE`.
+    pub descendant_prune: bool,
+}
+
+impl Default for Switches {
+    fn default() -> Switches {
+        Switches { style_sharing: true, id_share: true, sibling_index: true, descendant_prune: true }
+    }
+}
+
+/// What the cascade asks besides the document: the name table, the container, the declaration cache `style::add`
+/// keeps of style texts (the process's), and the switches.
+#[derive(Clone, Copy)]
+pub struct StyleCx<'a> {
+    pub names: &'a Names,
+    pub container: &'a dyn DocumentContainer,
+    pub cache: &'a DeclarationCache,
+    pub switches: Switches,
+}
+
+impl std::fmt::Debug for StyleCx<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StyleCx").field("switches", &self.switches).finish_non_exhaustive()
+    }
+}
+
+impl<'a> StyleCx<'a> {
+    pub fn env(&self) -> Env<'a> {
+        Env { names: self.names, container: self.container }
+    }
+}
+
+/// `font_item`: a font the container made and its metrics.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FontItem {
+    pub font: u64,
+    pub metrics: FontMetrics,
+}
+
 /// `css_text`: a style sheet's text as an element brought it, with its base url and media.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CssText {
@@ -189,6 +252,29 @@ pub struct Document {
     pub generated_boxes: i32,
     pub generated_bytes: usize,
     pub generated_limited: bool,
+    /// `m_master_css` (sheet 0), `m_styles` (1), `m_user_css` (2).
+    pub master_css: Css,
+    pub styles: Css,
+    pub user_css: Css,
+    /// `m_media`: the media features the document last had from its container.
+    pub media: MediaFeatures,
+    /// `m_media_lists`: every media list a sheet registered, each once.
+    pub media_lists: Vec<Arc<MediaQueryListList>>,
+    /// `m_finalized`.
+    pub finalized: bool,
+    /// `m_fonts`: the fonts by their description's hash.
+    pub fonts: RefCell<BTreeMap<Vec<u8>, FontItem>>,
+    /// `m_share_cache` and `m_next_share_id`: computed styles by sharing key.
+    pub share_cache: BTreeMap<Vec<u8>, CssProperties>,
+    pub next_share_id: i32,
+    /// `m_ids_selectable`: not looked at yet, or whether a sheet selects by id.
+    pub ids_selectable: Cell<Option<bool>>,
+    /// `has_backdrop`: an element has a backdrop filter.
+    pub has_backdrop: Cell<bool>,
+    /// The selector budget: `g_selector_steps`, `g_apply_depth` and `g_budget_depth`.
+    pub selector_steps: Cell<i64>,
+    pub apply_depth: Cell<i32>,
+    pub budget_depth: Cell<i32>,
 }
 
 /// `svg_geometry_attribute(name)`: the SVG attributes whose values are holes (unless a selector names them).
@@ -233,7 +319,7 @@ pub fn svg_geometry_attribute(name: &[u8]) -> bool {
 impl Document {
     /// `document(container)`.
     pub fn new() -> Document {
-        Document::default()
+        Document { styles: Css::with_sheet(1), user_css: Css::with_sheet(2), ..Document::default() }
     }
 
     /// `set_document_mode(mode)`.
@@ -516,6 +602,265 @@ impl Document {
             }
         }
         self.template_ok = true;
+    }
+}
+
+/// The document as `css::parse_css_stylesheet` reads it: its container, its media and root font size as they are,
+/// its mode; the media lists the sheet registers are kept for the document to add.
+struct SheetHost<'a> {
+    doc: &'a Document,
+    cx: &'a StyleCx<'a>,
+    lists: RefCell<Vec<Arc<MediaQueryListList>>>,
+}
+
+impl StyleSheetHost for SheetHost<'_> {
+    fn names(&self) -> &Names {
+        self.cx.names
+    }
+    fn container(&self) -> &dyn DocumentContainer {
+        self.cx.container
+    }
+    fn media_document(&self) -> MediaDocument<'_> {
+        MediaDocument { names: self.cx.names, units: self.doc.units(self.cx) }
+    }
+    fn mode(&self) -> DocumentMode {
+        self.doc.mode
+    }
+    fn add_media_list(&self, list: &Arc<MediaQueryListList>) {
+        self.lists.borrow_mut().push(Arc::clone(list));
+    }
+}
+
+impl Document {
+    /// What `to_pixels` and `cvt_units` read of the document now: its container, its media and its root's font
+    /// size.
+    pub fn units<'a>(&self, cx: &StyleCx<'a>) -> Units<'a> {
+        let root_font_size = self.root.map_or(Px(0.0), |root| self.el(root).css.get_font_size());
+        Units { container: cx.container, media: self.media, root_font_size }
+    }
+
+    /// `add_media_list(list)`: a list is kept once.
+    pub fn add_media_list(&mut self, list: &Arc<MediaQueryListList>) {
+        if !self.media_lists.iter().any(|l| Arc::ptr_eq(l, list)) {
+            self.media_lists.push(Arc::clone(list));
+        }
+    }
+
+    fn sheet_mut(&mut self, sheet: i32) -> &mut Css {
+        match sheet {
+            0 => &mut self.master_css,
+            1 => &mut self.styles,
+            _ => &mut self.user_css,
+        }
+    }
+
+    /// `css::parse_css_stylesheet(text, baseurl, doc, media)` into one of the document's sheets (0 the master, 1 the
+    /// document's, 2 the user's), registering the media lists it meets.
+    fn parse_sheet(&mut self, cx: &StyleCx, sheet: i32, text: &[u8], baseurl: &[u8], media: Option<&Arc<MediaQueryListList>>) {
+        let mut css = std::mem::take(self.sheet_mut(sheet));
+        let host = SheetHost { doc: self, cx, lists: RefCell::new(Vec::new()) };
+        css.parse_css_stylesheet(StyleSheetInput::Text(text), baseurl, &host, media, true);
+        let lists = host.lists.into_inner();
+        for list in &lists {
+            self.add_media_list(list);
+        }
+        *self.sheet_mut(sheet) = css;
+    }
+
+    /// `createUpdatableFromString(html, container, master_styles)`: the document built ([`Document::build`]),
+    /// finalized with its cascade, and its template.
+    pub fn create_updatable(html: &[u8], master_styles: &[u8], cx: &StyleCx) -> Document {
+        let (mut doc, root) = Document::build(html, &cx.env());
+        doc.finalize_from_external_root(cx, root, master_styles, b"");
+        doc.build_template();
+        doc
+    }
+
+    /// `finalize_from_external_root(root, master_styles, user_styles)`, once: the master sheet (in quirks mode with
+    /// tables' fonts reset) and the user sheet parsed as trusted, then for a root: the media features, `:root`, the
+    /// master sheet applied, the attributes parsed, the document's sheets parsed under their media, the media
+    /// applied, the document's and the user's sheets applied, and every element's computed style. The render tree
+    /// is stage L6's.
+    pub fn finalize_from_external_root(&mut self, cx: &StyleCx, root: Option<ElementId>, base_master_styles: &[u8], user_styles: &[u8]) {
+        if self.finalized {
+            return;
+        }
+        self.finalized = true;
+
+        self.root = root;
+
+        let master_styles = if self.mode == DocumentMode::quirks_mode && !base_master_styles.is_empty() {
+            [base_master_styles, b"\ntable { font-size: medium; font-weight: normal; font-style: normal; }\n"].concat()
+        } else {
+            base_master_styles.to_vec()
+        };
+        if !master_styles.is_empty() {
+            cx.container.trusted_styles(true);
+            self.parse_sheet(cx, 0, &master_styles, b"", None);
+            cx.container.trusted_styles(false);
+            self.master_css.sort_selectors();
+        }
+        if !user_styles.is_empty() {
+            cx.container.trusted_styles(true);
+            self.parse_sheet(cx, 2, user_styles, b"", None);
+            cx.container.trusted_styles(false);
+            self.user_css.sort_selectors();
+        }
+
+        let Some(root) = root else { return };
+        self.media = cx.container.get_media_features();
+
+        self.set_pseudo_class(root, crate::string_id::_root_, true);
+
+        // apply master CSS
+        let master = self.master_css.selectors().to_vec();
+        self.apply_stylesheet(cx, root, &master);
+
+        // parse elements attributes
+        self.parse_attributes(&cx.env(), root);
+        self.flush_declarations(cx);
+
+        // parse style sheets linked in document
+        for css in self.css.clone() {
+            let media = if css.media.is_empty() {
+                None
+            } else {
+                let mq_list = parse_media_query_list_text(&css.media, &MediaDocument { names: cx.names, units: self.units(cx) });
+                let mut list = MediaQueryListList::default();
+                list.add(mq_list);
+                Some(Arc::new(list))
+            };
+            self.parse_sheet(cx, 1, &css.text, &css.baseurl, media.as_ref());
+        }
+        // Sort css selectors using CSS rules.
+        self.styles.sort_selectors();
+
+        // Apply media features.
+        let media = self.media;
+        self.update_media_lists(cx, &media);
+
+        // Apply parsed styles.
+        let styles = self.styles.selectors().to_vec();
+        self.apply_stylesheet(cx, root, &styles);
+
+        // Apply user styles if any
+        let user = self.user_css.selectors().to_vec();
+        self.apply_stylesheet(cx, root, &user);
+
+        // Initialize element::m_css
+        self.compute_styles(cx, root, true);
+    }
+
+    /// The declarations `parse_attributes` recorded, added to each element's style in their order, and the master
+    /// sheet applied to the boxes the form controls made as the C++ applies it then (nothing reads a style in
+    /// between, and the boxes' matching reads nothing those calls change).
+    pub fn flush_declarations(&mut self, cx: &StyleCx) {
+        for index in 0..self.elements.len() {
+            let el = &mut self.elements[index];
+            let pending = el.declarations[el.declarations_applied..].to_vec();
+            el.declarations_applied = el.declarations.len();
+            for d in pending {
+                let container = if d.with_container { Some(cx.container) } else { None };
+                let style = &mut self.elements[index].style;
+                match &d.value {
+                    crate::element::AttributeValue::Text(text) => {
+                        style.add_property_text(cx.names, d.name, text, &d.baseurl, d.important, container)
+                    }
+                    crate::element::AttributeValue::Tokens(tokens) => {
+                        style.add_property(cx.names, d.name, tokens, &d.baseurl, d.important, container)
+                    }
+                }
+            }
+            if self.elements[index].master_sheet && !self.elements[index].master_applied {
+                self.elements[index].master_applied = true;
+                let master = self.master_css.selectors().to_vec();
+                self.apply_stylesheet(cx, ElementId(index as u32), &master);
+            }
+        }
+    }
+
+    /// `update_media_lists(features)`: every list's answer under the features; whether one changed.
+    pub fn update_media_lists(&mut self, cx: &StyleCx, features: &MediaFeatures) -> bool {
+        let mut update_styles = false;
+        for media_list in &self.media_lists {
+            if media_list.apply_media_features(cx.names, features) {
+                update_styles = true;
+            }
+        }
+        update_styles
+    }
+
+    /// `media_changed()`: the container's media features now; when a list's answer changed, every style again.
+    /// (The render tree it builds again is stage L6's.)
+    pub fn media_changed(&mut self, cx: &StyleCx) -> bool {
+        self.media = cx.container.get_media_features();
+        let media = self.media;
+        if self.update_media_lists(cx, &media)
+            && let Some(root) = self.root
+        {
+            self.refresh_styles(cx, root);
+            self.compute_styles(cx, root, true);
+            return true;
+        }
+        false
+    }
+
+    /// `get_font(descr, fm)`: the font of the description, made by the container the first time (`add_font`), and
+    /// its metrics; no font and no metrics for a size of 0.
+    pub fn get_font(&self, cx: &StyleCx, descr: &FontDescription) -> (u64, Option<FontMetrics>) {
+        if descr.size == Px(0.0) {
+            return (0, None);
+        }
+        let key = descr.hash();
+        if let Some(item) = self.fonts.borrow().get(&key) {
+            return (item.font, Some(item.metrics));
+        }
+        let (font, metrics) = cx.container.create_font(descr);
+        self.fonts.borrow_mut().insert(key, FontItem { font, metrics });
+        (font, Some(metrics))
+    }
+
+    /// `next_share_id()`.
+    pub fn next_share_id(&mut self) -> i32 {
+        self.next_share_id += 1;
+        self.next_share_id
+    }
+
+    /// `ids_selectable()`: whether a selector of the three sheets reads an id (an id selector, or an `id` attribute
+    /// selector in any case, nested lists included); always with `LH_NO_ID_SHARE`. Looked at once.
+    pub fn ids_selectable(&self, cx: &StyleCx) -> bool {
+        if let Some(seen) = self.ids_selectable.get() {
+            return seen;
+        }
+        fn sees_ids(names: &Names, selector: &crate::css_selector::CssSelector) -> bool {
+            let mut sel = Some(selector);
+            while let Some(s) = sel {
+                for attr in &s.m_right.m_attrs {
+                    if attr.ty == crate::css_selector::AttrSelectType::select_id
+                        || (attr.ty == crate::css_selector::AttrSelectType::select_attr
+                            && crate::html::t_strcasecmp(&names.s(attr.name), b"id") == 0)
+                    {
+                        return true;
+                    }
+                    if attr.selector_list.iter().any(|inner| sees_ids(names, inner)) {
+                        return true;
+                    }
+                }
+                sel = s.m_left.as_deref();
+            }
+            false
+        }
+        let mut seen = !cx.switches.id_share;
+        for sheet in [&self.master_css, &self.styles, &self.user_css] {
+            for sel in sheet.selectors() {
+                if seen {
+                    break;
+                }
+                seen = sees_ids(cx.names, sel);
+            }
+        }
+        self.ids_selectable.set(Some(seen));
+        seen
     }
 }
 
