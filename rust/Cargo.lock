@@ -53,6 +53,18 @@ name = "twidget_cstd"
 version = "0.1.0"
 
 [[package]]
+name = "twidget_encode"
+version = "0.1.0"
+dependencies = [
+ "twidget_base64",
+ "twidget_canvas",
+ "twidget_compositor",
+ "twidget_json",
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_filters"
 version = "0.1.0"
 dependencies = [

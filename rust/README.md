@@ -15,6 +15,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | `crates/base64` | `twidget_base64`: the base64 of canvas pixels (`core/src/encode.cpp`) |
 | `crates/filters` | `twidget_filters`: CSS filter functions for painters: colour matrices, a chain's reach, the CPU pass over pixels (`core/src/filters.cpp`) |
 | `crates/png` | `twidget_png`: the rows of a damaged PNG a browser keeps, and the size an image header declares (`core/src/png.cpp`) |
+| `crates/encode` | `twidget_encode`: the JSON forms of a display list, a canvas batch and a composition, for painters outside C++ (`core/src/encode.cpp`) |
 | `crates/canvas` | `twidget_canvas`: the 2D canvas interpreter, commands in and canvas ops out through a `CanvasHost` (`core/src/canvas.cpp`) |
 | `crates/animations` | `twidget_animations`: the animator, CSS animations, transitions and Web Animations: declarations and times in, style overrides and events out (`core/src/animations.cpp`) |
 | `crates/shadow` | `twidget_shadow`: the renderer's shadow tree, the render ops applied to it with their limits and the canvases they make, and the HTML it is written as (`core/src/renderer.cpp`) |

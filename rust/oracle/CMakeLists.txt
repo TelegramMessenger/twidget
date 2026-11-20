@@ -54,6 +54,9 @@ target_include_directories(filters_oracle PRIVATE "${TW_CORE}")
 add_executable(png_oracle png_oracle.cpp "${TW_CORE}/png.cpp")
 target_include_directories(png_oracle PRIVATE "${TW_CORE}")
 
+add_executable(encode_oracle encode_oracle.cpp "${TW_CORE}/encode.cpp" "${TW_CORE}/wire.cpp")
+target_include_directories(encode_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+
 # lhdump: the litehtml fork compiled as twidget's CMakeLists.txt compiles it, every source with no definitions and its warnings off; the linker takes the objects the dump reaches.
 enable_language(C)
 set(TW_LITEHTML "${TW_ROOT}/litehtml")

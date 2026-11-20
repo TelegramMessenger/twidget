@@ -1,0 +1,21 @@
+[package]
+name = "twidget_encode"
+description = "TwidgetCore's JSON forms of a display list, a canvas batch and a composition, for painters outside C++"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_base64 = { path = "../base64" }
+twidget_compositor = { path = "../compositor" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_canvas = { path = "../canvas" }
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }
