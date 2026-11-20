@@ -1,0 +1,22 @@
+[package]
+name = "twidget_events"
+description = "TwidgetCore's input: pointer, hover and gesture events with their listeners, focus and the platform's editor, and text selection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_css = { path = "../css" }
+twidget_cstd = { path = "../cstd" }
+twidget_gesture = { path = "../../../../widget-sandbox/packages/rust/crates/gesture" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_shadow = { path = "../shadow" }
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

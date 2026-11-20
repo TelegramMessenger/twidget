@@ -231,7 +231,7 @@ pub trait DocumentHost {
     /// A `prop` op set node `id`'s value: the editor takes it when it edits that node.
     fn value_set(&mut self, _id: i64, _value: &[u8]) {}
     /// A `call` op the tree does not answer itself: pointer capture, resize observers, focus, blur, selection.
-    fn call(&mut self, _document: &Document, _id: i64, _method: &[u8], _args: &Json, _out: &mut Vec<Json>) {}
+    fn call(&mut self, _document: &mut Document, _id: i64, _method: &[u8], _args: &Json, _out: &mut Vec<Json>) {}
     /// The renderer was frozen: it lets go of its touches, coalesced moves and hover.
     fn frozen(&mut self) {}
 }
@@ -400,7 +400,7 @@ impl Document {
         self.arena[r.0 as usize].as_ref().expect("a live node")
     }
 
-    fn get_mut(&mut self, r: NodeRef) -> &mut Node {
+    pub fn get_mut(&mut self, r: NodeRef) -> &mut Node {
         self.arena[r.0 as usize].as_mut().expect("a live node")
     }
 
@@ -570,7 +570,7 @@ impl Document {
         false
     }
 
-    fn note_attribute(&mut self, n: NodeRef, name: &[u8]) {
+    pub fn note_attribute(&mut self, n: NodeRef, name: &[u8]) {
         if !self.patch_log.valid || !self.attached(Some(n)) {
             return;
         }

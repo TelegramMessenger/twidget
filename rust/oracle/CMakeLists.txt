@@ -117,3 +117,5 @@ target_link_libraries(svg_oracle PRIVATE lhdump_litehtml)
 if (MSVC)
     target_compile_definitions(svg_oracle PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
+# events_oracle: the renderer with probes at its input code (events_oracle.cmake).
+include("${CMAKE_CURRENT_SOURCE_DIR}/events_oracle.cmake")
