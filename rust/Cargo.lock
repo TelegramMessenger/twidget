@@ -57,6 +57,15 @@ name = "twidget_json"
 version = "0.1.0"
 
 [[package]]
+name = "twidget_litehtml"
+version = "0.1.0"
+dependencies = [
+ "twidget_cstd",
+ "twidget_json",
+ "twidget_testkit",
+]
+
+[[package]]
 name = "twidget_paint"
 version = "0.1.0"
 dependencies = [

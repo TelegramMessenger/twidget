@@ -23,10 +23,14 @@ def step(name, command, env=None):
     return result.returncode == 0
 
 
+def is_oracle(name):
+    exe = ".exe" if os.name == "nt" else ""
+    return name.endswith("_oracle" + exe) or name == "lhdump" + exe
+
+
 def oracle_dir():
-    suffix = "_oracle.exe" if os.name == "nt" else "_oracle"
     for candidate in (os.path.join(BUILD, "Release"), BUILD):
-        if os.path.isdir(candidate) and any(name.endswith(suffix) for name in os.listdir(candidate)):
+        if os.path.isdir(candidate) and any(is_oracle(name) for name in os.listdir(candidate)):
             return candidate
     return None
 
@@ -38,7 +42,9 @@ def main():
         configure += ["-DCMAKE_BUILD_TYPE=Release"]
     elif not os.path.isdir(BUILD):
         configure += ["-A", "x64"]
-    if not (step("oracle configure", configure) and step("oracle build", ["cmake", "--build", BUILD, "--config", "Release", "--parallel"])):
+    # CMAKE_BUILD_PARALLEL_LEVEL caps the jobs; a bare --parallel lets the build tool take every core.
+    jobs = [os.environ["CMAKE_BUILD_PARALLEL_LEVEL"]] if os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL") else []
+    if not (step("oracle configure", configure) and step("oracle build", ["cmake", "--build", BUILD, "--config", "Release", "--parallel"] + jobs)):
         print("GATE FAIL: the oracle does not build")
         return 1
     directory = oracle_dir()
@@ -47,6 +53,7 @@ def main():
         return 1
     env = dict(os.environ, TWIDGET_ORACLE_DIR=directory, TWIDGET_ORACLE_REQUIRED="1")
     checks = [
+        # This workspace's packages: --all would walk widget-sandbox's workspace too, which its own gate checks.
         ("fmt", ["cargo", "fmt", "--check"], None),
         ("test", ["cargo", "test", "--workspace", "--locked"], env),
         ("clippy", ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"], None),

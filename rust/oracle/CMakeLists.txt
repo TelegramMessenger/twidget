@@ -47,3 +47,22 @@ target_include_directories(canvas_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCL
 
 add_executable(animations_oracle animations_oracle.cpp "${TW_CORE}/animations.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/paint_policy.cpp")
 target_include_directories(animations_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+
+# lhdump: the litehtml fork compiled as twidget's CMakeLists.txt compiles it, every source with no definitions and its warnings off; the linker takes the objects the dump reaches.
+enable_language(C)
+set(TW_LITEHTML "${TW_ROOT}/litehtml")
+file(GLOB LHDUMP_GUMBO_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/gumbo/*.c")
+file(GLOB LHDUMP_LITEHTML_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/*.cpp")
+add_library(lhdump_litehtml STATIC ${LHDUMP_GUMBO_SOURCES} ${LHDUMP_LITEHTML_SOURCES})
+target_include_directories(lhdump_litehtml
+    PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
+    PRIVATE "${TW_LITEHTML}/src")
+if (MSVC)
+    # gumbo expects POSIX strings.h; a per-language include directory is out of reach of the Visual Studio generators.
+    set_source_files_properties(${LHDUMP_GUMBO_SOURCES} PROPERTIES INCLUDE_DIRECTORIES "${TW_LITEHTML}/src/gumbo/visualc/include")
+    target_compile_options(lhdump_litehtml PRIVATE /w)
+else()
+    target_compile_options(lhdump_litehtml PRIVATE -w)
+endif()
+add_executable(lhdump lhdump.cpp)
+target_link_libraries(lhdump PRIVATE lhdump_litehtml)

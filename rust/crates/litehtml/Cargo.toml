@@ -1,0 +1,18 @@
+[package]
+name = "twidget_litehtml"
+description = "The litehtml fork twidget renders with: the HTML and CSS engine, ported a stage at a time"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_cstd = { path = "../cstd" }
+
+[dev-dependencies]
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }
