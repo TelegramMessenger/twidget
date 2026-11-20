@@ -1,20 +1,20 @@
-//! Layout, ported (stages L7–L10 and L12): documents cascaded and built as the renderer builds them, laid out at
-//! widths (again at the first after another, so the layout cache is used), after media changes and `:hover`
-//! restyles, and with the fixed boxes placed alone, through `oracle/lhdump` (`Y`) and the port: every render item's
-//! place, margins, padding and borders, its cache and marks, positioned lists in z-order, scroll views, sticky offsets,
-//! placements, inline boxes, a text's pieces, an inline context's line boxes and their items, a flex's baselines and
-//! lines with their items, a table's grid as laid out and the sides its collapsed borders leave each cell, the
-//! document's size, budget and fixed boxes, each element's line height, with the container's calls in order (fonts,
-//! text widths, the viewport, image sizes, text breakers). The documents: widget-sandbox's corpus light and dark at
-//! five widths, every tag, written shapes for each branch (margins collapsing, floats and clearance, line breaking,
-//! white space, `text-overflow`, bidi, vertical alignment, images, lists, `<textarea>`; flex directions, wrapping,
-//! every alignment value, factors and bases, min and max, `order`, gaps, `auto` margins, baselines, form controls;
-//! absolute and fixed boxes under each rule of CSS 2.2 10.3.7 and 10.6.4, containing blocks, static positions,
-//! `z-index`, sticky boxes, scroll views; tables with spans, captions, fixed layout, %, collapsed borders, heights,
-//! anonymous boxes, nesting), generated block, float, margin and inline documents, generated nested flex documents,
-//! generated positioned documents and generated table documents, the `LH_NO_*` layout switches, the budget crossed,
-//! and deep documents on a small stack. A case whose layout reaches a later stage's (grid) is laid out by the port as
-//! far as it goes but not compared, and counted. Each run reports what it reached.
+//! Layout, ported (stages L7–L12): documents cascaded and built as the renderer builds them, laid out at widths
+//! (again at the first after another, so the layout cache is used), after media changes and `:hover` restyles, and
+//! with the fixed boxes placed alone, through `oracle/lhdump` (`Y`) and the port: every render item's place, margins,
+//! padding and borders, its cache and marks, positioned lists in z-order, scroll views, sticky offsets, placements,
+//! inline boxes, a text's pieces, an inline context's line boxes and their items, a flex's baselines and lines with
+//! their items, a table's grid as laid out and the sides its collapsed borders leave each cell, each grid pass's
+//! tracks, items and their areas, the document's size, budget and fixed boxes, each element's line height, with the
+//! container's calls in order (fonts, text widths, the viewport, image sizes, text breakers). The documents:
+//! widget-sandbox's corpus light and dark at five widths, every tag, written shapes for each branch (margins
+//! collapsing, floats and clearance, line breaking, white space, `text-overflow`, bidi, vertical alignment, images,
+//! lists, `<textarea>`; flex directions, wrapping, every alignment value, factors and bases, min and max, `order`,
+//! gaps, `auto` margins, baselines, form controls; absolute and fixed boxes under each rule of CSS 2.2 10.3.7 and
+//! 10.6.4, containing blocks, static positions, `z-index`, sticky boxes, scroll views; tables with spans, captions,
+//! fixed layout, %, collapsed borders, heights, anonymous boxes, nesting; grid tracks of every kind, `repeat()` with
+//! `auto-fill` and `auto-fit`, placement and auto-placement, spans, gaps, alignment, nested grids), generated block,
+//! float, margin and inline documents, generated nested flex, positioned, table and grid documents, the `LH_NO_*`
+//! layout switches, the budget crossed, and deep documents on a small stack. Each run reports what it reached.
 
 mod common;
 
@@ -74,19 +74,11 @@ impl Run {
 
     fn case(&mut self, input: Vec<u8>, what: impl Into<String>) {
         let mut tally = LayoutTally::default();
-        let (rust, unported) = layout_answer(&self.lh, self.switches, &input, &mut tally);
+        let rust = layout_answer(&self.lh, self.switches, &input, &mut tally);
         self.cases += 1;
         self.tally.documents += 1;
-        if let Some(stage) = unported {
-            *self.tally.skipped.entry(stage).or_default() += 1;
-            if std::env::var_os("LAYOUT_SKIPPED").is_some() {
-                eprintln!("not compared ({stage}): {}", what.into());
-            }
-            // The case changed the process's name table and declaration cache, which lhdump never sees: the cases
-            // before it are compared now, and the next start afresh on both sides.
-            self.flush();
-            self.lh = Lh::new();
-            return;
+        if tally.grid_passes > 0 {
+            self.tally.grid_documents += 1;
         }
         self.compared += 1;
         self.tally.merge(tally);
@@ -1999,6 +1991,681 @@ fn written_table_documents() -> Vec<(&'static str, String)> {
     docs
 }
 
+// ---- Grid inputs (stage L11) --------------------------------------------------------------------------------
+
+/// A track list the fork parses (and some it refuses): lengths, %, `fr`, the content keywords, `minmax()`,
+/// `fit-content()`, `repeat()` with a count, `auto-fill` and `auto-fit`, line names, calc.
+fn grid_track_list(random: &mut Lcg) -> &'static str {
+    pick(
+        random,
+        &[
+            "100px 1fr",
+            "repeat(3, 1fr)",
+            "repeat(auto-fill, minmax(80px, 1fr))",
+            "repeat(auto-fit, minmax(60px, 1fr))",
+            "repeat(auto-fill, 100px)",
+            "repeat(auto-fit, 50px)",
+            "1fr 2fr",
+            "auto auto",
+            "auto 1fr auto",
+            "min-content 1fr max-content",
+            "minmax(50px, 200px) auto",
+            "minmax(min-content, 1fr) minmax(0, 2fr)",
+            "minmax(max-content, auto) 1fr",
+            "fit-content(120px) 1fr",
+            "20% 30% auto",
+            "[a] 50px [b] 1fr [c]",
+            "none",
+            "repeat(2, 40px 1fr)",
+            "minmax(0, 1fr) minmax(0, 1fr)",
+            "calc(50% - 10px) 1fr",
+            "0.5fr 0.3fr",
+            "0.2fr 30px 0.2fr",
+            "10px repeat(auto-fit, 30px) 20px",
+            "repeat(auto-fill, minmax(10%, 1fr))",
+            "1fr",
+            "auto",
+            "3fr 1fr 1fr 1fr",
+            "repeat(4, minmax(20px, auto))",
+            "200px 200px 200px",
+            "1fr 1fr 1fr 1fr 1fr 1fr",
+            "repeat(0, 1fr)",
+            "minmax(1fr, 2fr)",
+            "-10px 1fr",
+        ],
+    )
+}
+
+fn grid_rows_list(random: &mut Lcg) -> &'static str {
+    pick(
+        random,
+        &[
+            "50px auto",
+            "repeat(2, 1fr)",
+            "1fr 2fr",
+            "auto",
+            "minmax(20px, auto) 1fr",
+            "30% 70%",
+            "100px",
+            "min-content max-content",
+            "repeat(auto-fill, 40px)",
+            "auto 1fr auto",
+            "40px 40px 40px",
+            "fit-content(30px) 1fr",
+            "minmax(0, 1fr)",
+            "0.5fr 0.5fr",
+            "none",
+        ],
+    )
+}
+
+fn grid_alignment(random: &mut Lcg) -> &'static str {
+    pick(
+        random,
+        &[
+            "normal",
+            "start",
+            "end",
+            "center",
+            "space-between",
+            "space-around",
+            "space-evenly",
+            "stretch",
+            "flex-start",
+            "flex-end",
+            "left",
+            "right",
+            "safe center",
+        ],
+    )
+}
+
+fn grid_self_alignment(random: &mut Lcg) -> &'static str {
+    pick(
+        random,
+        &[
+            "auto",
+            "normal",
+            "stretch",
+            "start",
+            "end",
+            "center",
+            "baseline",
+            "self-start",
+            "self-end",
+            "flex-start",
+            "flex-end",
+            "left",
+            "right",
+            "safe end",
+            "last baseline",
+        ],
+    )
+}
+
+/// A grid container's declaration: its tracks, the shorthands, gaps, the alignments and its own box.
+fn grid_container_declaration(random: &mut Lcg) -> String {
+    match random.below(18) {
+        0..=3 => format!("grid-template-columns:{}", grid_track_list(random)),
+        4 | 5 => format!("grid-template-rows:{}", grid_rows_list(random)),
+        6 => format!("grid-auto-rows:{}", pick(random, &["40px", "minmax(30px, auto)", "auto", "1fr", "20px 40px", "min-content", "10%"])),
+        7 => pick(
+            random,
+            &[
+                "grid-template:50px auto / 1fr 1fr",
+                "grid:auto-flow 30px / repeat(3, 1fr)",
+                "grid:auto-flow / 1fr 2fr",
+                "grid:auto-flow dense / 1fr 1fr",
+                "grid-template:none",
+                "grid-template:\"a b\" / 1fr 1fr",
+                "grid-auto-flow:column",
+                "grid-auto-columns:50px",
+            ],
+        )
+        .to_string(),
+        8 | 9 => format!(
+            "{}:{}",
+            pick(random, &["gap", "row-gap", "column-gap", "grid-gap", "grid-row-gap", "grid-column-gap"]),
+            pick(random, &["10px", "5%", "1em 2em", "calc(5% + 2px)", "0", "4px 10%", "normal", "2px"])
+        ),
+        10 => format!("justify-content:{}", grid_alignment(random)),
+        11 => format!("align-content:{}", grid_alignment(random)),
+        12 => format!("justify-items:{}", grid_self_alignment(random)),
+        13 => format!("align-items:{}", grid_self_alignment(random)),
+        14 => format!(
+            "{}:{}",
+            pick(random, &["place-items", "place-content"]),
+            pick(random, &["center", "end start", "stretch", "space-between center"])
+        ),
+        15 => format!("width:{}", pick(random, &["300px", "50%", "auto", "120px", "min-content", "max-content", "fit-content"])),
+        16 => format!(
+            "{}:{}",
+            pick(random, &["height", "height", "min-height", "max-height"]),
+            pick(random, &["200px", "auto", "50%", "60px", "0", "120px"])
+        ),
+        _ => format!("box-sizing:border-box;padding:{};border:2px solid", pick(random, &["3px", "10px", "5%"])),
+    }
+}
+
+/// A grid item's declaration: its lines and spans (negative, reversed, past the explicit grid), the
+/// self alignments, `order`, sizes with min and max, margins, positioning, display.
+fn grid_item_declaration(random: &mut Lcg) -> String {
+    match random.below(20) {
+        0..=3 => format!(
+            "grid-column:{}",
+            pick(
+                random,
+                &[
+                    "1",
+                    "2",
+                    "-1",
+                    "1 / 3",
+                    "span 2",
+                    "2 / span 3",
+                    "-2 / -1",
+                    "span 5",
+                    "3 / 1",
+                    "5",
+                    "1 / -1",
+                    "auto / span 2",
+                    "12",
+                    "span 12",
+                    "auto",
+                    "4 / 2",
+                    "span 2 / 4",
+                    "0",
+                    "a",
+                ]
+            )
+        ),
+        4 | 5 => format!(
+            "grid-row:{}",
+            pick(random, &["1", "2 / 4", "span 2", "-1", "3", "1 / -1", "span 3", "2", "4 / 1", "auto", "span 2 / 3", "-3"])
+        ),
+        6 => format!(
+            "{}:{}",
+            pick(random, &["grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end"]),
+            pick(random, &["1", "2", "-1", "span 2", "auto", "3"])
+        ),
+        7 => format!("justify-self:{}", grid_self_alignment(random)),
+        8 => format!("align-self:{}", grid_self_alignment(random)),
+        9 => format!("place-self:{}", pick(random, &["center", "end start", "stretch", "start end"])),
+        10 => format!("order:{}", pick(random, &["-1", "1", "2", "0"])),
+        11 | 12 => format!(
+            "width:{}",
+            pick(random, &["50px", "50%", "calc(50% - 5px)", "auto", "min-content", "max-content", "fit-content", "200px", "100%"])
+        ),
+        13 => format!("height:{}", pick(random, &["30px", "50%", "auto", "100px"])),
+        14 => format!(
+            "{}:{}",
+            pick(random, &["min-width", "max-width", "min-height", "max-height"]),
+            pick(random, &["0", "100px", "50%", "none", "20px", "calc(10% + 5px)"])
+        ),
+        15 => format!("margin:{}", pick(random, &["auto", "5px", "10%", "0 auto", "-4px"])),
+        16 => format!("padding:{};border:{} solid", pick(random, &["0", "4px", "5%"]), pick(random, &["0", "1px", "3px"])),
+        17 => pick(
+            random,
+            &[
+                "position:absolute;left:5px;top:5px",
+                "position:absolute;right:0;bottom:0;width:30%",
+                "position:relative;left:3px",
+                "position:fixed;top:0",
+            ],
+        )
+        .to_string(),
+        18 => format!("display:{}", pick(random, &["none", "flex", "inline-block", "grid", "inline", "list-item"])),
+        _ => format!("box-sizing:{}", pick(random, &["border-box", "content-box"])),
+    }
+}
+
+/// A generated document of nested grids (and some flex boxes between), with items of every kind: blocks, runs of
+/// text, inlines, images, controls, nested containers.
+fn grid_document(random: &mut Lcg) -> Vec<u8> {
+    fn content(random: &mut Lcg, depth: u32, out: &mut String) {
+        match random.below(12) {
+            0 | 1 => words(random, out),
+            2 => out.push_str(&format!(
+                "<img src=\"{}.png\"{}>",
+                pick(random, &["a", "bb", "photo", "x9"]),
+                pick(random, &["", " style=\"width:50%\"", " style=\"width:40px\"", " width=\"30\""])
+            )),
+            3 => out.push_str(pick(
+                random,
+                &["<span>s <b>t</b></span>", "<b>bold</b> ", "<br>", "<span style=\"display:inline-block;width:30px\">ib</span>"],
+            )),
+            4 => out.push_str(pick(
+                random,
+                &["<input type=\"text\" value=\"v\">", "<select><option>o</option></select>", "<button>b</button>"],
+            )),
+            5 if depth < 3 => container(random, depth + 1, out),
+            6 if depth < 2 => {
+                out.push_str(&format!(
+                    "<div style=\"display:flex;{}\">",
+                    pick(random, &["flex-wrap:wrap", "flex-direction:column", "gap:4px", "justify-content:center"])
+                ));
+                for _ in 0..1 + random.below(3) {
+                    if random.chance(2) {
+                        container(random, depth + 1, out);
+                    } else {
+                        item(random, depth + 1, out);
+                    }
+                }
+                out.push_str("</div>");
+            }
+            _ => item(random, depth, out),
+        }
+    }
+    fn item(random: &mut Lcg, depth: u32, out: &mut String) {
+        let tag = pick(random, &["div", "div", "p", "span", "section", "li", "a"]);
+        out.push_str(&format!("<{tag}"));
+        if random.chance(3) {
+            out.push_str(&format!(" class=\"{}\"", pick(random, &["i", "j", "i j"])));
+        }
+        if !random.chance(4) {
+            let decls: Vec<String> = (0..1 + random.below(4)).map(|_| grid_item_declaration(random)).collect();
+            out.push_str(&format!(" style=\"{}\"", decls.join(";")));
+        }
+        out.push('>');
+        for _ in 0..random.below(3) {
+            if depth < 3 && random.chance(6) {
+                container(random, depth + 1, out);
+            } else {
+                words(random, out);
+            }
+        }
+        out.push_str(&format!("</{tag}>"));
+    }
+    fn container(random: &mut Lcg, depth: u32, out: &mut String) {
+        let display = if random.chance(5) { "inline-grid" } else { "grid" };
+        let mut decls: Vec<String> = (0..1 + random.below(5)).map(|_| grid_container_declaration(random)).collect();
+        decls.insert(0, format!("display:{display}"));
+        if random.chance(3) {
+            decls.push(grid_item_declaration(random));
+        }
+        if random.chance(10) {
+            decls.push("direction:rtl".to_string());
+        }
+        let class = if random.chance(3) { " class=\"g\"" } else { "" };
+        out.push_str(&format!("<div{class} style=\"{}\">", decls.join(";")));
+        let n = if depth > 1 { random.below(4) } else { random.below(8) };
+        for _ in 0..n {
+            content(random, depth, out);
+        }
+        out.push_str("</div>");
+    }
+    let mut out = String::new();
+    if !random.chance(8) {
+        out.push_str("<!DOCTYPE html>");
+    }
+    out.push_str("<html><head><style>");
+    for _ in 0..random.below(4) {
+        let selector = pick(random, &[".g", ".i", ".j", ".g > div", "div", "p", ".g > :first-child", ".g > :nth-child(3)"]);
+        let decls: Vec<String> = (0..1 + random.below(3))
+            .map(|_| if random.chance(2) { grid_container_declaration(random) } else { grid_item_declaration(random) })
+            .collect();
+        let rule = format!("{selector}{{{}}}", decls.join(";"));
+        if random.chance(3) {
+            out.push_str(&format!("@media (min-width:{}px){{{rule}}}", pick(random, &["300", "450", "700"])));
+        } else {
+            out.push_str(&rule);
+        }
+    }
+    out.push_str("</style></head><body>");
+    for _ in 0..1 + random.below(3) {
+        if random.chance(5) {
+            content(random, 1, &mut out);
+        } else {
+            container(random, 0, &mut out);
+        }
+    }
+    out.push_str("</body></html>");
+    out.into_bytes()
+}
+
+/// Grid shapes for each branch, written out.
+fn written_grid_documents() -> Vec<(&'static str, String)> {
+    let page = |body: &str| format!("<!DOCTYPE html><html><head></head><body>{body}</body></html>");
+    let six = "<div>one</div><div>two words</div><div>three more words here</div><div>4</div><div>five five</div><div>six</div>";
+    let grid = |style: &str, body: &str| page(&format!("<div style=\"display:grid;{style}\">{body}</div>"));
+    vec![
+        ("explicit columns", grid("grid-template-columns:100px 1fr 2fr", six)),
+        ("explicit rows and columns", grid("grid-template-columns:1fr 1fr;grid-template-rows:40px 60px 20px", six)),
+        ("implicit rows", grid("grid-template-columns:repeat(4, 1fr)", &format!("{six}{six}"))),
+        ("implicit rows from grid-auto-rows", grid("grid-template-columns:1fr 1fr;grid-auto-rows:30px 50px", &format!("{six}{six}"))),
+        ("no template at all", grid("", six)),
+        ("an empty grid", grid("grid-template-columns:1fr 1fr;height:50px;padding:4px", "")),
+        ("an empty grid with only spaces", grid("grid-template-columns:1fr 1fr", "  \n  ")),
+        ("text straight in the grid", grid("grid-template-columns:1fr 1fr", "loose text <b>bold</b> more <div>block</div> tail")),
+        (
+            "auto-placement skipping taken cells",
+            grid(
+                "grid-template-columns:repeat(3, 1fr)",
+                "<div style=\"grid-column:2;grid-row:1\">a</div><div>b</div><div>c</div><div style=\"grid-row:2;grid-column:1 / 3\">d</div><div>e</div><div>f</div>",
+            ),
+        ),
+        (
+            "auto-placement after a placed column behind the cursor",
+            grid(
+                "grid-template-columns:repeat(3, 60px)",
+                "<div>a</div><div>b</div><div style=\"grid-column:1\">c</div><div style=\"grid-column:3\">d</div><div style=\"grid-column:2\">e</div>",
+            ),
+        ),
+        (
+            "rows given, columns auto",
+            grid(
+                "grid-template-columns:repeat(3, 1fr)",
+                "<div style=\"grid-row:2\">a</div><div style=\"grid-row:2\">b</div><div style=\"grid-row:2 / span 2\">c</div><div style=\"grid-row:2\">d</div><div>e</div>",
+            ),
+        ),
+        (
+            "spans past the explicit grid",
+            grid(
+                "grid-template-columns:50px 50px",
+                "<div style=\"grid-column:span 4\">wide</div><div style=\"grid-column:3 / 6\">past</div><div style=\"grid-row:span 3\">tall</div><div>x</div>",
+            ),
+        ),
+        (
+            "negative and reversed lines",
+            grid(
+                "grid-template-columns:1fr 1fr 1fr;grid-template-rows:30px 30px",
+                "<div style=\"grid-column:-2 / -1\">a</div><div style=\"grid-column:3 / 1\">b</div><div style=\"grid-row:-1;grid-column:-4\">c</div><div style=\"grid-column-end:3\">d</div><div style=\"grid-column-end:span 2;grid-column-start:2\">e</div>",
+            ),
+        ),
+        (
+            "line numbers at the caps",
+            grid(
+                "grid-template-columns:1fr",
+                "<div style=\"grid-column:1000\">a</div><div style=\"grid-row:span 1000\">b</div><div style=\"grid-column:-1000\">c</div>",
+            ),
+        ),
+        (
+            "the placement budget spent",
+            grid(
+                "grid-template-columns:repeat(1000, 1px)",
+                "<div style=\"grid-column:span 1000;grid-row:span 300\">a</div><div>b</div><div style=\"grid-row:4\">c</div><div style=\"grid-column:3\">d</div><div>e</div>",
+            ),
+        ),
+        (
+            "fr with min-content items",
+            grid(
+                "grid-template-columns:1fr 1fr 1fr;width:150px",
+                "<div>supercalifragilisticexpialidocious</div><div>a</div><div>b c d e f g h</div>",
+            ),
+        ),
+        (
+            "fr frozen at their base",
+            grid(
+                "grid-template-columns:1fr 3fr;width:200px",
+                "<div><div style=\"width:150px\">wide</div></div><div>b</div>",
+            ),
+        ),
+        (
+            "fractions under one",
+            grid("grid-template-columns:0.2fr 0.3fr 50px", "<div>a</div><div>b</div><div>c</div>"),
+        ),
+        (
+            "minmax",
+            grid(
+                "grid-template-columns:minmax(50px, 200px) minmax(min-content, 1fr) minmax(0, 1fr) minmax(max-content, auto)",
+                "<div>a b</div><div>longer words here</div><div>xxxxxxxxxxxxxxx</div><div>tail end</div>",
+            ),
+        ),
+        (
+            "fit-content and the content keywords",
+            grid(
+                "grid-template-columns:fit-content(80px) min-content max-content auto",
+                "<div>fit content words</div><div>min content words</div><div>max content words</div><div>auto</div>",
+            ),
+        ),
+        ("repeat with a count", grid("grid-template-columns:repeat(2, 40px 1fr)", six)),
+        ("auto-fill", grid("grid-template-columns:repeat(auto-fill, minmax(80px, 1fr))", six)),
+        ("auto-fill of fixed tracks", grid("grid-template-columns:repeat(auto-fill, 100px);gap:7px", six)),
+        ("auto-fit collapsing empty tracks", grid("grid-template-columns:repeat(auto-fit, minmax(60px, 1fr))", "<div>a</div><div>b</div>")),
+        (
+            "auto-fit between fixed tracks",
+            grid("grid-template-columns:10px repeat(auto-fit, 30px) 20px;column-gap:3px", "<div>a</div><div>b</div><div>c</div>"),
+        ),
+        ("auto-fill with % tracks", grid("grid-template-columns:repeat(auto-fill, minmax(10%, 1fr))", six)),
+        ("auto-fill with no definite size", grid("grid-template-columns:repeat(auto-fill, auto)", six)),
+        ("gaps", grid("grid-template-columns:1fr 1fr;gap:10px 20px", six)),
+        ("% gaps without a height", grid("grid-template-columns:1fr 1fr;gap:5%", six)),
+        ("% gaps with a height", grid("grid-template-columns:1fr 1fr;gap:5% 10%;height:300px", six)),
+        ("calc gaps", grid("grid-template-columns:1fr 1fr;gap:calc(5% + 2px)", six)),
+        ("legacy gap names", grid("grid-template-columns:1fr 1fr;grid-row-gap:6px;grid-column-gap:9px", six)),
+        (
+            "justify-content between columns",
+            page(&[
+                "start", "end", "center", "space-between", "space-around", "space-evenly", "stretch", "flex-end", "right", "normal",
+            ]
+            .iter()
+            .map(|j| format!("<div style=\"display:grid;grid-template-columns:40px 40px 40px;justify-content:{j}\">{six}</div>"))
+            .collect::<String>()),
+        ),
+        (
+            "justify-content with auto columns",
+            page(&["start", "stretch", "flex-start", "center"]
+                .iter()
+                .map(|j| format!("<div style=\"display:grid;grid-template-columns:auto auto;justify-content:{j}\">{six}</div>"))
+                .collect::<String>()),
+        ),
+        (
+            "align-content between rows",
+            page(&["start", "end", "flex-end", "center", "space-between", "space-around", "space-evenly", "stretch", "normal"]
+                .iter()
+                .map(|a| {
+                    format!(
+                        "<div style=\"display:grid;grid-template-columns:1fr 1fr;grid-template-rows:30px auto;height:200px;align-content:{a}\">{six}</div>"
+                    )
+                })
+                .collect::<String>()),
+        ),
+        (
+            "fr rows in a definite height",
+            grid("grid-template-columns:1fr 1fr;grid-template-rows:1fr 2fr auto;height:240px;row-gap:5px", six),
+        ),
+        (
+            "fr rows frozen at their content",
+            grid(
+                "grid-template-rows:1fr 5fr;height:100px",
+                "<div style=\"height:80px\">tall</div><div>short</div>",
+            ),
+        ),
+        ("fr rows without a height", grid("grid-template-rows:1fr 2fr", six)),
+        ("% rows", grid("grid-template-rows:30% 70%;height:150px", "<div>a</div><div>b</div>")),
+        (
+            "rows spanned by a tall item",
+            grid(
+                "grid-template-columns:1fr 1fr;grid-template-rows:20px auto 20px",
+                "<div style=\"grid-row:1 / 4;height:150px\">tall</div><div>a</div><div>b</div><div>c</div>",
+            ),
+        ),
+        (
+            "rows spanned with no content-sized row",
+            grid(
+                "grid-template-columns:1fr 1fr;grid-template-rows:20px 20px",
+                "<div style=\"grid-row:span 2;height:90px\">tall</div><div>a</div>",
+            ),
+        ),
+        (
+            "columns spanned by a wide item",
+            grid(
+                "grid-template-columns:auto 50px auto",
+                "<div style=\"grid-column:1 / 4\">a very wide item with many words in it</div><div>a</div><div>b</div><div>c</div>",
+            ),
+        ),
+        (
+            "columns spanned across a flexible track",
+            grid(
+                "grid-template-columns:auto 1fr;width:100px",
+                "<div style=\"grid-column:span 2\">aaaaaaaaaaaaaaaaaaaa</div><div style=\"grid-column:span 2;min-width:150px\">b</div><div>c</div>",
+            ),
+        ),
+        (
+            "justify-items and justify-self",
+            grid(
+                "grid-template-columns:100px 100px 100px;justify-items:center",
+                "<div>a</div><div style=\"justify-self:end\">b</div><div style=\"justify-self:start\">c</div><div style=\"justify-self:stretch\">d</div><div style=\"justify-self:self-end\">e</div><div style=\"justify-self:flex-end;width:20px\">f</div>",
+            ),
+        ),
+        (
+            "align-items and align-self",
+            grid(
+                "grid-template-columns:repeat(3, 1fr);grid-auto-rows:80px;align-items:center",
+                "<div>a</div><div style=\"align-self:end\">b</div><div style=\"align-self:stretch\">c</div><div style=\"align-self:baseline\">d</div><div style=\"align-self:start\">e</div><div style=\"align-self:stretch;height:20px\">f</div>",
+            ),
+        ),
+        (
+            "place-items and place-self",
+            grid(
+                "grid-template-columns:1fr 1fr;grid-auto-rows:60px;place-items:end center",
+                "<div>a</div><div style=\"place-self:start end\">b</div><div>c</div>",
+            ),
+        ),
+        (
+            "items with widths",
+            grid(
+                "grid-template-columns:1fr 1fr 1fr",
+                "<div style=\"width:50px\">a</div><div style=\"width:50%\">b</div><div style=\"width:calc(50% - 5px)\">c</div><div style=\"width:min-content\">d e f</div><div style=\"width:max-content\">g h</div><div style=\"width:fit-content\">i j</div>",
+            ),
+        ),
+        (
+            "items with min and max widths",
+            grid(
+                "grid-template-columns:auto auto;width:120px",
+                "<div style=\"min-width:100px\">a</div><div style=\"min-width:50%;box-sizing:border-box;padding:5px\">b</div><div style=\"max-width:20px\">long words</div><div style=\"min-width:0\">xxxxxxxxxxxxxxxxxxx</div>",
+            ),
+        ),
+        (
+            "images with % widths",
+            grid(
+                "grid-template-columns:1fr 1fr",
+                "<img src=\"a.png\" style=\"width:50%\"><img src=\"b.png\"><img src=\"c.png\" style=\"width:30px\"><div>t</div>",
+            ),
+        ),
+        (
+            "margins and boxes",
+            grid(
+                "grid-template-columns:1fr 1fr;box-sizing:border-box;padding:10px;border:3px solid",
+                "<div style=\"margin:5px;padding:4px;border:2px solid\">a</div><div style=\"margin:auto\">b</div><div style=\"margin:10%\">c</div><div style=\"box-sizing:border-box;padding:6px;width:80px\">d</div>",
+            ),
+        ),
+        (
+            "order",
+            grid(
+                "grid-template-columns:1fr 1fr 1fr",
+                "<div style=\"order:2\">a</div><div style=\"order:-1\">b</div><div>c</div><div style=\"order:1\">d</div><div style=\"order:-1\">e</div>",
+            ),
+        ),
+        (
+            "nested grids",
+            grid(
+                "grid-template-columns:1fr 2fr",
+                "<div style=\"display:grid;grid-template-columns:auto auto;gap:3px\"><div>a</div><div>b</div><div>c</div></div><div style=\"display:grid;grid-template-columns:repeat(auto-fill, 30px)\"><div>d</div><div>e</div><div>f</div><div>g</div></div>",
+            ),
+        ),
+        (
+            "grid in flex",
+            page(
+                "<div style=\"display:flex\"><div style=\"display:grid;grid-template-columns:1fr 1fr;flex:1\"><div>a</div><div>b</div></div><div style=\"display:grid;grid-template-columns:auto\">c</div></div>",
+            ),
+        ),
+        (
+            "flex in grid",
+            grid(
+                "grid-template-columns:1fr 1fr",
+                "<div style=\"display:flex;flex-wrap:wrap\"><div>a</div><div>b</div><div>c</div></div><div style=\"display:flex;flex-direction:column\"><div>d</div><div>e</div></div>",
+            ),
+        ),
+        (
+            "absolute children of a grid",
+            grid(
+                "grid-template-columns:1fr 1fr;position:relative;height:100px",
+                "<div>a</div><div style=\"position:absolute;left:5px;top:5px\">abs</div><div>b</div><div style=\"position:absolute;right:0;bottom:0;width:30%\">abs2</div><div style=\"position:fixed;top:0\">fixed</div><div style=\"position:absolute;display:none\">none</div>",
+            ),
+        ),
+        (
+            "relative children of a grid",
+            grid("grid-template-columns:1fr 1fr", "<div style=\"position:relative;left:3px;top:4px\">a</div><div>b</div>"),
+        ),
+        (
+            "right to left",
+            grid("grid-template-columns:50px 1fr 2fr;direction:rtl", six),
+        ),
+        (
+            "inline grids",
+            page(
+                "text <div style=\"display:inline-grid;grid-template-columns:auto auto\"><div>a</div><div>b</div></div> more <span style=\"display:inline-grid\">c</span> end",
+            ),
+        ),
+        (
+            "a grid of a fixed width and height",
+            grid("grid-template-columns:1fr auto;width:200px;height:150px", six),
+        ),
+        (
+            "a grid of min-content and max-content widths",
+            page(&format!(
+                "<div style=\"display:grid;grid-template-columns:1fr 1fr;width:min-content\">{six}</div><div style=\"display:grid;grid-template-columns:1fr 1fr;width:max-content\">{six}</div><div style=\"display:grid;grid-template-columns:100px 1fr;width:fit-content\">{six}</div>"
+            )),
+        ),
+        (
+            "a floated and an absolute grid",
+            page(&format!(
+                "<div style=\"display:grid;grid-template-columns:1fr 1fr;float:left\">{six}</div><div style=\"display:grid;position:absolute;grid-template-columns:auto auto\">{six}</div>"
+            )),
+        ),
+        (
+            "a grid with min and max heights",
+            page(&format!(
+                "<div style=\"display:grid;grid-template-rows:1fr 1fr;min-height:200px\">{six}</div><div style=\"display:grid;max-height:30px\">{six}</div>"
+            )),
+        ),
+        (
+            "items with % heights",
+            page(
+                "<div style=\"display:grid;height:200px\"><div style=\"height:50%\">a</div><div>b</div></div><div style=\"display:grid\"><div style=\"height:50%\">c</div></div>",
+            ),
+        ),
+        (
+            "display none and contents among items",
+            grid("grid-template-columns:1fr 1fr", "<div>a</div><div style=\"display:none\">b</div><div>c</div><span>d</span>"),
+        ),
+        ("the grid shorthand", grid("grid:auto-flow 30px / repeat(3, 1fr)", six)),
+        ("grid-template with rows and columns", grid("grid-template:50px auto / 1fr 1fr", six)),
+        ("refused shorthands", grid("grid:auto-flow dense / 1fr 1fr;grid-template:\"a b\" / 1fr 1fr;grid-auto-flow:column", six)),
+        ("named lines skipped", grid("grid-template-columns:[a] 50px [b] 1fr [c]", "<div style=\"grid-column:a\">a</div><div>b</div>")),
+        ("a negative length refused", grid("grid-template-columns:-10px 1fr", six)),
+        (
+            "controls in a grid",
+            grid(
+                "grid-template-columns:auto 1fr",
+                "<label>name</label><input type=\"text\" value=\"v\"><label>pick</label><select><option>one</option></select><button>go</button><input type=\"range\">",
+            ),
+        ),
+        (
+            "a grid laid out at a media width",
+            page(
+                "<style>.g{display:grid;grid-template-columns:1fr}@media (min-width:600px){.g{grid-template-columns:1fr 1fr 1fr;gap:12px}}</style><div class=\"g\"><div>a</div><div>b</div><div>c</div></div>",
+            ),
+        ),
+        (
+            "a grid that changes on hover",
+            page(
+                "<style>.g:hover{grid-template-columns:1fr 3fr;justify-items:end}</style><div class=\"g\" style=\"display:grid;grid-template-columns:1fr 1fr\"><div>a</div><div>b</div><div>c</div></div>",
+            ),
+        ),
+        (
+            "a list as a grid",
+            page(
+                "<ul style=\"display:grid;grid-template-columns:repeat(2, 1fr);gap:4px\"><li>one</li><li>two</li><li>three</li></ul><ol style=\"display:grid\"><li>a</li><li>b</li></ol>",
+            ),
+        ),
+        (
+            "a scrolling grid",
+            grid("grid-template-columns:200px 200px 200px;overflow:auto;width:150px;height:60px", six),
+        ),
+    ]
+}
+
 // ---- The comparison ----------------------------------------------------------------------------------------
 
 #[test]
@@ -2030,8 +2697,7 @@ fn the_corpus_lays_out_alike() {
         }
     }
     let tally = run.finish();
-    // Only grid (stage L11) is not compared.
-    assert!(run_compared(&tally) > 740);
+    assert!(tally.grid_documents > 60 && tally.tables > 0);
 }
 
 /// The corpus again at narrower and wider viewports (flex lines wrap and stretch differently there): light at 150 and
@@ -2061,12 +2727,7 @@ fn the_corpus_lays_out_alike_at_more_widths() {
         }
     }
     let tally = run.finish();
-    // Only grid (stage L11) is not compared.
-    assert!(run_compared(&tally) > 740);
-}
-
-fn run_compared(tally: &LayoutTally) -> usize {
-    tally.documents - tally.skipped.values().sum::<usize>()
+    assert!(tally.grid_documents > 60 && tally.tables > 0);
 }
 
 /// Every tag, the table ones too, under the master sheet and the UA layers.
@@ -2088,8 +2749,7 @@ fn every_tag_lays_out_alike() {
         run.case(layout_record(412.0, 915.0, 3.0, &dark, b"", &themed_html(&html, true, &vars), &steps), format!("{what}, dark UA layers"));
         run.case(layout_record(375.0, 667.0, 2.0, b"", b"", &html, &steps), format!("{what}, no sheet"));
     }
-    let tally = run.finish();
-    assert_eq!(run_compared(&tally), tally.documents);
+    run.finish();
 }
 
 #[test]
@@ -2150,7 +2810,6 @@ fn written_flex_shapes_lay_out_alike() {
         }
     }
     let tally = run.finish();
-    assert_eq!(run_compared(&tally), tally.documents);
     for what in [
         "flex-direction row",
         "flex-direction row-reverse",
@@ -2205,8 +2864,7 @@ fn generated_flex_documents_lay_out_alike() {
             format!("generated flex {k}: {}", String::from_utf8_lossy(&html)),
         );
     }
-    let tally = run.finish();
-    assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
+    run.finish();
 }
 
 #[test]
@@ -2235,8 +2893,7 @@ fn generated_documents_lay_out_alike() {
         ]);
         run.case(layout_record(width, 640.0, 2.0, sheet, b"", &html, &steps), format!("generated {k}: {}", String::from_utf8_lossy(&html)));
     }
-    let tally = run.finish();
-    assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
+    run.finish();
 }
 
 #[test]
@@ -2284,7 +2941,6 @@ fn written_positioned_shapes_lay_out_alike() {
         }
     }
     let tally = run.finish();
-    assert_eq!(run_compared(&tally), tally.documents);
     for what in [
         "sticky boxes",
         "absolute boxes",
@@ -2350,8 +3006,7 @@ fn generated_positioned_documents_lay_out_alike() {
             format!("generated positioned {k}: {} with the user sheet {user}", String::from_utf8_lossy(&html)),
         );
     }
-    let tally = run.finish();
-    assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
+    run.finish();
 }
 
 #[test]
@@ -2376,7 +3031,6 @@ fn written_table_shapes_lay_out_alike() {
         }
     }
     let tally = run.finish();
-    assert_eq!(run_compared(&tally), tally.documents);
     for what in [
         "tables with collapsed borders",
         "tables with border spacing",
@@ -2435,12 +3089,95 @@ fn generated_table_documents_lay_out_alike() {
             format!("generated table {k}: {}", String::from_utf8_lossy(&html)),
         );
     }
-    let tally = run.finish();
-    assert!(run_compared(&tally) > 1800, "{} compared", run_compared(&tally));
+    run.finish();
 }
 
-/// The layout switches, each on both sides over generated documents and the written flex, positioned and table
-/// shapes.
+#[test]
+fn written_grid_shapes_lay_out_alike() {
+    let mut run = Run::new("written grid shapes");
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    for (what, html) in written_grid_documents() {
+        for sheet in [&master, &light] {
+            for (width, other) in [(375.0, 200.0), (120.0, 800.0)] {
+                let mut steps = layout_steps(width, other);
+                steps.extend([
+                    Step::Hover(2),
+                    Step::Layout(width, None),
+                    Step::Dump,
+                    Step::Media(900.0, 700.0),
+                    Step::Layout(900.0, None),
+                    Step::Dump,
+                ]);
+                run.case(layout_record(375.0, 667.0, 2.0, sheet, b"", html.as_bytes(), &steps), what);
+            }
+        }
+    }
+    let tally = run.finish();
+    for what in [
+        "empty grids",
+        "inline grids",
+        "grids of a definite height",
+        "grid % gaps",
+        "auto-fill repetitions",
+        "auto-fit repetitions",
+        "collapsed columns",
+        "implicit columns",
+        "implicit rows",
+        "grid-auto-rows",
+        "columns spread by justify-content",
+        "rows spread by align-content",
+        "fr columns frozen at their base",
+        "grid items spanning columns",
+        "grid items spanning rows",
+        "grid items placed by negative lines",
+        "grid items with a min-width",
+        "grid items with an order",
+        "grid items past the explicit columns",
+        "column tracks length / fr",
+        "column tracks min-content / min-content",
+        "column tracks max-content / max-content",
+        "column tracks auto / length",
+        "row tracks auto / fr",
+    ] {
+        assert!(tally.counts.contains_key(what), "no {what}");
+    }
+}
+
+#[test]
+fn generated_grid_documents_lay_out_alike() {
+    let mut run = Run::new("generated grid documents");
+    let mut random = Lcg::new(0x1B_0001);
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    let only: Option<usize> = std::env::var("LAYOUT_ONLY").ok().and_then(|v| v.parse().ok());
+    for k in 0..2500 {
+        let html = grid_document(&mut random);
+        if only.is_some_and(|only| only != k) {
+            continue;
+        }
+        let width = [320.0, 375.0, 150.0, 600.0][k % 4];
+        let other = [700.0, 240.0, 500.0, 90.0][(k / 4) % 4];
+        let sheet = if k % 2 == 0 { &master } else { &light };
+        let mut steps = layout_steps(width, other);
+        steps.extend([
+            Step::Media(other, 640.0),
+            Step::Layout(other, None),
+            Step::Dump,
+            Step::Hover(k as u32),
+            Step::Layout(other, None),
+            Step::Dump,
+        ]);
+        run.case(
+            layout_record(width, 640.0, 2.0, sheet, b"", &html, &steps),
+            format!("generated grid {k}: {}", String::from_utf8_lossy(&html)),
+        );
+    }
+    run.finish();
+}
+
+/// The layout switches, each on both sides over generated documents and the written flex, positioned, table and
+/// grid shapes.
 #[test]
 fn the_layout_switches_lay_out_alike() {
     let master = master_css();
@@ -2477,6 +3214,21 @@ fn the_layout_switches_lay_out_alike() {
             let mut steps = layout_steps(375.0, 200.0);
             steps.extend([Step::Hover(5), Step::Layout(375.0, None), Step::Dump]);
             run.case(layout_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &steps), format!("{switch}: {what}"));
+        }
+        for (what, html) in written_grid_documents() {
+            let mut steps = layout_steps(375.0, 200.0);
+            steps.extend([Step::Hover(2), Step::Layout(375.0, None), Step::Dump]);
+            run.case(layout_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &steps), format!("{switch}: {what}"));
+        }
+        let mut random = Lcg::new(0x1B_0002);
+        for k in 0..150 {
+            let html = grid_document(&mut random);
+            let mut steps = layout_steps(320.0, 500.0);
+            steps.extend([Step::Hover(k as u32), Step::Layout(320.0, None), Step::Dump]);
+            run.case(
+                layout_record(320.0, 640.0, 2.0, &master, b"", &html, &steps),
+                format!("{switch} grid {k}: {}", String::from_utf8_lossy(&html)),
+            );
         }
         let mut random = Lcg::new(0x1C_0002);
         for k in 0..150 {
@@ -2545,9 +3297,8 @@ fn a_deep_document_lays_out_on_a_small_stack() {
         let lh = Lh::new();
         let mut tally = LayoutTally::default();
         let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
-        let (answer, unported) = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        let answer = layout_answer(&lh, Switches::default(), &input, &mut tally);
         assert_eq!(answer.0, 1);
-        assert_eq!(unported, None);
         tally.items
     });
     let items = thread.expect("a thread").join().expect("the layout ran");
@@ -2579,9 +3330,8 @@ fn a_deep_positioned_document_lays_out_on_a_small_stack() {
         let lh = Lh::new();
         let mut tally = LayoutTally::default();
         let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
-        let (answer, unported) = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        let answer = layout_answer(&lh, Switches::default(), &input, &mut tally);
         assert_eq!(answer.0, 1);
-        assert_eq!(unported, None);
         tally.items
     });
     let items = thread.expect("a thread").join().expect("the layout ran");
@@ -2612,9 +3362,8 @@ fn a_deep_flex_document_lays_out_on_a_small_stack() {
         let lh = Lh::new();
         let mut tally = LayoutTally::default();
         let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
-        let (answer, unported) = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        let answer = layout_answer(&lh, Switches::default(), &input, &mut tally);
         assert_eq!(answer.0, 1);
-        assert_eq!(unported, None);
         tally.items
     });
     let items = thread.expect("a thread").join().expect("the layout ran");
@@ -2644,12 +3393,44 @@ fn a_deep_table_document_lays_out_on_a_small_stack() {
         let lh = Lh::new();
         let mut tally = LayoutTally::default();
         let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
-        let (answer, unported) = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        let answer = layout_answer(&lh, Switches::default(), &input, &mut tally);
         assert_eq!(answer.0, 1);
-        assert_eq!(unported, None);
         (tally.items, tally.tables)
     });
     let (items, tables) = thread.expect("a thread").join().expect("the layout ran");
     eprintln!("a deep table document: {items} items laid out, {tables} tables");
     assert!(tables >= 31);
+}
+
+/// 124 levels of grids, inline grids and flex boxes, each an item of the one above, lay out on the same stacks (the
+/// nested passes cross the layout budget long before they end, after the first has gone all the way down).
+#[test]
+fn a_deep_grid_document_lays_out_on_a_small_stack() {
+    let stack = if cfg!(debug_assertions) { 1 << 20 } else { 512 << 10 };
+    let thread = std::thread::Builder::new().stack_size(stack).spawn(|| {
+        let mut html = String::from("<!DOCTYPE html><html><head></head><body>");
+        for k in 0..124 {
+            html += match k % 4 {
+                0 => "<div style=\"display:grid;grid-template-columns:1fr auto;gap:2px\">a ",
+                1 => "<div style=\"display:inline-grid;grid-template-columns:repeat(auto-fill, 20px);grid-column:span 2\">b ",
+                2 => "<div style=\"display:grid;grid-template-rows:1fr;height:50px;align-items:center\">",
+                _ => "<div style=\"display:flex\">c ",
+            };
+        }
+        html += "<div>deep</div>";
+        for _ in 0..124 {
+            html += "</div>";
+        }
+        html += "</body></html>";
+        let lh = Lh::new();
+        let mut tally = LayoutTally::default();
+        let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
+        let answer = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        assert_eq!(answer.0, 1);
+        assert!(tally.counts.contains_key("layouts exhausted"));
+        tally.grid_passes
+    });
+    let passes = thread.expect("a thread").join().expect("the layout ran");
+    eprintln!("a deep grid document: {passes} grid passes");
+    assert!(passes > 100);
 }

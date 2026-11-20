@@ -59,6 +59,7 @@ pub mod pixel_type;
 pub mod render_block;
 pub mod render_block_context;
 pub mod render_flex;
+pub mod render_grid;
 pub mod render_image;
 pub mod render_inline_context;
 pub mod render_item;

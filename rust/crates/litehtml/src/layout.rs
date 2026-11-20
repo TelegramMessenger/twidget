@@ -11,9 +11,8 @@
 //! `z-index` (painting and hit testing take the stacking passes from its z-indexes), the fixed boxes' redraw boxes the
 //! document keeps, sticky offsets, placements and the scroll views `calc_document_size` makes.
 //!
-//! Not yet ported, and where the seam is: a grid's `_render_content` (L11). Reaching it records it in
-//! [`DocLayout::unported`] and does what the C++'s base class does (nothing, `{0, 0}`), so the boxes around it are
-//! laid out as the port can. Flex layout (L10) is in `render_flex.rs`, `flex_line.rs` and `flex_item.rs`.
+//! Grid layout (L11) is in `render_grid.rs`, flex layout (L10) in `render_flex.rs`, `flex_line.rs` and
+//! `flex_item.rs`, table layout (L12) in `render_table.rs`.
 
 use crate::Px;
 use crate::css_properties::CssProperties;
@@ -27,7 +26,7 @@ use crate::types::*;
 /// What `document` keeps for layout: `m_layout_epoch` (from 1), the budget (`m_layout_budget`, `m_layout_spent`,
 /// `m_layout_exhausted`), the viewport it last laid out in, the relayout boundaries to lay out again, the style and
 /// tree the positioned boxes were fetched for, the fixed boxes' redraw boxes (`m_fixed_boxes`), the document's size, the
-/// cache's counters (process-wide in the C++), and, for the port, the first layout that is not ported yet.
+/// cache's counters (process-wide in the C++), and, for the port, the grid passes a comparison asks to see.
 #[derive(Clone, Debug)]
 pub struct DocLayout {
     pub epoch: u64,
@@ -50,8 +49,9 @@ pub struct DocLayout {
     pub hits: u64,
     pub misses: u64,
     pub mismatches: u64,
-    /// The first layout reached that is a later stage's (`"grid"`).
-    pub unported: Option<&'static str>,
+    /// Each grid's `_render_content` as it ends, kept while this is `Some` (the C++ keeps none of it; lhdump's probe
+    /// records the same).
+    pub grid_trace: Option<Vec<crate::render_grid::GridPass>>,
 }
 
 impl Default for DocLayout {
@@ -73,7 +73,7 @@ impl Default for DocLayout {
             hits: 0,
             misses: 0,
             mismatches: 0,
-            unported: None,
+            grid_trace: None,
         }
     }
 }
@@ -284,13 +284,6 @@ impl Document {
             (Px(0.0), Px(0.0))
         };
         top + bottom
-    }
-
-    /// The layout of a later stage was reached.
-    pub(crate) fn unported(&mut self, what: &'static str) {
-        if self.layout.unported.is_none() {
-            self.layout.unported = Some(what);
-        }
     }
 
     // ---- The layout cache -----------------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-//! The Rust side of lhdump's `Y` record (stages L7–L10 and L12, layout): an `l` record whose steps may lay the document out
+//! The Rust side of lhdump's `Y` record (stages L7–L12, layout): an `l` record whose steps may lay the document out
 //! (`w` f32 width, u8 how: bit 0 the renderer's budget or a u64 that follows, the rest the `render_type`; answered with
 //! the f32 natural width) and whose dump steps dump the layout.
 //!
@@ -24,9 +24,15 @@
 //! start and end auto margins (f32, u8 default), u8 cross start and end auto margins, i32 alignment. A table's
 //! (stage L12) spacing and grid as the render tree's dump writes them (`render::grid_out`), now laid out: the rows'
 //! heights, tops and bottoms, the cells' minimum and maximum widths, the columns' widths and places. An item ref is
-//! i32 the item and i32 -1, or for a text's piece i32 the text and i32 which piece. Then u32 DOM elements, each f32 line
-//! height, i32 first render item, a text's u8 breaker kept; u32 anonymous elements, each f32 line height and i32 first
-//! render item.
+//! i32 the item and i32 -1, or for a text's piece i32 the text and i32 which piece. Then the grid passes of the layout
+//! steps right before the dump (stage L11; the C++ keeps none, lhdump's probe records them): u32 passes, each i32 the
+//! grid, f32 available width, f32 column gap, u8 definite height, f32 that height, f32 row gap, i32 explicit columns
+//! and rows, u32 columns and u32 rows, each i32 its size's minimum and maximum types, f32 fr, base and limit, u8
+//! infinite, repeated, occupied, collapsed, f32 content and min-content widths; u32 items, each i32 the item, i32
+//! column, row and spans, f32 min- and max-content widths, u8 automatic minimum, f32 outer width and height; u32 and
+//! f32 each column start, u32 and f32 each row start; f32 the rows' start and spacing, f32 the natural and minimum
+//! widths it reported. Then u32 DOM elements, each f32 line height, i32 first render item, a text's u8 breaker kept;
+//! u32 anonymous elements, each f32 line height and i32 first render item.
 
 use std::collections::BTreeMap;
 
@@ -37,6 +43,7 @@ use twidget_litehtml::css_values::*;
 use twidget_litehtml::document::{Document, StyleCx, Switches};
 use twidget_litehtml::flex_line::FlexLine;
 use twidget_litehtml::line_box::LbiType;
+use twidget_litehtml::render_grid::GridPass;
 use twidget_litehtml::render_item::{LayoutEntry, RenderId, RenderKind};
 use twidget_litehtml::types::{ContainingBlockContext, Margins, Position, TypedPixel};
 
@@ -52,7 +59,10 @@ pub struct LayoutTally {
     pub tables: usize,
     pub table_rows: usize,
     pub table_cells: usize,
-    pub skipped: BTreeMap<&'static str, usize>,
+    pub grid_passes: usize,
+    pub grid_items: usize,
+    /// Documents whose layouts reached a grid (counted by the run).
+    pub grid_documents: usize,
     pub counts: BTreeMap<String, usize>,
 }
 
@@ -73,6 +83,8 @@ impl LayoutTally {
         self.tables += other.tables;
         self.table_rows += other.table_rows;
         self.table_cells += other.table_cells;
+        self.grid_passes += other.grid_passes;
+        self.grid_items += other.grid_items;
         for (k, n) in other.counts {
             *self.counts.entry(k).or_default() += n;
         }
@@ -80,10 +92,10 @@ impl LayoutTally {
 
     pub fn report(&self) -> String {
         let counts: Vec<String> = self.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        let skipped: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{k} {n}")).collect();
         format!(
-            "{} documents, {} dumps, {} items, {} lines, {} flex lines of {} items, {} tables of {} rows and {} cells; not compared (a later stage's layout): {}; {}",
+            "{} documents ({} reaching grid), {} dumps, {} items, {} lines, {} flex lines of {} items, {} tables of {} rows and {} cells, {} grid passes of {} items; {}",
             self.documents,
+            self.grid_documents,
             self.dumps,
             self.items,
             self.lines,
@@ -92,7 +104,8 @@ impl LayoutTally {
             self.tables,
             self.table_rows,
             self.table_cells,
-            if skipped.is_empty() { "none".to_string() } else { skipped.join(", ") },
+            self.grid_passes,
+            self.grid_items,
             counts.join(", ")
         )
     }
@@ -158,6 +171,87 @@ impl LayoutTally {
             }
         }
         add("flex items out of source order", sorted);
+    }
+
+    /// The branches a grid's layout passes show they took (stage L11).
+    fn grid_note(&mut self, add: &mut dyn FnMut(&str, bool), doc: &Document, passes: &[GridPass]) {
+        use twidget_litehtml::css_effects::TrackType;
+        let kind = |ty: TrackType| match ty {
+            TrackType::length => "length",
+            TrackType::fraction => "fr",
+            TrackType::automatic => "auto",
+            TrackType::min_content => "min-content",
+            TrackType::max_content => "max-content",
+        };
+        for pass in passes {
+            self.grid_passes += 1;
+            self.grid_items += pass.cells.len();
+            let css = &doc.el(doc.render.item(pass.grid).element).css;
+            add("grid passes", true);
+            add("inline grids", css.m_display == StyleDisplay::display_inline_grid.index());
+            add("empty grids", pass.cells.is_empty());
+            add("grids of a definite height", pass.definite_height);
+            add("grid column gaps", pass.column_gap != Px(0.0));
+            add("grid row gaps", pass.row_gap != Px(0.0));
+            let percent = |l: &twidget_litehtml::css_length::CssLength| l.units() == CssUnits::css_units_percentage;
+            add("grid % gaps", percent(&css.m_column_gap) || percent(&css.m_row_gap));
+            let columns = &css.m_grid_template_columns;
+            add("auto-fill repetitions", columns.repeat_at >= 0 && !columns.auto_fit);
+            add("auto-fit repetitions", columns.repeat_at >= 0 && columns.auto_fit);
+            add("collapsed columns", pass.columns.iter().any(|t| t.collapsed));
+            add("implicit columns", pass.columns.len() as i32 > pass.explicit_columns);
+            add("implicit rows", pass.rows.len() as i32 > pass.explicit_rows);
+            add("grid-auto-rows", !css.m_grid_auto_rows.tracks.is_empty() && pass.rows.len() as i32 > pass.explicit_rows);
+            add("columns spread by justify-content", pass.column_x.first().is_some_and(|x| *x > Px(0.0)));
+            add("rows spread by align-content", pass.row_start > Px(0.0) || pass.row_between > Px(0.0));
+            add(&format!("grid justify-content {}", css.m_flex_justify_content), pass.cells.len() > 1);
+            add(&format!("grid align-content {}", css.m_flex_align_content), pass.definite_height);
+            // Each kind of track a pass has, once.
+            for (axis, tracks) in [("column", &pass.columns), ("row", &pass.rows)] {
+                let mut kinds = [[false; 5]; 5];
+                for t in tracks.iter() {
+                    kinds[t.size.min_type as usize][t.size.max_type as usize] = true;
+                }
+                for (min, maxes) in kinds.iter().enumerate() {
+                    for (max, &seen) in maxes.iter().enumerate() {
+                        if seen {
+                            let ty = |k: usize| {
+                                kind(
+                                    [
+                                        TrackType::length,
+                                        TrackType::fraction,
+                                        TrackType::automatic,
+                                        TrackType::min_content,
+                                        TrackType::max_content,
+                                    ][k],
+                                )
+                            };
+                            add(&format!("{axis} tracks {} / {}", ty(min), ty(max)), true);
+                        }
+                    }
+                }
+            }
+            add(
+                "fr columns frozen at their base",
+                pass.columns.iter().any(|t| t.size.max_type == TrackType::fraction && t.base > t.min_content && t.min_content > Px(0.0)),
+            );
+            let mut past = false;
+            for cell in &pass.cells {
+                let item_css = &doc.el(doc.render.item(cell.el).element).css;
+                let (column, row) = (&item_css.m_grid_column, &item_css.m_grid_row);
+                add("grid items spanning columns", cell.col_span > 1);
+                add("grid items spanning rows", cell.row_span > 1);
+                add("grid items placed by column", column.start != 0 || column.end != 0);
+                add("grid items placed by row", row.start != 0 || row.end != 0);
+                add("grid items placed by negative lines", column.start < 0 || column.end < 0 || row.start < 0 || row.end < 0);
+                add("grid items with a min-width", !cell.auto_min);
+                add(&format!("justify-self {:#x}", item_css.m_justify_self), true);
+                add(&format!("grid align-self {:#x}", item_css.m_flex_align_self), true);
+                add("grid items with an order", item_css.m_order != 0);
+                past |= cell.col + cell.col_span > pass.explicit_columns && pass.explicit_columns > 0;
+            }
+            add("grid items past the explicit columns", past);
+        }
     }
 
     /// The branches positioned layout shows it took (stage L9): the rule of CSS 2.2 10.6.4 and 10.3.7 each absolute or
@@ -381,6 +475,9 @@ impl LayoutTally {
                 add("bidi texts", twidget_litehtml::css_properties::strong_direction(&doc.el(it.element).text) > 0);
             }
         }
+        if let Some(passes) = doc.layout.grid_trace.as_ref() {
+            self.grid_note(&mut add, doc, passes);
+        }
         add("layouts exhausted", doc.layout.exhausted);
         if !doc.layout.fixed_boxes.is_empty() {
             add("fixed boxes' redraw boxes", true);
@@ -505,6 +602,43 @@ fn flex_out(o: &mut Out, doc: &Document, t: &Index, id: RenderId) {
             }
             o.u8(u8::from(item.auto_margin_cross_start)).u8(u8::from(item.auto_margin_cross_end)).i32(item.align);
         }
+    }
+}
+
+/// lhdump's `write_grid_passes`.
+fn grid_passes_out(o: &mut Out, doc: &Document, t: &Index) {
+    let passes = doc.layout.grid_trace.as_deref().unwrap_or(&[]);
+    mark(o, "grid passes", -2);
+    o.u32(passes.len() as u32);
+    for (n, pass) in passes.iter().enumerate() {
+        mark(o, "grid pass", n as i32);
+        o.i32(t.of(doc, Some(pass.grid))).f32(pass.available.value()).f32(pass.column_gap.value()).u8(u8::from(pass.definite_height));
+        o.f32(pass.container_height.value()).f32(pass.row_gap.value()).i32(pass.explicit_columns).i32(pass.explicit_rows);
+        for (what, tracks) in [("grid columns", &pass.columns), ("grid rows", &pass.rows)] {
+            mark(o, what, n as i32);
+            o.u32(tracks.len() as u32);
+            for track in tracks.iter() {
+                o.i32(track.size.min_type as i32).i32(track.size.max_type as i32);
+                o.f32(track.size.fr).f32(track.base.value()).f32(track.limit.value());
+                o.u8(u8::from(track.infinite)).u8(u8::from(track.repeated)).u8(u8::from(track.occupied)).u8(u8::from(track.collapsed));
+                o.f32(track.content.value()).f32(track.min_content.value());
+            }
+        }
+        mark(o, "grid items", n as i32);
+        o.u32(pass.cells.len() as u32);
+        for cell in &pass.cells {
+            o.i32(t.of(doc, Some(cell.el))).i32(cell.col).i32(cell.row).i32(cell.col_span).i32(cell.row_span);
+            o.f32(cell.min_content.value()).f32(cell.max_content.value()).u8(u8::from(cell.auto_min));
+            o.f32(cell.width.value()).f32(cell.height.value());
+        }
+        mark(o, "grid track starts", n as i32);
+        for starts in [&pass.column_x, &pass.row_y] {
+            o.u32(starts.len() as u32);
+            for v in starts.iter() {
+                o.f32(v.value());
+            }
+        }
+        o.f32(pass.row_start.value()).f32(pass.row_between.value()).f32(pass.ret.natural_width.value()).f32(pass.ret.min_width.value());
     }
 }
 
@@ -673,6 +807,7 @@ pub fn layout_out(o: &mut Out, cx: &StyleCx, doc: &Document, tally: &mut LayoutT
             grid_out(o, &|item| t.of(doc, item), doc, id);
         }
     }
+    grid_passes_out(o, doc, &t);
     mark(o, "DOM elements", -2);
     o.u32(nodes.len() as u32);
     for (index, &(id, _)) in nodes.iter().enumerate() {
@@ -692,16 +827,9 @@ pub fn layout_out(o: &mut Out, cx: &StyleCx, doc: &Document, tally: &mut LayoutT
     tally.note(doc, &t.items);
 }
 
-/// What lhdump answers to a `Y` record, and the first layout a later stage ports when the port reached one.
-pub fn layout_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut LayoutTally) -> ((u8, Vec<u8>), Option<&'static str>) {
-    let mut unported = None;
-    let answer = record_answer(lh, switches, input, &mut |o: &mut Out, cx: &StyleCx, doc: &Document| {
-        if unported.is_none() {
-            unported = doc.layout.unported;
-        }
-        layout_out(o, cx, doc, tally);
-    });
-    (answer, unported)
+/// What lhdump answers to a `Y` record.
+pub fn layout_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut LayoutTally) -> (u8, Vec<u8>) {
+    record_answer(lh, switches, input, &mut |o: &mut Out, cx: &StyleCx, doc: &Document| layout_out(o, cx, doc, tally))
 }
 
 /// A `Y` record.

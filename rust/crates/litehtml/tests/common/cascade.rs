@@ -752,12 +752,18 @@ pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn F
     let mut phases = vec![container.calls.borrow().len()];
     let steps = i.u32();
     let mut s = 0;
+    // The grid passes a dump writes are those of the layouts right before it, as lhdump's probe keeps them.
+    let mut last_op = 0;
     while s < steps && i.at < i.s.len() {
         if s > 0 {
             phases.push(container.calls.borrow().len());
         }
         s += 1;
         let op = i.u8();
+        if last_op != b'w' {
+            doc.layout.grid_trace = Some(Vec::new());
+        }
+        last_op = op;
         match op {
             b'd' => dump(&mut o, &cx, &doc),
             b'm' => {

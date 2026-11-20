@@ -11,6 +11,7 @@
 #include "html.h"
 #include "html_tag.h"
 #include "lhdump_dom.h"
+#include "lhdump_grid.h"
 #include "lhdump_gumbo.h"
 #include "master_css.h"
 #include "num_cvt.h"
@@ -1368,7 +1369,49 @@ void write_flex(Out& o, TreeIndex& t, render_item_flex& flex) {
     }
 }
 
-// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once, the fixed boxes' redraw boxes), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip, the sides a collapsed table leaves it; its cache and marks; its positioned items in z-order; its scroll view; a sticky box's offset; its placement; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps, a flex's baselines and lines with their items, a table's spacing and grid as laid out), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
+// Stage L11: the grid passes of the layout steps right before the dump, in order, each the grid, its available width, column gap, definite height and that height, row gap, explicit column and row counts, its columns and rows (the size's types and fr, base, limit, infinite, repeated, occupied, collapsed, content and min-content widths), its items (the item, column, row, spans, min- and max-content widths, automatic minimum, outer width and height), the columns' and rows' starts, the rows' start and spacing, and the widths it reported.
+void write_grid_passes(Out& o, TreeIndex& t) {
+    const auto& passes = lhdump_grid::trace();
+    o.u32(uint32_t(passes.size()));
+    for (const auto& pass : passes) {
+        o.i32(t.of(pass.grid));
+        o.f32(pass.available);
+        o.f32(pass.column_gap);
+        o.u8(pass.definite_height ? 1 : 0);
+        o.f32(pass.container_height);
+        o.f32(pass.row_gap);
+        o.i32(pass.explicit_columns);
+        o.i32(pass.explicit_rows);
+        for (const auto* tracks : {&pass.columns, &pass.rows}) {
+            o.u32(uint32_t(tracks->size()));
+            for (const auto& track : *tracks) {
+                o.i32(track.min_type);
+                o.i32(track.max_type);
+                for (float v : {track.fr, track.base, track.limit}) o.f32(v);
+                for (bool b : {track.infinite, track.repeated, track.occupied, track.collapsed}) o.u8(b ? 1 : 0);
+                o.f32(track.content);
+                o.f32(track.min_content);
+            }
+        }
+        o.u32(uint32_t(pass.cells.size()));
+        for (const auto& cell : pass.cells) {
+            o.i32(t.of(cell.el));
+            for (int v : {cell.col, cell.row, cell.col_span, cell.row_span}) o.i32(v);
+            o.f32(cell.min_content);
+            o.f32(cell.max_content);
+            o.u8(cell.auto_min ? 1 : 0);
+            o.f32(cell.width);
+            o.f32(cell.height);
+        }
+        for (const auto* starts : {&pass.column_x, &pass.row_y}) {
+            o.u32(uint32_t(starts->size()));
+            for (float v : *starts) o.f32(v);
+        }
+        for (float v : {pass.row_start, pass.row_between, pass.natural_width, pass.min_width}) o.f32(v);
+    }
+}
+
+// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once, the fixed boxes' redraw boxes), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip, the sides a collapsed table leaves it; its cache and marks; its positioned items in z-order; its scroll view; a sticky box's offset; its placement; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps, a flex's baselines and lines with their items, a table's spacing and grid as laid out), the grid passes, then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
 void write_layout(Out& o, document& doc) {
     using lhdump_dom::field;
     TreeIndex t;
@@ -1520,6 +1563,7 @@ void write_layout(Out& o, document& doc) {
         // Stage L12: a table's grid with its rows' heights and places, its cells' widths and its columns' widths and places.
         if (kind == 7) write_grid(o, t, static_cast<render_item_table&>(*ri));
     }
+    write_grid_passes(o, t);
     o.u32(uint32_t(nodes.size()));
     for (const auto& [el, parent] : nodes) {
         o.f32(el->css().line_height().computed_value.value());
@@ -1582,8 +1626,12 @@ void cascade(In& in, Out& o, int mode) {
     o.u8(uint8_t(doc->mode()));
     std::vector<size_t> phases{container.calls.size()};
     const uint32_t steps = in.u32();
+    uint8_t last_op = 0;
     for (uint32_t s = 0; s < steps && in.at < in.s.size(); s++, phases.push_back(container.calls.size())) {
         const uint8_t op = in.u8();
+        // The grid passes a dump writes are those of the layouts right before it.
+        if (last_op != 'w') lhdump_grid::trace().clear();
+        last_op = op;
         if (op == 'd') {
             if (mode == 2)
                 write_layout(o, *doc);

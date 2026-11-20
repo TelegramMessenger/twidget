@@ -81,9 +81,24 @@ if (MSVC)
 else()
     target_compile_options(lhdump_litehtml PRIVATE -w)
 endif()
+# lhdump's grid probe (stage L11): render_grid.cpp copied with a call of lhdump_grid.h's record() as _render_content returns, compiled into lhdump, whose own definition keeps the library's render_grid object out of its link.
+include("${CMAKE_CURRENT_SOURCE_DIR}/probe.cmake")
+set(TW_PROBE_WHAT lhdump)
+file(READ "${TW_LITEHTML}/src/render_grid.cpp" LHDUMP_GRID_CPP)
+string(REPLACE "\r\n" "\n" LHDUMP_GRID_CPP "${LHDUMP_GRID_CPP}")
+tw_probe(LHDUMP_GRID_CPP 1 [=[#include "html_tag.h"]=] [=[#include "html_tag.h"
+#include "lhdump_grid.h"]=])
+tw_probe(LHDUMP_GRID_CPP 1 [=[    return ret;
+}]=] [=[    lhdump_grid::record(this, available, column_gap, definite_height, container_height, row_gap, explicit_columns, explicit_rows, columns, rows, cells, column_x, row_y, row_start, row_between, ret);
+    return ret;
+}]=])
+set(LHDUMP_GRID "${CMAKE_CURRENT_BINARY_DIR}/lhdump_grid")
+file(WRITE "${LHDUMP_GRID}/render_grid.cpp.tmp" "${LHDUMP_GRID_CPP}")
+configure_file("${LHDUMP_GRID}/render_grid.cpp.tmp" "${LHDUMP_GRID}/render_grid.cpp" COPYONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TW_LITEHTML}/src/render_grid.cpp")
 # The renderer's colour-scheme rewrite, copied into lhdump, reads the core's CSS helpers.
-add_executable(lhdump lhdump.cpp "${TW_CORE}/css.cpp")
-target_include_directories(lhdump PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+add_executable(lhdump lhdump.cpp "${TW_CORE}/css.cpp" "${LHDUMP_GRID}/render_grid.cpp")
+target_include_directories(lhdump PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(lhdump PRIVATE lhdump_litehtml)
 
 # shadow_oracle: the whole renderer, its sources as twidget's CMakeLists.txt builds twidget_core, on the lhdump_litehtml objects; its UA layer generated from widget-sandbox's profile.json the same way.

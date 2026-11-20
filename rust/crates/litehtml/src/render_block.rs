@@ -421,8 +421,8 @@ impl Document {
     }
 
     /// `_render_content(x, y, second_pass, self_size, fmt_ctx)` of the block's class: a block context's boxes, an
-    /// inline context's lines, a flex's lines (the only one to read `x` and `y`); a grid's (L11) is not ported yet;
-    /// a plain block lays out nothing.
+    /// inline context's lines, a flex's lines or a grid's tracks (the two that read `x` and `y`); a plain block lays
+    /// out nothing.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_content(
         &mut self,
@@ -438,10 +438,7 @@ impl Document {
             RenderKind::render_item_block_context => self.block_context_render_content(cx, this, second_pass, self_size, fmt_ctx),
             RenderKind::render_item_inline_context => self.inline_context_render_content(cx, this, self_size, fmt_ctx),
             RenderKind::render_item_flex => self.flex_render_content(cx, this, x, y, self_size, fmt_ctx),
-            RenderKind::render_item_grid => {
-                self.unported("grid");
-                RenderedWidth::default()
-            }
+            RenderKind::render_item_grid => self.grid_render_content(cx, this, x, y, self_size, fmt_ctx),
             _ => RenderedWidth::default(),
         }
     }
