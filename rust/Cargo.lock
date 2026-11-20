@@ -19,9 +19,6 @@ version = "0.1.0"
 [[package]]
 name = "twidget_json"
 version = "0.1.0"
-dependencies = [
- "twidget_testkit",
-]
 
 [[package]]
 name = "twidget_paint"

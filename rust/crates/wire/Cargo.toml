@@ -11,4 +11,4 @@ publish.workspace = true
 workspace = true
 
 [dev-dependencies]
-twidget_testkit = { path = "../testkit" }
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

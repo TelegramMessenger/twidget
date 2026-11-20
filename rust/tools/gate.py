@@ -24,8 +24,9 @@ def step(name, command, env=None):
 
 
 def oracle_dir():
+    suffix = "_oracle.exe" if os.name == "nt" else "_oracle"
     for candidate in (os.path.join(BUILD, "Release"), BUILD):
-        if os.path.isfile(os.path.join(candidate, "wire_oracle.exe" if os.name == "nt" else "wire_oracle")):
+        if os.path.isdir(candidate) and any(name.endswith(suffix) for name in os.listdir(candidate)):
             return candidate
     return None
 
