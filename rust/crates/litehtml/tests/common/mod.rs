@@ -70,6 +70,8 @@
 //!   element (at most 48) `:hover`, then `:active` too, set up the chain, and every selector that reads them
 //!   against every node (u8).
 //! - `j` options, text: Gumbo's parse of the text, every node and error (see `gumbo`).
+//! - `i` flags, text: the fork's DOM of the text; `I` flags, text, declarations: the declarations its attributes
+//!   add to each tag's style against the port's (see `dom`).
 //!
 //! The declaration records (stage L5) read one of four containers by a u8: 0 none, 1 lhdump's (a 375 x 667
 //! screen), 2 the renderer's (its `sanitize_declaration` untrusted, 412 x 915), 3 one that resolves a few
@@ -97,7 +99,7 @@ use twidget_litehtml::css_parser::{self, CssParser, f_componentize, f_remove_whi
 use twidget_litehtml::css_selector::{CssSelector, DocumentMode};
 use twidget_litehtml::css_tokenizer::*;
 use twidget_litehtml::css_values::*;
-use twidget_litehtml::document::Units;
+use twidget_litehtml::document::{Env, Units};
 use twidget_litehtml::document_container::DocumentContainer;
 use twidget_litehtml::encodings::{Encoding, decode};
 use twidget_litehtml::html::lowcase;
@@ -109,6 +111,7 @@ use twidget_litehtml::stylesheet::{Css, RawDeclaration, RawRule, RuleType, Style
 use twidget_litehtml::types::{FontMetrics, MediaFeatures};
 use twidget_litehtml::*;
 
+pub mod dom;
 pub mod gumbo;
 
 #[derive(Default)]
@@ -2331,33 +2334,150 @@ pub fn match_input(flips: bool, html: &[u8], sheets: &[Vec<u8>]) -> Vec<u8> {
     o.take()
 }
 
-/// What the Rust side answers to an `h` record, given the DOM lhdump answered with (which the Rust side
-/// cannot build before stage L3): that DOM as it came, then the selectors and the matrix.
-pub fn match_answer(lh: &Lh, input: &[u8], cpp: &[u8], counts: &mut std::collections::BTreeMap<String, usize>) -> Vec<u8> {
-    let mut i = In::new(input);
-    let flips = i.u8() != 0;
-    let _html = i.str();
-    let sheet_texts: Vec<Vec<u8>> = (0..i.u32()).map(|_| i.str()).collect();
-    let (mode, mut tree, dom_len) = read_dom(&lh.names, cpp);
-    let mut o = Out::default();
-    o.s.extend_from_slice(&cpp[..dom_len.min(cpp.len())]);
-    let sheets = Sheets { lh, container: TestContainer, mode };
-    let mut selectors = Vec::new();
-    for text in &sheet_texts {
-        let mut sheet = Css::default();
-        sheet.parse_css_stylesheet(StyleSheetInput::Text(text), b"", &sheets, None, true);
-        o.u32(sheet.selectors().len() as u32);
-        for sel in sheet.selectors() {
-            selector_out(&mut o, &lh.names, sel);
-            selectors.push(std::sync::Arc::clone(sel));
+/// A tree whose elements the `h` record's flips set `:hover` and `:active` on, as the mouse does.
+pub trait Flips: SelectElements {
+    /// `on_mouse_over()`.
+    fn over(&mut self, el: Self::Node);
+    /// `on_lbutton_down()`.
+    fn down(&mut self, el: Self::Node);
+    /// `on_mouse_leave()`.
+    fn leave(&mut self, el: Self::Node);
+}
+
+impl Flips for TestTree {
+    fn over(&mut self, el: usize) {
+        self.set_up_the_chain(el, twidget_litehtml::string_id::_hover_, true);
+    }
+    fn down(&mut self, el: usize) {
+        self.set_up_the_chain(el, twidget_litehtml::string_id::_active_, true);
+    }
+    fn leave(&mut self, el: usize) {
+        self.set_up_the_chain(el, twidget_litehtml::string_id::_hover_, false);
+        self.set_up_the_chain(el, twidget_litehtml::string_id::_active_, false);
+    }
+}
+
+impl Flips for Document {
+    fn over(&mut self, el: ElementId) {
+        self.on_mouse_over(el);
+    }
+    fn down(&mut self, el: ElementId) {
+        self.on_lbutton_down(el);
+    }
+    fn leave(&mut self, el: ElementId) {
+        self.on_mouse_leave(el);
+    }
+}
+
+/// The pseudo-classes a document may set on an element, as lhdump's `PSEUDO_FLAGS` names them.
+const PSEUDO_FLAGS: [&str; 14] = [
+    "root",
+    "hover",
+    "active",
+    "focus",
+    "focus-visible",
+    "focus-within",
+    "link",
+    "visited",
+    "any-link",
+    "local-link",
+    "target",
+    "target-within",
+    "scope",
+    "host",
+];
+
+/// The document `h` builds (`createFromString` with litehtml's master sheet) as far as the DOM goes: the
+/// elements, `:root`, the attributes parsed, and `:link` on the anchors the three sheets are applied to. Generated
+/// content, which the document's own sheets may add, is the cascade's.
+pub fn h_document(names: &Names, html: &[u8]) -> (Document, Vec<ElementId>) {
+    let container = dom::DomContainer::default();
+    let env = Env { names, container: &container };
+    let (mut doc, root) = Document::build(html, &env);
+    doc.finalize_dom(&env, root);
+    fn sheets_reach(doc: &Document, el: ElementId, anchors: &mut Vec<ElementId>) {
+        if doc.kind(el) == ElementKind::el_anchor {
+            anchors.push(el);
+        }
+        if doc.kind(el).is_html_tag() {
+            for &child in doc.children(el) {
+                if !doc.is_text(child) {
+                    sheets_reach(doc, child, anchors);
+                }
+            }
         }
     }
-    *counts.entry("elements".into()).or_default() += tree.nodes.iter().filter(|n| n.is_tag).count();
+    let mut anchors = Vec::new();
+    if let Some(root) = root {
+        sheets_reach(&doc, root, &mut anchors);
+    }
+    for _sheet in 0..3 {
+        for &anchor in &anchors {
+            doc.el_anchor_apply_stylesheet(anchor);
+        }
+    }
+    fn collect(doc: &Document, el: ElementId, nodes: &mut Vec<ElementId>) {
+        nodes.push(el);
+        for &child in doc.children(el) {
+            collect(doc, child, nodes);
+        }
+    }
+    let mut nodes = Vec::new();
+    if let Some(root) = root {
+        collect(&doc, root, &mut nodes);
+    }
+    (doc, nodes)
+}
+
+/// The DOM part of an `h` answer for a Rust document: lhdump's `write_dom`.
+pub fn h_dom_out(o: &mut Out, names: &Names, doc: &Document, nodes: &[ElementId]) {
+    o.u8(doc.mode as u8);
+    o.u32(nodes.len() as u32);
+    let index: std::collections::BTreeMap<ElementId, i32> = nodes.iter().enumerate().map(|(k, &e)| (e, k as i32)).collect();
+    for &el in nodes {
+        let e = doc.el(el);
+        let tag = e.kind.is_html_tag();
+        o.i32(doc.parent(el).map(|p| index[&p]).unwrap_or(-1));
+        o.u8(u8::from(tag)).u8(u8::from(doc.is_comment(el))).u8(u8::from(doc.is_text(el)));
+        o.str(&names.s(doc.tag(el)));
+        o.str(if tag { names.s(e.id).to_vec() } else { Vec::new() }.as_slice());
+        o.u32(if tag { e.classes.len() as u32 } else { 0 });
+        if tag {
+            for &cls in &e.classes {
+                o.str(&names.s(cls));
+            }
+        }
+        o.u32(if tag { e.attrs.len() as u32 } else { 0 });
+        if tag {
+            for (name, value) in &e.attrs {
+                o.str(name).str(value);
+            }
+        }
+        let flags: Vec<&str> = PSEUDO_FLAGS.iter().copied().filter(|name| doc.has_pseudo_class(el, names.id(name.as_bytes()))).collect();
+        o.u32(flags.len() as u32);
+        for flag in flags {
+            o.str(flag.as_bytes());
+        }
+    }
+}
+
+/// The matrix of an `h` answer on a tree: every selector against every node with pseudo-classes checked and not,
+/// then with flips the dynamic selectors with `:hover` and `:active` set on every k-th tag.
+fn matrix<T: Flips>(
+    o: &mut Out,
+    tree: &mut T,
+    nodes: &[T::Node],
+    names: &Names,
+    selectors: &[Arc<CssSelector>],
+    flips: bool,
+    counts: &mut std::collections::BTreeMap<String, usize>,
+) {
+    *counts.entry("elements".into()).or_default() += nodes.iter().filter(|&&n| tree.is_html_tag(n)).count();
     *counts.entry("selectors".into()).or_default() += selectors.len();
     {
-        let matcher = Matcher::new(&tree, &lh.names);
-        for sel in &selectors {
-            for el in 0..tree.nodes.len() {
+        let matcher = Matcher::new(&*tree, names);
+        for sel in selectors {
+            for &el in nodes {
                 let with = matcher.select(el, sel, true);
                 let without = matcher.select(el, sel, false);
                 if with != 0 {
@@ -2377,19 +2497,18 @@ pub fn match_answer(lh: &Lh, input: &[u8], cpp: &[u8], counts: &mut std::collect
         }
     }
     if flips {
-        use twidget_litehtml::string_id::{_active_, _hover_};
         let dynamic: Vec<_> = selectors.iter().filter(|s| is_dynamic(s)).cloned().collect();
-        let tags: Vec<usize> = (0..tree.nodes.len()).filter(|&n| tree.nodes[n].is_tag).collect();
+        let tags: Vec<T::Node> = nodes.iter().copied().filter(|&n| tree.is_html_tag(n)).collect();
         let step = tags.len().div_ceil(48).max(1);
         for &target in tags.iter().step_by(step) {
-            tree.set_up_the_chain(target, _hover_, true);
+            tree.over(target);
             for pass in 0..2 {
                 if pass == 1 {
-                    tree.set_up_the_chain(target, _active_, true);
+                    tree.down(target);
                 }
-                let matcher = Matcher::new(&tree, &lh.names);
+                let matcher = Matcher::new(&*tree, names);
                 for sel in &dynamic {
-                    for el in 0..tree.nodes.len() {
+                    for &el in nodes {
                         let with = matcher.select(el, sel, true);
                         if with != 0 {
                             *counts.entry("matches with :hover/:active set".into()).or_default() += 1;
@@ -2398,10 +2517,60 @@ pub fn match_answer(lh: &Lh, input: &[u8], cpp: &[u8], counts: &mut std::collect
                     }
                 }
             }
-            tree.set_up_the_chain(target, _hover_, false);
-            tree.set_up_the_chain(target, _active_, false);
+            tree.leave(target);
             *counts.entry("hover/active flips".into()).or_default() += 1;
         }
+    }
+}
+
+/// What the Rust side answers to an `h` record: the DOM it builds of the html (stage L3) and the matrix on it.
+/// Where lhdump's DOM holds generated `::before` or `::after` boxes, which the document's own sheets make in the
+/// cascade (stage L5), the answer takes lhdump's DOM as it came and matches on that.
+pub fn match_answer(lh: &Lh, input: &[u8], cpp: &[u8], counts: &mut std::collections::BTreeMap<String, usize>) -> Vec<u8> {
+    use twidget_litehtml::string_id::{__tag_after_, __tag_before_};
+    let mut i = In::new(input);
+    let flips = i.u8() != 0;
+    let html = i.str();
+    let sheet_texts: Vec<Vec<u8>> = (0..i.u32()).map(|_| i.str()).collect();
+    let (mode, mut tree, dom_len) = read_dom(&lh.names, cpp);
+    let generated = tree.nodes.iter().any(|n| n.tag == __tag_before_ || n.tag == __tag_after_);
+    let (mut doc, nodes) = h_document(&lh.names, &html);
+    // The render tree numbers ordered list items in an attribute (render_block.cpp, `list_index`): stage L6's, taken
+    // from lhdump's DOM where the trees agree.
+    if nodes.len() == tree.nodes.len() {
+        for (k, &el) in nodes.iter().enumerate() {
+            if let Some(value) = tree.nodes[k].attrs.get(&b"list_index"[..])
+                && doc.get_attr(el, b"list_index").is_none()
+            {
+                doc.set_attr(&lh.names, el, b"list_index", value);
+                *counts.entry("list_index attributes from lhdump's render tree".into()).or_default() += 1;
+            }
+        }
+    }
+    let mut o = Out::default();
+    if generated {
+        o.s.extend_from_slice(&cpp[..dom_len.min(cpp.len())]);
+        *counts.entry("documents matched on lhdump's DOM (generated content)".into()).or_default() += 1;
+    } else {
+        h_dom_out(&mut o, &lh.names, &doc, &nodes);
+        *counts.entry("documents matched on the Rust DOM".into()).or_default() += 1;
+    }
+    let sheets = Sheets { lh, container: TestContainer, mode };
+    let mut selectors = Vec::new();
+    for text in &sheet_texts {
+        let mut sheet = Css::default();
+        sheet.parse_css_stylesheet(StyleSheetInput::Text(text), b"", &sheets, None, true);
+        o.u32(sheet.selectors().len() as u32);
+        for sel in sheet.selectors() {
+            selector_out(&mut o, &lh.names, sel);
+            selectors.push(Arc::clone(sel));
+        }
+    }
+    if generated {
+        let nodes: Vec<usize> = (0..tree.nodes.len()).collect();
+        matrix(&mut o, &mut tree, &nodes, &lh.names, &selectors, flips, counts);
+    } else {
+        matrix(&mut o, &mut doc, &nodes, &lh.names, &selectors, flips, counts);
     }
     o.take()
 }

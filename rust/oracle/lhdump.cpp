@@ -10,6 +10,7 @@
 #include "encodings.h"
 #include "html.h"
 #include "html_tag.h"
+#include "lhdump_dom.h"
 #include "lhdump_gumbo.h"
 #include "master_css.h"
 #include "num_cvt.h"
@@ -1182,6 +1183,16 @@ bool run(int op, std::string_view input) {
                 tags[t]->on_mouse_leave();
             }
         }
+        answer(1, o.s);
+        return true;
+    }
+    case 'i': { // the fork's DOM of a text as the renderer's documents are built: lhdump_dom.h
+        lhdump_dom::dom<In, Out, OracleContainer>(in, o);
+        answer(1, o.s);
+        return true;
+    }
+    case 'I': { // the declarations parse_attributes adds to each tag's style, against the port's: lhdump_dom.h
+        lhdump_dom::replay<In, Out, OracleContainer>(in, o, [](In& in) { return read_token(in, 0); });
         answer(1, o.s);
         return true;
     }

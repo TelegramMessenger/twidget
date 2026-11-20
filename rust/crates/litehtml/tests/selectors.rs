@@ -3,8 +3,9 @@
 //! as text, the pseudo-class flags), then every selector of each sheet as the fork parses it (its compounds,
 //! subclass and pseudo selectors, nested lists, combinators, specificity, order) and the match matrix: each
 //! selector against each node, with pseudo-classes checked and not, and with `:hover` and `:active` set on
-//! element after element. The Rust side reads the DOM into a tree implementing `SelectElements`, parses
-//! the same sheets and matches them. The documents: widget-sandbox's corpus with its own sheets (and litehtml's
+//! element after element. The Rust side builds its own DOM of the document (stage L3), which must dump alike,
+//! parses the same sheets and matches them on it; where the fork's DOM holds `::before` or `::after` boxes the
+//! document's sheets generated (the cascade's, stage L5), it matches on lhdump's DOM read into a `TestTree`. The documents: widget-sandbox's corpus with its own sheets (and litehtml's
 //! master CSS and the renderer's UA layers on some), and generated documents and selector sheets. Skipped
 //! without `TWIDGET_ORACLE_DIR`.
 

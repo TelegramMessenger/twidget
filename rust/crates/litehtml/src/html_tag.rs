@@ -1,12 +1,22 @@
-//! `html_tag.cpp`'s selector matching: `select` of a complex selector, a compound, a pseudo-class and an
-//! attribute selector, the ancestor and sibling searches the combinators make, the structural counts of the
-//! `:nth-*` pseudo-classes, `select_all` and `select_one`. Until the DOM is ported it works on any tree that
-//! answers what `css_selector.cpp` and `html_tag.cpp` ask of an element ([`SelectElements`]).
+//! `html_tag.cpp`: what an `html_tag` keeps of its tag and attributes (`set_tagName`, `set_attr` with its classes
+//! and id, `set_class`, the pseudo-classes, `appendChild`, `parse_attributes` with the presentational mappings) on
+//! the document's elements, and its selector matching: `select` of a complex selector, a compound, a pseudo-class
+//! and an attribute selector, the ancestor and sibling searches the combinators make, the structural counts of the
+//! `:nth-*` pseudo-classes, `select_all` and `select_one`. Matching works on any tree that answers what
+//! `css_selector.cpp` and `html_tag.cpp` ask of an element ([`SelectElements`]); the document is one.
 
 use std::cell::Cell;
 
-use crate::css_selector::{AttrMatcher, AttrSelectType, CssAttributeSelector, CssCombinator, CssElementSelector, CssSelector};
-use crate::html::{WHITESPACE, lowcase, match_at, split_string};
+use crate::css_selector::{
+    AttrMatcher, AttrSelectType, CssAttributeSelector, CssCombinator, CssElementSelector, CssSelector, DocumentMode,
+};
+use crate::css_tokenizer::{CssNumberType, CssToken, CssTokenType, DIMENSION, PERCENTAGE};
+use crate::document::{Document, Env};
+use crate::element::{AttributeDeclaration, AttributeValue, ElementId};
+use crate::html::{WHITESPACE, join_string, lowcase, match_at, split_string};
+use crate::html_microsyntaxes::{
+    HtmlDimensionType, html_parse_dimension_value, html_parse_non_negative_integer, html_parse_nonzero_dimension_value,
+};
 use crate::string_id::*;
 use crate::{Names, StringId};
 
@@ -573,4 +583,285 @@ fn c_str(value: &[u8]) -> &[u8] {
 
 fn find(hay: &[u8], needle: &[u8]) -> bool {
     needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
+}
+
+// ---- The element --------------------------------------------------------------------------------------------
+
+/// A value as a `const char*` hands it on: up to its first NUL.
+fn c_value(value: &[u8]) -> &[u8] {
+    c_str(value)
+}
+
+impl Document {
+    /// `html_tag::appendChild(el)`: the child gets this parent and goes last.
+    pub(crate) fn html_tag_append_child(&mut self, parent: ElementId, el: ElementId) -> bool {
+        self.el_mut(el).parent = Some(parent);
+        self.el_mut(parent).children.push(el);
+        true
+    }
+
+    /// `set_tagName(tag)`: an `html_tag`'s tag, lower-case; other classes ignore it.
+    pub fn set_tag_name(&mut self, names: &Names, id: ElementId, tag: &[u8]) {
+        if self.kind(id).is_html_tag() {
+            self.el_mut(id).tag = names.id(&lowcase(c_value(tag)));
+        }
+    }
+
+    /// `set_attr(name, val)`: an `html_tag` keeps every attribute under its lower-case name with its value as
+    /// written; `class` also gives its words and `id` the id, lower-case in quirks mode. Other classes ignore it.
+    pub fn set_attr(&mut self, names: &Names, id: ElementId, name: &[u8], val: &[u8]) {
+        if !self.kind(id).is_html_tag() {
+            return;
+        }
+        let (name, val) = (lowcase(c_value(name)), c_value(val).to_vec());
+        let quirks = self.mode == DocumentMode::quirks_mode;
+        let el = &mut self.elements[id.0 as usize];
+        el.attrs.insert(name.clone(), val.clone());
+        if name == b"class" {
+            let val = if quirks { lowcase(&val) } else { val };
+            el.str_classes = split_string(&val, WHITESPACE, b"", b"");
+            el.classes = el.str_classes.iter().map(|cls| names.id(cls)).collect();
+        } else if name == b"id" {
+            let val = if quirks { lowcase(&val) } else { val };
+            el.id = names.id(&val);
+        }
+    }
+
+    /// `get_attr(name)`: an `html_tag`'s attribute; none for other classes.
+    pub fn get_attr(&self, id: ElementId, name: &[u8]) -> Option<&[u8]> {
+        let el = self.el(id);
+        if !el.kind.is_html_tag() {
+            return None;
+        }
+        el.attrs.get(name).map(|v| &v[..])
+    }
+
+    /// `set_class(pclass, add)`: the space-separated classes added to or taken from `m_str_classes`, and the
+    /// `class` attribute written again from them when they changed.
+    pub fn set_class(&mut self, names: &Names, id: ElementId, pclass: &[u8], add: bool) -> bool {
+        if !self.kind(id).is_html_tag() {
+            return false;
+        }
+        let classes = split_string(c_value(pclass), b" ", b"", b"\"");
+        let mut changed = false;
+        let str_classes = &mut self.el_mut(id).str_classes;
+        if add {
+            for class in classes {
+                if !str_classes.contains(&class) {
+                    str_classes.push(class);
+                    changed = true;
+                }
+            }
+        } else {
+            for class in &classes {
+                let before = str_classes.len();
+                str_classes.retain(|c| c != class);
+                if str_classes.len() != before {
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let class_string = join_string(&self.el(id).str_classes, b" ");
+            self.set_attr(names, id, b"class", &class_string);
+            return true;
+        }
+        false
+    }
+
+    /// `set_pseudo_class(cls, add)`: whether the element's pseudo-classes changed.
+    pub fn set_pseudo_class(&mut self, id: ElementId, cls: StringId, add: bool) -> bool {
+        if !self.kind(id).is_html_tag() {
+            return false;
+        }
+        let pseudo = &mut self.el_mut(id).pseudo_classes;
+        if add {
+            if !pseudo.contains(&cls) {
+                pseudo.push(cls);
+                return true;
+            }
+        } else if let Some(at) = pseudo.iter().position(|c| *c == cls) {
+            pseudo.remove(at);
+            return true;
+        }
+        false
+    }
+
+    /// `set_pseudo_class(cls, add)` on the element and every ancestor: whether any changed.
+    fn set_pseudo_class_up(&mut self, id: ElementId, cls: StringId, add: bool) -> bool {
+        let mut ret = false;
+        let mut el = Some(id);
+        while let Some(e) = el {
+            if self.set_pseudo_class(e, cls, add) {
+                ret = true;
+            }
+            el = self.parent(e);
+        }
+        ret
+    }
+
+    /// `on_mouse_over()`: `:hover` up the chain.
+    pub fn on_mouse_over(&mut self, id: ElementId) -> bool {
+        self.set_pseudo_class_up(id, _hover_, true)
+    }
+
+    /// `on_mouse_leave()`: `:hover` and `:active` off up the chain, element by element.
+    pub fn on_mouse_leave(&mut self, id: ElementId) -> bool {
+        let mut ret = false;
+        let mut el = Some(id);
+        while let Some(e) = el {
+            if self.set_pseudo_class(e, _hover_, false) {
+                ret = true;
+            }
+            if self.set_pseudo_class(e, _active_, false) {
+                ret = true;
+            }
+            el = self.parent(e);
+        }
+        ret
+    }
+
+    /// `on_lbutton_down()`: `:active` up the chain.
+    pub fn on_lbutton_down(&mut self, id: ElementId) -> bool {
+        self.set_pseudo_class_up(id, _active_, true)
+    }
+
+    /// `m_style.add_property(name, value, "", false, container)` as `parse_attributes` makes it.
+    pub(crate) fn add_declaration(&mut self, id: ElementId, name: StringId, value: AttributeValue, with_container: bool) {
+        self.el_mut(id).declarations.push(AttributeDeclaration { name, value, baseurl: Vec::new(), important: false, with_container });
+    }
+
+    /// `m_style.add_property(name, text)`, no container.
+    pub(crate) fn add_text_declaration(&mut self, id: ElementId, name: StringId, text: &[u8]) {
+        self.add_declaration(id, name, AttributeValue::Text(c_value(text).to_vec()), false);
+    }
+
+    /// `m_style.add_property(name, text, "", false, container)`.
+    pub(crate) fn add_text_declaration_with_container(&mut self, id: ElementId, name: StringId, text: &[u8]) {
+        self.add_declaration(id, name, AttributeValue::Text(c_value(text).to_vec()), true);
+    }
+
+    /// `html_tag::parse_attributes()`: the font attributes of an SVG text element (in an `<svg>`, or one itself)
+    /// set the properties they name, a bare `font-size` number in px; then the children's.
+    pub fn html_tag_parse_attributes(&mut self, env: &Env, id: ElementId) {
+        const SVG_TEXT_TAGS: [&[u8]; 6] = [b"svg", b"g", b"text", b"tspan", b"textpath", b"a"];
+        let mut svg_context = false;
+        let mut cur = self.parent(id);
+        while let Some(p) = cur {
+            if svg_context {
+                break;
+            }
+            svg_context = lowcase(&self.get_tag_name(env.names, p)) == b"svg";
+            cur = self.parent(p);
+        }
+        let tag = lowcase(&env.names.s(self.el(id).tag));
+        if (tag == b"svg" || svg_context) && SVG_TEXT_TAGS.contains(&&tag[..]) {
+            for name in [&b"font-family"[..], b"font-weight", b"font-style", b"font-size"] {
+                let Some(value) = self.get_attr(id, name) else { continue };
+                if value.is_empty() {
+                    continue;
+                }
+                let mut text = value.to_vec();
+                if name == b"font-size" && text.iter().all(|c| b"0123456789.".contains(c)) {
+                    text.extend_from_slice(b"px");
+                }
+                let name = env.names.id(name);
+                self.add_text_declaration_with_container(id, name, &text);
+            }
+        }
+        for child in self.el(id).children.clone() {
+            self.parse_attributes(env, child);
+        }
+    }
+
+    /// `css_token(type, number, number_type, str)` in a list of one, as the mappings add it.
+    fn mapped(&mut self, id: ElementId, prop_name: StringId, ty: CssTokenType, number: f32, number_type: CssNumberType, unit: &[u8]) {
+        let mut tok = CssToken::with_number(ty, number, number_type);
+        tok.str = unit.to_vec();
+        self.add_declaration(id, prop_name, AttributeValue::Tokens(vec![tok]), false);
+    }
+
+    /// `map_to_pixel_length_property(prop_name, attr_value)` (https://html.spec.whatwg.org/multipage/rendering.html#maps-to-the-pixel-length-property).
+    pub(crate) fn map_to_pixel_length_property(&mut self, id: ElementId, prop_name: StringId, attr_value: &[u8]) {
+        if let Some(n) = html_parse_non_negative_integer(attr_value) {
+            self.mapped(id, prop_name, DIMENSION, n as f32, CssNumberType::css_number_integer, b"px");
+        }
+    }
+
+    /// `map_to_pixel_length_property_with_default_value(prop_name, attr_value, default_value)`.
+    pub(crate) fn map_to_pixel_length_property_with_default_value(
+        &mut self,
+        id: ElementId,
+        prop_name: StringId,
+        attr_value: &[u8],
+        default_value: i32,
+    ) {
+        let n = html_parse_non_negative_integer(attr_value).unwrap_or(default_value);
+        self.mapped(id, prop_name, DIMENSION, n as f32, CssNumberType::css_number_integer, b"px");
+    }
+
+    /// `map_to_dimension_property(prop_name, attr_value)` (https://html.spec.whatwg.org/multipage/rendering.html#maps-to-the-dimension-property).
+    pub(crate) fn map_to_dimension_property(&mut self, id: ElementId, prop_name: StringId, attr_value: &[u8]) {
+        if let Some((x, ty)) = html_parse_dimension_value(attr_value) {
+            self.dimension(id, prop_name, x, ty);
+        }
+    }
+
+    /// `map_to_dimension_property_ignoring_zero(prop_name, attr_value)`.
+    pub(crate) fn map_to_dimension_property_ignoring_zero(&mut self, id: ElementId, prop_name: StringId, attr_value: &[u8]) {
+        if let Some((x, ty)) = html_parse_nonzero_dimension_value(attr_value) {
+            self.dimension(id, prop_name, x, ty);
+        }
+    }
+
+    fn dimension(&mut self, id: ElementId, prop_name: StringId, x: f32, ty: HtmlDimensionType) {
+        match ty {
+            HtmlDimensionType::html_length => self.mapped(id, prop_name, DIMENSION, x, CssNumberType::css_number_number, b"px"),
+            HtmlDimensionType::html_percentage => self.mapped(id, prop_name, PERCENTAGE, x, CssNumberType::css_number_number, b""),
+        }
+    }
+}
+
+/// The document's elements as matching reads them. `tag()` is the class's (`script` and `style` too), the
+/// children are `element::m_children` (an `el_style` has none), text is `inline-text` (no tag computes to it),
+/// and the language is the document's (empty until `lang_changed`, which the renderer never calls).
+impl SelectElements for Document {
+    type Node = ElementId;
+
+    fn parent(&self, el: ElementId) -> Option<ElementId> {
+        Document::parent(self, el)
+    }
+    fn children(&self, el: ElementId) -> &[ElementId] {
+        Document::children(self, el)
+    }
+    fn is_html_tag(&self, el: ElementId) -> bool {
+        self.kind(el).is_html_tag()
+    }
+    fn tag(&self, el: ElementId) -> StringId {
+        Document::tag(self, el)
+    }
+    fn id(&self, el: ElementId) -> StringId {
+        let el = self.el(el);
+        if el.kind.is_html_tag() { el.id } else { empty_id }
+    }
+    fn classes(&self, el: ElementId) -> &[StringId] {
+        let el = self.el(el);
+        if el.kind.is_html_tag() { &el.classes } else { &[] }
+    }
+    fn get_attr(&self, el: ElementId, name: &[u8]) -> Option<&[u8]> {
+        Document::get_attr(self, el, name)
+    }
+    fn is_comment(&self, el: ElementId) -> bool {
+        Document::is_comment(self, el)
+    }
+    fn is_inline_text(&self, el: ElementId) -> bool {
+        self.is_text(el)
+    }
+    fn has_pseudo_class(&self, el: ElementId, cls: StringId) -> bool {
+        let el = self.el(el);
+        el.kind.is_html_tag() && el.pseudo_classes.contains(&cls)
+    }
+    fn match_lang(&self, lang: &[u8]) -> bool {
+        lang == &self.lang[..] || lang == &self.culture[..]
+    }
 }

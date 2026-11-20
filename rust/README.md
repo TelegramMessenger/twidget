@@ -11,7 +11,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 
 | `crates/computed_style` | `twidget_computed_style`: the `cs` query's strings, getComputedStyle as Chromium writes it, from what the fork computed for an element (`core/src/computed_style.cpp`) |
 | `crates/css` | `twidget_css`: TwidgetCore's small CSS helpers (`core/src/css.cpp`) |
-| `crates/cstd` | `twidget_cstd`: the C library behaviours the C++ leans on (`strtod`, `atof`, `atoi`, `%.*f`) |
+| `crates/cstd` | `twidget_cstd`: the C library behaviours the C++ leans on (`strtod`, `strtof`, `strtol`, `atof`, `atoi`, `%.*f`, `%g`) |
 | `crates/compositor` | `twidget_compositor`: layers and their baked tracks, paint digests, damage, inert clips (`core/src/compositor.cpp`) |
 | `crates/base64` | `twidget_base64`: the base64 of canvas pixels (`core/src/encode.cpp`) |
 | `crates/filters` | `twidget_filters`: CSS filter functions for painters: colour matrices, a chain's reach, the CPU pass over pixels (`core/src/filters.cpp`) |
@@ -21,7 +21,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | `crates/animations` | `twidget_animations`: the animator, CSS animations, transitions and Web Animations: declarations and times in, style overrides and events out (`core/src/animations.cpp`) |
 | `crates/shadow` | `twidget_shadow`: the renderer's shadow tree, the render ops applied to it with their limits and the canvases they make, and the HTML it is written as (`core/src/renderer.cpp`) |
 | `crates/ends` | `twidget_ends`: the two ends over a byte channel: `RendererEnd` with its Backend proxy over a `Renderer` trait, and `PlatformEnd` (`core/src/renderer_end.cpp`, `platform_end.cpp`) |
-| `crates/litehtml` | `twidget_litehtml`: the litehtml fork a stage at a time, one module per C++ file (`litehtml/src`); so far `pixel_t`, the name table, strtod, `web_color`, `css_length`, the keyword tables, the CSS tokenizer and parser, stylesheets with their at-rules and media queries, selectors and their matching, style blocks (`style.cpp`: every property's declaration as the typed value the fork keeps, shorthands, `!important`, the declaration cache), gradients, and the value parsers and math folding of `css_effects.cpp` |
+| `crates/litehtml` | `twidget_litehtml`: the litehtml fork a stage at a time, one module per C++ file (`litehtml/src`); so far `pixel_t`, the name table, strtod, `web_color`, `css_length`, the keyword tables, the CSS tokenizer and parser, stylesheets with their at-rules and media queries, selectors and their matching, style blocks (`style.cpp`: every property's declaration as the typed value the fork keeps, shorthands, `!important`, the declaration cache), gradients, the value parsers and math folding of `css_effects.cpp`, and the DOM: a document built from Gumbo's tree as the renderer builds one (the element classes, words and spaces, the limits, the source template and its holes, what each class takes from its attributes) |
 | `crates/litehtml/src/gumbo` | `twidget_litehtml::gumbo`: Gumbo, the HTML parser the fork parses with (`litehtml/src/gumbo`), one module per C file: the UTF-8 reader, character references with char_ref.c's Ragel machine, the tokenizer, tree construction and its limits |
 
 | `oracle/` | the C++ the port is compared with: small programs built from twidget's sources, cases on stdin; `lhdump` answers for the litehtml fork, stage by stage |

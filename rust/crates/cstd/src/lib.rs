@@ -1,6 +1,7 @@
 //! The C library behaviours the ported C++ leans on, in the "C" locale the widget helper runs in:
 //! `strtod` (and `atof`) with the whole C grammar — whitespace, sign, `inf`, `infinity`, `nan(…)`,
-//! decimal and C99 hexadecimal floats, correctly rounded — `atoi`, `isspace`, `tolower`, and `%.*f`.
+//! decimal and C99 hexadecimal floats, correctly rounded — `strtof` (rounded once to a float), `strtol`, `atoi`,
+//! `isspace`, `tolower`, `%.*f` and `%g`.
 
 #![forbid(unsafe_code)]
 
@@ -151,6 +152,13 @@ fn decimal(text: &[u8]) -> Option<(f64, usize)> {
 /// A hexadecimal float after its `0x`: hex digits with at most one point, at least one digit, then a
 /// binary exponent when a `p` with digits follows; rounded to nearest, ties to even.
 fn hex_float(text: &[u8]) -> Option<(f64, usize)> {
+    let (mantissa, sticky, exponent, n) = hex_parts(text)?;
+    Some((binary_value(mantissa, sticky, exponent), n))
+}
+
+/// What [`hex_float`] reads: the mantissa's leading bits, whether a non-zero digit followed them, the binary
+/// exponent of the mantissa's last bit and the bytes taken.
+fn hex_parts(text: &[u8]) -> Option<(u128, bool, i64, usize)> {
     let mut mantissa: u128 = 0;
     let mut exponent: i64 = 0;
     let mut sticky = false;
@@ -198,7 +206,7 @@ fn hex_float(text: &[u8]) -> Option<(f64, usize)> {
             i = j;
         }
     }
-    Some((binary_value(mantissa, sticky, exponent), i))
+    Some((mantissa, sticky, exponent, i))
 }
 
 /// mantissa × 2^exponent, plus a non-zero tail below the mantissa when `sticky`, as the nearest double.
@@ -237,6 +245,110 @@ fn binary_value(mantissa: u128, sticky: bool, exponent: i64) -> f64 {
         // A subnormal: rounding up into 2^52 is the smallest normal, which these bits are too.
         f64::from_bits(significand as u64)
     }
+}
+
+/// mantissa × 2^exponent, plus a non-zero tail below the mantissa when `sticky`, as the nearest float:
+/// [`binary_value`] for 24 bits and the float's exponents.
+fn binary_value_f32(mantissa: u128, sticky: bool, exponent: i64) -> f32 {
+    if mantissa == 0 {
+        return 0.0;
+    }
+    let length = 128 - i64::from(mantissa.leading_zeros());
+    let top = exponent + length - 1;
+    if top > 127 {
+        return f32::INFINITY;
+    }
+    let bits = if top >= -126 { 24 } else { top + 150 };
+    if bits <= 0 {
+        let above_half = bits == 0 && (mantissa != 1 << (length - 1) || sticky);
+        return if above_half { f32::from_bits(1) } else { 0.0 };
+    }
+    let shift = length - bits;
+    let significand = if shift <= 0 {
+        mantissa << (-shift)
+    } else {
+        let kept = mantissa >> shift;
+        let rest = mantissa & ((1u128 << shift) - 1);
+        let half = 1u128 << (shift - 1);
+        let up = rest > half || (rest == half && (sticky || kept & 1 == 1));
+        if up { kept + 1 } else { kept }
+    };
+    if top >= -126 {
+        let (significand, top) = if significand >> 24 != 0 { (significand >> 1, top + 1) } else { (significand, top) };
+        if top > 127 {
+            return f32::INFINITY;
+        }
+        f32::from_bits((((top + 127) as u32) << 23) | (significand as u32 & ((1 << 23) - 1)))
+    } else {
+        // A subnormal: rounding up into 2^23 is the smallest normal, which these bits are too.
+        f32::from_bits(significand as u32)
+    }
+}
+
+/// `strtof(text, &end)`: [`strtod`]'s grammar, the value rounded once to a float (not through a double).
+pub fn strtof(text: &[u8]) -> (f32, usize) {
+    let mut i = 0;
+    while i < text.len() && is_space(text[i]) {
+        i += 1;
+    }
+    let negative = match text.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let signed = |v: f32| if negative { -v } else { v };
+    let rest = &text[i..];
+    if starts_with_ignore_case(rest, b"inf") || starts_with_ignore_case(rest, b"nan") {
+        let (value, n) = strtod(text);
+        return (value as f32, n);
+    }
+    if rest.len() >= 2
+        && rest[0] == b'0'
+        && (rest[1] == b'x' || rest[1] == b'X')
+        && let Some((mantissa, sticky, exponent, n)) = hex_parts(&rest[2..])
+    {
+        return (signed(binary_value_f32(mantissa, sticky, exponent)), i + 2 + n);
+    }
+    match decimal(rest) {
+        Some((_, n)) => {
+            let literal = std::str::from_utf8(&rest[..n]).expect("ASCII digits");
+            (signed(literal.parse().expect("a decimal strtod took")), i + n)
+        }
+        None => (0.0, 0),
+    }
+}
+
+/// `snprintf("%g", value)`: six significant digits, trailing zeros dropped, the exponent form below 1e-4 and
+/// from 1e6 on.
+pub fn format_general(value: f64) -> String {
+    if value.is_nan() {
+        return if value.is_sign_negative() { "-nan".into() } else { "nan".into() };
+    }
+    if value.is_infinite() {
+        return if value < 0.0 { "-inf".into() } else { "inf".into() };
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() { "-0".into() } else { "0".into() };
+    }
+    // The exponent of the value rounded to six digits decides the form, as C has it.
+    let scientific = format!("{value:.5e}");
+    let (mantissa, exponent) = scientific.split_once('e').expect("an exponent");
+    let exponent: i32 = exponent.parse().expect("a decimal exponent");
+    let strip = |digits: &str| -> String {
+        if digits.contains('.') { digits.trim_end_matches('0').trim_end_matches('.').to_string() } else { digits.to_string() }
+    };
+    if !(-4..6).contains(&exponent) {
+        let sign = if exponent < 0 { '-' } else { '+' };
+        return format!("{}e{sign}{:02}", strip(mantissa), exponent.abs());
+    }
+    let decimals = (5 - exponent) as usize;
+    strip(&format!("{value:.decimals$}"))
 }
 
 /// `strtol(text, &end, 10)` on a C string: the value and how many bytes it took, 0 bytes (and 0) when it
