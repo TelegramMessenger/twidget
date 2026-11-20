@@ -1010,8 +1010,15 @@ std::optional<std::string> Animator::transition_value(int64_t id, const std::str
 }
 
 void Animator::update(const std::unordered_map<int64_t, Declared>& declarations, double now) {
-    std::unordered_map<int64_t, std::vector<Running>> next_running;
-    for (const auto& [id, values] : declarations) {
+    // In id order: the animationstart events come out in it.
+    std::vector<const std::pair<const int64_t, Declared>*> elements;
+    elements.reserve(declarations.size());
+    for (const auto& element : declarations) elements.push_back(&element);
+    std::sort(elements.begin(), elements.end(), [](const auto* a, const auto* b) { return a->first < b->first; });
+    std::map<int64_t, std::vector<Running>> next_running;
+    for (const auto* element : elements) {
+        const int64_t id = element->first;
+        const Declared& values = element->second;
         auto specs = AnimationSpec::list(values);
         if (!specs.empty()) {
             const auto& previous = running_[id];

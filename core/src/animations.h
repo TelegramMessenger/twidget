@@ -234,10 +234,11 @@ private:
     KeyframeRules keyframes_;
     /// Rule 5 for each @keyframes name, read once per set of style sheets.
     mutable std::unordered_map<std::string, std::optional<paint::BoxPaint>> keyframes_paint_;
-    std::unordered_map<int64_t, std::vector<Running>> running_;
-    std::unordered_map<int64_t, std::map<std::string, Transition>> transitions_;
-    std::unordered_map<int64_t, Declared> bases_;
-    std::unordered_map<int64_t, std::map<std::string, Override>> overrides_;
+    // By element id, the order their events and motions are reported in.
+    std::map<int64_t, std::vector<Running>> running_;
+    std::map<int64_t, std::map<std::string, Transition>> transitions_;
+    std::map<int64_t, Declared> bases_;
+    std::map<int64_t, std::map<std::string, Override>> overrides_;
     std::map<int64_t, WebAnimation> web_;  // by aid; sampled in aid order, as twidget does
     std::vector<AnimationEvent> events_;
 };

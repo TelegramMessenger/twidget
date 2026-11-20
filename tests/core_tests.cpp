@@ -1712,6 +1712,91 @@ int main() {
     }
 #endif
 
+    // ── a renderer lets go of its canvases in node order and of its canvas fonts in the order it made them ──
+    {
+        struct ReleaseBackend : StubBackend {
+            int next_canvas_font = 5000;
+            std::vector<int> made, deleted, released;
+            // Counting down: the order they are made in is no order of their handles or their names.
+            int create_canvas_font(const std::string&, float size, int, bool, FontMetrics& out) override {
+                out.ascent = size * 0.8f;
+                out.descent = size * 0.2f;
+                out.height = size * 1.2f;
+                made.push_back(--next_canvas_font);
+                return made.back();
+            }
+            void delete_font(int font) override {
+                if (font < 5000 && font > 4000) deleted.push_back(font);
+            }
+            void canvas_release(int canvas) override { released.push_back(canvas); }
+        };
+        const std::vector<int64_t> nodes = {70, 31, 95, 12, 58};
+        std::string page = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body"})";
+        for (int64_t id : nodes)
+            page += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"canvas","attrs":[["width","40"],["height","20"]]},{"op":"ins","parent":4,"id":)" + std::to_string(id) + R"(,"before":null})";
+        page += "]}";
+        auto draw = [](int64_t id, int from, int count) {
+            std::string cmds = R"(["s","textBaseline","top"])";
+            for (int i = from; i < from + count; i++) cmds += R"(,["s","font",")" + std::to_string(i) + R"(px serif"],["c","fillText","hi",0,10])";
+            return parse(R"({"type":"ops","ops":[{"op":"canvas","id":)" + std::to_string(id) + R"(,"cmds":[)" + cmds + "]}]}");
+        };
+        ReleaseBackend rb;
+        {
+            Renderer r(300, 1, false, rb);
+            r.receive(parse(page));
+            r.receive(draw(95, 30, 40));
+            r.receive(draw(12, 1, 25));
+            const std::vector<int> first(rb.made.begin(), rb.made.end());
+            r.receive(draw(70, 100, 1));
+            check(rb.deleted == first, "past 64 canvas fonts the renderer lets them all go in the order it made them (" + std::to_string(rb.deleted.size()) + " of " + std::to_string(first.size()) + ")");
+            rb.deleted.clear();
+            r.receive(draw(31, 200, 3));
+            r.receive(draw(58, 300, 0));
+        }
+        check(rb.released == std::vector<int>{12, 31, 58, 70, 95}, "a renderer that goes releases its canvases in node order");
+        check(rb.made.size() == 69 && rb.deleted == std::vector<int>(rb.made.end() - 4, rb.made.end()), "and its canvas fonts in the order it made them (" + std::to_string(rb.deleted.size()) + " released)");
+    }
+
+    // ── the animator reports its events and motions in element order, whatever order the declarations come in ──
+    {
+        Animator a;
+        a.set_style_sheets({"@keyframes k{from{opacity:0}to{opacity:1}} @keyframes h{from{filter:blur(2px)}to{filter:blur(6px)}}"});
+        std::vector<int64_t> ids;
+        for (int i = 0; i < 40; i++) ids.push_back(i * 919 % 1000 + 1);
+        auto declare = [&](const std::string& filter) {
+            std::unordered_map<int64_t, Declared> all;
+            for (size_t i = 0; i < ids.size(); i++) all[ids[i]] = {{"animation", i % 2 ? "k 1s linear 2" : "h 1s linear 2"}, {"transition", "filter 0.5s linear"}, {"filter", filter}};
+            return all;
+        };
+        std::vector<int64_t> sorted = ids;
+        std::sort(sorted.begin(), sorted.end());
+        auto targets = [](const std::vector<AnimationEvent>& events) {
+            std::vector<std::pair<std::string, int64_t>> out;
+            for (const AnimationEvent& e : events) out.emplace_back(e.type, e.target);
+            return out;
+        };
+        auto expected = [&](std::vector<std::string> types) {
+            std::vector<std::pair<std::string, int64_t>> out;
+            for (const std::string& type : types)
+                for (int64_t id : sorted) out.emplace_back(type, id);
+            return out;
+        };
+        a.update(declare("blur(1px)"), 0);
+        check(targets(a.take_events()) == expected({"animationstart"}), "animationstart comes element by element in id order");
+        a.update(declare("blur(5px)"), 0.1);
+        std::vector<Animator::Motion> motions;
+        a.heavy_motion(0.2, &motions);
+        std::vector<std::pair<char, int64_t>> motion_ids, motion_expected;
+        for (const Animator::Motion& m : motions) motion_ids.emplace_back(m.kind, m.id);
+        for (int64_t id : sorted) motion_expected.emplace_back('a', id);
+        for (int64_t id : sorted) motion_expected.emplace_back('t', id);
+        check(motion_ids == motion_expected, "heavy motions come animations first, then transitions, each in element order (" + std::to_string(motions.size()) + " motions)");
+        a.sample(1.5);
+        check(targets(a.take_events()) == expected({"animationiteration", "transitionend"}), "animationiteration, then transitionend, each in element order");
+        a.sample(2.5);
+        check(targets(a.take_events()) == expected({"animationend"}), "animationend in element order");
+    }
+
     // ── what a build in paint() says waits for the next tick ──
     {
         StubBackend pb;

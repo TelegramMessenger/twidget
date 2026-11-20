@@ -465,6 +465,7 @@ private:
     void run_canvas(Canvas& canvas, const twidget::Json& cmds);
     void forget_canvas(int64_t id);
     int canvas_font(const std::string& css, FontMetrics& metrics) override;
+    void release_canvas_fonts();
     /// `measureText`: the text in the canvas font `font` names, the one fillText draws it with.
     twidget::Json measure_text(const std::string& font, const std::string& text);
     float canvas_text_width(int font, const std::string& text) override;
@@ -635,7 +636,7 @@ private:
     bool frozen_fatal_ = false;
     std::array<double, 4> last_size_{};  // width, document height, viewport height, dpr as last reported
     uint64_t declared_generation_ = 0;
-    std::unordered_map<int, Touch> touches_;
+    std::map<int, Touch> touches_;  // by pointer, the order a capture call walks them in
     int64_t hover_ = 0;
     double hover_x_ = 0, hover_y_ = 0;
     int click_count_ = 0;
@@ -661,8 +662,9 @@ private:
     uint64_t composition_key_ = 0;
     uint64_t next_version_ = 1;
 
-    std::unordered_map<int64_t, std::unique_ptr<Canvas>> canvases_;
+    std::map<int64_t, std::unique_ptr<Canvas>> canvases_;  // by node id, the order they are released in
     std::unordered_map<std::string, std::pair<int, FontMetrics>> canvas_fonts_;  // empty while the hook is set
+    std::vector<int> canvas_font_order_;  // canvas_fonts_' handles in the order they were made, the order they are released in
     CanvasFontHook canvas_font_hook_;
     std::string binary_;  // the binary payload of the query being answered (imageData), base64
 };

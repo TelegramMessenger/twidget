@@ -2645,7 +2645,7 @@ std::string Renderer::cursor() const {
 
 Renderer::~Renderer() {
     for (const auto& [id, canvas] : canvases_) backend_.canvas_release(canvas->id());
-    for (const auto& [css, font] : canvas_fonts_) backend_.delete_font(font.first);
+    release_canvas_fonts();
 }
 
 double Renderer::now_ms() const { return clock_ ? clock_->now_ms() : steady_ms(); }
@@ -4321,10 +4321,7 @@ Canvas* Renderer::canvas_for(Node* n) {
 
 void Renderer::run_canvas(Canvas& canvas, const Json& cmds) {
     // Fonts are held across one batch at most, so a widget cycling through font strings cannot grow this.
-    if (canvas_fonts_.size() > 64) {
-        for (const auto& [font_css, font] : canvas_fonts_) backend_.delete_font(font.first);
-        canvas_fonts_.clear();
-    }
+    if (canvas_fonts_.size() > 64) release_canvas_fonts();
     std::vector<CanvasOp> ops;
     canvas.run(cmds, ops);
     if (ops.empty()) return;
@@ -4367,11 +4364,14 @@ void Renderer::forget_canvas(int64_t id) {
 }
 
 void Renderer::set_canvas_font_hook(CanvasFontHook hook) {
-    if (hook) {
-        for (const auto& [font_css, held] : canvas_fonts_) backend_.delete_font(held.first);
-        canvas_fonts_.clear();
-    }
+    if (hook) release_canvas_fonts();
     canvas_font_hook_ = std::move(hook);
+}
+
+void Renderer::release_canvas_fonts() {
+    for (int handle : canvas_font_order_) backend_.delete_font(handle);
+    canvas_font_order_.clear();
+    canvas_fonts_.clear();
 }
 
 int Renderer::canvas_font(const std::string& font, FontMetrics& metrics) {
@@ -4383,7 +4383,10 @@ int Renderer::canvas_font(const std::string& font, FontMetrics& metrics) {
     css::Font f = css::parse_font(font);
     int handle = backend_.create_canvas_font(f.family, f.size, f.weight, f.italic, metrics);
     if (handle && metrics.em_ascent == 0 && metrics.em_descent == 0) set_em_box(metrics, metrics.ascent, metrics.descent, f.size);
-    if (handle) canvas_fonts_.emplace(font, std::make_pair(handle, metrics));
+    if (handle) {
+        canvas_fonts_.emplace(font, std::make_pair(handle, metrics));
+        canvas_font_order_.push_back(handle);
+    }
     return handle;
 }
 
@@ -4391,10 +4394,7 @@ float Renderer::canvas_text_width(int font, const std::string& text) { return ba
 
 Json Renderer::measure_text(const std::string& font, const std::string& text) {
     // In the font fillText draws it with: the canvas's, not a document's.
-    if (canvas_fonts_.size() > 64) {
-        for (const auto& [font_css, held] : canvas_fonts_) backend_.delete_font(held.first);
-        canvas_fonts_.clear();
-    }
+    if (canvas_fonts_.size() > 64) release_canvas_fonts();
     FontMetrics fm;
     int handle = canvas_font(font, fm);
     float width = handle ? backend_.text_width(handle, text) : 0.0f;

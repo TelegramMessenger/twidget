@@ -111,12 +111,7 @@ std::vector<int64_t> id_list(In& in) {
     return out;
 }
 
-// The animator's maps are unordered: its events come per element in no order the source decides, so they go out by element, each element's in its order.
-void events(Out& o, std::vector<AnimationEvent> list) {
-    std::stable_sort(list.begin(), list.end(), [](const AnimationEvent& a, const AnimationEvent& b) {
-        const int pa = a.type == "transitionend", pb = b.type == "transitionend";
-        return pa != pb ? pa < pb : a.target < b.target;
-    });
+void events(Out& o, const std::vector<AnimationEvent>& list) {
     o.u32(uint32_t(list.size()));
     for (const AnimationEvent& e : list) {
         o.str(e.type);
@@ -126,12 +121,7 @@ void events(Out& o, std::vector<AnimationEvent> list) {
     }
 }
 
-void motions(Out& o, std::vector<Animator::Motion> list) {
-    auto rank = [](char kind) { return kind == 'a' ? 0 : kind == 't' ? 1 : 2; };
-    std::stable_sort(list.begin(), list.end(), [&](const Animator::Motion& a, const Animator::Motion& b) {
-        if (rank(a.kind) != rank(b.kind)) return rank(a.kind) < rank(b.kind);
-        return rank(a.kind) < 2 && a.id < b.id;
-    });
+void motions(Out& o, const std::vector<Animator::Motion>& list) {
     o.u32(uint32_t(list.size()));
     for (const Animator::Motion& m : list) {
         o.i64(m.id);

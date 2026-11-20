@@ -16,9 +16,8 @@
 //!       'g' i64 id -> u64 signature;                   'q' ids, f64 now -> css_animations dump;
 //!       't' i64 id -> web targets, web properties;    'x' ids alive -> (prune);
 //!       'h' f64 now -> u64 hash, u64 hash, u32 n motions (i64 id, u8 kind, name, i64 aid, u8 heavy, u8 backdrop).
-//!     Events are a u32 count of (type, i64 target, name, f64 elapsed). The C++'s maps are unordered, so
-//!     the oracle writes events and motions by phase and element, each element's in its order: the port's
-//!     maps are ordered by element, and it writes them as they come.
+//!     Events are a u32 count of (type, i64 target, name, f64 elapsed). Both sides keep their maps by
+//!     element id and write events and motions as they come.
 //!   'T' timing text, u32 n f64 x -> u8 parsed, the timing, then css(x), web(x, false), web(x, true) for each.
 //!   'I' a, b, f64 t -> interpolate(a, b, t).
 //!   'K' u32 n style sheets -> the keyframe rules by name: u32 n (name, u32 frames (f64 offset, values,

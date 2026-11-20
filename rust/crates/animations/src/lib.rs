@@ -5,11 +5,10 @@
 //! inline declarations. Times are seconds on the renderer's clock unless a name says milliseconds. Text
 //! is bytes, as the C++ `std::string`s hold it; every double is where the C++ has it.
 //!
-//! Two things differ from the C++ by design (rust/PLAN.md, rules 6 and 0.3). The C++ keeps two caches
-//! per thread (parsed timing functions, tokenised value pairs); here they are a [`Caches`] object that
-//! the helper shares between its animators as the C++ threads share theirs, with the same bounds and
-//! the same keys. And the C++'s per-element maps are `unordered_map`s whose iteration order leaks into
-//! the order of events and motions; here they are ordered by element id.
+//! One thing differs from the C++ by design (rust/PLAN.md, rule 6). The C++ keeps two caches per thread
+//! (parsed timing functions, tokenised value pairs); here they are a [`Caches`] object that the helper
+//! shares between its animators as the C++ threads share theirs, with the same bounds and the same keys.
+//! The per-element maps are ordered by element id on both sides, which is the order of events and motions.
 
 #![forbid(unsafe_code)]
 
