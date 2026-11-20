@@ -1,16 +1,18 @@
-//! Layout, ported (stages L7, L8 and L10): documents cascaded and built as the renderer builds them, laid out at
-//! widths (again at the first after another, so the layout cache is used), after media changes and `:hover`
-//! restyles, through `oracle/lhdump` (`Y`) and the port: every render item's place, margins, padding and borders, its
-//! cache and marks, positioned lists, scroll views, inline boxes, a text's pieces, an inline context's line boxes and
-//! their items, a flex's baselines and lines with their items, the document's size and budget, each element's line
-//! height, with the container's calls in order (fonts, text widths, the viewport, image sizes, text breakers). The
-//! documents: widget-sandbox's corpus light and dark at five widths, every tag but tables, written shapes for each
-//! branch (margins collapsing, floats and clearance, line breaking, white space, `text-overflow`, bidi, vertical
-//! alignment, images, lists, `<textarea>`; flex directions, wrapping, every alignment value, factors and bases, min
-//! and max, `order`, gaps, `auto` margins, baselines, form controls), generated block, float, margin and inline
-//! documents and generated nested flex documents, the `LH_NO_*` layout switches, the budget crossed, and deep
-//! documents on a small stack. A case whose layout reaches a later stage's (absolute and fixed placement, tables,
-//! grid) is laid out by the port as far as it goes but not compared, and counted. Each run reports what it reached.
+//! Layout, ported (stages L7–L10): documents cascaded and built as the renderer builds them, laid out at widths
+//! (again at the first after another, so the layout cache is used), after media changes and `:hover` restyles, and
+//! with the fixed boxes placed alone, through `oracle/lhdump` (`Y`) and the port: every render item's place, margins,
+//! padding and borders, its cache and marks, positioned lists in z-order, scroll views, sticky offsets, placements,
+//! inline boxes, a text's pieces, an inline context's line boxes and their items, a flex's baselines and lines with
+//! their items, the document's size, budget and fixed boxes, each element's line height, with the container's calls
+//! in order (fonts, text widths, the viewport, image sizes, text breakers). The documents: widget-sandbox's corpus
+//! light and dark at five widths, every tag but tables, written shapes for each branch (margins collapsing, floats
+//! and clearance, line breaking, white space, `text-overflow`, bidi, vertical alignment, images, lists, `<textarea>`;
+//! flex directions, wrapping, every alignment value, factors and bases, min and max, `order`, gaps, `auto` margins,
+//! baselines, form controls; absolute and fixed boxes under each rule of CSS 2.2 10.3.7 and 10.6.4, containing
+//! blocks, static positions, `z-index`, sticky boxes, scroll views), generated block, float, margin and inline
+//! documents, generated nested flex documents and generated positioned documents, the `LH_NO_*` layout switches, the
+//! budget crossed, and deep documents on a small stack. A case whose layout reaches a later stage's (tables, grid) is
+//! laid out by the port as far as it goes but not compared, and counted. Each run reports what it reached.
 
 mod common;
 
@@ -1087,6 +1089,384 @@ fn written_flex_documents() -> Vec<(&'static str, String)> {
     docs
 }
 
+// ---- Positioned inputs (stage L9) ---------------------------------------------------------------------------
+
+/// An offset: lengths, percentages, negative, `calc()`, `auto`.
+fn offset(random: &mut Lcg) -> &'static str {
+    pick(random, &["0", "5px", "-8px", "10%", "50%", "100%", "auto", "1.5em", "calc(20% - 4px)", "33.3px", "-25%", "auto", "12px"])
+}
+
+/// A declaration of a positioned box or of what holds one: the position and offsets, sizes with min and max, `auto`
+/// margins, `z-index`, transforms and containment, overflow, displays, padding and borders, box-sizing, direction.
+fn positioned_declaration(random: &mut Lcg) -> String {
+    match random.below(26) {
+        0..=3 => format!("position:{}", pick(random, &["absolute", "absolute", "fixed", "relative", "sticky", "static", "absolute"])),
+        4..=7 => format!("{}:{}", pick(random, &["top", "right", "bottom", "left"]), offset(random)),
+        8 => format!("inset:{}", pick(random, &["0", "10px", "5% 10%", "auto 0", "0 auto auto 0", "10px 20px 30px 40px"])),
+        9 | 10 => format!(
+            "width:{}",
+            pick(random, &["auto", "50px", "40%", "100%", "min-content", "max-content", "fit-content", "calc(50% - 10px)", "200px"])
+        ),
+        11 => format!("height:{}", pick(random, &["auto", "30px", "50%", "100%", "0", "2em"])),
+        12 => format!(
+            "{}:{}",
+            pick(random, &["min-width", "max-width", "min-height", "max-height"]),
+            pick(random, &["10px", "60px", "50%", "none", "200px", "0"])
+        ),
+        13 => pick(
+            random,
+            &[
+                "margin:auto",
+                "margin:0 auto",
+                "margin-left:auto",
+                "margin-right:auto",
+                "margin-top:auto;margin-bottom:auto",
+                "margin-top:auto",
+                "margin-bottom:auto",
+                "margin:5px",
+                "margin:-10px 3px",
+                "margin:10%",
+            ],
+        )
+        .to_string(),
+        14 => format!("z-index:{}", pick(random, &["-1", "0", "1", "2", "5", "auto", "99999999999", "-3", "1"])),
+        15 => format!("transform:{}", pick(random, &["translate(5px,3px)", "rotate(10deg)", "none", "scale(2)"])),
+        16 => format!("contain:{}", pick(random, &["layout", "paint", "strict", "none", "size", "content"])),
+        17 => format!("overflow:{}", pick(random, &["hidden", "auto", "scroll", "visible", "clip"])),
+        18 => format!("display:{}", pick(random, &["block", "inline", "inline-block", "flex", "inline-flex", "none", "list-item"])),
+        19 => format!("padding:{}", pick(random, &["0", "3px", "1em", "10%", "7px 2px"])),
+        20 => format!("border:{} solid", pick(random, &["0", "1px", "3px"])),
+        21 => format!("box-sizing:{}", pick(random, &["border-box", "content-box"])),
+        22 => format!("direction:{}", pick(random, &["rtl", "ltr"])),
+        23 => format!("float:{}", pick(random, &["left", "right", "none"])),
+        24 => "visibility:hidden".to_string(),
+        _ => layout_declaration(random),
+    }
+}
+
+/// A generated document of absolute, fixed, relative and sticky boxes nested in one another, in blocks, inlines,
+/// flex containers, transformed, contained and scrolling boxes, with offsets of every kind, sizes, `auto` margins and
+/// `z-index`; sometimes the root or the body positioned.
+fn positioned_document(random: &mut Lcg) -> Vec<u8> {
+    fn element(random: &mut Lcg, depth: u32, out: &mut String) {
+        let tag = pick(random, &["div", "div", "div", "span", "p", "img", "section", "b", "svg", "input", "button", "ul", "li", "div"]);
+        out.push('<');
+        out.push_str(tag);
+        match tag {
+            "img" => {
+                out.push_str(&format!(" src=\"{}.png\"", pick(random, &["a", "bb", "photo", "x9"])));
+                if random.chance(3) {
+                    out.push_str(&format!(" width=\"{}\"", pick(random, &["20", "100", "50%"])));
+                }
+            }
+            "svg" => out.push_str(pick(random, &[" width=\"40\" height=\"20\"", " viewBox=\"0 0 10 5\"", ""])),
+            "input" => out.push_str(pick(random, &[" type=\"range\"", " type=\"checkbox\"", " value=\"v\""])),
+            _ => {}
+        }
+        if random.chance(3) {
+            out.push_str(&format!(" class=\"{}\"", pick(random, &["p", "q", "p q", "r"])));
+        }
+        if !random.chance(4) {
+            let mut decls: Vec<String> = (0..1 + random.below(5)).map(|_| positioned_declaration(random)).collect();
+            if random.chance(2) {
+                decls.insert(0, format!("position:{}", pick(random, &["absolute", "fixed", "relative", "sticky"])));
+            }
+            out.push_str(&format!(" style=\"{}\"", decls.join(";")));
+        }
+        out.push('>');
+        if matches!(tag, "img" | "input") {
+            return;
+        }
+        if tag == "svg" {
+            out.push_str("<rect width=\"4\" height=\"4\"/></svg>");
+            return;
+        }
+        let n = if depth > 5 { random.below(2) } else { random.below(5) };
+        for _ in 0..n {
+            match random.below(6) {
+                0 | 1 => words(random, out),
+                _ => element(random, depth + 1, out),
+            }
+        }
+        out.push_str(&format!("</{tag}>"));
+    }
+    let mut out = String::new();
+    if !random.chance(8) {
+        out.push_str("<!DOCTYPE html>");
+    }
+    let root_style = match random.below(6) {
+        0 => " style=\"position:relative;padding:7px\"",
+        1 => " style=\"position:absolute;top:5px;left:3px\"",
+        2 => " style=\"transform:translate(1px,2px)\"",
+        _ => "",
+    };
+    out.push_str(&format!("<html{root_style}><head><style>"));
+    for _ in 0..random.below(5) {
+        let selector = pick(random, &["div", "span", ".p", ".q", "p", "li", ".r", "img", "body", "section > div", ".p > :first-child"]);
+        let decls: Vec<String> = (0..1 + random.below(3)).map(|_| positioned_declaration(random)).collect();
+        let rule = format!("{selector}{{{}}}", decls.join(";"));
+        if random.chance(3) {
+            out.push_str(&format!("@media (min-width:{}px){{{rule}}}", pick(random, &["300", "450", "700"])));
+        } else {
+            out.push_str(&rule);
+        }
+    }
+    out.push_str("</style></head><body");
+    if random.chance(4) {
+        out.push_str(pick(random, &[" style=\"position:relative\"", " style=\"overflow:auto;height:300px\"", " style=\"display:flex\""]));
+    }
+    out.push('>');
+    for _ in 0..1 + random.below(5) {
+        element(random, 0, &mut out);
+    }
+    out.push_str("</body></html>");
+    out.into_bytes()
+}
+
+/// Positioned shapes for each branch, written out.
+fn written_positioned_documents() -> Vec<(&'static str, String)> {
+    let page = |body: &str| format!("<!DOCTYPE html><html><head></head><body>{body}</body></html>");
+    let rel = |inner: &str| {
+        page(&format!("<div style=\"position:relative;width:300px;height:200px;padding:10px;border:2px solid\">{inner}</div>"))
+    };
+    let text = "some words in the box that wrap";
+    let mut docs = vec![
+        ("top and left", rel(&format!("<div style=\"position:absolute;top:10px;left:20px\">{text}</div>"))),
+        ("bottom and right", rel(&format!("<div style=\"position:absolute;bottom:10px;right:20px\">{text}</div>"))),
+        (
+            "static position in blocks",
+            rel(&format!("<p>before</p><div style=\"position:absolute\">{text}</div><p>after</p><div style=\"margin:7px;padding:3px\"><div style=\"position:absolute;width:40px\">s</div></div>")),
+        ),
+        (
+            "static position in inlines",
+            rel("<p>text before <span style=\"position:absolute\">abs</span> and after <b style=\"position:absolute;top:2px\">top</b> end</p>"),
+        ),
+        ("left and right", rel(&format!("<div style=\"position:absolute;left:10px;right:30px\">{text}</div>"))),
+        ("top and bottom", rel(&format!("<div style=\"position:absolute;top:10px;bottom:30px\">{text}</div>"))),
+        (
+            "left, right and a max-width",
+            rel(&format!(
+                "<div style=\"position:absolute;left:10px;right:10px;max-width:50%;margin:0 auto\">{text}</div><div style=\"position:absolute;left:0;right:0;max-width:100px;margin-left:auto\">x</div>"
+            )),
+        ),
+        (
+            "top, bottom and a max-height",
+            rel(&format!(
+                "<div style=\"position:absolute;top:0;bottom:0;max-height:50px;margin:auto 0\">{text}</div><div style=\"position:absolute;top:0;bottom:0;max-height:30%;margin-bottom:auto\">y</div>"
+            )),
+        ),
+        (
+            "every side and auto margins",
+            rel(&format!(
+                "<div style=\"position:absolute;top:0;bottom:0;left:0;right:0;width:100px;height:50px;margin:auto\">{text}</div><div style=\"position:absolute;top:0;bottom:0;left:0;right:0;width:500px;height:500px;margin:auto\">big</div><div style=\"position:absolute;inset:0;width:80px;height:20px;margin-left:auto;margin-top:auto\">one</div><div style=\"position:absolute;inset:10px;width:80px;height:20px\">over</div>"
+            )),
+        ),
+        (
+            "width with auto sides",
+            rel(&format!(
+                "<p>a</p><div style=\"position:absolute;width:100px;height:40px;margin:auto\">{text}</div><div style=\"position:absolute;width:50%;height:25%\">pct</div>"
+            )),
+        ),
+        (
+            "right and width, bottom and height",
+            rel(&format!("<div style=\"position:absolute;right:5px;width:120px;bottom:5px;height:30px;margin:auto\">{text}</div>")),
+        ),
+        (
+            "left and width, top and height",
+            rel(&format!("<div style=\"position:absolute;left:5%;width:120px;top:5%;height:30px\">{text}</div>")),
+        ),
+        (
+            "min and max",
+            rel(&format!(
+                "<div style=\"position:absolute;left:0;width:10px;min-width:60px;top:0;height:10px;min-height:20%\">{text}</div><div style=\"position:absolute;right:0;width:400px;max-width:50%;bottom:0;height:400px;max-height:40px\">m</div>"
+            )),
+        ),
+        (
+            "box-sizing",
+            rel(&format!(
+                "<div style=\"position:absolute;box-sizing:border-box;left:0;width:100px;padding:10px;border:3px solid;top:0;height:50px\">{text}</div><div style=\"position:absolute;box-sizing:border-box;left:0;right:0;top:0;bottom:0;padding:20px;max-width:100px\">b</div>"
+            )),
+        ),
+        (
+            "absolute flex boxes",
+            rel(
+                "<div style=\"position:absolute;display:flex;left:10px\"><div>one</div><div>two words</div></div><div style=\"position:absolute;display:flex;left:10px;right:10px;top:40px\"><div style=\"flex:1\">grow</div><div>b</div></div><div style=\"position:absolute;display:inline-flex;right:0;bottom:0;flex-direction:column\"><div>c</div><div>dd</div></div><div style=\"position:absolute;display:flex;width:50px;top:80px\">fixed width but auto height</div>",
+            ),
+        ),
+        (
+            "absolute replaced boxes",
+            rel(
+                "<img src=\"a.png\" style=\"position:absolute;left:0;right:0;margin:0 auto\"><img src=\"bb.png\" style=\"position:absolute;top:0;bottom:0;margin:auto 0\"><img src=\"c.png\" style=\"position:absolute;left:0;right:0;top:0;bottom:0;margin:auto;max-height:10px;max-width:10%\"><svg width=\"40\" height=\"20\" style=\"position:absolute;right:0;left:10px;margin-left:auto\"></svg><img src=\"photo.png\" style=\"position:absolute;inset:0;margin-right:auto\">",
+            ),
+        ),
+        (
+            "fixed boxes",
+            page(&format!(
+                "<div style=\"position:fixed;top:0;left:0;right:0;height:40px\">header</div><div style=\"height:2000px\">{text}</div><div style=\"position:fixed;bottom:10px;right:10px;width:50px;padding:0 2px 0 9px;border-left:4px solid\"><div style=\"position:absolute;left:-30px;width:200px\">wide child</div><div style=\"margin-left:-50px;width:300px\">over</div></div><div style=\"position:fixed;top:50px;left:0;width:40px;padding:0 3px 0 11px;border-left:5px solid\">x</div><div style=\"position:fixed;bottom:0;overflow:hidden;width:20px\"><div style=\"width:400px\">clipped</div></div>"
+            )),
+        ),
+        (
+            "fixed boxes inside positioned and transformed boxes",
+            page(
+                "<div style=\"position:relative;margin:30px;padding:5px\"><p>a</p><div style=\"position:fixed\">static fixed</div><div style=\"position:fixed;top:10%;left:10%\">pct</div></div><div style=\"transform:translate(10px,10px);margin:20px\"><div style=\"position:fixed;right:0\">in a transform</div><div style=\"position:absolute;top:0\">abs in a transform</div></div>",
+            ),
+        ),
+        (
+            "nested containing blocks",
+            rel(
+                "<div style=\"position:absolute;top:10px;left:10px;width:200px;height:150px;padding:4px\"><div style=\"margin:5px\"><div style=\"padding:3px\"><div style=\"position:absolute;bottom:0;right:0\">deep</div><div style=\"position:absolute\">static deep</div></div></div><div style=\"position:relative;top:5px;left:5px;margin:9px\"><span style=\"position:absolute;left:100%;top:50%\">far</span></div></div>",
+            ),
+        ),
+        (
+            "the viewport as the containing block",
+            page(&format!(
+                "<div style=\"position:absolute;bottom:0;right:0\">corner</div><div style=\"margin:20px\"><div style=\"position:absolute;left:50%;top:50%;width:50%;height:50%\">{text}</div></div>"
+            )),
+        ),
+        (
+            "a positioned root",
+            format!(
+                "<!DOCTYPE html><html style=\"position:relative;padding:12px;margin:5px\"><head></head><body style=\"margin:8px\"><div style=\"position:absolute;bottom:0;right:0\">corner</div><div style=\"position:absolute\">static {text}</div></body></html>"
+            ),
+        ),
+        (
+            "an absolute root",
+            "<!DOCTYPE html><html style=\"position:absolute;top:10px;left:10px;width:300px\"><head></head><body><div style=\"position:absolute;right:0\">r</div></body></html>".to_string(),
+        ),
+        (
+            "transformed and contained holders",
+            page(
+                "<div style=\"transform:rotate(5deg);margin:10px;padding:5px\"><div style=\"position:absolute;right:0\">t</div></div><div style=\"contain:layout;padding:5px\"><div><div style=\"position:absolute;bottom:0\">c</div></div></div><div style=\"contain:paint;height:40px\"><div style=\"position:absolute;left:0;right:0\">p</div></div><div style=\"contain:strict;width:100px;height:40px\"><div style=\"position:absolute;inset:0\">s</div></div>",
+            ),
+        ),
+        (
+            "z-index order",
+            rel(
+                "<div style=\"position:absolute;z-index:3\">a</div><div style=\"position:relative;z-index:-1\">b</div><div style=\"position:absolute;z-index:0\">c</div><div style=\"position:absolute\">d</div><div style=\"position:absolute;z-index:2\">e</div><div style=\"position:relative;z-index:3\">f</div><div style=\"position:absolute;z-index:-5\">g</div><div style=\"position:sticky;top:0;z-index:1\">h</div><div style=\"position:absolute;z-index:99999999999\">i</div><div style=\"position:absolute;z-index:-99999999999\">j</div>",
+            ),
+        ),
+        ("z-index without absolute boxes", page("<div style=\"position:relative;z-index:2\">a</div><div style=\"position:relative;z-index:1\">b</div>")),
+        (
+            "scroll views with absolute boxes",
+            page(
+                "<div style=\"position:relative;overflow:auto;height:60px;width:100px\"><div style=\"position:absolute;top:200px;left:300px\">far</div><p>a</p></div><div style=\"overflow:hidden;position:relative;height:20px\"><div style=\"position:absolute;bottom:-50px\">under</div></div><div style=\"overflow:scroll\"><div style=\"position:fixed;top:0\">fixed out of a scroller</div></div>",
+            ),
+        ),
+        (
+            "display none and hidden absolute boxes",
+            rel(
+                "<div style=\"position:absolute;display:none;top:0\"><div style=\"position:absolute\">inner</div></div><div style=\"position:absolute;visibility:hidden;left:0;right:0\">h</div><div style=\"position:fixed;display:none\">f</div>",
+            ),
+        ),
+        (
+            "absolute boxes in flex containers",
+            page(
+                "<div style=\"display:flex;position:relative;height:100px;align-items:center;justify-content:space-between\"><div>a</div><div style=\"position:absolute;right:0;top:0\">abs</div><div style=\"position:absolute\">static</div><div>b</div></div><div style=\"display:flex;flex-direction:column\"><span style=\"position:absolute;bottom:0\">col</span></div>",
+            ),
+        ),
+        (
+            "right to left",
+            page(
+                "<div dir=\"rtl\" style=\"direction:rtl;position:relative;width:200px;height:50px\"><div style=\"position:absolute\">static rtl</div><div style=\"position:absolute;left:0;right:0;width:50px;margin:0 auto\">c</div><div style=\"position:absolute;left:0;right:0;width:500px;margin:0 auto\">wide</div></div>",
+            ),
+        ),
+        (
+            "floats and inline boxes made absolute",
+            rel("<div style=\"float:left;position:absolute;right:0\">f</div><span style=\"display:inline-block;position:absolute;bottom:0\">ib</span><li style=\"position:absolute;top:30px\">item</li>"),
+        ),
+        (
+            "intrinsic widths",
+            rel(&format!(
+                "<div style=\"position:absolute;width:min-content\">{text}</div><div style=\"position:absolute;width:max-content;top:30px\">{text}</div><div style=\"position:absolute;width:fit-content;top:60px;right:0\">{text}</div><div style=\"position:absolute;left:0;right:0;width:calc(50% - 10px);top:90px\">calc</div>"
+            )),
+        ),
+        (
+            "a zero-width containing block",
+            page(&format!("<div style=\"position:relative;width:0\"><div style=\"position:absolute;left:0;right:0\">{text}</div><div style=\"position:absolute\">{text}</div></div>")),
+        ),
+        (
+            "percentage offsets and margins",
+            rel(&format!("<div style=\"position:absolute;top:10%;left:25%;right:calc(5% + 3px);margin:5%;padding:2%\">{text}</div>")),
+        ),
+        (
+            "relative boxes holding absolute ones",
+            page(
+                "<div style=\"position:relative;top:10px;left:-5px\"><span style=\"position:relative;left:3px\">r <b style=\"position:absolute;right:0\">a</b></span></div><p style=\"position:relative\">x<span style=\"position:absolute;top:100%;left:0\">below</span></p>",
+            ),
+        ),
+        (
+            "range inputs",
+            page("<input type=\"range\"><input type=\"range\" style=\"width:200px\" value=\"30\"><div style=\"display:flex\"><input type=\"range\" min=\"0\" max=\"10\" value=\"7\"></div>"),
+        ),
+        (
+            "deep absolute chain",
+            page("<div style=\"position:absolute;left:1px\"><div style=\"position:absolute;left:2px\"><div style=\"position:absolute;left:3px\"><div style=\"position:fixed;left:4px\"><div style=\"position:absolute;left:5px\">x</div></div></div></div></div>"),
+        ),
+        (
+            "fixed boxes a media change makes static",
+            "<!DOCTYPE html><html><head><style>.f{position:fixed;top:0;width:50px}@media (min-width:800px){.f{position:static}}</style></head><body><p>a</p><div class=\"f\">fixed below 800px</div></body></html>".to_string(),
+        ),
+    ];
+    for display in ["block", "inline", "inline-block", "list-item"] {
+        docs.push((
+            "absolute boxes of every display",
+            rel(&format!(
+                "<span style=\"display:{display};position:absolute;left:0;right:0;top:0;bottom:0\">all</span><span style=\"display:{display};position:absolute\">none</span><span style=\"display:{display};position:fixed;right:0;bottom:0;width:30px;height:20px\">f</span>"
+            )),
+        ));
+    }
+    docs
+}
+
+/// Sticky shapes: the renderer refuses `position: sticky` from a widget (`sanitize_declaration`), so it comes from the
+/// trusted user sheet here, as from the renderer's own sheets.
+fn written_sticky_documents() -> Vec<(&'static str, &'static str, String)> {
+    let page = |body: &str| format!("<!DOCTYPE html><html><head></head><body>{body}</body></html>");
+    let sheet = ".st{position:sticky;top:0}.sb{position:sticky;bottom:10%}.sl{position:sticky;left:5px}.sr{position:sticky;right:0}.sv{position:sticky;top:-10px;bottom:-10px}.sp{position:sticky;top:20px;left:0;z-index:2}.sx{position:sticky;top:5%;bottom:0;left:1px;right:1px}";
+    vec![
+        (
+            "sticky boxes in scrollers",
+            sheet,
+            page(
+                "<div style=\"overflow:auto;height:100px;padding:5px\"><div class=\"st\">top</div><p>a</p><p>b</p><p>c</p><p>d</p><div class=\"sb\">bottom</div><p>e</p><p>f</p></div><div style=\"overflow:auto;width:100px;white-space:nowrap\"><span class=\"sl\">left</span> wide wide wide wide wide wide <span class=\"sr\" style=\"display:inline-block\">right</span></div><div style=\"overflow:hidden;height:30px;padding-top:40px\"><div class=\"sv\">both</div><p>more</p></div>",
+            ),
+        ),
+        (
+            "sticky boxes in the body",
+            sheet,
+            page(
+                "<div class=\"sp\">in the body</div><div style=\"height:900px\"><div class=\"sb\">deep bottom</div><div style=\"height:2000px\"></div><div class=\"st\">late top</div></div>",
+            ),
+        ),
+        (
+            "sticky boxes in clipping and positioned boxes",
+            sheet,
+            page(
+                "<div style=\"overflow:clip;height:50px\"><div style=\"position:relative;top:30px;overflow:scroll;height:40px\"><div style=\"height:100px\"></div><div class=\"sx\">x</div></div></div><div style=\"position:absolute;top:0;overflow:auto;height:60px;width:80px\"><div style=\"margin-top:200px\" class=\"st\">in an absolute scroller</div></div><div style=\"position:fixed;bottom:0;overflow:auto;height:20px\"><p>a</p><p class=\"sb\">fixed scroller</p><p>b</p></div>",
+            ),
+        ),
+        (
+            "nested sticky boxes",
+            sheet,
+            page(
+                "<div style=\"overflow:auto;height:80px\"><div style=\"height:300px\"></div><div class=\"sb\" style=\"padding:5px;border:2px solid\"><span class=\"sr\">in</span><div class=\"sv\" style=\"margin:3px\">inner</div><div style=\"position:absolute;right:0\">abs in sticky</div></div></div>",
+            ),
+        ),
+    ]
+}
+
+/// A trusted user sheet with sticky rules for the generated documents' classes.
+fn sticky_user_sheet(random: &mut Lcg) -> String {
+    let mut out = String::new();
+    for _ in 0..1 + random.below(3) {
+        let class = pick(random, &["p", "q", "r"]);
+        let decls: Vec<String> =
+            (0..1 + random.below(3)).map(|_| format!("{}:{}", pick(random, &["top", "right", "bottom", "left"]), offset(random))).collect();
+        out.push_str(&format!(".{class}{{position:sticky;{}}}", decls.join(";")));
+    }
+    out
+}
+
 /// The widths a case is laid out at: its own, another, its own again (the cache).
 fn layout_steps(width: f32, other: f32) -> Vec<Step> {
     vec![Step::Layout(width, None), Step::Dump, Step::Layout(other, None), Step::Dump, Step::Layout(width, None), Step::Dump]
@@ -1173,8 +1553,9 @@ fn every_tag_lays_out_alike() {
         for tag in ["table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td"] {
             html = html.replace(&format!("<{tag} "), "<div data-was-table ").replace(&format!("</{tag}>"), "</div>");
         }
-        // A range input's thumb is absolutely positioned (stage L9): ranges are text fields here.
-        let html = html.replace("type=\"range\"", "type=\"text\"").into_bytes();
+        // A range input's thumb is absolutely positioned.
+        assert!(html.contains("type=\"range\""));
+        let html = html.into_bytes();
         let what = if quirks { "every tag in quirks mode" } else { "every tag" };
         run.case(layout_record(375.0, 667.0, 1.0, &master, b"", &html, &steps), format!("{what}, master CSS"));
         run.case(layout_record(375.0, 667.0, 2.0, &light, b"", &html, &steps), format!("{what}, light UA layers"));
@@ -1243,8 +1624,7 @@ fn written_flex_shapes_lay_out_alike() {
         }
     }
     let tally = run.finish();
-    // A range input's thumb is absolutely positioned (stage L9): its shape is the one not compared.
-    assert_eq!(run_compared(&tally) + 4, tally.documents);
+    assert_eq!(run_compared(&tally), tally.documents);
     for what in [
         "flex-direction row",
         "flex-direction row-reverse",
@@ -1333,7 +1713,122 @@ fn generated_documents_lay_out_alike() {
     assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
 }
 
-/// The layout switches, each on both sides over generated documents and the written flex shapes.
+#[test]
+fn written_positioned_shapes_lay_out_alike() {
+    let mut run = Run::new("written positioned shapes");
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    for (what, html) in written_positioned_documents() {
+        for sheet in [&master, &light] {
+            for (width, other) in [(375.0, 200.0), (120.0, 800.0)] {
+                let mut steps = layout_steps(width, other);
+                steps.extend([
+                    Step::Hover(2),
+                    Step::Layout(width, None),
+                    Step::Dump,
+                    Step::Media(900.0, 700.0),
+                    Step::Layout(900.0, None),
+                    Step::Dump,
+                    Step::LayoutAs(900.0, 2),
+                    Step::Dump,
+                    Step::Media(500.0, 300.0),
+                    Step::LayoutAs(900.0, 2),
+                    Step::Dump,
+                    Step::LayoutAs(500.0, 1),
+                    Step::Dump,
+                ]);
+                run.case(layout_record(375.0, 667.0, 2.0, sheet, b"", html.as_bytes(), &steps), what);
+            }
+        }
+    }
+    for (what, user, html) in written_sticky_documents() {
+        for sheet in [&master, &light] {
+            for (width, height) in [(375.0, 667.0), (120.0, 90.0)] {
+                let mut steps = layout_steps(width, 300.0);
+                steps.extend([
+                    Step::Hover(2),
+                    Step::Layout(width, None),
+                    Step::Dump,
+                    Step::Media(200.0, 50.0),
+                    Step::Layout(200.0, None),
+                    Step::Dump,
+                ]);
+                run.case(layout_record(width, height, 2.0, sheet, user.as_bytes(), html.as_bytes(), &steps), what);
+            }
+        }
+    }
+    let tally = run.finish();
+    assert_eq!(run_compared(&tally), tally.documents);
+    for what in [
+        "sticky boxes",
+        "absolute boxes",
+        "fixed boxes",
+        "vertical rule 1 (top and height auto)",
+        "vertical rule 2 (top and bottom auto)",
+        "vertical rule 3 (height and bottom auto)",
+        "vertical rule 4 (top auto)",
+        "vertical rule 5 (height auto)",
+        "vertical rule 6 (bottom auto)",
+        "vertical rule 7 (all auto)",
+        "vertical rule 8 (none auto)",
+        "horizontal rule 1 (left and width auto)",
+        "horizontal rule 2 (left and right auto)",
+        "horizontal rule 3 (width and right auto)",
+        "horizontal rule 4 (left auto)",
+        "horizontal rule 5 (width auto)",
+        "horizontal rule 6 (right auto)",
+        "horizontal rule 7 (all auto)",
+        "horizontal rule 8 (none auto)",
+        "absolute replaced boxes",
+        "absolute flex boxes",
+        "fixed boxes' redraw boxes",
+        "positioned lists out of tree order",
+        "positioned held by static boxes",
+        "sticky boxes moved",
+        "boxes placed against the viewport",
+    ] {
+        assert!(tally.counts.contains_key(what), "no {what}");
+    }
+}
+
+#[test]
+fn generated_positioned_documents_lay_out_alike() {
+    let mut run = Run::new("generated positioned documents");
+    let mut random = Lcg::new(0x19_0001);
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    let only: Option<usize> = std::env::var("LAYOUT_ONLY").ok().and_then(|v| v.parse().ok());
+    for k in 0..2500 {
+        let html = positioned_document(&mut random);
+        let user = if k % 3 == 0 { sticky_user_sheet(&mut random) } else { String::new() };
+        if only.is_some_and(|only| only != k) {
+            continue;
+        }
+        let width = [320.0, 375.0, 150.0, 600.0][k % 4];
+        let other = [700.0, 240.0, 500.0, 90.0][(k / 4) % 4];
+        let sheet = if k % 2 == 0 { &master } else { &light };
+        let mut steps = layout_steps(width, other);
+        steps.extend([
+            Step::Media(other, 640.0),
+            Step::Layout(other, None),
+            Step::Dump,
+            Step::Hover(k as u32),
+            Step::Layout(other, None),
+            Step::Dump,
+        ]);
+        if k % 5 == 0 {
+            steps.extend([Step::Media(other, 300.0), Step::LayoutAs(other, 2), Step::Dump, Step::LayoutAs(width, 1), Step::Dump]);
+        }
+        run.case(
+            layout_record(width, 640.0, 2.0, sheet, user.as_bytes(), &html, &steps),
+            format!("generated positioned {k}: {} with the user sheet {user}", String::from_utf8_lossy(&html)),
+        );
+    }
+    let tally = run.finish();
+    assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
+}
+
+/// The layout switches, each on both sides over generated documents and the written flex and positioned shapes.
 #[test]
 fn the_layout_switches_lay_out_alike() {
     let master = master_css();
@@ -1351,7 +1846,17 @@ fn the_layout_switches_lay_out_alike() {
                 format!("{switch} {k}: {}", String::from_utf8_lossy(&html)),
             );
         }
-        for (what, html) in written_flex_documents() {
+        let mut random = Lcg::new(0x19_0002);
+        for k in 0..200 {
+            let html = positioned_document(&mut random);
+            let mut steps = layout_steps(320.0, 500.0);
+            steps.extend([Step::Hover(k as u32), Step::Layout(320.0, None), Step::Dump]);
+            run.case(
+                layout_record(320.0, 640.0, 2.0, &master, b"", &html, &steps),
+                format!("{switch} positioned {k}: {}", String::from_utf8_lossy(&html)),
+            );
+        }
+        for (what, html) in written_flex_documents().into_iter().chain(written_positioned_documents()) {
             let mut steps = layout_steps(375.0, 200.0);
             steps.extend([Step::Hover(2), Step::Layout(375.0, None), Step::Dump]);
             run.case(layout_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &steps), format!("{switch}: {what}"));
@@ -1420,6 +1925,40 @@ fn a_deep_document_lays_out_on_a_small_stack() {
     });
     let items = thread.expect("a thread").join().expect("the layout ran");
     eprintln!("a deep document: {items} items laid out");
+    assert!(items > 200);
+}
+
+/// 124 levels of absolute, fixed, relative and transformed boxes, with static blocks between, lay out and are placed
+/// on the same stacks.
+#[test]
+fn a_deep_positioned_document_lays_out_on_a_small_stack() {
+    let stack = if cfg!(debug_assertions) { 1 << 20 } else { 512 << 10 };
+    let thread = std::thread::Builder::new().stack_size(stack).spawn(|| {
+        let mut html = String::from("<!DOCTYPE html><html><head></head><body>");
+        for k in 0..124 {
+            html += match k % 5 {
+                0 => "<div style=\"position:absolute;left:1px;right:2px\">a ",
+                1 => "<div style=\"position:relative;top:1px\">b ",
+                2 => "<div style=\"transform:translate(1px,1px);margin:1px\">c ",
+                3 => "<div style=\"position:fixed;top:2px;width:50%\">d ",
+                _ => "<div style=\"padding:1px\">",
+            };
+        }
+        html += "<div style=\"position:absolute;bottom:0\">deep</div>";
+        for _ in 0..124 {
+            html += "</div>";
+        }
+        html += "</body></html>";
+        let lh = Lh::new();
+        let mut tally = LayoutTally::default();
+        let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
+        let (answer, unported) = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        assert_eq!(answer.0, 1);
+        assert_eq!(unported, None);
+        tally.items
+    });
+    let items = thread.expect("a thread").join().expect("the layout ran");
+    eprintln!("a deep positioned document: {items} items laid out");
     assert!(items > 200);
 }
 

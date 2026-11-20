@@ -1,14 +1,15 @@
-//! The Rust side of lhdump's `Y` record (stages L7 and L8, layout): an `l` record whose steps may lay the document out
-//! (`w` f32 width, u8 budget: 0 the renderer's, 1 a u64 that follows; answered with the f32 natural width) and whose
-//! dump steps dump the layout.
+//! The Rust side of lhdump's `Y` record (stages L7–L10, layout): an `l` record whose steps may lay the document out
+//! (`w` f32 width, u8 how: bit 0 the renderer's budget or a u64 that follows, the rest the `render_type`; answered with
+//! the f32 natural width) and whose dump steps dump the layout.
 //!
 //! A dump: u8 a root item, f32 the document's width and height, u64 boxes laid out of the budget, u8 exhausted, u8
-//! positioned boxes, u64 the layout epoch, u32 relayout roots left, u8 rendered once; u32 items, numbered as the render
-//! tree's dump numbers them (`render`), each: u8 class, i32 element, i32 parent, u32 children and each i32, its place
-//! (4 f32), margins, padding, borders (12 f32), u8 skip; its cache (u8 dirty, u8 relayout pending, u8 out of flow,
-//! u64 epoch, the last layout (`entry_out`), its place, f32 x, y, its margins, padding, borders, the two measures, i32
-//! the next measure, i32 resolved-layout safety); u32 positioned items and each i32; u8 a scroll view and its
-//! viewport, f32 size, left, top; an inline's or a text's boxes (u32, 4 f32 each); a block context's f32 vertical-align
+//! positioned boxes, u64 the layout epoch, u32 relayout roots left, u8 rendered once, u32 fixed boxes' redraw boxes (4
+//! f32 each); u32 items, numbered as the render tree's dump numbers them (`render`), each: u8 class, i32 element, i32
+//! parent, u32 children and each i32, its place (4 f32), margins, padding, borders (12 f32), u8 skip; its cache (u8
+//! dirty, u8 relayout pending, u8 out of flow, u64 epoch, the last layout (`entry_out`), its place, f32 x, y, its
+//! margins, padding, borders, the two measures, i32 the next measure, i32 resolved-layout safety); u32 positioned items
+//! in z-order and each i32; u8 a scroll view and its viewport, f32 size, left, top; a sticky box's f32 offset (stage
+//! L9); its placement (4 f32); an inline's or a text's boxes (u32, 4 f32 each); a block context's f32 vertical-align
 //! shift; a text's u8 piece, its text, i32 cut, u32 pieces (each place, margins, padding, borders, u8 skip, u8 piece,
 //! text, i32 cut, i32 parent, u32 pieces, boxes); an inline context's f32 trailing, f32 natural and min width, f32
 //! vertical-align shift, u8 cut, u32 ellipses (4 f32), u32 cut texts (an item ref), u32 lines, each f32 top, left,
@@ -29,7 +30,7 @@ use std::collections::BTreeMap;
 use super::cascade::*;
 use super::*;
 use twidget_litehtml::css_values::*;
-use twidget_litehtml::document::{Document, Switches};
+use twidget_litehtml::document::{Document, StyleCx, Switches};
 use twidget_litehtml::flex_line::FlexLine;
 use twidget_litehtml::line_box::LbiType;
 use twidget_litehtml::render_item::{LayoutEntry, RenderId, RenderKind};
@@ -146,6 +147,89 @@ impl LayoutTally {
         add("flex items out of source order", sorted);
     }
 
+    /// The branches positioned layout shows it took (stage L9): the rule of CSS 2.2 10.6.4 and 10.3.7 each absolute or
+    /// fixed box was placed by, what holds it, the order of the positioned lists, sticky shifts.
+    fn positioned_note(&mut self, add: &mut dyn FnMut(&str, bool), doc: &Document, id: RenderId, order: &BTreeMap<RenderId, usize>) {
+        let r = &doc.render;
+        let it = r.item(id);
+        let css = &doc.el(it.element).css;
+        let position = css.m_el_position;
+        let absolute = position == ElementPosition::element_position_absolute.index();
+        let fixed = position == ElementPosition::element_position_fixed.index();
+        if (absolute || fixed) && css.m_display != StyleDisplay::display_none.index() {
+            add(if absolute { "absolute boxes" } else { "fixed boxes" }, true);
+            let o = &css.m_css_offsets;
+            let rule = |a: bool, b: bool, size: bool| match (a, b, size) {
+                (true, false, true) => 1,
+                (true, true, false) => 2,
+                (false, true, true) => 3,
+                (true, false, false) => 4,
+                (false, false, true) => 5,
+                (false, true, false) => 6,
+                (true, true, true) => 7,
+                _ => 8,
+            };
+            let v = rule(o.top.is_predefined(), o.bottom.is_predefined(), css.m_css_height.is_predefined());
+            let v_name = [
+                "",
+                "top and height auto",
+                "top and bottom auto",
+                "height and bottom auto",
+                "top auto",
+                "height auto",
+                "bottom auto",
+                "all auto",
+                "none auto",
+            ][v];
+            add(&format!("vertical rule {v} ({v_name})"), true);
+            let h = rule(o.left.is_predefined(), o.right.is_predefined(), css.m_css_width.is_predefined());
+            let h_name = [
+                "",
+                "left and width auto",
+                "left and right auto",
+                "width and right auto",
+                "left auto",
+                "width auto",
+                "right auto",
+                "all auto",
+                "none auto",
+            ][h];
+            add(&format!("horizontal rule {h} ({h_name})"), true);
+            add("absolute replaced boxes", doc.is_replaced(it.element));
+            let flex = css.m_display == StyleDisplay::display_flex.index() || css.m_display == StyleDisplay::display_inline_flex.index();
+            add("absolute flex boxes", flex && (css.m_css_width.is_predefined() || css.m_css_height.is_predefined()));
+            let m = &css.m_css_margins;
+            add(
+                "auto margins solved",
+                (v == 8 && (m.top.is_predefined() || m.bottom.is_predefined()))
+                    || (h == 8 && (m.left.is_predefined() || m.right.is_predefined())),
+            );
+            add("percentage offsets", [&o.left, &o.right, &o.top, &o.bottom].iter().any(|l| l.units() == CssUnits::css_units_percentage));
+        }
+        if position == ElementPosition::element_position_sticky.index() {
+            let shift = doc.sticky_offset(id);
+            add("sticky boxes", true);
+            add("sticky boxes moved", shift.x != Px(0.0) || shift.y != Px(0.0));
+        }
+        if !it.positioned.is_empty() {
+            let element = it.element;
+            let root = r.parent(id).is_none();
+            let static_holder = doc.el(element).css.m_el_position == ElementPosition::element_position_static.index();
+            add("positioned held by static boxes", static_holder && !root);
+            let indexes: Vec<usize> = it.positioned.iter().map(|p| order.get(p).copied().unwrap_or(usize::MAX)).collect();
+            add("positioned lists out of tree order", indexes.windows(2).any(|w| w[0] > w[1]));
+            let zs: std::collections::BTreeSet<i32> = it.positioned.iter().map(|&p| doc.el(r.item(p).element).css.get_z_index()).collect();
+            add("positioned lists of several z-indexes", zs.len() > 1);
+            let viewport = root && !doc.is_positioned(element);
+            for &p in &it.positioned {
+                let pc = &doc.el(r.item(p).element).css;
+                let placed = pc.m_el_position == ElementPosition::element_position_absolute.index()
+                    && pc.m_display != StyleDisplay::display_none.index();
+                add("boxes placed against the viewport", placed && viewport);
+            }
+        }
+    }
+
     /// The branches the layout shows it took.
     fn note(&mut self, doc: &Document, items: &[RenderId]) {
         self.dumps += 1;
@@ -157,9 +241,11 @@ impl LayoutTally {
                 *c.entry(what.to_string()).or_default() += 1;
             }
         };
+        let order: BTreeMap<RenderId, usize> = items.iter().enumerate().map(|(k, &id)| (id, k)).collect();
         for &id in items {
             let it = r.item(id);
             let css = &doc.el(it.element).css;
+            self.positioned_note(&mut add, doc, id, &order);
             add("floats left", css.m_float == ElementFloat::float_left.index());
             add("floats right", css.m_float == ElementFloat::float_right.index());
             add("boxes clearing", css.m_clear != ElementClear::clear_none.index());
@@ -226,6 +312,9 @@ impl LayoutTally {
             }
         }
         add("layouts exhausted", doc.layout.exhausted);
+        if !doc.layout.fixed_boxes.is_empty() {
+            add("fixed boxes' redraw boxes", true);
+        }
         for (k, n) in c {
             self.count(&k, n);
         }
@@ -350,7 +439,7 @@ fn flex_out(o: &mut Out, doc: &Document, t: &Index, id: RenderId) {
 }
 
 /// lhdump's `write_layout`.
-pub fn layout_out(o: &mut Out, doc: &Document, tally: &mut LayoutTally) {
+pub fn layout_out(o: &mut Out, cx: &StyleCx, doc: &Document, tally: &mut LayoutTally) {
     let mut nodes = Vec::new();
     if let Some(root) = doc.root {
         cascade_walk(doc, root, -1, &mut nodes);
@@ -381,6 +470,11 @@ pub fn layout_out(o: &mut Out, doc: &Document, tally: &mut LayoutTally) {
     mark(o, "document's layout", -2);
     o.u8(u8::from(r.root.is_some())).f32(l.size.width.value()).f32(l.size.height.value()).u64(l.spent).u8(u8::from(l.exhausted));
     o.u8(u8::from(l.has_positioned)).u64(l.epoch).u32(l.relayout_roots.len() as u32).u8(u8::from(l.after_render));
+    let fixed_boxes = doc.get_fixed_boxes();
+    o.u32(fixed_boxes.len() as u32);
+    for b in &fixed_boxes {
+        pos_out(o, b);
+    }
     o.u32(t.items.len() as u32);
     for k in 0..t.items.len() {
         let id = t.items[k];
@@ -427,6 +521,13 @@ pub fn layout_out(o: &mut Out, doc: &Document, tally: &mut LayoutTally) {
                 o.u8(0);
             }
         }
+        if doc.el(it.element).css.m_el_position == ElementPosition::element_position_sticky.index() {
+            mark(o, "sticky offset", -1);
+            let sticky = doc.sticky_offset(id);
+            o.f32(sticky.x.value()).f32(sticky.y.value());
+        }
+        mark(o, "item's placement", -1);
+        pos_out(o, &doc.get_placement(cx, id));
         if matches!(it.kind, RenderKind::render_item_inline | RenderKind::render_text) {
             mark(o, "inline's boxes", -1);
             inline_boxes_out(o, &it.inline_boxes);
@@ -520,11 +621,11 @@ pub fn layout_out(o: &mut Out, doc: &Document, tally: &mut LayoutTally) {
 /// What lhdump answers to a `Y` record, and the first layout a later stage ports when the port reached one.
 pub fn layout_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut LayoutTally) -> ((u8, Vec<u8>), Option<&'static str>) {
     let mut unported = None;
-    let answer = record_answer(lh, switches, input, &mut |o: &mut Out, _names: &Names, doc: &Document| {
+    let answer = record_answer(lh, switches, input, &mut |o: &mut Out, cx: &StyleCx, doc: &Document| {
         if unported.is_none() {
             unported = doc.layout.unported;
         }
-        layout_out(o, doc, tally);
+        layout_out(o, cx, doc, tally);
     });
     (answer, unported)
 }

@@ -1368,7 +1368,7 @@ void write_flex(Out& o, TreeIndex& t, render_item_flex& flex) {
     }
 }
 
-// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip; its cache and marks; its positioned items; its scroll view; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps, a flex's baselines and lines with their items), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
+// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once, the fixed boxes' redraw boxes), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip; its cache and marks; its positioned items in z-order; its scroll view; a sticky box's offset; its placement; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps, a flex's baselines and lines with their items), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
 void write_layout(Out& o, document& doc) {
     using lhdump_dom::field;
     TreeIndex t;
@@ -1401,6 +1401,10 @@ void write_layout(Out& o, document& doc) {
     o.u64(doc.layout_epoch());
     o.u32(uint32_t(doc.m_relayout_roots.size()));
     o.u8(doc.m_layout_after_render ? 1 : 0);
+    position::vector fixed_boxes;
+    doc.get_fixed_boxes(fixed_boxes);
+    o.u32(uint32_t(fixed_boxes.size()));
+    for (const auto& b : fixed_boxes) write_pos(o, b);
     o.u32(uint32_t(t.items.size()));
     auto write_inline_boxes = [&](render_item& ri) {
         const auto& boxes = field<lhdump_dom::InlineBoxes>(static_cast<render_item_inline&>(ri));
@@ -1444,6 +1448,12 @@ void write_layout(Out& o, document& doc) {
             o.f32(view->get_left().value());
             o.f32(view->get_top().value());
         }
+        if (ri->css().get_position() == element_position_sticky) {
+            const position sticky = ri->sticky_offset();
+            o.f32(sticky.x.value());
+            o.f32(sticky.y.value());
+        }
+        write_pos(o, ri->get_placement());
         if (kind == 4 || kind == 5) write_inline_boxes(*ri);
         if (kind == 2) o.f32(field<lhdump_dom::BcVaApplied>(static_cast<render_item_block_context&>(*ri)).value());
         if (kind == 5) {
@@ -1535,7 +1545,7 @@ uint64_t renderer_layout_budget(document& doc) {
     return 100000 + 50 * elements;
 }
 
-// f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump (the cascade, with mode 1 the render tree, with mode 2 the layout), 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root, 'w' f32 width and u8 budget (0 the renderer's, 1 a u64 that follows) then render, answered with its f32): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
+// f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump (the cascade, with mode 1 the render tree, with mode 2 the layout), 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root, 'w' f32 width and u8 how (bit 0: the renderer's budget or a u64 that follows; the rest the render_type) then render, answered with its f32): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
 void cascade(In& in, Out& o, int mode) {
     const size_t names_before = _id_usage().names;
     CascadeContainer container;
@@ -1583,8 +1593,8 @@ void cascade(In& in, Out& o, int mode) {
         if (op == 'w') {
             const float width = in.f32();
             const uint8_t how = in.u8();
-            doc->set_layout_budget(how ? in.u64() : renderer_layout_budget(*doc));
-            o.f32(doc->render(pixel_t(width)).value());
+            doc->set_layout_budget((how & 1) ? in.u64() : renderer_layout_budget(*doc));
+            o.f32(doc->render(pixel_t(width), render_type(how >> 1)).value());
             continue;
         }
         if (op == 'm') {

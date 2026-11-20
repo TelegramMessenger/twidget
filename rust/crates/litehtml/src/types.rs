@@ -310,6 +310,16 @@ impl ContainingBlockContext {
     }
 }
 
+/// `render_type`: what `document::render` lays out: everything, all but the fixed boxes' placement, or only the
+/// fixed boxes placed again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RenderType {
+    render_all,
+    render_no_fixed,
+    render_fixed_only,
+}
+
 /// `margins`: four sides in pixels (a box's margins, padding or border widths).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Margins {

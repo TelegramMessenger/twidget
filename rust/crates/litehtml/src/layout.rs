@@ -6,11 +6,15 @@
 //! Each class's `_render` is in its module: `render_block.rs` (and the block and inline contexts' contents in
 //! `render_block_context.rs` and `render_inline_context.rs`), `render_image.rs`.
 //!
-//! Not yet ported, and where the seam is: placing absolute and fixed boxes after the flow (`render_positioned`,
-//! stage L9; their in-flow pass, `render_out_of_flow`, is here), a table's `_render` (L12), a grid's
-//! `_render_content` (L11). Reaching one records it in [`DocLayout::unported`] and does what the C++'s base class
-//! does (nothing, `{0, 0}`), so the boxes around it are laid out as the port can. Flex layout (L10) is in
-//! `render_flex.rs`, `flex_line.rs` and `flex_item.rs`.
+//! Positioned layout (stage L9) is here too: `render_positioned` places the absolute and fixed boxes after the flow
+//! (their in-flow pass, `render_out_of_flow`, leaves the static position), each item's positioned list sorted by
+//! `z-index` (painting and hit testing take the stacking passes from its z-indexes), the fixed boxes' redraw boxes the
+//! document keeps, sticky offsets, placements and the scroll views `calc_document_size` makes.
+//!
+//! Not yet ported, and where the seam is: a table's `_render` (L12), a grid's `_render_content` (L11). Reaching one
+//! records it in [`DocLayout::unported`] and does what the C++'s base class does (nothing, `{0, 0}`), so the boxes
+//! around it are laid out as the port can. Flex layout (L10) is in `render_flex.rs`, `flex_line.rs` and
+//! `flex_item.rs`.
 
 use crate::Px;
 use crate::css_properties::CssProperties;
@@ -23,8 +27,8 @@ use crate::types::*;
 
 /// What `document` keeps for layout: `m_layout_epoch` (from 1), the budget (`m_layout_budget`, `m_layout_spent`,
 /// `m_layout_exhausted`), the viewport it last laid out in, the relayout boundaries to lay out again, the style and
-/// tree the positioned boxes were fetched for, the document's size, the cache's counters (process-wide in the C++),
-/// and, for the port, the first layout that is not ported yet.
+/// tree the positioned boxes were fetched for, the fixed boxes' redraw boxes (`m_fixed_boxes`), the document's size, the
+/// cache's counters (process-wide in the C++), and, for the port, the first layout that is not ported yet.
 #[derive(Clone, Debug)]
 pub struct DocLayout {
     pub epoch: u64,
@@ -40,12 +44,14 @@ pub struct DocLayout {
     pub has_positioned: bool,
     /// `m_layout_after_render`.
     pub after_render: bool,
+    /// `m_fixed_boxes`: each fixed box's redraw box, as `render_positioned` placed them.
+    pub fixed_boxes: Vec<Position>,
     /// `m_size`.
     pub size: Size,
     pub hits: u64,
     pub misses: u64,
     pub mismatches: u64,
-    /// The first layout reached that is a later stage's (`"positioned"`, `"table"`, `"grid"`).
+    /// The first layout reached that is a later stage's (`"table"`, `"grid"`).
     pub unported: Option<&'static str>,
 }
 
@@ -63,6 +69,7 @@ impl Default for DocLayout {
             positioned_tree: u64::MAX,
             has_positioned: false,
             after_render: false,
+            fixed_boxes: Vec::new(),
             size: Size::default(),
             hits: 0,
             misses: 0,
@@ -1090,7 +1097,8 @@ impl Document {
     }
 
     /// `render_out_of_flow(y, self_size, fmt_ctx)`: an absolute or fixed box's in-flow pass, shrunk to fit:
-    /// min(max(min-content, available), max-content); `render_positioned` (stage L9) places it.
+    /// min(max(min-content, available), max-content), which leaves its static position; `render_positioned` places
+    /// it.
     pub fn render_out_of_flow(
         &mut self,
         cx: &StyleCx,
@@ -1112,12 +1120,537 @@ impl Document {
         }
     }
 
+    /// `render_positioned(rt)`: the absolute and fixed boxes the item positions placed in their containing block (the
+    /// viewport for a fixed box and for the root's when the root is not positioned, else the item's padding box) as
+    /// CSS 2.2 10.3.7 and 10.6.4 solve them, laid out again at their size when it changed; each fixed box's redraw box
+    /// kept by the document; each positioned box's own placed in turn (all of them), then those of the static boxes
+    /// below that hold some (transformed or contained ones); the list sorted by `z-index`, ties in their order.
+    pub fn render_positioned(&mut self, cx: &StyleCx, id: RenderId, rt: RenderType) {
+        let view_port = cx.container.get_viewport();
+        let mut k = 0;
+        while k < self.render.item(id).positioned.len() {
+            let el = self.render.item(id).positioned[k];
+            k += 1;
+            self.place_positioned(cx, id, el, rt, &view_port);
+            self.render_positioned(cx, el, RenderType::render_all);
+        }
+        self.render_positioned_holders(cx, id, rt);
+        if !self.render.item(id).positioned.is_empty() {
+            let mut positioned = std::mem::take(&mut self.render.item_mut(id).positioned);
+            // std::stable_sort by get_z_index(): a stable sort by the key.
+            positioned.sort_by_key(|&p| self.ri_css(p).get_z_index());
+            self.render.item_mut(id).positioned = positioned;
+        }
+    }
+
+    /// `render_positioned`'s `holders`: the static boxes below the item, in order and short of the positioned ones,
+    /// that hold positioned boxes place them; the others are looked into.
+    fn render_positioned_holders(&mut self, cx: &StyleCx, item: RenderId, rt: RenderType) {
+        let mut k = 0;
+        while k < self.render.children(item).len() {
+            let child = self.render.children(item)[k];
+            k += 1;
+            if self.ri_css(child).m_el_position != element_position_static {
+                continue;
+            }
+            if !self.render.item(child).positioned.is_empty() {
+                self.render_positioned(cx, child, rt);
+            } else {
+                self.render_positioned_holders(cx, child, rt);
+            }
+        }
+    }
+
+    /// `render_positioned`'s height in the box's sizing: min and max against the containing block, then the
+    /// padding, borders and margins a content-box height leaves out (`fix_height_min_max`).
+    fn fix_height_min_max(&self, el: RenderId, containing_block_size: &ContainingBlockContext, mut height: Px) -> Px {
+        let css = self.ri_css(el);
+        let max_height = &css.m_css_max_height;
+        let min_height = &css.m_css_min_height;
+        if !max_height.is_predefined() {
+            let max_height_value = max_height.calc_percent(containing_block_size.height.px());
+            height = height.min(max_height_value);
+        }
+        if !min_height.is_predefined() {
+            let min_height_value = min_height.calc_percent(containing_block_size.height.px());
+            height = height.max(min_height_value);
+        }
+        height += self.render.item(el).content_offset_height() - self.box_sizing_height(el);
+        height
+    }
+
+    /// `fix_width_min_max`, the same across.
+    fn fix_width_min_max(&self, el: RenderId, containing_block_size: &ContainingBlockContext, mut width: Px) -> Px {
+        let css = self.ri_css(el);
+        let max_width = &css.m_css_max_width;
+        let min_width = &css.m_css_min_width;
+        if !max_width.is_predefined() {
+            let max_width_value = max_width.calc_percent(containing_block_size.width.px());
+            width = width.min(max_width_value);
+        }
+        if !min_width.is_predefined() {
+            let min_width_value = min_width.calc_percent(containing_block_size.width.px());
+            width = width.max(min_width_value);
+        }
+        width += self.render.item(el).content_offset_width() - self.box_sizing_width(el);
+        width
+    }
+
+    /// One box of `render_positioned`'s list placed: kept out of the recursion's frames.
+    #[inline(never)]
+    fn place_positioned(&mut self, cx: &StyleCx, id: RenderId, el: RenderId, rt: RenderType, view_port: &Position) {
+        let el_element = self.render.item(el).element;
+        let el_position = self.el(el_element).css.m_el_position;
+
+        let mut process = false;
+        if self.el(el_element).css.m_display != display_none {
+            if el_position == element_position_absolute {
+                if rt != RenderType::render_fixed_only {
+                    process = true;
+                }
+            } else if el_position == element_position_fixed && rt != RenderType::render_no_fixed {
+                process = true;
+            }
+        }
+        if !process {
+            return;
+        }
+
+        let mut containing_block_size = ContainingBlockContext::default();
+        if el_position == element_position_fixed || (self.render_is_root(id) && !self.is_positioned(self.render.item(id).element)) {
+            containing_block_size.height.set(view_port.height);
+            containing_block_size.width.set(view_port.width);
+        } else {
+            let it = self.render.item(id);
+            containing_block_size.height.set(it.pos.height + it.padding.height());
+            containing_block_size.width.set(it.pos.width + it.padding.width());
+        }
+        let cb_width = containing_block_size.width.px();
+        let cb_height = containing_block_size.height.px();
+
+        let css = &self.el(el_element).css;
+        let css_left = css.m_css_offsets.left.clone();
+        let css_right = css.m_css_offsets.right.clone();
+        let css_top = css.m_css_offsets.top.clone();
+        let css_bottom = css.m_css_offsets.bottom.clone();
+        let el_width = css.m_css_width.clone();
+        let el_height = css.m_css_height.clone();
+        let margin_top_auto = css.m_css_margins.top.is_predefined();
+        let margin_bottom_auto = css.m_css_margins.bottom.is_predefined();
+        let margin_left_auto = css.m_css_margins.left.is_predefined();
+        let margin_right_auto = css.m_css_margins.right.is_predefined();
+        let display = css.m_display;
+
+        let mut need_render = false;
+
+        if (display == display_flex || display == display_inline_flex) && (el_width.is_predefined() || el_height.is_predefined()) {
+            let mut available_width = cb_width;
+            if !css_left.is_predefined() {
+                available_width -= css_left.calc_percent(cb_width);
+            }
+            if !css_right.is_predefined() {
+                available_width -= css_right.calc_percent(cb_width);
+            }
+            available_width = Px(0.0).max(available_width);
+            let (left, top) = (self.render.item(el).left(), self.render.item(el).top());
+            let measured = self.render(cx, el, left, top, &containing_block_size.new_width(available_width, size_mode_normal), None, false);
+            if el_width.is_predefined() && (css_left.is_predefined() || css_right.is_predefined()) {
+                let fitted_width = measured.min_width.max(available_width).min(measured.natural_width);
+                if fitted_width != self.render.item(el).width() {
+                    let (left, top) = (self.render.item(el).left(), self.render.item(el).top());
+                    self.render(cx, el, left, top, &containing_block_size.new_width(fitted_width, size_mode_normal), None, false);
+                }
+            }
+        }
+
+        let bottom;
+        let top;
+        let mut height;
+
+        let (el_static_offset_x, el_static_offset_y) = self.element_static_offset(id, el);
+
+        let el_static_x = self.render.item(el).pos.x + el_static_offset_x;
+        let el_static_y = self.render.item(el).pos.y + el_static_offset_y;
+        // The auto vertical margins set to 0, as every rule but the last does first.
+        let zero_vertical_auto_margins = |doc: &mut Document| {
+            let it = doc.render.item_mut(el);
+            if margin_top_auto {
+                it.margins.top = Px(0.0);
+            }
+            if margin_bottom_auto {
+                it.margins.bottom = Px(0.0);
+            }
+        };
+        // Calculate vertical position
+        // https://www.w3.org/TR/CSS22/visudet.html#abs-non-replaced-height
+        // 10.6.4 Absolutely positioned, non-replaced elements
+        if css_top.is_predefined() && !css_bottom.is_predefined() && el_height.is_predefined() {
+            // 1. 'top' and 'height' are 'auto' and 'bottom' is not 'auto', then the height is based on the
+            // content per 10.6.7, set 'auto' values for 'margin-top' and 'margin-bottom' to 0, and solve for 'top'
+            zero_vertical_auto_margins(self);
+            height = self.render.item(el).height();
+            bottom = css_bottom.calc_percent(cb_height);
+            top = containing_block_size.height.value - height - bottom;
+        } else if css_top.is_predefined() && css_bottom.is_predefined() && !el_height.is_predefined() {
+            // 2. 'top' and 'bottom' are 'auto' and 'height' is not 'auto', then set 'top' to the static position,
+            // set 'auto' values for 'margin-top' and 'margin-bottom' to 0, and solve for 'bottom'
+            zero_vertical_auto_margins(self);
+            top = el_static_y - self.render.item(el).content_offset_top();
+            height = self.fix_height_min_max(el, &containing_block_size, el_height.calc_percent(cb_height));
+        } else if !css_top.is_predefined() && css_bottom.is_predefined() && el_height.is_predefined() {
+            // 3. 'height' and 'bottom' are 'auto' and 'top' is not 'auto', then the height is based on the
+            // content per 10.6.7, set 'auto' values for 'margin-top' and 'margin-bottom' to 0,
+            // and solve for 'bottom'
+            zero_vertical_auto_margins(self);
+            height = self.render.item(el).height();
+            top = css_top.calc_percent(cb_height);
+        } else if css_top.is_predefined() && !css_bottom.is_predefined() && !el_height.is_predefined() {
+            // 4. 'top' is 'auto', 'height' and 'bottom' are not 'auto', then set 'auto' values for 'margin-top'
+            // and 'margin-bottom' to 0, and solve for 'top'
+            zero_vertical_auto_margins(self);
+            height = self.fix_height_min_max(el, &containing_block_size, el_height.calc_percent(cb_height));
+            bottom = css_bottom.calc_percent(cb_height);
+            top = containing_block_size.height.value - height - bottom;
+        } else if !css_top.is_predefined() && !css_bottom.is_predefined() && el_height.is_predefined() {
+            // 5. 'height' is 'auto', 'top' and 'bottom' are not 'auto', then 'auto' values for 'margin-top' and
+            // 'margin-bottom' are set to 0 and solve for 'height'
+            zero_vertical_auto_margins(self);
+            bottom = css_bottom.calc_percent(cb_height);
+            top = css_top.calc_percent(cb_height);
+            if self.is_replaced(el_element) {
+                let it = self.render.item_mut(el);
+                height = it.height() - it.content_offset_height();
+                let reminded = (containing_block_size.height.value - top - bottom) - height - it.content_offset_height();
+                if reminded > Px(0.0) {
+                    let divider = i32::from(margin_top_auto) + i32::from(margin_bottom_auto);
+                    if divider != 0 {
+                        if margin_top_auto {
+                            it.margins.top = reminded / Px::from_int(divider);
+                        }
+                        if margin_bottom_auto {
+                            it.margins.bottom = reminded / Px::from_int(divider);
+                        }
+                    }
+                }
+                height += it.content_offset_height();
+            } else {
+                height = containing_block_size.height.value - top - bottom;
+            }
+            let max_height_css = &self.ri_css(el).m_css_max_height;
+            if !max_height_css.is_predefined() {
+                let max_height = max_height_css.calc_percent(cb_height);
+                let it = self.render.item_mut(el);
+                if height - it.content_offset_height() > max_height {
+                    let reminded = height - it.content_offset_height() - max_height;
+                    height = max_height;
+                    let divider = i32::from(margin_top_auto) + i32::from(margin_bottom_auto);
+                    if divider != 0 {
+                        if margin_top_auto {
+                            it.margins.top = reminded / Px::from_int(divider);
+                        }
+                        if margin_bottom_auto {
+                            it.margins.bottom = reminded / Px::from_int(divider);
+                        }
+                    }
+                    height += it.content_offset_height();
+                }
+            }
+        } else if !css_top.is_predefined() && css_bottom.is_predefined() && !el_height.is_predefined() {
+            // 6. 'bottom' is 'auto', 'top' and 'height' are not 'auto', then set 'auto' values for 'margin-top'
+            // and 'margin-bottom' to 0 and solve for 'bottom'
+            zero_vertical_auto_margins(self);
+            height = self.fix_height_min_max(el, &containing_block_size, el_height.calc_percent(cb_height));
+            top = css_top.calc_percent(cb_height);
+        } else if css_top.is_predefined() && css_bottom.is_predefined() && el_height.is_predefined() {
+            // If all three of 'top', 'height', and 'bottom' are auto, set 'top' to the static position and
+            // apply rule number three.
+            zero_vertical_auto_margins(self);
+            height = self.render.item(el).height();
+            top = el_static_y - self.render.item(el).content_offset_top();
+        } else {
+            // If none of the three are 'auto':
+            height = self.fix_height_min_max(el, &containing_block_size, el_height.calc_percent(cb_height));
+            top = css_top.calc_percent(cb_height);
+            bottom = css_bottom.calc_percent(cb_height);
+            let remained = containing_block_size.height.value - height - top - bottom;
+
+            let it = self.render.item_mut(el);
+            if margin_top_auto && margin_bottom_auto {
+                // If both 'margin-top' and 'margin-bottom' are 'auto', solve the equation under the extra
+                // constraint that the two margins get equal values.
+                it.margins.bottom = remained / Px(2.0);
+                it.margins.top = it.margins.bottom;
+                height += it.margins.top + it.margins.bottom;
+            } else {
+                // If one of 'margin-top' or 'margin-bottom' is 'auto', solve the equation for that value.
+                if margin_top_auto {
+                    it.margins.top = remained;
+                    height += it.margins.top;
+                }
+                if margin_bottom_auto {
+                    it.margins.bottom = remained;
+                    height += it.margins.bottom;
+                }
+            }
+        }
+        let it = self.render.item_mut(el);
+        it.pos.y = top + it.content_offset_top();
+        if it.pos.height != height - it.content_offset_height() {
+            it.pos.height = height - it.content_offset_height();
+            need_render = true;
+        }
+
+        // Calculate horizontal position
+        let right;
+        let left;
+        let mut width;
+        let zero_horizontal_auto_margins = |doc: &mut Document| {
+            let it = doc.render.item_mut(el);
+            if margin_left_auto {
+                it.margins.left = Px(0.0);
+            }
+            if margin_right_auto {
+                it.margins.right = Px(0.0);
+            }
+        };
+        // https://www.w3.org/TR/CSS22/visudet.html#abs-non-replaced-width
+        // 10.3.7 Absolutely positioned, non-replaced elements
+        if css_left.is_predefined() && !css_right.is_predefined() && el_width.is_predefined() {
+            // 1. 'left' and 'width' are 'auto' and 'right' is not 'auto', then the width is shrink-to-fit.
+            // Then solve for 'left'
+            zero_horizontal_auto_margins(self);
+            width = self.render.item(el).width();
+            right = css_right.calc_percent(cb_width);
+            left = containing_block_size.width.value - width - right;
+        } else if css_left.is_predefined() && css_right.is_predefined() && !el_width.is_predefined() {
+            // 2. 'left' and 'right' are 'auto' and 'width' is not 'auto', then if the 'direction' property of
+            // the element establishing the static-position containing block is 'ltr' set 'left' to the
+            // static position, otherwise set 'right' to the static position. Then solve for 'left'
+            // (if 'direction is 'rtl') or 'right' (if 'direction' is 'ltr').
+            zero_horizontal_auto_margins(self);
+            left = el_static_x - self.render.item(el).content_offset_left();
+            width = self.fix_width_min_max(el, &containing_block_size, el_width.calc_percent(cb_width));
+        } else if !css_left.is_predefined() && css_right.is_predefined() && el_width.is_predefined() {
+            // 3. 'width' and 'right' are 'auto' and 'left' is not 'auto', then the width is shrink-to-fit .
+            // Then solve for 'right'
+            zero_horizontal_auto_margins(self);
+            width = self.render.item(el).width();
+            left = css_left.calc_percent(cb_width);
+        } else if css_left.is_predefined() && !css_right.is_predefined() && !el_width.is_predefined() {
+            // 4. 'left' is 'auto', 'width' and 'right' are not 'auto', then solve for 'left'
+            zero_horizontal_auto_margins(self);
+            right = css_right.calc_percent(cb_width);
+            width = self.fix_width_min_max(el, &containing_block_size, el_width.calc_percent(cb_width));
+            left = containing_block_size.width.value - right - width;
+        } else if !css_left.is_predefined() && !css_right.is_predefined() && el_width.is_predefined() {
+            // 5. 'width' is 'auto', 'left' and 'right' are not 'auto', then solve for 'width'
+            zero_horizontal_auto_margins(self);
+            left = css_left.calc_percent(cb_width);
+            right = css_right.calc_percent(cb_width);
+            if self.is_replaced(el_element) {
+                let it = self.render.item_mut(el);
+                width = it.width() - it.content_offset_width();
+                let reminded = (containing_block_size.width.value - left - right) - width - it.content_offset_width();
+                if reminded != Px(0.0) {
+                    let divider = i32::from(margin_left_auto) + i32::from(margin_right_auto);
+                    if divider != 0 {
+                        if margin_left_auto {
+                            it.margins.left = reminded / Px::from_int(divider);
+                        }
+                        if margin_right_auto {
+                            it.margins.right = reminded / Px::from_int(divider);
+                        }
+                    }
+                }
+                width += it.content_offset_width();
+            } else {
+                width = containing_block_size.width.value - left - right;
+            }
+            let max_width_css = &self.ri_css(el).m_css_max_width;
+            if !max_width_css.is_predefined() {
+                // The C++ resolves a % max-width here against the containing block's height.
+                let max_width = max_width_css.calc_percent(cb_height);
+                let it = self.render.item_mut(el);
+                if width - it.content_offset_width() > max_width {
+                    let reminded = width - it.content_offset_width() - max_width;
+                    width = max_width;
+                    let divider = i32::from(margin_left_auto) + i32::from(margin_right_auto);
+                    if divider != 0 {
+                        if margin_left_auto {
+                            it.margins.left = reminded / Px::from_int(divider);
+                        }
+                        if margin_right_auto {
+                            it.margins.right = reminded / Px::from_int(divider);
+                        }
+                    }
+                    width += it.content_offset_width();
+                }
+            }
+        } else if !css_left.is_predefined() && css_right.is_predefined() && !el_width.is_predefined() {
+            // 6. 'right' is 'auto', 'left' and 'width' are not 'auto', then solve for 'right'
+            zero_horizontal_auto_margins(self);
+            left = css_left.calc_percent(cb_width);
+            width = self.fix_width_min_max(el, &containing_block_size, el_width.calc_percent(cb_width));
+        } else if css_left.is_predefined() && css_right.is_predefined() && el_width.is_predefined() {
+            // If all three of 'left', 'width', and 'right' are 'auto': First set any 'auto' values for
+            // 'margin-left' and 'margin-right' to 0. Then, if the 'direction' property of the element
+            // establishing the static-position containing block is 'ltr' set 'left' to the static position
+            // and apply rule number three below; otherwise, set 'right' to the static position and apply
+            // rule number one below.
+            zero_horizontal_auto_margins(self);
+            width = self.render.item(el).width();
+            left = el_static_x - self.render.item(el).content_offset_left();
+        } else {
+            // If none of the three is 'auto':
+            width = self.fix_width_min_max(el, &containing_block_size, el_width.calc_percent(cb_width));
+            left = css_left.calc_percent(cb_width);
+            right = css_right.calc_percent(cb_width);
+            let remained = containing_block_size.width.value - width - left - right;
+
+            let it = self.render.item_mut(el);
+            if margin_left_auto && margin_right_auto {
+                // If both 'margin-left' and 'margin-right' are 'auto', solve the equation under the extra
+                // constraint that the two margins get equal values, unless this would make them negative,
+                // in which case when direction of the containing block is 'ltr' ('rtl'), set 'margin-left'
+                // ('margin-right') to zero and solve for 'margin-right' ('margin-left').
+                it.margins.right = remained / Px(2.0);
+                it.margins.left = it.margins.right;
+                if it.margins.left < Px(0.0) {
+                    it.margins.left = Px(0.0);
+                    it.margins.right = remained;
+                }
+                width += it.margins.left + it.margins.right;
+            } else {
+                // If one of 'margin-left' or 'margin-right' is 'auto', solve the equation
+                // for that value. If the values are over-constrained, ignore the value for 'left'
+                // (in case the 'direction' property of the containing block is 'rtl') or 'right' (in case
+                // 'direction' is 'ltr') and solve for that value.
+                if margin_left_auto {
+                    it.margins.left = remained;
+                    width += it.margins.left;
+                }
+                if margin_right_auto {
+                    it.margins.right = remained;
+                    width += it.margins.right;
+                }
+            }
+        }
+        let it = self.render.item_mut(el);
+        it.pos.x = left + it.content_offset_left();
+        if it.pos.width != width - it.content_offset_width() {
+            it.pos.width = width - it.content_offset_width();
+            need_render = true;
+        }
+
+        if el_position != element_position_fixed {
+            it.pos.x -= el_static_offset_x;
+            it.pos.y -= el_static_offset_y;
+        }
+
+        if need_render {
+            let pos = self.render.item(el).pos;
+            let (left, top) = (self.render.item(el).left(), self.render.item(el).top());
+            if self.ri_css(el).m_display == display_table || self.is_replaced(el_element) {
+                let cb = containing_block_size.new_width(self.render.item(el).width(), size_mode_normal);
+                self.render(cx, el, left, top, &cb, None, true);
+            } else {
+                let cb = containing_block_size.new_width_height(
+                    pos.width + self.box_sizing_width(el),
+                    pos.height + self.box_sizing_height(el),
+                    size_mode_exact_width | size_mode_exact_height,
+                );
+                self.render(cx, el, left, top, &cb, None, true);
+            }
+            self.render.item_mut(el).pos = pos;
+        }
+
+        if el_position == element_position_fixed {
+            let mut fixed_pos = self.render.item(el).pos;
+            self.get_redraw_box(el, &mut fixed_pos, Px(0.0), Px(0.0));
+            self.layout.fixed_boxes.push(fixed_pos);
+        }
+    }
+
+    /// `element_static_offset(el)`: from the box's parent to this item (to the root for a fixed box), the places
+    /// of the boxes between, then this item's place for a fixed box or a root that is not positioned, else its
+    /// padding: what turns a static position into one in the containing block.
+    pub fn element_static_offset(&self, id: RenderId, el: RenderId) -> (Px, Px) {
+        let mut offset_x = Px(0.0);
+        let mut offset_y = Px(0.0);
+        let fixed = self.ri_css(el).m_el_position == element_position_fixed;
+        let mut cur_el = self.render.parent(el);
+        let this_el = if !fixed { Some(id) } else { self.render.root };
+        while let Some(cur) = cur_el {
+            if Some(cur) == this_el {
+                break;
+            }
+            let pos = self.render.item(cur).pos;
+            offset_x += pos.x;
+            offset_y += pos.y;
+            cur_el = self.render.parent(cur);
+        }
+
+        if fixed || (self.render_is_root(id) && !self.is_positioned(self.render.item(id).element)) {
+            // The C++ reads the document's root render item here unchecked; layout runs only with one.
+            if let Some(this_el) = this_el {
+                let pos = self.render.item(this_el).pos;
+                offset_x += pos.x;
+                offset_y += pos.y;
+            }
+        } else {
+            let it = self.render.item(id);
+            offset_x += it.padding.left;
+            offset_y += it.padding.top;
+        }
+        (offset_x, offset_y)
+    }
+
+    /// `get_redraw_box(pos, x, y)`: the box grown over the item's border box at `x`, `y` (its right edge grown by its
+    /// left padding and border, as the C++ has it), and over its children's that are not fixed unless it clips them.
+    pub fn get_redraw_box(&self, id: RenderId, pos: &mut Position, x: Px, y: Px) {
+        if !self.is_visible(id) {
+            return;
+        }
+        let it = self.render.item(id);
+        let p_left = pos.left().min(x + it.pos.left() - it.padding.left - it.borders.left);
+        let p_right = pos.right().max(x + it.pos.right() + it.padding.left + it.borders.left);
+        let p_top = pos.top().min(y + it.pos.top() - it.padding.top - it.borders.top);
+        let p_bottom = pos.bottom().max(y + it.pos.bottom() + it.padding.bottom + it.borders.bottom);
+
+        pos.x = p_left;
+        pos.y = p_top;
+        pos.width = p_right - p_left;
+        pos.height = p_bottom - p_top;
+
+        let css = self.ri_css(id);
+        let clips_contents = css.m_overflow > overflow_visible || (css.m_contain & contain_paint) != 0;
+        if !clips_contents {
+            let (cx, cy) = (x + it.pos.x, y + it.pos.y);
+            for &el in &it.children {
+                if self.ri_css(el).m_el_position != element_position_fixed {
+                    self.get_redraw_box(el, pos, cx, cy);
+                }
+            }
+        }
+    }
+
+    /// `document::get_fixed_boxes(fixed_boxes)`: the fixed boxes' redraw boxes the last placement kept.
+    pub fn get_fixed_boxes(&self) -> Vec<Position> {
+        self.layout.fixed_boxes.clone()
+    }
+
     // ---- The document -------------------------------------------------------------------------------------------
 
-    /// `document::render(max_width, render_all)`: the root laid out at the width, the viewport's height its
-    /// containing block's (a new viewport starts a new layout epoch), within the budget; the relayout boundaries
-    /// laid out again; the positioned boxes placed (stage L9); the document's size. Gives the root's natural width.
+    /// `document::render(max_width)`: [`Document::layout_document_as`] with `render_all`, as the renderer lays out.
     pub fn layout_document(&mut self, cx: &StyleCx, max_width: Px) -> Px {
+        self.layout_document_as(cx, max_width, RenderType::render_all)
+    }
+
+    /// `document::render(max_width, rt)`: the root laid out at the width, the viewport's height its containing
+    /// block's (a new viewport starts a new layout epoch), within the budget; the relayout boundaries laid out again;
+    /// the positioned boxes placed when there are absolute or fixed ones; the document's size. Gives the root's
+    /// natural width. `render_fixed_only` places the fixed boxes again and nothing else (it gives 0).
+    pub fn layout_document_as(&mut self, cx: &StyleCx, max_width: Px, rt: RenderType) -> Px {
         let mut ret = Px(0.0);
         self.layout.spent = 0;
         let Some(root_render) = self.render.root else { return ret };
@@ -1135,6 +1668,11 @@ impl Document {
         cb_context.height.set(viewport.height);
         cb_context.height.ty = CbcValueType::absolute;
 
+        if rt == RenderType::render_fixed_only {
+            self.layout.fixed_boxes.clear();
+            self.render_positioned(cx, root_render, rt);
+            return ret;
+        }
         let refetch = !cx.switches.positioned_reuse;
         if refetch || self.layout.positioned_epoch != self.layout.style_epoch || self.layout.positioned_tree != self.render.serial {
             self.layout.has_positioned = self.fetch_positioned(root_render);
@@ -1149,7 +1687,8 @@ impl Document {
         }
         self.layout.after_render = true;
         if self.layout.has_positioned {
-            self.unported("positioned");
+            self.layout.fixed_boxes.clear();
+            self.render_positioned(cx, root_render, rt);
         }
         self.layout.size = Size::default();
         let mut size = Size::default();
@@ -1274,6 +1813,47 @@ impl Document {
             &offsets.bottom,
         );
         shift
+    }
+
+    /// `calc_placement(x, y)`: the item's content box moved by `x`, `y` less its scroll position, plus its sticky
+    /// shift: where its children's places start from.
+    pub fn calc_placement(&self, id: RenderId, x: i32, y: i32) -> Position {
+        let mut pos = self.render.item(id).pos;
+        let sticky = self.sticky_offset(id);
+        pos.x += Px::from_int(x) - self.get_scroll_left(id) + sticky.x;
+        pos.y += Px::from_int(y) - self.get_scroll_top(id) + sticky.y;
+        pos
+    }
+
+    /// `get_placement()`: the item's content box in the document, its sticky shift in, through its ancestors'
+    /// placements up to the first fixed one (or itself), which adds the viewport's corner.
+    pub fn get_placement(&self, cx: &StyleCx, id: RenderId) -> Position {
+        let mut pos = self.render.item(id).pos;
+        let sticky = self.sticky_offset(id);
+        pos.x += sticky.x;
+        pos.y += sticky.y;
+        if self.ri_css(id).m_el_position == element_position_fixed {
+            let view_port = cx.container.get_viewport();
+            pos.x += view_port.left();
+            pos.y += view_port.top();
+            return pos;
+        }
+        let mut cur_el = self.render.parent(id);
+        while let Some(cur) = cur_el {
+            let p = self.calc_placement(cur, 0, 0);
+            pos.x += p.x;
+            pos.y += p.y;
+
+            if self.ri_css(cur).m_el_position == element_position_fixed {
+                let view_port = cx.container.get_viewport();
+                pos.x += view_port.left();
+                pos.y += view_port.top();
+                return pos;
+            }
+
+            cur_el = self.render.parent(cur);
+        }
+        pos
     }
 
     /// `get_rendering_boxes(redraw_box)`: the item's boxes (an inline's boxes, else its border box) in the

@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 
 use super::cascade::*;
 use super::*;
-use twidget_litehtml::document::{Document, Switches};
+use twidget_litehtml::document::{Document, StyleCx, Switches};
 use twidget_litehtml::render_item::{RenderId, RenderKind};
 
 /// What the render trees reached, for the report.
@@ -324,7 +324,7 @@ pub fn tree_out(o: &mut Out, names: &Names, doc: &Document, tally: &mut RenderTa
 pub fn render_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut RenderTally) -> (u8, Vec<u8>) {
     assert_eq!(input.first(), Some(&b'r'), "a render tree record");
     tally.documents += 1;
-    record_answer(lh, switches, &input[1..], &mut |o: &mut Out, names: &Names, doc: &Document| tree_out(o, names, doc, tally))
+    record_answer(lh, switches, &input[1..], &mut |o: &mut Out, cx: &StyleCx, doc: &Document| tree_out(o, cx.names, doc, tally))
 }
 
 /// An `o` record of the render tree.

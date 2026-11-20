@@ -30,7 +30,7 @@ use twidget_litehtml::cxx;
 use twidget_litehtml::document::{Document, StyleCx, Switches};
 use twidget_litehtml::element::{ElementKind, ElementState, FormLook};
 use twidget_litehtml::font_description::FontDescription;
-use twidget_litehtml::types::{Position, Size};
+use twidget_litehtml::types::{Position, RenderType, Size};
 
 /// A mark: byte offset, field, element (-1 for a field).
 pub type Mark = (usize, &'static str, i32);
@@ -585,6 +585,9 @@ pub enum Step {
     Refresh,
     /// A layout at the width within a budget (`None` the renderer's).
     Layout(f32, Option<u64>),
+    /// A layout at the width within the renderer's budget, of the render type (`render_type`: 0 all, 1 all but the
+    /// fixed boxes' placement, 2 the fixed boxes only).
+    LayoutAs(f32, u8),
 }
 
 /// An `l` record's input.
@@ -617,6 +620,9 @@ pub fn cascade_record(width: f32, height: f32, dpr: f32, master: &[u8], user: &[
                     Some(boxes) => o.u8(1).u64(*boxes),
                     None => o.u8(0),
                 };
+            }
+            Step::LayoutAs(w, rt) => {
+                o.u8(b'w').f32(*w).u8(*rt << 1);
             }
         }
     }
@@ -723,14 +729,14 @@ impl CascadeTally {
 
 /// What lhdump answers to an `l` record, with the process's name table and declaration cache.
 pub fn cascade_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut CascadeTally) -> (u8, Vec<u8>) {
-    record_answer(lh, switches, input, &mut |o: &mut Out, names: &Names, doc: &Document| {
-        cascade_out(o, names, doc);
-        tally.note(names, doc);
+    record_answer(lh, switches, input, &mut |o: &mut Out, cx: &StyleCx, doc: &Document| {
+        cascade_out(o, cx.names, doc);
+        tally.note(cx.names, doc);
     })
 }
 
 /// What lhdump answers to an `l` record's input, each dump step written by `dump`.
-pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn FnMut(&mut Out, &Names, &Document)) -> (u8, Vec<u8>) {
+pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn FnMut(&mut Out, &StyleCx, &Document)) -> (u8, Vec<u8>) {
     let names = &lh.names;
     let mut i = In::new(input);
     let (width, height, dpr) = (i.f32(), i.f32(), i.f32());
@@ -753,7 +759,7 @@ pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn F
         s += 1;
         let op = i.u8();
         match op {
-            b'd' => dump(&mut o, names, &doc),
+            b'd' => dump(&mut o, &cx, &doc),
             b'm' => {
                 container.width.set(i.f32());
                 container.height.set(i.f32());
@@ -769,9 +775,15 @@ pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn F
             }
             b'w' => {
                 let width = i.f32();
-                let budget = if i.u8() != 0 { i.u64() } else { renderer_layout_budget(&doc) };
+                let how = i.u8();
+                let budget = if how & 1 != 0 { i.u64() } else { renderer_layout_budget(&doc) };
                 doc.set_layout_budget(budget);
-                let ret = doc.layout_document(&cx, Px(width));
+                let rt = match how >> 1 {
+                    0 => RenderType::render_all,
+                    1 => RenderType::render_no_fixed,
+                    _ => RenderType::render_fixed_only,
+                };
+                let ret = doc.layout_document_as(&cx, Px(width), rt);
                 o.f32(ret.value());
             }
             _ => {
