@@ -17,6 +17,7 @@ static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<doubl
 
 /// The fewest bytes a str takes: its length.
 constexpr size_t STR_BYTES = 4;
+constexpr size_t WIDTHS_ITEM_BYTES = 4 + STR_BYTES;
 
 constexpr std::string_view PLATFORM_TYPES[] = {"size", "gesture", "limit", "violation", "bubble"};
 
@@ -32,12 +33,22 @@ int32_t to_int(uint32_t u) {
 }
 
 bool known(uint8_t kind) {
-    return (kind >= 1 && kind <= 8) || (kind >= 32 && kind <= 35) || (kind >= 64 && kind <= 72) || (kind >= 96 && kind <= 99);
+    return (kind >= 1 && kind <= 8) || (kind >= 32 && kind <= 36) || (kind >= 64 && kind <= 72) || (kind >= 96 && kind <= 100);
 }
 
 std::optional<uint32_t> pixel_bytes(int32_t w, int32_t h) {
     if (w < 0 || h < 0 || w > Canvas::MAX_SIDE || h > Canvas::MAX_SIDE || int64_t(w) * h > Canvas::MAX_PIXELS) return std::nullopt;
     return uint32_t(uint64_t(w) * uint64_t(h) * 4);
+}
+
+bool widths_fit(const WidthsRequest& request, const Caps& caps) {
+    if (request.texts.size() > std::min<size_t>(caps.widths, UINT32_MAX)) return false;
+    size_t left = caps.widths_text;
+    for (const TextInFont& t : request.texts) {
+        if (t.text.size() > caps.text || t.text.size() > left) return false;
+        left -= t.text.size();
+    }
+    return true;
 }
 
 class Writer {
@@ -72,6 +83,11 @@ public:
     bool bytes(const std::vector<uint8_t>& v, size_t cap) {
         if (!room(v.size()) || !count(v.size(), cap)) return false;
         if (!v.empty()) out_.append(reinterpret_cast<const char*>(v.data()), v.size());
+        return true;
+    }
+    bool floats(const std::vector<float>& v, size_t cap) {
+        if (v.size() > SIZE_MAX / sizeof(float) || !room(v.size() * sizeof(float)) || !count(v.size(), cap)) return false;
+        for (const float& f : v) f32(f);
         return true;
     }
     template <class Write> bool value(Write write) {
@@ -424,6 +440,22 @@ bool decode(std::string_view message, const Caps& caps, const PixelsRequest& ask
     });
 }
 
+bool encode(const WidthsAnswer& message, const Caps& caps, std::string& out) {
+    return appended(out, caps, Kind::WidthsAnswer, [&](Writer& w) { return w.floats(message.widths, caps.widths); });
+}
+
+bool decode(std::string_view message, const Caps& caps, const WidthsRequest& asked, WidthsAnswer& out) {
+    const bool fits = widths_fit(asked, caps);
+    return taken(message, caps, Kind::WidthsAnswer, out, [&](Reader& r, WidthsAnswer& m) {
+        size_t n = 0;
+        if (!fits || !r.count(n, caps.widths, sizeof(float)) || n != asked.texts.size()) return false;
+        m.widths.resize(n);
+        for (float& width : m.widths)
+            if (!r.f32(width)) return false;
+        return true;
+    });
+}
+
 bool encode(const Frame& message, const Caps& caps, std::string& out) {
     return appended(out, caps, Kind::Frame, [&](Writer& w) {
         w.u64(message.seq);
@@ -602,6 +634,32 @@ bool encode(const PixelsRequest& message, const Caps& caps, std::string& out) {
 bool decode(std::string_view message, const Caps& caps, PixelsRequest& out) {
     return taken(message, caps, Kind::PixelsRequest, out, [](Reader& r, PixelsRequest& m) {
         return r.i32(m.id) && r.i32(m.x) && r.i32(m.y) && r.i32(m.w) && r.i32(m.h) && pixel_bytes(m.w, m.h).has_value();
+    });
+}
+
+bool encode(const WidthsRequest& message, const Caps& caps, std::string& out) {
+    return appended(out, caps, Kind::WidthsRequest, [&](Writer& w) {
+        if (!widths_fit(message, caps) || !w.count(message.texts.size(), caps.widths)) return false;
+        for (const TextInFont& t : message.texts) {
+            w.i32(t.font);
+            if (!w.str(t.text, caps.text)) return false;
+        }
+        return true;
+    });
+}
+
+bool decode(std::string_view message, const Caps& caps, WidthsRequest& out) {
+    return taken(message, caps, Kind::WidthsRequest, out, [&](Reader& r, WidthsRequest& m) {
+        size_t n = 0;
+        if (!r.count(n, caps.widths, WIDTHS_ITEM_BYTES)) return false;
+        m.texts.reserve(n);
+        size_t left = caps.widths_text;
+        for (size_t i = 0; i < n; i++) {
+            TextInFont& t = m.texts.emplace_back();
+            if (!r.i32(t.font) || !r.str(t.text, std::min(caps.text, left))) return false;
+            left -= t.text.size();
+        }
+        return true;
     });
 }
 

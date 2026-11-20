@@ -1,12 +1,15 @@
 // RendererEnd: each Backend call of the renderer becomes a message or a request that waits, each call ends with the reports in a fixed order, and the first failure stops the end for good.
 #include "renderer_end.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <utility>
 
 namespace twlite::remote {
 namespace {
+
+constexpr size_t WIDTHS_HEAD = 2 + 4, WIDTHS_ITEM = 4 + 4, WIDTH_BYTES = 4;
 
 std::optional<twidget::WidgetGestureClaim> claim_of(const std::vector<twidget::Json>& messages) {
     for (const twidget::Json& m : messages)
@@ -73,6 +76,23 @@ public:
         return answered(WidthRequest{font, text}, answer) ? answer.width : 0;
     }
 
+    std::vector<float> text_widths(const std::vector<TextInFont>& texts) override {
+        std::vector<float> widths(texts.size(), 0.f);
+        for (size_t i = 0; i < texts.size() && !end_.stopped();) {
+            WidthsRequest request = batch(texts, i);
+            if (request.texts.empty()) {
+                widths[i] = text_width(texts[i].font, texts[i].text);
+                i++;
+                continue;
+            }
+            WidthsAnswer answer;
+            if (!end_.ask(request, [&](std::string_view bytes) { return decode(bytes, end_.caps_, request, answer); })) break;
+            std::copy(answer.widths.begin(), answer.widths.end(), widths.begin() + std::ptrdiff_t(i));
+            i += request.texts.size();
+        }
+        return widths;
+    }
+
     bool load_image(int id, const std::string& url, float& w, float& h) override {
         if (url.size() > end_.caps_.url) return false;
         ImageAnswer answer;
@@ -99,6 +119,22 @@ public:
     }
 
 private:
+    WidthsRequest batch(const std::vector<TextInFont>& texts, size_t from) const {
+        const Caps& caps = end_.caps_;
+        WidthsRequest request;
+        size_t bytes = WIDTHS_HEAD, text = 0;
+        for (size_t i = from; i < texts.size(); i++) {
+            const size_t n = texts[i].text.size(), count = request.texts.size() + 1;
+            if (count > caps.widths || n > caps.text || n > caps.widths_text - text || caps.message < bytes || caps.message - bytes < WIDTHS_ITEM
+                || n > caps.message - bytes - WIDTHS_ITEM || count > (caps.message - WIDTHS_HEAD) / WIDTH_BYTES)
+                break;
+            request.texts.push_back(texts[i]);
+            bytes += WIDTHS_ITEM + n;
+            text += n;
+        }
+        return request;
+    }
+
     template <class Request, class Answer> bool answered(const Request& request, Answer& answer) {
         return end_.ask(request, [&](std::string_view bytes) { return decode(bytes, end_.caps_, answer); });
     }

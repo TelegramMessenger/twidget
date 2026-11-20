@@ -164,6 +164,7 @@ bool PlatformEnd::receive(std::string_view message) {
     case Kind::WidthRequest:
     case Kind::ImageRequest:
     case Kind::PixelsRequest:
+    case Kind::WidthsRequest:
         return refuse("a request of " + named(*kind) + " where a one-way message belongs");
     default:
         return refuse("a message of " + named(*kind) + ", which only the platform end sends");
@@ -212,6 +213,13 @@ bool PlatformEnd::answer(std::string_view request, std::string& reply) {
     }
     case Kind::PixelsRequest:
         return answer_pixels(request, reply);
+    case Kind::WidthsRequest: {
+        WidthsRequest m;
+        if (!take(request, *kind, m)) return false;
+        std::vector<float> widths = backend_.text_widths(m.texts);
+        if (widths.size() != m.texts.size()) return refuse("the Backend gave " + std::to_string(widths.size()) + " widths for " + std::to_string(m.texts.size()) + " texts");
+        return respond(WidthsAnswer{std::move(widths)}, reply);
+    }
     case Kind::Frame:
     case Kind::State:
     case Kind::Messages:

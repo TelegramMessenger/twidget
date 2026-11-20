@@ -634,19 +634,23 @@ struct Renderer::Node {
 };
 
 #ifdef TW_LITEHTML_TWIDGET
+class Container;
+
 /// Where overflow-wrap may break a word that does not fit: between user-perceived characters, measured
 /// through the container like any other text. Clusters are approximated from code points (combining
 /// marks, variation selectors, skin tones, tags and ZWJ sequences stay together; regional indicators
 /// pair up), which is all the fork asks of a platform without a grapheme API.
 class TextBreaker final : public litehtml::text_breaker {
 public:
-    TextBreaker(litehtml::document_container& measure, const std::string& text, litehtml::uint_ptr font)
-        : measure_(measure), text_(text), font_(font) {
-        boundaries_.push_back(0);
+    TextBreaker(Container& measure, const std::string& text, litehtml::uint_ptr font)
+        : measure_(measure), text_(text), font_(font), boundaries_(points(text)) {}
+
+    static std::vector<size_t> points(const std::string& text) {
+        std::vector<size_t> boundaries{0};
         bool ascii = std::all_of(text.begin(), text.end(), [](unsigned char c) { return c >= 0x20 && c < 0x7f; });
         if (ascii) {
-            for (size_t i = 1; i <= text.size(); i++) boundaries_.push_back(i);
-            return;
+            for (size_t i = 1; i <= text.size(); i++) boundaries.push_back(i);
+            return boundaries;
         }
         auto decode = [&](size_t at, uint32_t& cp) {
             unsigned char c = (unsigned char)text[at];
@@ -670,11 +674,12 @@ public:
             size_t n = decode(at, cp);
             bool joined = at > 0 && (extends(cp) || previous == 0x200d || (regional(cp) && regionals % 2 == 1));
             regionals = regional(cp) ? regionals + 1 : 0;
-            if (at > 0 && !joined) boundaries_.push_back(at);
+            if (at > 0 && !joined) boundaries.push_back(at);
             previous = cp;
             at += n;
         }
-        boundaries_.push_back(text.size());
+        boundaries.push_back(text.size());
+        return boundaries;
     }
 
     size_t fit(size_t start, litehtml::pixel_t width) override {
@@ -709,11 +714,9 @@ public:
     }
 
 private:
-    float measure(size_t from, size_t to) {
-        return float(measure_.text_width(text_.substr(from, to - from).c_str(), font_));
-    }
+    float measure(size_t from, size_t to);
 
-    litehtml::document_container& measure_;
+    Container& measure_;
     std::string text_;
     litehtml::uint_ptr font_;
     std::vector<size_t> boundaries_;
@@ -748,18 +751,80 @@ public:
     /// nothing again, and the renderer stops (Renderer::stop_layout).
     void layout(float width) {
         uint64_t elements = 0;
-        std::vector<const litehtml::element*> pending;
-        if (auto root = doc_->root()) pending.push_back(root.get());
+        std::vector<std::pair<litehtml::element*, bool>> pending;
+#ifdef TW_LITEHTML_TWIDGET
+        std::vector<litehtml::el_text*> owed, shown;
+#endif
+        if (auto root = doc_->root()) pending.emplace_back(root.get(), false);
         while (!pending.empty()) {
-            const litehtml::element* el = pending.back();
+            auto [el, hidden] = pending.back();
             pending.pop_back();
             elements++;
-            for (const auto& child : el->children()) pending.push_back(child.get());
+            hidden = hidden || el->css().get_display() == litehtml::display_none;
+#ifdef TW_LITEHTML_TWIDGET
+            if (el->is_text()) {
+                auto text = dynamic_cast<litehtml::el_text*>(el);
+                if (text && text->width_owed()) owed.push_back(text);
+                if (text && !hidden) shown.push_back(text);
+            }
+#endif
+            const auto& children = el->children();
+            for (auto it = children.rbegin(); it != children.rend(); ++it) pending.emplace_back(it->get(), hidden);
         }
+#ifdef TW_LITEHTML_TWIDGET
+        measure(owed, shown);
+#endif
         doc_->set_layout_budget(kLayoutBudgetBase + kLayoutBudgetPerElement * elements);
         doc_->render(litehtml::pixel_t(width));
+#ifdef TW_LITEHTML_TWIDGET
+        breakable_.clear();
+#endif
         if (doc_->layout_exhausted()) r_.stop_layout(doc_->layout_spent());
     }
+#ifdef TW_LITEHTML_TWIDGET
+    /// The layout's words, the units a spaced run is painted in, and the texts whose breaks it may measure.
+    void measure(const std::vector<litehtml::el_text*>& owed, const std::vector<litehtml::el_text*>& shown) {
+        breakable_.clear();
+        Asking asking{.pool = width_bytes_};
+        for (litehtml::el_text* text : owed)
+            if (const Font* font = font_of(text->measured_font())) asking.add(font->face, text->display_text());
+        for (litehtml::el_text* text : shown) {
+            const Font* font = font_of(text->css().get_font());
+            if (!font) continue;
+            const std::string& t = text->display_text();
+            if (font->letter_spacing != 0)
+                for (std::string_view unit : spacing_units(t)) asking.add(font->face, unit);
+            else if (font->word_spacing != 0 && spacing_spaces(t))
+                for (std::string_view unit : spacing_words(t)) asking.add(font->face, unit);
+            const litehtml::white_space ws = text->css().get_white_space();
+            if (!text->is_space() && !text->is_break() && text->css().get_wrapping() != litehtml::overflow_wrap_normal &&
+                ws != litehtml::white_space_nowrap && ws != litehtml::white_space_pre)
+                breakable_.push_back(text);
+        }
+        asking.send(backend_);
+        for (litehtml::el_text* text : owed) {
+            const Font* font = font_of(text->measured_font());
+            if (font && font->face->widths.count(text->display_text())) text->measure_width();
+        }
+        for (litehtml::el_text* text : owed) text->measure_width();
+    }
+    /// A break's width as text_width gives it. The layout's first unmeasured break asks for every break of the texts it may wrap.
+    litehtml::pixel_t break_width(const char* text, litehtml::uint_ptr h) {
+        const Font* font = font_of(h);
+        if (font && text && !breakable_.empty() && !font->face->widths.count(std::string_view(text))) measure_breaks();
+        return text_width(text, h);
+    }
+    void measure_breaks() {
+        Asking asking{.pool = width_bytes_};
+        for (litehtml::el_text* text : std::exchange(breakable_, {})) {
+            const Font* font = font_of(text->css().get_font());
+            const std::string& t = text->display_text();
+            const std::vector<size_t> points = TextBreaker::points(t);
+            for (size_t i = 1; font && i < points.size(); i++) asking.add(font->face, std::string_view(t).substr(points[i - 1], points[i] - points[i - 1]));
+        }
+        asking.send(backend_);
+    }
+#endif
 
     /// The last layout ran past the budget: the document is laid out no more.
     bool exhausted() const { return doc_ && doc_->layout_exhausted(); }
@@ -1381,6 +1446,7 @@ public:
     std::shared_ptr<litehtml::text_breaker> create_text_breaker(const std::string& text, litehtml::uint_ptr font) override {
         return fonts_.count(font) ? std::make_shared<TextBreaker>(*this, text, font) : nullptr;
     }
+    bool measures_text_later() const override { return true; }
 #endif
     litehtml::pixel_t text_width(const char* text, litehtml::uint_ptr h) override {
         auto it = fonts_.find(h);
@@ -2362,14 +2428,17 @@ private:
         float width(Backend& backend, std::string_view text) {
             if (auto c = widths.find(text); c != widths.end()) return c->second;
             float w = backend.text_width(handle, std::string(text));
+            remember(text, w);
+            return w;
+        }
+        void remember(std::string_view text, float w) {
             // Words repeat across documents, but a widget that types a counter would grow this forever.
-            if (text.size() > MAX_WIDTH_KEY) return w;
+            if (text.size() > MAX_WIDTH_KEY) return;
             if (widths.size() >= MAX_WIDTH_ENTRIES || (pool && *pool + text.size() > MAX_WIDTH_BYTES)) forget();
-            if (pool && *pool + text.size() > MAX_WIDTH_BYTES) return w;  // other faces hold the budget
-            widths.emplace(std::string(text), w);
+            if (pool && *pool + text.size() > MAX_WIDTH_BYTES) return;  // other faces hold the budget
+            if (!widths.emplace(std::string(text), w).second) return;
             bytes += text.size();
             if (pool) *pool += text.size();
-            return w;
         }
     };
     using FaceKey = std::tuple<std::string, float, int, bool, std::string>;
@@ -2417,6 +2486,38 @@ private:
             return w;
         }
     };
+#ifdef TW_LITEHTML_TWIDGET
+    /// One Backend call for widths no face has, in the order asked, each face within what its cache keeps.
+    struct Asking {
+        std::vector<TextInFont> texts;
+        std::vector<Face*> faces;
+        std::set<std::pair<const Face*, std::string_view>> asked;
+        std::map<const Face*, size_t> room;
+        size_t pool = 0;
+
+        void add(Face* face, std::string_view text) {
+            text = text.substr(0, text.find('\0'));  // every reader measures the text as a C string
+            if (!face || text.size() > MAX_WIDTH_KEY || face->widths.count(text) || asked.count({face, text})) return;
+            // Past what the caches keep, a batch would forget its first answers before they are read.
+            size_t& left = room.try_emplace(face, MAX_WIDTH_ENTRIES - std::min(face->widths.size(), MAX_WIDTH_ENTRIES)).first->second;
+            if (!left || text.size() > MAX_WIDTH_BYTES - pool) return;
+            left--;
+            pool += text.size();
+            asked.emplace(face, text);
+            texts.push_back(TextInFont{face->handle, std::string(text)});
+            faces.push_back(face);
+        }
+        void send(Backend& backend) {
+            if (texts.empty()) return;
+            const std::vector<float> widths = backend.text_widths(texts);
+            for (size_t i = 0; i < texts.size() && i < widths.size(); i++) faces[i]->remember(texts[i].text, widths[i]);
+        }
+    };
+    const Font* font_of(litehtml::uint_ptr h) const {
+        const auto it = fonts_.find(h);
+        return it == fonts_.end() ? nullptr : &it->second;
+    }
+#endif
     struct Image {
         int id = 0;
         int canvas = 0;
@@ -2522,6 +2623,9 @@ private:
     std::map<FaceKey, std::unique_ptr<Face>> faces_;
     uint64_t face_clock_ = 0;
     std::unordered_map<litehtml::uint_ptr, Font> fonts_;
+#ifdef TW_LITEHTML_TWIDGET
+    std::vector<litehtml::el_text*> breakable_;  // during a layout only
+#endif
     size_t built_fonts_ = 0;
     litehtml::uint_ptr next_font_ = 0;
     std::unordered_map<std::string, Image> images_;
@@ -2556,6 +2660,12 @@ public:
 #endif
     }
 };
+
+#ifdef TW_LITEHTML_TWIDGET
+float TextBreaker::measure(size_t from, size_t to) {
+    return float(measure_.break_width(text_.substr(from, to - from).c_str(), font_));
+}
+#endif
 
 // ───────────────────────── Renderer ─────────────────────────
 

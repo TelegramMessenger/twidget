@@ -294,8 +294,8 @@ if(TWIDGET_BUILD_TESTS)
     # Corpus widgets recorded once by tools/record on macOS and committed: the recording carries libc++'s hash order, so it replays there only.
     if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         set(TW_CORPUS_RECORDING "${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/corpus.twrec")
-        # The first recording's 286880 bytes plus a quarter; re-recordings vary in size with timing, and a larger one fails the check.
-        set(TW_CORPUS_BYTES 358600)
+        # The recording's 318892 bytes plus a quarter; re-recordings vary in size with timing, and a larger one fails the check.
+        set(TW_CORPUS_BYTES 398615)
         add_test(NAME twidget_parity_corpus
             COMMAND "${CMAKE_COMMAND}" "-DREPLAY=$<TARGET_FILE:twidget_replay>" "-DRECORDING=${TW_CORPUS_RECORDING}" -DSOURCE=corpus
                 "-DNEEDS=sessions,steps,lists,batches,calls,pointers,claims,holds,ticks,engine,resizes,themes,images" -DSESSIONS=4

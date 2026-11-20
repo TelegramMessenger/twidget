@@ -18,7 +18,16 @@ litehtml::el_text::el_text(const char* text, const document::ptr& doc) :
 
 void litehtml::el_text::get_content_size(size& sz, pixel_t /*max_width*/)
 {
+    measure_width();
     sz = m_size;
+}
+
+void litehtml::el_text::measure_width()
+{
+    if(!m_width_owed)
+        return;
+    m_width_owed = false;
+    m_size.width = get_document()->container()->text_width(display_text().c_str(), m_measured_font);
 }
 
 void litehtml::el_text::get_text(std::string& text) const
@@ -76,6 +85,7 @@ void litehtml::el_text::set_text(const std::string& text)
     m_draw_spaces     = true;
     m_size            = size();
     m_measured_font   = 0;
+    m_width_owed      = false;
     m_breaker.reset();
     mark_layout_dirty();
     css_w()           = css_properties();
@@ -155,6 +165,7 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         m_size.height      = 0;
         m_size.width       = 0;
         m_measured_font    = 0;
+        m_width_owed       = false;
     } else
     {
         m_size.height = fm.height;
@@ -162,10 +173,11 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         if(m_measured_font != font || m_measured_transform != transform)
         {
             m_breaker.reset();
-            m_size.width = get_document()->container()->text_width(
-                m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font);
             m_measured_font      = font;
             m_measured_transform = transform;
+            m_width_owed         = true;
+            if(!get_document()->container()->measures_text_later())
+                measure_width();
         }
     }
     m_draw_spaces = fm.draw_spaces;

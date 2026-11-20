@@ -37,6 +37,10 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   keep when the stream is damaged, and `image_dimensions` there reads the size a header declares, for a
   backend to refuse an image before decoding it. The container hands a backend only the profile's image
   types (`data:` PNG, JPEG, GIF, WebP): an SVG in any spelling is the placeholder, drawn by the core.
+  `text_widths` measures many texts in one call, each in its own font; its default is `text_width` for
+  each in order, and a backend that measures them together overrides it. The renderer asks for a
+  layout's new words, the units its paint spaces and the breaks it measures that way ("A layout's
+  words" below).
   A canvas's fonts come from `create_canvas_font`, which is `create_font` with empty features unless
   the backend overrides it to tell them apart, for an allowance of their own. The renderer caches them
   by the CSS spelling of `font`, and releases them all once it holds more than 64 and at its
@@ -410,8 +414,8 @@ rules:
   its framing: the default, 32 MiB, leaves 64 KiB of widget-sandbox's frames of 32 MiB and 64 KiB.
 
 **Messages.** Every message is a `u8` kind, a `u8` version (1, `remote::VERSION`), its fields and
-nothing after them. Kinds 1-8 are the platform's input and 32-35 its answers to the renderer's
-requests 96-99, in the same order; 64-72 go from the renderer one way. `kind_of(message)` reads the
+nothing after them. Kinds 1-8 are the platform's input and 32-36 its answers to the renderer's
+requests 96-100, in the same order; 64-72 go from the renderer one way. `kind_of(message)` reads the
 header alone: the kind when it is one of these at version 1, nothing otherwise; it never stands in for
 decoding. A changed layout takes a new version or a new kind, and version 1's bytes keep their meaning.
 
@@ -441,6 +445,7 @@ same name in `src/remote.h`.
 | 33 | `WidthAnswer` | platform → renderer, answers 97 | `f32` width |
 | 34 | `ImageAnswer` | platform → renderer, answers 98 | `flag` ok, `f32` w, `f32` h |
 | 35 | `PixelsAnswer` | platform → renderer, answers 99 | `flag` ok; at 1 a `u32` length, exactly the request's w × h × 4 and at most `pixels`, then the RGBA bytes |
+| 36 | `WidthsAnswer` | platform → renderer, answers 100 | `count` (cap `widths`, 4 bytes), exactly one for each text of the request, × `f32` width, in the request's order |
 | 64 | `Frame` | renderer → platform, answers 1 | `u64` seq, `state`, `flag` painted; at 1 `value` (display list), `value` (damage) |
 | 65 | `State` | renderer → platform | `state` |
 | 66 | `Messages` | renderer → platform | `count` (cap `messages`, 4 bytes) × `str`, each a renderer message's JSON |
@@ -454,11 +459,13 @@ same name in `src/remote.h`.
 | 97 | `WidthRequest` | renderer → platform, waits | `i32` font, `str` text |
 | 98 | `ImageRequest` | renderer → platform, waits | `i32` id, `str` url (cap `url`) |
 | 99 | `PixelsRequest` | renderer → platform, waits | `i32` id, `i32` x, `i32` y, `i32` w, `i32` h; w and h from 0 to `Canvas::MAX_SIDE` (8192), w × h at most `Canvas::MAX_PIXELS` (4096 × 4096) |
+| 100 | `WidthsRequest` | renderer → platform, waits | `count` (cap `widths`, 8 bytes) × (`i32` font, `str` text); the texts together at most `widths_text` |
 
 - `encode(message, caps, out)` appends the message to `out`. It returns false, `out` cut back to its
   size on entry, for what the decoder would refuse: a `str` or a count past its cap or past
-  `UINT32_MAX`, a value `wire::encode` refuses, a `Paint` or a pixel size out of range, or a message
-  past `Caps::message` (what `out` held before does not count). A field its flag leaves out must hold
+  `UINT32_MAX`, a value `wire::encode` refuses, a `Paint` or a pixel size out of range, a
+  WidthsRequest whose texts together pass `widths_text`, or a message past `Caps::message` (what
+  `out` held before does not count). A field its flag leaves out must hold
   its default: an unpainted Frame with a list or damage, a canvas's FontRequest with features and a
   failed PixelsAnswer with pixels are refused rather than sent without them.
   `encode_canvas_run(id, w, h, ops, caps, out)` writes a CanvasRun without copying the batch.
@@ -467,7 +474,11 @@ same name in `src/remote.h`.
   field cut short, a count or a length past its cap or past the bytes left, a `value` longer than the
   bytes left or that `wire::decode` does not take whole under `Caps::values`, a flag or a `Paint` out
   of range, a field present or missing against its flag, and bytes left over. A PixelsAnswer decodes
-  against the request it answers, `decode(message, caps, asked, out)`, which must itself be in range.
+  against the request it answers, `decode(message, caps, asked, out)`, which must itself be in range;
+  so does a WidthsAnswer, whose request must be within `widths`, `text` and `widths_text`, and which
+  holds exactly one width for each of its texts. A WidthsRequest's count is checked against its cap and
+  the bytes left before any room is made, and each text against `text` and against what is left of
+  `widths_text` before it is copied.
   `out` is replaced once the last byte has passed, and what a decoder allocates follows its bytes, as
   in the binary forms, `std::bad_alloc` included.
 
@@ -480,6 +491,8 @@ same name in `src/remote.h`.
 | `text` | the bytes of one `str` but a URL | 4 MiB |
 | `url` | the bytes of an image URL | 8 MiB |
 | `messages` | the texts of one Messages report | 1024 |
+| `widths` | the texts of one WidthsRequest, and so the widths of its answer | 256 |
+| `widths_text` | the bytes of a WidthsRequest's texts together | 16 KiB |
 
 At two caps the renderer gets what an in-process backend that refuses would give it; past any other,
 the end that would send stops:
@@ -489,6 +502,11 @@ the end that would send stops:
   pixels, would pass `message`, is answered not ok without a `canvas_read`, and the renderer fills
   the `imageData` with zeroes as for any failed read. With the default caps that is a read of more
   than 8388606 pixels.
+
+The widths caps bound how much one request makes the platform measure: `widths` the strings, which
+cost a call each however short, and `widths_text` their bytes. They change how many requests carry a
+layout's words, never what is measured: a text that no WidthsRequest can hold alone goes as a
+WidthRequest, under the `text` cap as ever, and with `widths` at 0 every word does.
 
 **Frames: the host drives the clock.** The renderer end never ticks or paints by itself.
 `PlatformEnd::request_frame(tick, paint)` sends a FrameRequest and returns its seq, counted from 1.
@@ -531,7 +549,7 @@ to, kept within the minimum and the maximum height), `dirty()`, `wants_tick()`, 
 **The platform end.** `PlatformEnd(backend, host, channel, caps)` sends its host's input with
 `request_frame`, `set_width`, `set_max_height`, `set_theme`, `touch`, `hover`, `clear_selection`
 and `ask_claim`, which returns its seq too, and takes the renderer end's messages in `receive` (kinds
-64-72) and its requests in `answer` (96-99):
+64-72) and its requests in `answer` (96-100):
 
 - FontRelease, CanvasRun and CanvasRelease call `delete_font`, `canvas_run` and `canvas_release` at
   once, in the order they arrive, so they keep their place among the frames. The host paints a frame,
@@ -540,8 +558,10 @@ and `ask_claim`, which returns its seq too, and takes the renderer end's message
 - A FontRequest calls `create_canvas_font` when it is a canvas's and `create_font` otherwise, a
   WidthRequest `text_width`, an ImageRequest `load_image` with `w` and `h` at 0, a PixelsRequest
   `canvas_read` (past the caps, as above), each out-parameter default-constructed as at the renderer's
-  call sites. Pixels other than exactly w × h × 4 bytes are answered not ok. The answer replaces
-  `reply` only once it is made.
+  call sites. Pixels other than exactly w × h × 4 bytes are answered not ok. A WidthsRequest, checked
+  whole first, calls `text_widths` once with all its texts on the thread that answers, and a Backend
+  that gives another number of widths than texts stops the end. The answer replaces `reply` only once
+  it is made.
 - Frame, State, Messages, Pointer, Selection and ClaimAnswer go to the host's `frame`, `state`,
   `messages`, `pointer`, `selection` and `claim`. `state()` is the last State, a Frame's included,
   updated before the callback. Each Messages text is parsed with `Json::parse(text, 4)` and must be an
@@ -568,10 +588,38 @@ answer.
 the clock when one is given, on a Backend that sends:
 
 - `create_font` and `create_canvas_font` as a FontRequest, the second marked as a canvas's,
-  `text_width` as a WidthRequest, `load_image` as an ImageRequest (`w` and `h` from the answer whether
-  it is ok or not), `canvas_read` as a PixelsRequest, each waiting for its answer. Each `text_width`
-  is a round trip; a face asks once per word, as in process.
+  `text_width` as a WidthRequest, `text_widths` as WidthsRequests, `load_image` as an ImageRequest
+  (`w` and `h` from the answer whether it is ok or not), `canvas_read` as a PixelsRequest, each
+  waiting for its answer. Each `text_width` is a round trip; a face asks once per word, as in process.
+  `text_widths` makes no request for no texts, and otherwise puts the texts in order into as few
+  WidthsRequests as `widths`, `widths_text`, `text` and `message` let each request and its answer
+  hold; a text that fits in none alone goes as a WidthRequest. After a failure the texts left get
+  width 0 with no request.
 - `delete_font`, `canvas_run` and `canvas_release` one way, in the order the renderer makes them.
+
+**A layout's words.** litehtml measures each text in its style pass. A container that returns true
+from the fork's `document_container::measures_text_later()` lets a text owe its width instead: the
+text keeps its font, transform, height and line-break rules from the style pass, and whatever reads
+its size first (the layout, or a patch comparing a hole's sizes, through `get_content_size`)
+measures it then through `text_width`, exactly as the style pass would have. The default is false,
+so every other container measures as it always did. TwidgetCore's container opts in, and right
+before each layout its walk of the document takes the words the texts owe that no face has cached,
+in document order, each once per face and no more than each face's cache keeps (texts past the
+cache's key size are left out), and measures them in one `text_widths` call. The widths go into the
+faces' caches by the same rules as one measured alone, and every text then takes its width from its
+face, letter and word spacing added, before the layout starts; what the call left out is measured
+one by one. The same call takes the units a paint draws one at a time, for each text the walk finds
+outside a `display:none` box whose font has letter spacing (its characters) or word spacing and a
+space (its words and spaces), so the paint that follows measures none of them. The walk also keeps,
+for the layout alone, the texts it may break (an `overflow-wrap` or `word-break` other than normal,
+`white-space` neither `nowrap` nor `pre`, outside a `display:none` box): the first break a
+`TextBreaker` measures that its face has not cached asks, in one more `text_widths` call by the same
+rules, for every break point of all of them, the characters a word is broken into when its box is
+measured at its narrowest. A break's longer pieces, where a line ends inside a word, are still
+measured one by one, and a layout makes that call once at most. No text pointer or font handle
+outlives the layout. A renderer used directly makes these calls on its own Backend, and a renderer
+end sends them as WidthsRequests, so both make the same Backend calls in the same order: a build's
+fonts in the style pass, then its words and spaced units, then the breaks its layout measures.
 
 Its embedder, the process that runs the engine, calls:
 
@@ -594,17 +642,25 @@ neutral Backend answers (font 0 with the metrics untouched, width 0, false) with
 From then on nothing is sent: `deliver` returns false with `out` empty, no partial messages and no
 engine frame, `receive` returns nothing, and the destructor sends nothing.
 
-`twidget_remote_tests` (ctest `twidget_remote`) links `twidget::remote` alone. Samples of all 25
+`twidget_remote_tests` (ctest `twidget_remote`) links `twidget::remote` alone. Samples of all 27
 kinds come back member by member, and some encode to bytes written out by hand; the decoders refuse
 every cut, every other kind and version, seeded changes they cannot take, counts and lengths past
-their bounds, and optional fields and pixel sizes against their flags and requests, leaving the
-output as it was and asking the allocator for no more than a bound linear in their bytes. A
-platform-end session against a recording Backend makes every input, request, one-way call and report,
-and each refusal above. `twidget_ends_tests` (ctest `twidget_ends`) runs a renderer called directly
+their bounds, and optional fields, pixel sizes and widths counts against their flags and requests,
+leaving the output as it was and asking the allocator for no more than a bound linear in their bytes.
+A platform-end session against a recording Backend makes every input, request, widths batch, one-way
+call and report, and each refusal above, a widths request past its caps and a Backend's wrong number
+of widths among them. `twidget_ends_tests` (ctest `twidget_ends`) runs a renderer called directly
 and the two ends over an in-memory channel (`tests/loopback.h`) with the same Backend behaviour and
 equal clocks, and compares, call by call, their messages, decoded lists, damage and batches, the
 Backend calls in order from construction to destruction, cursors, claims, hold answers, selections
-and states; it stops the renderer end at each kind of failure.
+and states; it stops the renderer end at each kind of failure, a widths request's among them. It
+also checks a layout's words: one widths request per build after its fonts, requests and answers
+within every cap with the words in order, sizes read before a layout, transforms, spacing, words broken
+in the layout, more words than a face's cache keeps, and a plain litehtml container that measures in
+the style pass as before; the units of spaced runs in the build's request, none of a hidden run and
+none measured by the paint; the breaks of a layout in one more request, those of hidden texts left
+out, a relayout and a later layout asking for nothing or for their new characters alone, two boxes
+sharing the request, the breaks under small caps, and that request failing every way.
 
 The parity checks compare the two ends with renderers used directly over real workloads, recorded in
 one process and replayed in another. `RecordingRenderer` (`tests/recording_renderer.h`) is a
@@ -665,8 +721,8 @@ ctest:
   no engine. Its origin names the widgets, twidget's and widget-sandbox's versions as `git describe`
   gave them, the recorder, its backend and toolchain, the host's options and the script. It is
   checked on macOS only: `~Renderer` releases canvases and canvas fonts in the order of its hash
-  tables, libc++'s in the recording. `parity.cmake` fails it when it is missing or larger than 358600
-  bytes (`-DMAX_BYTES`), the first recording's 286880 plus a quarter; re-recordings vary in size with
+  tables, libc++'s in the recording. `parity.cmake` fails it when it is missing or larger than 398615
+  bytes (`-DMAX_BYTES`), the recording's 318892 plus a quarter; re-recordings vary in size with
   timing.
 
 ## Building

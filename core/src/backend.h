@@ -36,6 +36,11 @@ inline bool set_em_box(FontMetrics& m, float ascent, float descent, float size) 
     return true;
 }
 
+struct TextInFont {
+    int font = 0;
+    std::string text;
+};
+
 class Backend {
 public:
     virtual ~Backend() = default;
@@ -52,6 +57,12 @@ public:
     virtual void delete_font(int font) = 0;
     /// Advance width of `text` (UTF-8) in CSS px.
     virtual float text_width(int font, const std::string& text) = 0;
+    virtual std::vector<float> text_widths(const std::vector<TextInFont>& texts) {
+        std::vector<float> widths;
+        widths.reserve(texts.size());
+        for (const TextInFont& t : texts) widths.push_back(text_width(t.font, t.text));
+        return widths;
+    }
     /// Decodes a `data:` image (anything else is refused by the container before this) and keeps it
     /// under `id` for the painter; `w`/`h` get the intrinsic size in CSS px. False when undecodable.
     virtual bool load_image(int id, const std::string& url, float& w, float& h) = 0;

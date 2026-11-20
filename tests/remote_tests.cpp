@@ -1,4 +1,4 @@
-// twidget::remote alone, linked without litehtml or the renderer: every message kind comes back member for member, its bytes follow docs/TWIDGET_CORE.md "Two ends over a byte channel", hostile bytes are refused with the output untouched, no decode asking the allocator for more than a bound linear in its bytes, and a platform end serves a session and stops at what an honest renderer end never sends.
+// twidget::remote alone, linked without litehtml or the renderer: every message kind comes back member for member, its bytes follow docs/TWIDGET_CORE.md "Two ends over a byte channel", hostile bytes are refused with the output untouched, no decode asking the allocator for more than a bound linear in its bytes, and a platform end serves a session, widths batches included, and stops at what an honest renderer end never sends.
 #include "platform_end.h"
 #include "remote.h"
 
@@ -46,8 +46,9 @@ constexpr size_t SPECIALS = std::size(SPECIAL_FLOATS);
 static_assert(std::size(SPECIAL_DOUBLES) == SPECIALS);
 
 const Kind KINDS[] = {Kind::FrameRequest, Kind::SetWidth, Kind::SetMaxHeight, Kind::SetTheme, Kind::Touch, Kind::Hover, Kind::ClearSelection, Kind::ClaimQuery,
-    Kind::FontAnswer, Kind::WidthAnswer, Kind::ImageAnswer, Kind::PixelsAnswer, Kind::Frame, Kind::State, Kind::Messages, Kind::Pointer, Kind::Selection,
-    Kind::ClaimAnswer, Kind::FontRelease, Kind::CanvasRun, Kind::CanvasRelease, Kind::FontRequest, Kind::WidthRequest, Kind::ImageRequest, Kind::PixelsRequest};
+    Kind::FontAnswer, Kind::WidthAnswer, Kind::ImageAnswer, Kind::PixelsAnswer, Kind::WidthsAnswer, Kind::Frame, Kind::State, Kind::Messages, Kind::Pointer,
+    Kind::Selection, Kind::ClaimAnswer, Kind::FontRelease, Kind::CanvasRun, Kind::CanvasRelease, Kind::FontRequest, Kind::WidthRequest, Kind::ImageRequest,
+    Kind::PixelsRequest, Kind::WidthsRequest};
 
 bool listed(uint32_t kind) {
     for (Kind k : KINDS)
@@ -144,6 +145,10 @@ template <class V> void walk(V& v, const At& at, const remote::PixelsAnswer& a, 
     walk(v, At{&at, "rgba"}, a.rgba, b.rgba);
 }
 
+template <class V> void walk(V& v, const At& at, const remote::WidthsAnswer& a, const remote::WidthsAnswer& b) {
+    walk(v, At{&at, "widths"}, a.widths, b.widths);
+}
+
 template <class V> void walk(V& v, const At& at, const remote::State& a, const remote::State& b) {
     walk_state(v, at, a, b);
 }
@@ -220,6 +225,15 @@ template <class V> void walk(V& v, const At& at, const remote::PixelsRequest& a,
     v.integer(At{&at, "y"}, uint32_t(a.y), uint32_t(b.y));
     v.integer(At{&at, "w"}, uint32_t(a.w), uint32_t(b.w));
     v.integer(At{&at, "h"}, uint32_t(a.h), uint32_t(b.h));
+}
+
+template <class V> void walk(V& v, const At& at, const TextInFont& a, const TextInFont& b) {
+    v.integer(At{&at, "font"}, uint32_t(a.font), uint32_t(b.font));
+    v.raw(At{&at, "text"}, a.text, b.text);
+}
+
+template <class V> void walk(V& v, const At& at, const remote::WidthsRequest& a, const remote::WidthsRequest& b) {
+    walk(v, At{&at, "texts"}, a.texts, b.texts);
 }
 
 /// The sharing patterns of the values a message carries, each within its own value.
@@ -320,6 +334,16 @@ std::vector<const void*> held(const remote::WidthRequest& m) {
 
 std::vector<const void*> held(const remote::ImageRequest& m) {
     return {m.url.data()};
+}
+
+std::vector<const void*> held(const remote::WidthsAnswer& m) {
+    return {m.widths.data()};
+}
+
+std::vector<const void*> held(const remote::WidthsRequest& m) {
+    std::vector<const void*> out{m.texts.data()};
+    for (const TextInFont& t : m.texts) out.push_back(t.text.data());
+    return out;
 }
 
 void make_sentinel(FontMetrics& m) {
@@ -458,13 +482,32 @@ void make_sentinel(remote::PixelsRequest& m) {
     m = {1, 2, 3, 4, 5};
 }
 
+void make_sentinel(remote::WidthsAnswer& m) {
+    m.widths = {1.5f, -2.25f, 1e9f};
+}
+
+void make_sentinel(remote::WidthsRequest& m) {
+    m.texts = {{13, "a sentinel text longer than a small string's own room"}, {-14, "and a second"}};
+}
+
 template <class T> T sentinel() {
     T value;
     make_sentinel(value);
     return value;
 }
 
-template <class T> bool decode_as(std::string_view bytes, const remote::Caps& caps, const remote::PixelsRequest&, T& out) {
+/// The request an answer decodes against: a PixelsAnswer's and a WidthsAnswer's own, a pixels request standing in for the others.
+template <class T> struct AskedBy {
+    using type = remote::PixelsRequest;
+};
+
+template <> struct AskedBy<remote::WidthsAnswer> {
+    using type = remote::WidthsRequest;
+};
+
+template <class T> using AskedFor = typename AskedBy<T>::type;
+
+template <class T> bool decode_as(std::string_view bytes, const remote::Caps& caps, const AskedFor<T>&, T& out) {
     return remote::decode(bytes, caps, out);
 }
 
@@ -472,13 +515,17 @@ bool decode_as(std::string_view bytes, const remote::Caps& caps, const remote::P
     return remote::decode(bytes, caps, asked, out);
 }
 
-/// Every decode these checks make goes through here, and so through the allocation scope; `asked` is the request a PixelsAnswer answers.
-template <class T> bool decoded(std::string_view bytes, const remote::Caps& caps, T& out, const remote::PixelsRequest& asked = {}) {
+bool decode_as(std::string_view bytes, const remote::Caps& caps, const remote::WidthsRequest& asked, remote::WidthsAnswer& out) {
+    return remote::decode(bytes, caps, asked, out);
+}
+
+/// Every decode these checks make goes through here, and so through the allocation scope; `asked` is the request a PixelsAnswer or a WidthsAnswer answers.
+template <class T> bool decoded(std::string_view bytes, const remote::Caps& caps, T& out, const AskedFor<T>& asked = {}) {
     return in_scope(bytes, [&] { return decode_as(bytes, caps, asked, out); });
 }
 
 /// `bytes` refused, and the output the decoder was given still the same value holding the same objects.
-template <class T> void refused(const std::string& what, std::string_view bytes, const remote::Caps& caps, const remote::PixelsRequest& asked = {}) {
+template <class T> void refused(const std::string& what, std::string_view bytes, const remote::Caps& caps, const AskedFor<T>& asked = {}) {
     const T expected = sentinel<T>();
     T out = expected;
     const std::vector<const void*> before = held(out);
@@ -495,6 +542,8 @@ remote::Caps tight() {
     c.text = 64;
     c.url = 128;
     c.messages = 4;
+    c.widths = 4;
+    c.widths_text = 32;
     c.values.commands = 8;
     c.values.canvas_ops = 8;
     c.values.path_ops = 16;
@@ -574,11 +623,11 @@ template <class T> std::string encoded(const T& value, const remote::Caps& caps 
 // ───────────────────────── Samples ─────────────────────────
 
 template <class T> struct Sample {
-    Sample(std::string name, T value, remote::PixelsRequest asked = {}) : name(std::move(name)), value(std::move(value)), asked(asked) {}
+    Sample(std::string name, T value, AskedFor<T> asked = {}) : name(std::move(name)), value(std::move(value)), asked(std::move(asked)) {}
 
     std::string name;
     T value;
-    remote::PixelsRequest asked;
+    AskedFor<T> asked;
 };
 
 template <class T> using Samples = std::vector<Sample<T>>;
@@ -751,6 +800,18 @@ Samples<remote::PixelsAnswer> pixels_answers() {
         {"unsupported for the largest", {}, {3, -5, -6, 8192, 2048}}};
 }
 
+/// Four texts in two fonts: what the widths answers below answer.
+remote::WidthsRequest four_texts() {
+    return {{{1, "a"}, {1, "bb"}, {2, "a"}, {2, ""}}};
+}
+
+Samples<remote::WidthsAnswer> widths_answers() {
+    remote::WidthsAnswer first, second;
+    for (size_t i = 0; i < SPECIALS; i++) put_bits((i < 4 ? first : second).widths.emplace_back(), SPECIAL_FLOATS[i]);
+    return {{"none", {}}, {"one width", {{42.25f}}, {{{3, "word"}}}}, {"special widths", first, four_texts()}, {"more special widths", second, four_texts()},
+        {"ordinary widths", {{8.f, 0.f, 16.5f, 1e-3f}}, four_texts()}};
+}
+
 Samples<remote::Frame> frames() {
     remote::Frame unchanged{9, ordinary_state(), false, {}, std::nullopt};
     remote::Frame whole{10, ordinary_state(), true, compact_list(), std::nullopt};
@@ -807,6 +868,11 @@ Samples<remote::WidthRequest> width_requests() {
 
 Samples<remote::ImageRequest> image_requests() {
     return {{"default", {}}, {"a data URL", {5, "data:image/png;base64,iVBORw0KGgo="}}, {"the least", {INT32_MIN, "x"}}};
+}
+
+Samples<remote::WidthsRequest> widths_requests() {
+    const remote::WidthsRequest several{{{3, "hello"}, {-1, std::string("\0\xff\n", 3)}, {INT32_MIN, ""}, {3, "hello"}}};
+    return {{"none", {}}, {"one text", {{{7, "word"}}}}, {"repeated, empty and bytes", several}, {"the extremes", {{{INT32_MAX, " "}, {0, std::string(28, 'x')}}}}};
 }
 
 Samples<remote::PixelsRequest> pixels_requests() {
@@ -985,13 +1051,13 @@ template <class T> void suite(const char* name, Kind kind, const Samples<T>& sam
 // ───────────────────────── Layouts ─────────────────────────
 
 /// `value` encodes to exactly `expected` and `expected` decodes back to it.
-template <class T> void golden(const std::string& what, const T& value, const std::string& expected) {
+template <class T> void golden(const std::string& what, const T& value, const std::string& expected, const AskedFor<T>& asked = {}) {
     std::string bytes;
     const bool written = remote::encode(value, {}, bytes);
     check(written && bytes == expected, what + ": encodes to the documented bytes, the first difference at byte " + std::to_string(first_difference(bytes, expected)));
     T out;
     std::string why;
-    check(decoded(expected, {}, out) && equal(value, out, why), what + ": the documented bytes decode to it " + why);
+    check(decoded(expected, {}, out, asked) && equal(value, out, why), what + ": the documented bytes decode to it " + why);
 }
 
 void golden_bytes() {
@@ -1011,6 +1077,11 @@ void golden_bytes() {
     golden("a document font request", remote::FontRequest{false, "a", 1, 2, true, "b"}, unhex("60 01  00  01 00 00 00 61  00 00 80 3f  02 00 00 00  01  01 00 00 00 62"));
     golden("a pixels request", remote::PixelsRequest{1, -1, 2, 3, 4}, unhex("63 01  01 00 00 00  ff ff ff ff  02 00 00 00  03 00 00 00  04 00 00 00"));
     golden("messages", remote::Messages{{"ab", ""}}, unhex("42 01  02 00 00 00  02 00 00 00 61 62  00 00 00 00"));
+    const remote::WidthsRequest two{{{1, "ab"}, {-1, ""}}};
+    golden("a widths request", two, unhex("64 01  02 00 00 00  01 00 00 00  02 00 00 00 61 62  ff ff ff ff  00 00 00 00"));
+    golden("a widths answer", remote::WidthsAnswer{{1.f, -0.f}}, unhex("24 01  02 00 00 00  00 00 80 3f  00 00 00 80"), two);
+    golden("an empty widths request", remote::WidthsRequest{}, unhex("64 01  00 00 00 00"));
+    golden("an empty widths answer", remote::WidthsAnswer{}, unhex("24 01  00 00 00 00"));
     std::string metrics;
     wire::encode(ordinary_metrics(), metrics);
     golden("a font answer", remote::FontAnswer{-2, ordinary_metrics()}, Bytes().head(Kind::FontAnswer).i32(-2).value(metrics).s);
@@ -1026,7 +1097,7 @@ void golden_bytes() {
     check(!remote::encode_canvas_run(1, 2, 3, ops, small, kept) && kept == EARLIER, "encode_canvas_run refuses a batch past its cap, the earlier value kept");
 }
 
-/// The kinds: 25 of them in four ranges by direction and role, kind_of naming exactly those of version 1 and looking at the header alone.
+/// The kinds: 27 of them in four ranges by direction and role, kind_of naming exactly those of version 1 and looking at the header alone.
 void kinds() {
     context = "kinds";
     std::set<uint32_t> values;
@@ -1035,11 +1106,12 @@ void kinds() {
         const uint32_t v = uint32_t(k);
         values.insert(v);
         platform += v >= 1 && v <= 8;
-        answers += v >= 32 && v <= 35;
+        answers += v >= 32 && v <= 36;
         renderer += v >= 64 && v <= 72;
-        requests += v >= 96 && v <= 99;
+        requests += v >= 96 && v <= 100;
     }
-    check(values.size() == 25 && platform == 8 && answers == 4 && renderer == 9 && requests == 4, "25 kinds: 8 from the platform, 4 answers, 9 from the renderer, 4 requests");
+    check(values.size() == 27 && platform == 8 && answers == 5 && renderer == 9 && requests == 5, "27 kinds: 8 from the platform, 5 answers, 9 from the renderer, 5 requests");
+    check(uint32_t(Kind::WidthsAnswer) - uint32_t(Kind::FontAnswer) == uint32_t(Kind::WidthsRequest) - uint32_t(Kind::FontRequest), "each answer is its request's kind less 64");
     check(remote::VERSION == 1, "version 1");
     for (uint32_t k = 0; k < 256; k++) {
         const std::optional<Kind> named = remote::kind_of(Bytes().u8(k).u8(1).s);
@@ -1055,7 +1127,7 @@ void kinds() {
 }
 
 /// A flag at byte `at` of a sample: any value but 0 and 1 refused; the other of them taken when `plain`, refused when the flag says which fields follow.
-template <class T> void flag_at(const std::string& what, const T& value, size_t at, bool plain, const remote::PixelsRequest& asked = {}) {
+template <class T> void flag_at(const std::string& what, const T& value, size_t at, bool plain, const AskedFor<T>& asked = {}) {
     const std::string bytes = encoded(value);
     if (at >= bytes.size() || uint8_t(bytes[at]) > 1) {
         check(false, what + ": the sample has a flag at byte " + std::to_string(at));
@@ -1170,6 +1242,7 @@ void accepted_as(Kind kind, const std::string& what, const std::string& bytes, c
     case Kind::Selection: return accepted<remote::Selection>(what, bytes, caps, below);
     case Kind::FontRequest: return accepted<remote::FontRequest>(what, bytes, caps, below);
     case Kind::WidthRequest: return accepted<remote::WidthRequest>(what, bytes, caps, below);
+    case Kind::WidthsRequest: return accepted<remote::WidthsRequest>(what, bytes, caps, below);
     case Kind::ImageRequest: return accepted<remote::ImageRequest>(what, bytes, caps, below);
     case Kind::FontAnswer: return accepted<remote::FontAnswer>(what, bytes, caps, below);
     case Kind::Frame: return accepted<remote::Frame>(what, bytes, caps, below);
@@ -1185,6 +1258,7 @@ void refused_as(Kind kind, const std::string& what, const std::string& bytes, co
     case Kind::Selection: return refused<remote::Selection>(what, bytes, caps);
     case Kind::FontRequest: return refused<remote::FontRequest>(what, bytes, caps);
     case Kind::WidthRequest: return refused<remote::WidthRequest>(what, bytes, caps);
+    case Kind::WidthsRequest: return refused<remote::WidthsRequest>(what, bytes, caps);
     case Kind::ImageRequest: return refused<remote::ImageRequest>(what, bytes, caps);
     case Kind::FontAnswer: return refused<remote::FontAnswer>(what, bytes, caps);
     case Kind::Frame: return refused<remote::Frame>(what, bytes, caps);
@@ -1229,6 +1303,10 @@ std::vector<Site> sites() {
         {"a FontRequest's features", Kind::FontRequest, &remote::Caps::text, 1, Bytes().head(Kind::FontRequest).u8(0).str("").s + font_tail, "", byte_item},
         {"a WidthRequest's text", Kind::WidthRequest, &remote::Caps::text, 1, Bytes().head(Kind::WidthRequest).i32(3).s, "", byte_item},
         {"an ImageRequest's url", Kind::ImageRequest, &remote::Caps::url, 1, Bytes().head(Kind::ImageRequest).i32(5).s, "", byte_item},
+        {"a WidthsRequest's count", Kind::WidthsRequest, &remote::Caps::widths, 8, Bytes().head(Kind::WidthsRequest).s, "", [](Bytes& b, size_t i) { b.i32(int32_t(i)).u32(0); }},
+        {"a WidthsRequest's text", Kind::WidthsRequest, &remote::Caps::text, 1, Bytes().head(Kind::WidthsRequest).u32(2).i32(1).str("").i32(2).s, "", byte_item},
+        {"a WidthsRequest's texts together", Kind::WidthsRequest, &remote::Caps::widths_text, 1, Bytes().head(Kind::WidthsRequest).u32(2).i32(1).str("").i32(2).s, "",
+            byte_item},
     };
 }
 
@@ -1408,6 +1486,100 @@ void pixels() {
     }
 }
 
+// ───────────────────────── Widths ─────────────────────────
+
+std::string widths_answer(uint32_t declared, size_t widths) {
+    Bytes b;
+    b.head(Kind::WidthsAnswer).u32(declared);
+    for (size_t i = 0; i < widths; i++) b.f32(float(i) + 0.5f);
+    return b.s;
+}
+
+/// `n` texts of `bytes` bytes each, in three fonts.
+remote::WidthsRequest texts_of(size_t n, size_t bytes = 1) {
+    remote::WidthsRequest r;
+    for (size_t i = 0; i < n; i++) r.texts.push_back({int(i % 3) + 1, std::string(bytes, char('a' + i % 26))});
+    return r;
+}
+
+/// A widths answer holds exactly one width for each text of the request it answers, which must itself be within the caps; a request's texts are bounded by count, one by one and together, both ways.
+void widths() {
+    context = "widths";
+    const remote::WidthsRequest three = texts_of(3);
+    remote::WidthsAnswer out;
+    check(decoded(widths_answer(3, 3), {}, out, three) && out.widths.size() == 3 && out.widths[0] == 0.5f && out.widths[2] == 2.5f, "an answer of 3 widths to 3 texts is taken in order");
+    const size_t one = last_decode.scope.asked;
+    for (uint32_t n : {0u, 1u, 2u, 4u, 6u}) refused<remote::WidthsAnswer>("an answer of " + std::to_string(n) + " widths to 3 texts", widths_answer(n, n), {}, three);
+    refused<remote::WidthsAnswer>("an answer declaring 3 widths with 2", widths_answer(3, 2), {}, three);
+    refused<remote::WidthsAnswer>("an answer declaring 3 widths with 4", widths_answer(3, 4), {}, three);
+    refused<remote::WidthsAnswer>("an answer declaring 3 widths with 2 and a byte", widths_answer(3, 2) + '\0', {}, three);
+    for (uint32_t n : VAST) {
+        refused<remote::WidthsAnswer>("an answer declaring " + hex(n) + " widths", widths_answer(n, 3), {}, three);
+        check(last_decode.scope.asked <= one, "an answer declaring " + hex(n) + " widths: refused before making room");
+    }
+    check(decoded(widths_answer(0, 0), {}, out, {}) && out.widths.empty(), "an answer of no widths to no texts is taken");
+    refused<remote::WidthsAnswer>("an answer of one width to no texts", widths_answer(1, 1), {}, {});
+
+    remote::Caps caps;
+    caps.widths = 3;
+    check(decoded(widths_answer(3, 3), caps, out, three), "an answer of 3 widths is taken under a widths cap of 3");
+    caps.widths = 2;
+    refused<remote::WidthsAnswer>("an answer of 3 widths under a widths cap of 2", widths_answer(3, 3), caps, three);
+    std::string kept = EARLIER;
+    check(!remote::encode(out, caps, kept) && kept == EARLIER, "an answer past the widths cap is not encoded, the earlier value kept");
+    caps = {};
+    caps.message = 2 + 4 + 3 * 4;
+    check(decoded(widths_answer(3, 3), caps, out, three) && remote::encode(out, caps, kept), "an answer of 3 widths takes 18 bytes");
+    caps.message = 17;
+    refused<remote::WidthsAnswer>("an answer of 3 widths under a message cap of 17", widths_answer(3, 3), caps, three);
+    kept = EARLIER;
+    check(!remote::encode(out, caps, kept) && kept == EARLIER, "an answer past the message cap is not encoded, the earlier value kept");
+    caps = {};
+    caps.text = 0;
+    refused<remote::WidthsAnswer>("an answer to a request whose texts pass the text cap", widths_answer(3, 3), caps, three);
+    caps = {};
+    caps.widths_text = 2;
+    refused<remote::WidthsAnswer>("an answer to a request whose texts together pass their cap", widths_answer(3, 3), caps, three);
+    caps.widths_text = 3;
+    check(decoded(widths_answer(3, 3), caps, out, three), "an answer to a request whose texts together are at their cap is taken");
+    caps = {};
+    caps.widths = 2;
+    refused<remote::WidthsAnswer>("an answer to a request past the widths cap", widths_answer(2, 2), caps, three);
+
+    const remote::WidthsRequest pair{{{1, "abc"}, {2, "de"}}}, over{{{1, "abc"}, {2, "def"}}};
+    remote::Caps total;
+    total.widths_text = 5;
+    remote::WidthsRequest request;
+    check(decoded(encoded(pair, total), total, request) && request.texts.size() == 2 && request.texts[1].text == "de", "two texts of 5 bytes together are taken under a cap of 5");
+    remote::Caps open = total;
+    open.widths_text = 6;
+    refused<remote::WidthsRequest>("two texts of 6 bytes together under a cap of 5", encoded(over, open), total);
+    kept = EARLIER;
+    check(!remote::encode(over, total, kept) && kept == EARLIER, "two texts of 6 bytes together are not encoded under a cap of 5, the earlier value kept");
+    remote::Caps none;
+    none.widths = 0;
+    check(decoded(encoded(remote::WidthsRequest{}, none), none, request) && request.texts.empty(), "an empty request is taken under a widths cap of 0");
+    refused<remote::WidthsRequest>("a request of one text under a widths cap of 0", encoded(texts_of(1)), none);
+    kept = EARLIER;
+    check(!remote::encode(texts_of(1), none, kept) && kept == EARLIER, "a request of one text is not encoded under a widths cap of 0, the earlier value kept");
+    none = {};
+    none.widths_text = 0;
+    check(decoded(encoded(texts_of(3, 0), none), none, request) && request.texts.size() == 3, "empty texts are taken under a texts cap of 0");
+    refused<remote::WidthsRequest>("a request of a 1-byte text under a texts cap of 0", encoded(texts_of(1)), none);
+    caps = {};
+    caps.widths = 1024;
+    caps.widths_text = 64 << 10;
+    check(decoded(encoded(texts_of(1024, 64), caps), caps, request) && request.texts.size() == 1024, "1,024 texts of 64 KiB together are taken under the embedding's caps");
+    remote::Caps wider = caps;
+    wider.widths = 1025;
+    refused<remote::WidthsRequest>("1,025 texts under a widths cap of 1,024", encoded(texts_of(1025, 1), wider), caps);
+    wider = caps;
+    wider.widths_text = (64 << 10) + 1;
+    remote::WidthsRequest heavy = texts_of(1024, 64);
+    heavy.texts.back().text += 'x';
+    refused<remote::WidthsRequest>("1,024 texts of 64 KiB and a byte under a texts cap of 64 KiB", encoded(heavy, wider), caps);
+}
+
 /// An encoder checks a counted field's room before it appends: past the message cap, it asks the allocator for nothing.
 void encoder_room() {
     context = "encoder room";
@@ -1426,6 +1598,11 @@ void encoder_room() {
     before_appending("a width request's text of 1 MiB", remote::WidthRequest{1, big});
     before_appending("a report of a 1 MiB text", remote::Messages{{"a", big}});
     before_appending("pixels of 1 MiB", remote::PixelsAnswer{true, std::vector<uint8_t>(big.size(), 1)});
+    before_appending("a widths answer of 1 MiB", remote::WidthsAnswer{std::vector<float>(big.size() / 4, 1.f)});
+    caps.widths = SIZE_MAX;
+    caps.widths_text = SIZE_MAX;
+    before_appending("a widths answer of 1 MiB under widths caps of SIZE_MAX", remote::WidthsAnswer{std::vector<float>(big.size() / 4, 1.f)});
+    before_appending("a widths request's text of 1 MiB under widths caps of SIZE_MAX", remote::WidthsRequest{{{1, big}}});
 }
 
 // ───────────────────────── A platform end's session ─────────────────────────
@@ -1539,7 +1716,7 @@ template <class T> bool give(Session& s, const T& message) {
 }
 
 /// The end answers `request`, replacing what the reply held with exactly one answer, which `out` gets decoded against `pixels`.
-template <class A, class R> bool answered(Session& s, const R& request, A& out, const remote::PixelsRequest& pixels = {}) {
+template <class A, class R> bool answered(Session& s, const R& request, A& out, const AskedFor<A>& pixels = {}) {
     std::string reply = "a reply the answer replaces";
     if (!s.end.answer(encoded(request), reply)) return false;
     std::string again;
@@ -1646,6 +1823,95 @@ void session_requests() {
     check(calls[7].op == Call::CanvasRead && calls[7].rgba.size() == 28 && !wrong.ok && wrong.rgba.empty(), "pixels read at the wrong size are answered as unsupported");
     check(calls[8].op == Call::CanvasRead && calls[8].w == 0 && calls[8].h == 5 && none.ok && none.rgba.empty(), "a read of no pixels asks the Backend and is answered with none");
     check(s.host.events.empty() && !s.end.refusing(), "requests reach no host callback");
+}
+
+/// Measures in one call what text_width measures one by one, and counts its calls.
+struct BulkBackend : LogBackend {
+    std::vector<float> text_widths(const std::vector<TextInFont>& texts) override {
+        bulk.push_back(texts.size());
+        return LogBackend::text_widths(texts);
+    }
+
+    std::vector<size_t> bulk;
+};
+
+/// Gives one width too few or too many.
+struct MiscountingBackend : LogBackend {
+    std::vector<float> text_widths(const std::vector<TextInFont>& texts) override {
+        std::vector<float> widths = LogBackend::text_widths(texts);
+        if (fewer && !widths.empty()) widths.pop_back();
+        if (!fewer) widths.push_back(1);
+        return widths;
+    }
+
+    bool fewer = true;
+};
+
+/// A WidthsRequest reaches the Backend's text_widths once with every text in order, which measures them as text_width does unless the Backend measures them itself, and its answer carries the widths in that order; an empty one asks nothing; a Backend that gives another number of widths stops the end, the reply untouched.
+void session_widths() {
+    context = "a platform end's widths";
+    {
+        Session s;
+        remote::FontAnswer font, bold;
+        check(answered(s, remote::FontRequest{false, "serif", 12, 400, false, ""}, font) && answered(s, remote::FontRequest{false, "serif", 12, 700, false, ""}, bold),
+            "two fonts are answered");
+        const remote::WidthsRequest request{{{font.font, "hello"}, {bold.font, "world"}, {font.font, ""}, {font.font, "hello"}, {99, "no such font"}}};
+        remote::WidthsAnswer widths = sentinel<remote::WidthsAnswer>();
+        check(answered(s, request, widths, request), "a widths request is answered");
+        const std::vector<Call>& calls = s.backend.calls;
+        bool measured = calls.size() == 2 + request.texts.size() && widths.widths.size() == request.texts.size();
+        for (size_t i = 0; measured && i < request.texts.size(); i++) {
+            const Call& c = calls[2 + i];
+            measured = c.op == Call::TextWidth && c.font == request.texts[i].font && c.text == request.texts[i].text && bits(c.width) == bits(widths.widths[i]);
+        }
+        check(measured, "each text is measured in its font, in order, and the answer holds the Backend's widths in that order");
+        check(widths.widths[0] > 0 && widths.widths[2] == 0 && widths.widths[4] == 0, "the Backend's widths, an empty text and an unknown font giving 0 as text_width does");
+        remote::WidthsAnswer none = sentinel<remote::WidthsAnswer>();
+        check(answered(s, remote::WidthsRequest{}, none, {}) && none.widths.empty() && calls.size() == 2 + request.texts.size(), "an empty widths request is answered with none and no Backend call");
+        check(s.host.events.empty() && !s.end.refusing(), "widths reach no host callback");
+    }
+    {
+        BulkBackend backend;
+        Recorder host(backend);
+        Capture channel;
+        remote::PlatformEnd end(backend, host, channel);
+        host.end = &end;
+        const remote::WidthsRequest request = texts_of(5);
+        std::string reply;
+        remote::WidthsAnswer widths;
+        check(end.answer(encoded(request), reply) && remote::decode(reply, {}, request, widths) && widths.widths.size() == 5, "a Backend that measures many at once answers a widths request");
+        check(backend.bulk == std::vector<size_t>{5} && backend.count(Call::TextWidth) == 5, "the platform end hands it the whole request in one call");
+    }
+    for (bool fewer : {true, false}) {
+        const std::string what = std::string("a Backend that gives one width too ") + (fewer ? "few" : "many");
+        MiscountingBackend backend;
+        backend.fewer = fewer;
+        Recorder host(backend);
+        Capture channel;
+        remote::PlatformEnd end(backend, host, channel);
+        host.end = &end;
+        std::string reply = "kept";
+        check(!end.answer(encoded(texts_of(3)), reply) && reply == "kept" && end.refusing() && host.refusals.size() == 1 && !host.refusals[0].empty(),
+            what + ": the end stops with a reason, the reply untouched");
+        check(channel.sent.empty() && host.events.empty(), what + ": nothing is sent and the host hears nothing else");
+    }
+    {
+        remote::Caps caps;
+        caps.widths = 2;
+        caps.widths_text = 5;
+        Session s(caps);
+        remote::WidthsAnswer widths;
+        const remote::WidthsRequest fits{{{1, "abc"}, {1, "de"}}};
+        check(answered(s, fits, widths, fits) && widths.widths.size() == 2 && s.backend.calls.size() == 2, "two texts of 5 bytes are answered under caps of 2 texts and 5 bytes");
+        remote::Caps wide = caps;
+        wide.widths = 3;
+        wide.widths_text = 6;
+        std::string reply = "kept";
+        std::string three;
+        check(remote::encode(remote::WidthsRequest{{{1, "a"}, {1, "b"}, {1, "c"}}}, wide, three) && !s.end.answer(three, reply) && reply == "kept" && s.end.refusing()
+                && s.backend.calls.size() == 2,
+            "three texts under a cap of two stop the end before the Backend measures any");
+    }
 }
 
 /// Under `caps`, a request for `region`'s pixels is answered, read from the Backend when `read`, else unsupported without asking it.
@@ -1857,7 +2123,8 @@ std::vector<std::pair<Kind, std::string>> every_kind() {
         {Kind::Pointer, encoded(remote::Pointer{})}, {Kind::Selection, encoded(remote::Selection{})}, {Kind::ClaimAnswer, encoded(remote::ClaimAnswer{})},
         {Kind::FontRelease, encoded(remote::FontRelease{})}, {Kind::CanvasRun, encoded(remote::CanvasRun{})}, {Kind::CanvasRelease, encoded(remote::CanvasRelease{})},
         {Kind::FontRequest, encoded(remote::FontRequest{})}, {Kind::WidthRequest, encoded(remote::WidthRequest{})}, {Kind::ImageRequest, encoded(remote::ImageRequest{})},
-        {Kind::PixelsRequest, encoded(remote::PixelsRequest{})}};
+        {Kind::PixelsRequest, encoded(remote::PixelsRequest{})}, {Kind::WidthsAnswer, encoded(remote::WidthsAnswer{})},
+        {Kind::WidthsRequest, encoded(remote::WidthsRequest{})}};
 }
 
 /// Fresh ends refuse replies nobody asked for or out of turn, traffic of the wrong direction, bytes that do not decode and reports that are not the five platform messages.
@@ -1939,6 +2206,25 @@ void session_refusals() {
     refusal_case("a font request of version 0", no_setup, versioned(font, 0), font, true);
     refusal_case("a pixels request wider than a canvas", no_setup, Bytes().head(Kind::PixelsRequest).i32(1).i32(0).i32(0).i32(8193).i32(1).s,
         encoded(remote::PixelsRequest{1, 0, 0, 8192, 1}), true);
+    refusal_case("kind 37", no_setup, Bytes().u8(37).u8(1).u32(0).s, encoded(remote::WidthsRequest{}), true);
+    refusal_case("kind 101", no_setup, Bytes().u8(101).u8(1).u32(0).s, encoded(remote::WidthsRequest{}), true);
+    const remote::Caps defaults;
+    remote::Caps wide = defaults;
+    wide.widths = defaults.widths + 1;
+    wide.widths_text = defaults.widths_text + 1;
+    refusal_case("a widths request one text past the widths cap", no_setup, encoded(texts_of(defaults.widths + 1), wide), encoded(texts_of(defaults.widths)), true);
+    refusal_case("a widths request one byte past the texts cap", no_setup, encoded(texts_of(1, defaults.widths_text + 1), wide), encoded(texts_of(1, defaults.widths_text)), true);
+    remote::WidthsRequest split = texts_of(2, defaults.widths_text / 2);
+    refusal_case("a widths request whose last text takes its texts one byte past their cap", no_setup, [&] {
+        remote::WidthsRequest over = split;
+        over.texts.back().text += 'x';
+        return encoded(over, wide);
+    }(), encoded(split), true);
+    const std::string widths = encoded(texts_of(3));
+    refusal_case("a widths request cut short", no_setup, widths.substr(0, widths.size() - 1), widths, true);
+    refusal_case("a widths request with a byte after it", no_setup, widths + 'x', widths, true);
+    refusal_case("a widths request of version 2", no_setup, versioned(widths, 2), widths, true);
+    refusal_case("a widths request declaring a text more than it holds", no_setup, Bytes().head(Kind::WidthsRequest).u32(2).i32(1).str("a").s, widths, true);
 
     const std::string size = R"({"type":"size","width":1})";
     const char* const refused_texts[] = {"not json", "", "[1]", "\"size\"", "null", "{}", R"({"type":5})", R"({"type":null})", R"({"type":"event"})", R"({"type":"result"})",
@@ -2019,6 +2305,7 @@ int main() {
     value_lengths();
     nested_caps();
     pixels();
+    widths();
     encoder_room();
 
     suite("FrameRequest", Kind::FrameRequest, frame_requests(), 0x01000000);
@@ -2033,6 +2320,7 @@ int main() {
     suite("WidthAnswer", Kind::WidthAnswer, width_answers(), 0x21000000);
     suite("ImageAnswer", Kind::ImageAnswer, image_answers(), 0x22000000);
     suite("PixelsAnswer", Kind::PixelsAnswer, pixels_answers(), 0x23000000);
+    suite("WidthsAnswer", Kind::WidthsAnswer, widths_answers(), 0x24000000);
     suite("Frame", Kind::Frame, frames(), 0x40000000);
     suite("State", Kind::State, states(), 0x41000000);
     suite("Messages", Kind::Messages, messages(), 0x42000000);
@@ -2046,10 +2334,12 @@ int main() {
     suite("WidthRequest", Kind::WidthRequest, width_requests(), 0x61000000);
     suite("ImageRequest", Kind::ImageRequest, image_requests(), 0x62000000);
     suite("PixelsRequest", Kind::PixelsRequest, pixels_requests(), 0x63000000);
+    suite("WidthsRequest", Kind::WidthsRequest, widths_requests(), 0x64000000);
 
     session_inputs();
     session_requests();
     session_caps();
+    session_widths();
     session_reports();
     session_replies();
     session_order();
@@ -2057,7 +2347,7 @@ int main() {
     session_queue();
 
     print_reports();
-    std::printf("platform end: a session of every input, request, one-way Backend call and report, and %zu refusal cases\n", refusal_cases);
+    std::printf("platform end: a session of every input, request, widths batch, one-way Backend call and report, and %zu refusal cases\n", refusal_cases);
     std::printf("allocation: %zu decodes measured against a budget of %zu bytes for each input byte and %zu more\n", measured_decodes, PER_BYTE, FIXED);
     print_extreme("the nearest its budget", nearest_budget);
     print_extreme("the most per input byte of 256 or more", most_per_byte);

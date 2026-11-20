@@ -1,4 +1,4 @@
-// The renderer end against a platform end over an in-memory channel: focused sequences match a renderer called directly step by step, the time and canvas-font seams hold, and a missing or bad answer, bad platform input or a value past the caps stops it for good with nothing sent after.
+// The renderer end against a platform end over an in-memory channel: focused sequences match a renderer called directly step by step, a layout's unknown words, the units its paint spaces and the breaks it takes go in bounded batches, the time and canvas-font seams hold, and a missing or bad answer, bad platform input or a value past the caps stops it for good with nothing sent after.
 #include "platform_end.h"
 #include "remote.h"
 #include "renderer.h"
@@ -9,12 +9,17 @@
 #include "reports.h"
 #include "wire_compare.h"
 
+#include <litehtml.h>
+#include <litehtml/el_text.h>
+
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <optional>
@@ -204,6 +209,7 @@ std::string kind_name(remote::Kind kind) {
     case remote::Kind::WidthRequest: return "a width request";
     case remote::Kind::ImageRequest: return "an image request";
     case remote::Kind::PixelsRequest: return "a pixels request";
+    case remote::Kind::WidthsRequest: return "a widths request";
     default: return "kind " + std::to_string(int(kind));
     }
 }
@@ -304,12 +310,15 @@ void construction_failures() {
 
 /// A later request of each kind fails every way inside an engine message, which then gets nothing back.
 void later_failures() {
-    const remote::Kind kinds[] = {remote::Kind::FontRequest, remote::Kind::WidthRequest, remote::Kind::ImageRequest, remote::Kind::PixelsRequest};
+    const remote::Kind kinds[] = {remote::Kind::FontRequest, remote::Kind::WidthRequest, remote::Kind::ImageRequest, remote::Kind::PixelsRequest, remote::Kind::WidthsRequest};
     std::vector<std::pair<Fault, std::string>> faults;
     for (remote::Kind kind : kinds)
         for (Spoil how : SPOILS) faults.push_back({Fault{how, 0, kind, {}}, kind_name(kind) + " " + spoil_name(how)});
     faults.push_back({Fault{Spoil::Replaced, 0, remote::Kind::PixelsRequest, encoded(remote::PixelsAnswer{true, std::vector<uint8_t>(4, 9)})}, "a pixels request answered with 4 bytes for 8"});
     faults.push_back({Fault{Spoil::Replaced, 0, remote::Kind::FontRequest, encoded(remote::WidthAnswer{8})}, "a font request answered with a width"});
+    faults.push_back({Fault{Spoil::Replaced, 0, remote::Kind::WidthsRequest, encoded(remote::WidthsAnswer{{8}})}, "a widths request answered with one width for several texts"});
+    faults.push_back({Fault{Spoil::Replaced, 0, remote::Kind::WidthsRequest, encoded(remote::WidthsAnswer{})}, "a widths request answered with no widths"});
+    faults.push_back({Fault{Spoil::Replaced, 0, remote::Kind::WidthsRequest, encoded(remote::WidthAnswer{8})}, "a widths request answered with a single width"});
     for (const auto& [fault, what] : faults) {
         VirtualClock clock;
         Loopback loop;
@@ -325,7 +334,7 @@ void later_failures() {
     }
 }
 
-/// A frame, a touch, a hover and a hold query each settle a batch that waited for the frame, whose first width request goes unanswered.
+/// A frame, a touch, a hover and a hold query each settle a batch that waited for the frame, whose widths request goes unanswered.
 void mid_call_failures() {
     const char* names[] = {"a ticking frame", "a touch", "a hover", "a hold query"};
     for (int call = 0; call < 4; call++) {
@@ -334,12 +343,12 @@ void mid_call_failures() {
         Loopback loop;
         loop.open(300, 1, false, &clock);
         loop.receive(parse(SPINNING));
-        const size_t widths = count(loop.wire.kinds, remote::Kind::WidthRequest);
+        const size_t widths = count(loop.wire.kinds, remote::Kind::WidthsRequest);
         loop.receive(parse(FRESH_TEXT));
-        check(count(loop.wire.kinds, remote::Kind::WidthRequest) == widths && loop.end->renderer().wants_tick() && !loop.end->stopped(),
+        check(count(loop.wire.kinds, remote::Kind::WidthsRequest) == widths && loop.end->renderer().wants_tick() && !loop.end->stopped(),
               what + ": the batch waits for the frame");
         loop.want_frame();
-        loop.wire.fault = {Spoil::Unanswered, 0, remote::Kind::WidthRequest, {}};
+        loop.wire.fault = {Spoil::Unanswered, 0, remote::Kind::WidthsRequest, {}};
         if (call == 0) loop.platform.request_frame(true, remote::Paint::Force);
         if (call == 1) loop.platform.touch(0, 5, 5, 1, true);
         if (call == 2) loop.platform.hover(0, 5, 5);
@@ -347,7 +356,7 @@ void mid_call_failures() {
         loop.out = stale_output();
         const size_t frames = loop.backend.count(Call::Frame), runs = loop.backend.count(Call::CanvasRun);
         check(loop.pump() && loop.delivered == std::vector<bool>{false} && empty(loop.outputs[0]) && empty(loop.out), what + ": the delivery gets false and an empty output, the engine's frame not due");
-        stopped_at_spoil(loop, remote::Kind::WidthRequest, "a request got no answer", what);
+        stopped_at_spoil(loop, remote::Kind::WidthsRequest, "a request got no answer", what);
         check(loop.host.frames.empty() && loop.host.pointers.empty() && loop.host.claims.empty() && loop.backend.count(Call::Frame) == frames && loop.backend.count(Call::CanvasRun) == runs,
               what + ": no paint, frame, pointer or claim follows");
         check(call != 0 || loop.end->renderer().dirty(), what + ": the frame leaves its paint undone");
@@ -1312,6 +1321,614 @@ void clocks() {
     }
 }
 
+
+/// A litehtml container that lays text out at 8 px a byte and draws nothing, logging each measure; it lets texts owe their widths when `later`.
+class PlainContainer final : public litehtml::document_container {
+public:
+    explicit PlainContainer(bool later) : later_(later) {}
+
+    litehtml::uint_ptr create_font(const litehtml::font_description& descr, const litehtml::document*, litehtml::font_metrics* fm) override {
+        if (fm) {
+            fm->font_size = descr.size;
+            fm->ascent = litehtml::pixel_t(float(descr.size) * 0.75f);
+            fm->descent = litehtml::pixel_t(float(descr.size) * 0.25f);
+            fm->height = litehtml::pixel_t(float(descr.size) * 1.25f);
+            fm->x_height = litehtml::pixel_t(float(descr.size) * 0.5f);
+            fm->ch_width = litehtml::pixel_t(8);
+        }
+        return ++fonts_;
+    }
+    void delete_font(litehtml::uint_ptr) override {}
+    litehtml::pixel_t text_width(const char* text, litehtml::uint_ptr) override {
+        measured.emplace_back(text);
+        return litehtml::pixel_t(8.0f * float(std::strlen(text)));
+    }
+    bool measures_text_later() const override { return later_; }
+    void draw_text(litehtml::uint_ptr, const char*, litehtml::uint_ptr, litehtml::web_color, const litehtml::position&) override {}
+    litehtml::pixel_t pt_to_px(float pt) const override { return litehtml::pixel_t(pt * 96.0f / 72.0f); }
+    litehtml::pixel_t get_default_font_size() const override { return 16; }
+    const char* get_default_font_name() const override { return "sans-serif"; }
+    void draw_list_marker(litehtml::uint_ptr, const litehtml::list_marker&) override {}
+    void load_image(const char*, const char*, bool) override {}
+    void get_image_size(const char*, const char*, litehtml::size& sz) override { sz = litehtml::size(); }
+    void draw_image(litehtml::uint_ptr, const litehtml::background_layer&, const std::string&, const std::string&) override {}
+    void draw_solid_fill(litehtml::uint_ptr, const litehtml::background_layer&, const litehtml::web_color&) override {}
+    void draw_linear_gradient(litehtml::uint_ptr, const litehtml::background_layer&, const litehtml::background_layer::linear_gradient&) override {}
+    void draw_radial_gradient(litehtml::uint_ptr, const litehtml::background_layer&, const litehtml::background_layer::radial_gradient&) override {}
+    void draw_conic_gradient(litehtml::uint_ptr, const litehtml::background_layer&, const litehtml::background_layer::conic_gradient&) override {}
+    void draw_borders(litehtml::uint_ptr, const litehtml::borders&, const litehtml::position&, bool) override {}
+    void set_caption(const char*) override {}
+    void set_base_url(const char*) override {}
+    void link(const std::shared_ptr<litehtml::document>&, const litehtml::element::ptr&) override {}
+    void on_anchor_click(const char*, const litehtml::element::ptr&) override {}
+    void on_mouse_event(const litehtml::element::ptr&, litehtml::mouse_event) override {}
+    void set_cursor(const char*) override {}
+    void transform_text(std::string& text, litehtml::text_transform tt) override {
+        if (tt == litehtml::text_transform_uppercase)
+            for (char& c : text) c = char(std::toupper(static_cast<unsigned char>(c)));
+    }
+    void import_css(std::string&, const std::string&, std::string&) override {}
+    void set_clip(const litehtml::position&, const litehtml::border_radiuses&) override {}
+    void del_clip() override {}
+    void get_viewport(litehtml::position& viewport) const override { viewport = litehtml::position(0, 0, 300, 600); }
+    litehtml::element::ptr create_element(const char*, const litehtml::string_map&, const std::shared_ptr<litehtml::document>&) override { return nullptr; }
+    void get_media_features(litehtml::media_features& media) const override {
+        media = litehtml::media_features();
+        media.type = litehtml::media_type_screen;
+        media.width = media.device_width = 300;
+        media.height = media.device_height = 600;
+        media.color = 8;
+        media.resolution = 96;
+    }
+    void get_language(std::string& language, std::string& culture) const override {
+        language = "en";
+        culture.clear();
+    }
+
+    std::vector<std::string> measured;
+
+private:
+    bool later_ = false;
+    litehtml::uint_ptr fonts_ = 0;
+};
+
+/// What litehtml's layout reads of an element's size.
+litehtml::size size_of(litehtml::element* el) {
+    litehtml::size sz;
+    if (el) el->get_content_size(sz, 0);
+    return sz;
+}
+
+litehtml::el_text* first_text(const litehtml::document::ptr& doc, const std::string& selector) {
+    const litehtml::element::ptr el = doc->root()->select_one(selector);
+    return el && !el->children().empty() ? dynamic_cast<litehtml::el_text*>(el->children().front().get()) : nullptr;
+}
+
+/// A container that does not opt in measures every text in the style pass, as litehtml always did; one that opts in measures each when it is read, the same texts at the same widths, and set_text drops what a text owed.
+void containers() {
+    const std::string html = R"(<html><body><p>alpha beta</p><p style="text-transform:uppercase">gamma</p><pre>a	b</pre></body></html>)";
+    PlainContainer now(false), later(true);
+    const litehtml::document::ptr a = litehtml::document::createFromString(litehtml::estring(html), &now);
+    const litehtml::document::ptr b = litehtml::document::createFromString(litehtml::estring(html), &later);
+    const std::set<std::string> styled(now.measured.begin(), now.measured.end());
+    check(styled.count("alpha") && styled.count("GAMMA") && styled.count("    "), "a container that does not opt in measures what the texts show in the style pass");
+    check(later.measured.empty(), "one that opts in measures nothing there");
+    litehtml::el_text* alpha = first_text(b, "p");
+    check(alpha && alpha->width_owed() && !first_text(a, "p")->width_owed(), "its texts owe their widths, the other's none");
+    const size_t before = now.measured.size();
+    a->render(300);
+    b->render(300);
+    check(now.measured.size() == before, "the container that does not opt in measures nothing more in the layout");
+    const std::set<std::string> read(later.measured.begin(), later.measured.end());
+    check(read == styled && later.measured.size() == before, "the one that opts in measures the same texts once each as the layout reads them");
+    check(a->height() == b->height() && a->width() == b->width() && !alpha->width_owed(), "both lay out alike, and no width is owed after the layout");
+
+    PlainContainer early(true);
+    const litehtml::document::ptr c = litehtml::document::createFromString(litehtml::estring(html), &early);
+    litehtml::el_text* text = first_text(c, "p");
+    const litehtml::size sz = size_of(text);
+    check(text && early.measured == std::vector<std::string>{"alpha"} && float(sz.width) == 40 && !text->width_owed(), "a size read before the layout measures that text alone, exactly");
+    size_of(text);
+    check(early.measured.size() == 1, "and reading it again measures nothing");
+    PlainContainer reset(true);
+    const litehtml::document::ptr d = litehtml::document::createFromString(litehtml::estring(html), &reset);
+    litehtml::el_text* changed = first_text(d, "p");
+    if (changed) changed->set_text("omega");
+    check(changed && !changed->width_owed(), "set_text drops the width a text owed");
+    check(reset.measured.empty() && float(size_of(changed).width) == 0, "and its size reads as nothing until it is styled again, as before");
+}
+
+// ───────────────────────── a layout's unknown words in batches ─────────────────────────
+
+std::vector<remote::Kind> kinds_since(const Loopback& loop, size_t from) {
+    return std::vector<remote::Kind>(loop.wire.kinds.begin() + std::ptrdiff_t(from), loop.wire.kinds.end());
+}
+
+std::vector<Call> widths_since(const LogBackend& backend, size_t from) {
+    std::vector<Call> out;
+    for (size_t i = from; i < backend.calls.size(); i++)
+        if (backend.calls[i].op == Call::TextWidth) out.push_back(backend.calls[i]);
+    return out;
+}
+
+/// No font and text measured twice.
+bool measured_once(const std::vector<Call>& widths) {
+    std::set<std::pair<int, std::string>> seen;
+    for (const Call& c : widths)
+        if (!seen.emplace(c.font, c.text).second) return false;
+    return true;
+}
+
+/// Exactly `n` widths requests, the first after every font request, the last before every single width request.
+bool batches_of(const std::vector<remote::Kind>& kinds, size_t n) {
+    const auto first = std::find(kinds.begin(), kinds.end(), remote::Kind::WidthsRequest);
+    const auto last = std::find(kinds.rbegin(), kinds.rend(), remote::Kind::WidthsRequest).base();
+    if (first == kinds.end() || count(kinds, remote::Kind::WidthsRequest) != n) return false;
+    return std::find(first, kinds.end(), remote::Kind::FontRequest) == kinds.end() && std::find(kinds.begin(), last, remote::Kind::WidthRequest) == last;
+}
+
+bool one_batch(const std::vector<remote::Kind>& kinds) {
+    return batches_of(kinds, 1);
+}
+
+std::set<std::string> texts_of(const std::vector<Call>& widths) {
+    std::set<std::string> out;
+    for (const Call& c : widths) out.insert(c.text);
+    return out;
+}
+
+/// Some fifty words in five faces: repeated words, a bold copy of five, an uppercase line, a pre block with a tab, spaced words, and a word broken anywhere in a narrow box.
+const char* WORDS = R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},
+ {"op":"el","id":10,"tag":"p","attrs":[]},
+ {"op":"text","id":11,"data":"alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen alpha beta gamma delta pi rho tau mu"},
+ {"op":"el","id":12,"tag":"p","attrs":[["style","font-weight:bold"]]},
+ {"op":"text","id":13,"data":"alpha beta gamma delta epsilon"},
+ {"op":"el","id":14,"tag":"p","attrs":[["style","text-transform:uppercase"]]},
+ {"op":"text","id":15,"data":"Mixed case words"},
+ {"op":"el","id":16,"tag":"pre","attrs":[["style","font:13px monospace"]]},
+ {"op":"text","id":17,"data":"a\tb  c\nd"},
+ {"op":"el","id":18,"tag":"p","attrs":[["style","letter-spacing:2px;word-spacing:3px"]]},
+ {"op":"text","id":19,"data":"spaced words here"},
+ {"op":"el","id":20,"tag":"div","attrs":[["style","width:40px;overflow-wrap:anywhere"]]},
+ {"op":"text","id":21,"data":"supercalifragilisticexpialidocious"},
+ {"op":"ins","parent":4,"id":10,"before":null},{"op":"ins","parent":10,"id":11,"before":null},
+ {"op":"ins","parent":4,"id":12,"before":null},{"op":"ins","parent":12,"id":13,"before":null},
+ {"op":"ins","parent":4,"id":14,"before":null},{"op":"ins","parent":14,"id":15,"before":null},
+ {"op":"ins","parent":4,"id":16,"before":null},{"op":"ins","parent":16,"id":17,"before":null},
+ {"op":"ins","parent":4,"id":18,"before":null},{"op":"ins","parent":18,"id":19,"before":null},
+ {"op":"ins","parent":4,"id":20,"before":null},{"op":"ins","parent":20,"id":21,"before":null}
+]})";
+
+/// A build's unknown words go in one widths request after its fonts and the breaks its layout takes in one more, a relayout finds them cached, later builds ask for their new words alone, transforms and spacing measure what they show, and after trim the words are asked for again; each call as the direct renderer makes it.
+void batches() {
+    Arms a("batches");
+    size_t sent = a.loop.wire.kinds.size(), calls = a.loop.backend.calls.size();
+    a.receive(WORDS, "a page of some fifty words in five faces");
+    std::vector<remote::Kind> kinds = kinds_since(a.loop, sent);
+    std::vector<Call> widths = widths_since(a.loop.backend, calls);
+    const size_t singles = count(kinds, remote::Kind::WidthRequest), batched = widths.size() - singles;
+    a.ok(batches_of(kinds, 2), "the build asks for its words in one widths request after its fonts, and its layout for the breaks in one more, before any single width");
+    a.ok(batched > 50, "the requests hold the page's distinct words and spaces, and their letters (" + std::to_string(batched) + ")");
+    bool letters_alone = false;
+    for (size_t i = widths.size() - singles; i < widths.size(); i++) letters_alone = letters_alone || widths[i].text.size() < 2;
+    a.ok(singles > 0 && !letters_alone, "the word broken anywhere is measured in longer pieces in the layout, after the batches, never a letter alone (" + std::to_string(singles) + ")");
+    a.ok(measured_once(widths), "no font and text is measured twice");
+    bool upper = false, tab = false;
+    for (const Call& c : widths) {
+        upper = upper || c.text == "MIXED";
+        tab = tab || c.text == "    ";
+    }
+    a.ok(upper && tab, "the batch measures what the texts show: the uppercase words and a tab's spaces");
+    a.frame("the first frame", true, remote::Paint::IfDirty);
+
+    sent = a.loop.wire.kinds.size();
+    a.set_width("a narrower view", 200);
+    a.ok(count(kinds_since(a.loop, sent), remote::Kind::WidthsRequest) == 0, "a relayout at another width finds every word cached");
+
+    sent = a.loop.wire.kinds.size();
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"p","attrs":[]},{"op":"text","id":31,"data":"alpha omega seventeen eighteen alpha nineteen"},{"op":"ins","parent":4,"id":30,"before":null},{"op":"ins","parent":30,"id":31,"before":null}]})",
+              "a paragraph of known and new words");
+    kinds = kinds_since(a.loop, sent);
+    widths = widths_since(a.loop.backend, calls);
+    std::set<std::string> asked;
+    for (const Call& c : widths) asked.insert(c.text);
+    a.ok(one_batch(kinds) && asked == std::set<std::string>{"seventeen", "eighteen", "nineteen"}, "only the new words are asked for, in one widths request");
+
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"style","id":18,"name":"letter-spacing","value":"5px"}]})", "a new letter spacing");
+    bool spaced = false;
+    for (const Call& c : widths_since(a.loop.backend, calls)) spaced = spaced || c.text == "spaced" || c.text == "here";
+    a.ok(!spaced, "the spaced words keep their face's widths, the spacing added where they are used");
+    a.receive(R"({"type":"ops","ops":[{"op":"style","id":14,"name":"text-transform","value":"lowercase"}]})", "the uppercase line turned lowercase");
+    a.frame("the frame after the restyles", true, remote::Paint::IfDirty);
+
+    a.helper("the helper trims", [](Renderer& r) {
+        r.trim();
+        return std::vector<Json>();
+    });
+    sent = a.loop.wire.kinds.size();
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"el","id":32,"tag":"p","attrs":[]},{"op":"text","id":33,"data":"alpha beta gamma"},{"op":"ins","parent":4,"id":32,"before":null},{"op":"ins","parent":32,"id":33,"before":null}]})",
+              "words measured before the trim");
+    kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthsRequest) == 2 && !widths_since(a.loop.backend, calls).empty(),
+         "the words the trim forgot are asked for again in one request, and the breaks of the word broken anywhere in one more");
+    a.frame("the last frame", true, remote::Paint::IfDirty);
+    a.close();
+}
+
+/// A letter-spaced line (11), a word-spaced number with a no-break space (13), and a letter-spaced word (16) under a display:none box (14).
+const char* SPACED = R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},
+ {"op":"el","id":10,"tag":"p","attrs":[["style","letter-spacing:2px"]]},
+ {"op":"text","id":11,"data":"Spaced CAPS"},
+ {"op":"el","id":12,"tag":"p","attrs":[["style","word-spacing:4px"]]},
+ {"op":"text","id":13,"data":"10 000 apart"},
+ {"op":"el","id":14,"tag":"div","attrs":[["style","display:none"]]},
+ {"op":"el","id":15,"tag":"p","attrs":[["style","letter-spacing:3px"]]},
+ {"op":"text","id":16,"data":"QXZ"},
+ {"op":"ins","parent":4,"id":10,"before":null},{"op":"ins","parent":10,"id":11,"before":null},
+ {"op":"ins","parent":4,"id":12,"before":null},{"op":"ins","parent":12,"id":13,"before":null},
+ {"op":"ins","parent":4,"id":14,"before":null},{"op":"ins","parent":14,"id":15,"before":null},{"op":"ins","parent":15,"id":16,"before":null}
+]})";
+
+bool none_measured(const std::vector<Call>& widths, const std::set<std::string>& texts) {
+    for (const Call& c : widths)
+        if (texts.count(c.text)) return false;
+    return true;
+}
+
+/// A run painted with letter or word spacing is drawn unit by unit: the build's one request holds the units of every run it can see, and the paint measures nothing.
+void spaced_units() {
+    Arms a("spaced units");
+    size_t sent = a.loop.wire.kinds.size(), calls = a.loop.backend.calls.size();
+    a.receive(SPACED, "spaced runs, one under a display:none box");
+    std::vector<remote::Kind> kinds = kinds_since(a.loop, sent);
+    std::vector<Call> widths = widths_since(a.loop.backend, calls);
+    std::set<std::string> asked = texts_of(widths);
+    a.ok(one_batch(kinds) && count(kinds, remote::Kind::WidthRequest) == 0, "the build makes one widths request and no single one (" + reports_name(kinds) + ")");
+    bool letters = true;
+    for (const char* unit : {"S", "p", "a", "c", "e", "d", "C", "A", "P"}) letters = letters && asked.count(unit);
+    a.ok(letters, "it holds each letter of the letter-spaced line");
+    a.ok(asked.count("10") && asked.count("\xC2\xA0") && asked.count("000"), "and the words and the space the word-spaced number is drawn in");
+    a.ok(asked.count("QXZ") && none_measured(widths, {"Q", "X", "Z"}), "the hidden word's own width, but not its letters");
+    a.ok(measured_once(widths), "no font and text is measured twice");
+    sent = a.loop.wire.kinds.size();
+    a.frame("the first frame", true, remote::Paint::IfDirty);
+    kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthRequest) == 0 && count(kinds, remote::Kind::WidthsRequest) == 0, "the paint measures nothing (" + reports_name(kinds) + ")");
+
+    sent = a.loop.wire.kinds.size();
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"style","id":14,"name":"display","value":"block"}]})", "the hidden box shown");
+    kinds = kinds_since(a.loop, sent);
+    asked = texts_of(widths_since(a.loop.backend, calls));
+    a.ok(one_batch(kinds) && count(kinds, remote::Kind::WidthRequest) == 0 && asked == std::set<std::string>{"Q", "X", "Z"}, "its letters come in the layout's one request, and nothing else");
+    sent = a.loop.wire.kinds.size();
+    a.frame("the frame that shows it", true, remote::Paint::IfDirty);
+    kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthRequest) == 0 && count(kinds, remote::Kind::WidthsRequest) == 0, "and its paint measures nothing");
+
+    sent = a.loop.wire.kinds.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"letter-spacing","value":"5px"}]})", "a wider letter spacing");
+    a.frame("the frame after it", true, remote::Paint::IfDirty);
+    kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthRequest) == 0 && count(kinds, remote::Kind::WidthsRequest) == 0, "the letters keep their face's widths, the spacing added where they are drawn");
+    a.close();
+}
+
+/// Two words in a flex row (12, 14), whose items' smallest widths break them, a paragraph that fits (16), and a word in a flex row under a display:none box (20).
+const char* BREAKING = R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},
+ {"op":"el","id":10,"tag":"div","attrs":[["style","display:flex"]]},
+ {"op":"el","id":11,"tag":"div","attrs":[]},
+ {"op":"text","id":12,"data":"breakable"},
+ {"op":"el","id":13,"tag":"div","attrs":[]},
+ {"op":"text","id":14,"data":"pieces"},
+ {"op":"el","id":15,"tag":"p","attrs":[]},
+ {"op":"text","id":16,"data":"plain fits"},
+ {"op":"el","id":17,"tag":"div","attrs":[["style","display:none"]]},
+ {"op":"el","id":18,"tag":"div","attrs":[["style","display:flex"]]},
+ {"op":"el","id":19,"tag":"div","attrs":[]},
+ {"op":"text","id":20,"data":"VWK"},
+ {"op":"ins","parent":4,"id":10,"before":null},
+ {"op":"ins","parent":10,"id":11,"before":null},{"op":"ins","parent":11,"id":12,"before":null},
+ {"op":"ins","parent":10,"id":13,"before":null},{"op":"ins","parent":13,"id":14,"before":null},
+ {"op":"ins","parent":4,"id":15,"before":null},{"op":"ins","parent":15,"id":16,"before":null},
+ {"op":"ins","parent":4,"id":17,"before":null},{"op":"ins","parent":17,"id":18,"before":null},
+ {"op":"ins","parent":18,"id":19,"before":null},{"op":"ins","parent":19,"id":20,"before":null}
+]})";
+
+std::string flex_item(int row, int id, const std::string& text) {
+    return R"({"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[]},{"op":"text","id":)" + std::to_string(id + 1) + R"(,"data":")" + text +
+           R"("},{"op":"ins","parent":)" + std::to_string(id) + R"(,"id":)" + std::to_string(id + 1) + R"(,"before":null},{"op":"ins","parent":)" + std::to_string(row) +
+           R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+}
+
+/// The breaks a layout measures: its first unmeasured one asks, in one request, for the break points of every text it may wrap that it can see; each is measured once and none alone, a relayout asks for nothing, and a later layout for its new letters alone.
+void breaks() {
+    Arms a("breaks");
+    size_t sent = a.loop.wire.kinds.size(), calls = a.loop.backend.calls.size();
+    a.receive(BREAKING, "words in a flex row, a paragraph and a hidden row");
+    std::vector<remote::Kind> kinds = kinds_since(a.loop, sent);
+    std::vector<Call> widths = widths_since(a.loop.backend, calls);
+    std::set<std::string> asked = texts_of(widths);
+    a.ok(batches_of(kinds, 2) && count(kinds, remote::Kind::WidthRequest) == 0,
+         "the build asks for its words in one widths request and its layout for the breaks in one more, with no single width (" + reports_name(kinds) + ")");
+    bool letters = true;
+    for (const char* letter : {"b", "r", "e", "a", "k", "l", "p", "i", "c", "s"}) letters = letters && asked.count(letter);
+    a.ok(letters, "the breaks hold every letter of the row's words");
+    a.ok(asked.count("f") && asked.count("t"), "and of the paragraph, which the layout may wrap too");
+    a.ok(asked.count("VWK") && none_measured(widths, {"V", "W", "K"}), "the hidden word's own width, but not its letters");
+    a.ok(measured_once(widths), "no font and text is measured twice");
+    sent = a.loop.wire.kinds.size();
+    a.frame("the first frame", true, remote::Paint::IfDirty);
+    a.set_width("a narrower view", 200);
+    kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthRequest) == 0 && count(kinds, remote::Kind::WidthsRequest) == 0, "the paint and a relayout at another width measure nothing");
+
+    sent = a.loop.wire.kinds.size();
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[)" + flex_item(10, 30, "QXZ") + "]}", "a new word in the row");
+    kinds = kinds_since(a.loop, sent);
+    asked = texts_of(widths_since(a.loop.backend, calls));
+    a.ok(batches_of(kinds, 2) && count(kinds, remote::Kind::WidthRequest) == 0 && asked == std::set<std::string>{"QXZ", "Q", "X", "Z"},
+         "the word in one request, and its new letters alone in the layout's one more");
+
+    sent = a.loop.wire.kinds.size();
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"div","attrs":[["style","display:flex"]]},{"op":"ins","parent":4,"id":40,"before":null},)" + flex_item(40, 41, "JJ") + "," +
+                  flex_item(10, 43, "YY") + "]}",
+              "new words in two rows");
+    kinds = kinds_since(a.loop, sent);
+    asked = texts_of(widths_since(a.loop.backend, calls));
+    a.ok(batches_of(kinds, 2) && count(kinds, remote::Kind::WidthRequest) == 0 && asked == std::set<std::string>{"JJ", "YY", "J", "Y"},
+         "two boxes that break in one layout share its one request for breaks");
+    a.frame("the last frame", true, remote::Paint::IfDirty);
+    a.close();
+}
+
+/// html(2) head(3) body(4), a paragraph (10) whose text (11) is all it holds.
+const char* SOLE_TEXT = R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},
+ {"op":"el","id":10,"tag":"p","attrs":[]},
+ {"op":"text","id":11,"data":"alpha beta"},
+ {"op":"ins","parent":4,"id":10,"before":null},
+ {"op":"ins","parent":10,"id":11,"before":null}
+]})";
+
+std::string data_op(const std::string& text) {
+    return R"({"type":"ops","ops":[{"op":"data","id":11,"data":")" + text + R"("}]})";
+}
+
+/// A sole text patched in place: the document reads the new words' sizes before any layout, one request each, until a size differs; the rest wait for the layout's batch.
+void patched_words() {
+    Arms a("patches");
+    a.receive(SOLE_TEXT, "a paragraph whose text is all it holds");
+    a.frame("the first frame", true, remote::Paint::IfDirty);
+    size_t sent = a.loop.wire.kinds.size();
+    a.receive(data_op("gamma zeta"), "new words of the same widths");
+    std::vector<remote::Kind> kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthRequest) == 2 && count(kinds, remote::Kind::WidthsRequest) == 0,
+         "each new word is read before any layout, one width request each (" + reports_name(kinds) + ")");
+    a.frame("the frame after it", true, remote::Paint::IfDirty);
+    sent = a.loop.wire.kinds.size();
+    a.receive(data_op("epsilons iota"), "a longer first word");
+    kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthRequest) == 1 && count(kinds, remote::Kind::WidthsRequest) == 1,
+         "the first word is read, and the layout its new width needs asks for the rest in one request");
+    a.frame("the frame after the longer word", true, remote::Paint::IfDirty);
+    sent = a.loop.wire.kinds.size();
+    a.receive(data_op("one two three"), "a text of more words");
+    kinds = kinds_since(a.loop, sent);
+    a.ok(count(kinds, remote::Kind::WidthRequest) == 0 && count(kinds, remote::Kind::WidthsRequest) == 1, "new text elements are measured in the layout's one request");
+    a.frame("the last frame", true, remote::Paint::IfDirty);
+    a.close();
+}
+
+/// More different words in one face than its cache keeps: the batch takes what the cache keeps, the rest are measured one by one, none twice.
+void cache_pressure() {
+    Arms a("cache pressure");
+    std::string words;
+    for (int i = 0; i < 4200; i++) words += "w" + std::to_string(i) + " ";
+    const size_t sent = a.loop.wire.kinds.size(), calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},)"
+              R"({"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},{"op":"el","id":10,"tag":"p","attrs":[]},)"
+              R"({"op":"text","id":11,"data":")" + words + R"("},{"op":"ins","parent":4,"id":10,"before":null},{"op":"ins","parent":10,"id":11,"before":null}]})",
+              "a paragraph of 4,200 different words in one face");
+    const std::vector<remote::Kind> kinds = kinds_since(a.loop, sent);
+    const std::vector<Call> widths = widths_since(a.loop.backend, calls);
+    const size_t singles = count(kinds, remote::Kind::WidthRequest), batches = count(kinds, remote::Kind::WidthsRequest), batched = widths.size() - singles;
+    const size_t per = remote::Caps().widths;
+    a.ok(measured_once(widths) && widths.size() == 4201, "each word and the space measured once (" + std::to_string(widths.size()) + " measured)");
+    a.ok(batched == 4096 && batches == (batched + per - 1) / per && singles == 4201 - 4096,
+         "the batches take what the face keeps, in requests of at most " + std::to_string(per) + ", the rest one by one (" + std::to_string(batched) + " in " + std::to_string(batches) +
+             " requests, " + std::to_string(singles) + " alone)");
+    a.frame("the frame", true, remote::Paint::IfDirty);
+    a.close();
+}
+
+/// Twenty words of many lengths, one of 30 bytes, and the space between them, in the body's one face, none wider than the line.
+const char* MANY_WORDS = R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},
+ {"op":"el","id":10,"tag":"p","attrs":[]},
+ {"op":"text","id":11,"data":"a bb ccc dddd eeeee ffffff ggggggg hhhhhhhh iiiiiiiii jjjjjjjjjj kk lll mmmm nnnnn oooooo ppppppp qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq rr sss tttt"},
+ {"op":"ins","parent":4,"id":10,"before":null},
+ {"op":"ins","parent":10,"id":11,"before":null}
+]})";
+
+struct BatchLog : LogBackend {
+    std::vector<float> text_widths(const std::vector<TextInFont>& texts) override {
+        batches.push_back(texts.size());
+        return LogBackend::text_widths(texts);
+    }
+
+    std::vector<size_t> batches;
+};
+
+/// A renderer end's channel straight into a platform end on a Backend that notes each batch it is handed, keeping every request and answer.
+struct Straight : remote::RendererChannel {
+    explicit Straight(const remote::Caps& caps) : caps(caps), platform(backend, host, queue, caps) {}
+
+    void send(std::string message) override {
+        if (!platform.receive(message)) refused++;
+    }
+    bool request(std::string message, std::string& answer) override {
+        requests.push_back(message);
+        if (!platform.answer(message, answer)) {
+            refused++;
+            return false;
+        }
+        answers.push_back(answer);
+        return true;
+    }
+
+    remote::Caps caps;
+    BatchLog backend;
+    Heard host{backend};
+    Queue queue;
+    remote::PlatformEnd platform;
+    std::vector<std::string> requests, answers;
+    size_t refused = 0;
+};
+
+/// Under caps of each kind, the words go in requests and answers within every cap, a text no batch can hold alone goes as a single width request, and the platform end makes the direct renderer's Backend calls, each request in one Backend call.
+void bounded_batches() {
+    struct Case {
+        std::string what;
+        size_t widths, widths_text, message;
+        size_t requests, singles;
+    };
+    const remote::Caps defaults;
+    const Case cases[] = {
+        {"the default caps", defaults.widths, defaults.widths_text, defaults.message, 1, 0},
+        {"4 texts", 4, defaults.widths_text, defaults.message, 6, 0},
+        {"1 text", 1, defaults.widths_text, defaults.message, 21, 0},
+        {"0 texts", 0, defaults.widths_text, defaults.message, 0, 21},
+        {"16 bytes of texts, less than the long word's", defaults.widths, 16, defaults.message, 8, 1},
+        {"a message of 96 bytes", defaults.widths, defaults.widths_text, 96, 4, 0},
+        {"40 bytes of texts", defaults.widths, 40, defaults.message, 4, 0},
+    };
+    for (const Case& c : cases) {
+        const std::string what = "under a cap of " + c.what;
+        remote::Caps caps;
+        caps.widths = c.widths;
+        caps.widths_text = c.widths_text;
+        caps.message = c.message;
+        VirtualClock direct_clock, clock;
+        LogBackend direct_backend;
+        Renderer direct(300, 1, false, direct_backend, &direct_clock);
+        Straight channel(caps);
+        remote::RendererEnd end(300, 1, false, channel, caps, &clock);
+        const std::vector<Json> want = direct.receive(parse(MANY_WORDS));
+        const std::vector<Json> got = end.receive(parse(MANY_WORDS));
+        std::string why;
+        check(!end.stopped() && channel.refused == 0 && dumps(got) == dumps(want), what + ": both ends stay healthy and give the direct renderer's messages");
+        check(same_calls(direct_backend.calls, channel.backend.calls, why), what + ": the platform end makes the direct renderer's Backend calls " + why);
+        size_t requests = 0, singles = 0, within = 0, items = 0;
+        std::vector<size_t> sizes;
+        for (size_t i = 0; i < channel.requests.size() && i < channel.answers.size(); i++) {
+            const std::optional<remote::Kind> kind = remote::kind_of(channel.requests[i]);
+            if (kind == remote::Kind::WidthRequest) singles++;
+            if (kind != remote::Kind::WidthsRequest) continue;
+            requests++;
+            remote::WidthsRequest request;
+            remote::WidthsAnswer answer;
+            size_t text = 0;
+            if (remote::decode(channel.requests[i], caps, request) && remote::decode(channel.answers[i], caps, request, answer)) {
+                for (const TextInFont& t : request.texts) text += t.text.size();
+                within += request.texts.size() <= c.widths && text <= c.widths_text && channel.requests[i].size() <= c.message && channel.answers[i].size() <= c.message;
+            }
+            items += request.texts.size();
+            sizes.push_back(request.texts.size());
+        }
+        check(within == requests, what + ": every request and answer is within the caps");
+        check(sizes == channel.backend.batches, what + ": each request reaches the Backend in one call of its texts");
+        const size_t measured = widths_since(channel.backend, 0).size();
+        check(items + singles == measured, what + ": every word goes in a batch or alone, once");
+        check(requests == c.requests && singles == c.singles && items + singles == 21,
+              what + ": the 21 texts go in " + std::to_string(c.requests) + " requests and " + std::to_string(c.singles) + " single widths, not " + std::to_string(requests) + " and " +
+                  std::to_string(singles));
+    }
+}
+
+/// With batches of 4, a build's second widths request fails every way: the first was answered, nothing goes out after the second, and the end stops.
+void batch_failures() {
+    for (Spoil how : SPOILS) {
+        const std::string what = "the second of three widths requests " + spoil_name(how);
+        remote::Caps caps;
+        caps.widths = 4;
+        VirtualClock clock;
+        Loopback loop(caps);
+        loop.open(300, 1, false, &clock);
+        loop.receive(parse(TALL));
+        const size_t batches = count(loop.wire.kinds, remote::Kind::WidthsRequest), states = loop.host.states.size();
+        loop.wire.fault = {how, loop.wire.requests + 2, std::nullopt, {}};
+        const std::vector<Json> got = loop.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"div","attrs":[]},{"op":"text","id":31,"data":"one two three four five six seven eight nine ten"},{"op":"ins","parent":4,"id":30,"before":null},{"op":"ins","parent":30,"id":31,"before":null}]})"));
+        check(got.empty(), what + ": the engine message gets nothing back");
+        stopped_at_spoil(loop, remote::Kind::WidthsRequest, reason_for(how), what);
+        check(count(loop.wire.kinds, remote::Kind::WidthsRequest) == batches + 2 && loop.host.states.size() == states, what + ": the first request went, no third and no report");
+        inert(loop, what);
+    }
+}
+
+/// Under batches of 4 the layout's breaks go in several requests, each within the caps, and the platform end makes the direct renderer's Backend calls.
+void bounded_breaks() {
+    remote::Caps caps;
+    caps.widths = 4;
+    VirtualClock direct_clock, clock;
+    LogBackend direct_backend;
+    Renderer direct(300, 1, false, direct_backend, &direct_clock);
+    Straight channel(caps);
+    remote::RendererEnd end(300, 1, false, channel, caps, &clock);
+    const std::vector<Json> want = direct.receive(parse(BREAKING));
+    const std::vector<Json> got = end.receive(parse(BREAKING));
+    std::string why;
+    check(!end.stopped() && channel.refused == 0 && dumps(got) == dumps(want), "breaks in batches of 4: both ends stay healthy and give the direct renderer's messages");
+    check(same_calls(direct_backend.calls, channel.backend.calls, why), "breaks in batches of 4: the platform end makes the direct renderer's Backend calls " + why);
+    size_t requests = 0, within = 0, singles = 0;
+    for (const std::string& request : channel.requests) {
+        const std::optional<remote::Kind> kind = remote::kind_of(request);
+        singles += kind == remote::Kind::WidthRequest;
+        if (kind != remote::Kind::WidthsRequest) continue;
+        requests++;
+        remote::WidthsRequest decoded;
+        within += remote::decode(request, caps, decoded) && decoded.texts.size() <= caps.widths;
+    }
+    check(requests > 4 && within == requests && singles == 0, "breaks in batches of 4: the words and the breaks go in " + std::to_string(requests) + " requests within the cap, none alone");
+}
+
+/// The layout's request for breaks fails every way: the words' request was answered, nothing goes out after it, and the end stops.
+void break_failures() {
+    for (Spoil how : SPOILS) {
+        const std::string what = "the request for breaks " + spoil_name(how);
+        VirtualClock clock;
+        Loopback loop;
+        loop.open(300, 1, false, &clock);
+        loop.receive(parse(BREAKING));
+        const size_t batches = count(loop.wire.kinds, remote::Kind::WidthsRequest), states = loop.host.states.size();
+        loop.wire.fault = {how, loop.wire.requests + 2, std::nullopt, {}};
+        const std::vector<Json> got = loop.receive(parse(R"({"type":"ops","ops":[)" + flex_item(10, 30, "QXZ") + "]}"));
+        check(got.empty(), what + ": the engine message gets nothing back");
+        stopped_at_spoil(loop, remote::Kind::WidthsRequest, reason_for(how), what);
+        check(count(loop.wire.kinds, remote::Kind::WidthsRequest) == batches + 2 && count(loop.wire.kinds, remote::Kind::WidthRequest) == 0 && loop.host.states.size() == states,
+              what + ": the words' request went, then the failed one, and nothing after");
+        inert(loop, what);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1326,6 +1943,16 @@ int main() {
     pointing();
     routing();
     clocks();
+    containers();
+    batches();
+    spaced_units();
+    breaks();
+    patched_words();
+    cache_pressure();
+    bounded_batches();
+    batch_failures();
+    bounded_breaks();
+    break_failures();
     total.print("all sessions");
     for (int op = 0; op < Call::Frame; op++) check(total.calls[op] > 0, std::string("the sessions compare ") + CALL_NAMES[op]);
     check(total.construction && total.destruction && total.one_way_between() && total.painted && total.unchanged && total.helper_only, "the sessions compare construction, destruction, one-way calls between frames, painted and unchanged frames and the helper's own messages");

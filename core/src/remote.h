@@ -19,9 +19,9 @@ constexpr uint8_t VERSION = 1;
 /// Kinds from 1 go from the platform to the renderer and kinds from 64 back; those from 32 answer the requests from 96.
 enum class Kind : uint8_t {
     FrameRequest = 1, SetWidth = 2, SetMaxHeight = 3, SetTheme = 4, Touch = 5, Hover = 6, ClearSelection = 7, ClaimQuery = 8,
-    FontAnswer = 32, WidthAnswer = 33, ImageAnswer = 34, PixelsAnswer = 35,
+    FontAnswer = 32, WidthAnswer = 33, ImageAnswer = 34, PixelsAnswer = 35, WidthsAnswer = 36,
     Frame = 64, State = 65, Messages = 66, Pointer = 67, Selection = 68, ClaimAnswer = 69, FontRelease = 70, CanvasRun = 71, CanvasRelease = 72,
-    FontRequest = 96, WidthRequest = 97, ImageRequest = 98, PixelsRequest = 99,
+    FontRequest = 96, WidthRequest = 97, ImageRequest = 98, PixelsRequest = 99, WidthsRequest = 100,
 };
 
 struct Caps {
@@ -31,6 +31,8 @@ struct Caps {
     size_t text = size_t(4) << 20;
     size_t url = size_t(8) << 20;
     size_t messages = 1024;
+    size_t widths = 256;
+    size_t widths_text = size_t(16) << 10;
 };
 
 enum class Paint : uint8_t { Skip = 0, IfDirty = 1, Force = 2 };
@@ -91,6 +93,10 @@ struct ImageAnswer {
 struct PixelsAnswer {
     bool ok = false;
     std::vector<uint8_t> rgba;
+};
+
+struct WidthsAnswer {
+    std::vector<float> widths;
 };
 
 struct State {
@@ -163,6 +169,10 @@ struct PixelsRequest {
     int32_t id = 0, x = 0, y = 0, w = 0, h = 0;
 };
 
+struct WidthsRequest {
+    std::vector<TextInFont> texts;
+};
+
 std::optional<Kind> kind_of(std::string_view message);
 bool is_platform_message(std::string_view type);
 
@@ -178,6 +188,7 @@ bool encode(const FontAnswer& message, const Caps& caps, std::string& out);
 bool encode(const WidthAnswer& message, const Caps& caps, std::string& out);
 bool encode(const ImageAnswer& message, const Caps& caps, std::string& out);
 bool encode(const PixelsAnswer& message, const Caps& caps, std::string& out);
+bool encode(const WidthsAnswer& message, const Caps& caps, std::string& out);
 bool encode(const Frame& message, const Caps& caps, std::string& out);
 bool encode(const State& message, const Caps& caps, std::string& out);
 bool encode(const Messages& message, const Caps& caps, std::string& out);
@@ -191,6 +202,7 @@ bool encode(const FontRequest& message, const Caps& caps, std::string& out);
 bool encode(const WidthRequest& message, const Caps& caps, std::string& out);
 bool encode(const ImageRequest& message, const Caps& caps, std::string& out);
 bool encode(const PixelsRequest& message, const Caps& caps, std::string& out);
+bool encode(const WidthsRequest& message, const Caps& caps, std::string& out);
 bool encode_canvas_run(int32_t id, int32_t w, int32_t h, const std::vector<CanvasOp>& ops, const Caps& caps, std::string& out);
 
 bool decode(std::string_view message, const Caps& caps, FrameRequest& out);
@@ -205,6 +217,7 @@ bool decode(std::string_view message, const Caps& caps, FontAnswer& out);
 bool decode(std::string_view message, const Caps& caps, WidthAnswer& out);
 bool decode(std::string_view message, const Caps& caps, ImageAnswer& out);
 bool decode(std::string_view message, const Caps& caps, const PixelsRequest& asked, PixelsAnswer& out);
+bool decode(std::string_view message, const Caps& caps, const WidthsRequest& asked, WidthsAnswer& out);
 bool decode(std::string_view message, const Caps& caps, Frame& out);
 bool decode(std::string_view message, const Caps& caps, State& out);
 bool decode(std::string_view message, const Caps& caps, Messages& out);
@@ -218,6 +231,7 @@ bool decode(std::string_view message, const Caps& caps, FontRequest& out);
 bool decode(std::string_view message, const Caps& caps, WidthRequest& out);
 bool decode(std::string_view message, const Caps& caps, ImageRequest& out);
 bool decode(std::string_view message, const Caps& caps, PixelsRequest& out);
+bool decode(std::string_view message, const Caps& caps, WidthsRequest& out);
 
 class Channel {
 public:

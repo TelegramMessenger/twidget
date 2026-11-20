@@ -17,6 +17,7 @@ namespace litehtml
         bool        m_draw_spaces;
         uint_ptr    m_measured_font = 0;
         int         m_measured_transform = -1;
+        bool        m_width_owed = false;
         std::shared_ptr<text_breaker> m_breaker;
         mutable int8_t m_strong_direction = 2;  // 2: not looked at yet
 
@@ -27,6 +28,9 @@ namespace litehtml
         void set_text(const std::string& text);
         void compute_styles(bool recursive) override;
         const std::string& display_text() const { return m_use_transformed ? m_transformed_text : m_text; }
+        bool width_owed() const { return m_width_owed; }
+        uint_ptr measured_font() const { return m_measured_font; }
+        void measure_width();
         std::shared_ptr<text_breaker> breaker();
         /// The direction of the text's first strong character: 1 right to left, -1 left to right, 0 none
         /// (digits, punctuation, spaces, symbols).
