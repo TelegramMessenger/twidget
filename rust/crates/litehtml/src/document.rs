@@ -143,6 +143,9 @@ pub struct Switches {
     pub positioned_reuse: bool,
     /// `layout_cache_check()`: `LH_LAYOUT_CACHE_CHECK`, a cache hit laid out again and compared.
     pub layout_cache_check: bool,
+    /// `LHReuseColumnMeasure()`: a column flex item's auto or content basis is the height its min-height measured,
+    /// not measured again: not `LH_NO_COLUMN_REUSE`.
+    pub column_reuse: bool,
 }
 
 impl Default for Switches {
@@ -156,6 +159,7 @@ impl Default for Switches {
             fixed_layout_reuse: true,
             positioned_reuse: true,
             layout_cache_check: false,
+            column_reuse: true,
         }
     }
 }

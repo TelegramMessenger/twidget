@@ -245,7 +245,7 @@ impl Document {
         //*****************************************
         // Render content
         //*****************************************
-        let content = self.render_content(cx, this, second_pass, &self_size, fmt_ctx);
+        let content = self.render_content(cx, this, x, y, second_pass, &self_size, fmt_ctx);
         let (mut ret_width, mut ret_min_width) = (content.natural_width, content.min_width);
         //*****************************************
         let element = self.render.item(this).element;
@@ -323,7 +323,7 @@ impl Document {
             }
 
             let width = self.render.item(this).pos.width + (self_size.width.px() - self_size.render_width.px());
-            self.render_content(cx, this, true, &self_size.new_width(width, size_mode_normal), fmt_ctx);
+            self.render_content(cx, this, x, y, true, &self_size.new_width(width, size_mode_normal), fmt_ctx);
         }
 
         let content_height = self.render.item(this).pos.height;
@@ -420,13 +420,16 @@ impl Document {
         ret
     }
 
-    /// `_render_content(x, y, second_pass, self_size, fmt_ctx)` of the block's class (which reads neither `x` nor
-    /// `y`): a block context's boxes, an inline context's lines; a flex's (L10) and a grid's (L11) are not ported
-    /// yet; a plain block lays out nothing.
+    /// `_render_content(x, y, second_pass, self_size, fmt_ctx)` of the block's class: a block context's boxes, an
+    /// inline context's lines, a flex's lines (the only one to read `x` and `y`); a grid's (L11) is not ported yet;
+    /// a plain block lays out nothing.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_content(
         &mut self,
         cx: &StyleCx,
         this: RenderId,
+        x: Px,
+        y: Px,
         second_pass: bool,
         self_size: &ContainingBlockContext,
         fmt_ctx: &mut FormattingContext,
@@ -434,10 +437,7 @@ impl Document {
         match self.render.item(this).kind {
             RenderKind::render_item_block_context => self.block_context_render_content(cx, this, second_pass, self_size, fmt_ctx),
             RenderKind::render_item_inline_context => self.inline_context_render_content(cx, this, self_size, fmt_ctx),
-            RenderKind::render_item_flex => {
-                self.unported("flex");
-                RenderedWidth::default()
-            }
+            RenderKind::render_item_flex => self.flex_render_content(cx, this, x, y, self_size, fmt_ctx),
             RenderKind::render_item_grid => {
                 self.unported("grid");
                 RenderedWidth::default()

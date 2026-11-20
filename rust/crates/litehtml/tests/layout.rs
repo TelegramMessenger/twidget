@@ -1,14 +1,16 @@
-//! Layout, ported (stages L7 and L8): documents cascaded and built as the renderer builds them, laid out at widths
-//! (again at the first after another, so the layout cache is used), after media changes and `:hover` restyles,
-//! through `oracle/lhdump` (`Y`) and the port: every render item's place, margins, padding and borders, its cache
-//! and marks, positioned lists, scroll views, inline boxes, a text's pieces, an inline context's line boxes and their
-//! items, the document's size and budget, each element's line height, with the container's calls in order (fonts,
-//! text widths, the viewport, image sizes, text breakers). The documents: widget-sandbox's corpus light and dark,
-//! every tag but tables, written shapes for each branch (margins collapsing, floats and clearance, line breaking,
-//! white space, `text-overflow`, bidi, vertical alignment, images, lists, `<textarea>`), generated block, float,
-//! margin and inline documents, the `LH_NO_*` layout switches, the budget crossed, and a deep document on a small
-//! stack. A case whose layout reaches a later stage's (absolute and fixed placement, tables, flex, grid) is laid
-//! out by the port as far as it goes but not compared, and counted. Each run reports what it reached.
+//! Layout, ported (stages L7, L8 and L10): documents cascaded and built as the renderer builds them, laid out at
+//! widths (again at the first after another, so the layout cache is used), after media changes and `:hover`
+//! restyles, through `oracle/lhdump` (`Y`) and the port: every render item's place, margins, padding and borders, its
+//! cache and marks, positioned lists, scroll views, inline boxes, a text's pieces, an inline context's line boxes and
+//! their items, a flex's baselines and lines with their items, the document's size and budget, each element's line
+//! height, with the container's calls in order (fonts, text widths, the viewport, image sizes, text breakers). The
+//! documents: widget-sandbox's corpus light and dark at five widths, every tag but tables, written shapes for each
+//! branch (margins collapsing, floats and clearance, line breaking, white space, `text-overflow`, bidi, vertical
+//! alignment, images, lists, `<textarea>`; flex directions, wrapping, every alignment value, factors and bases, min
+//! and max, `order`, gaps, `auto` margins, baselines, form controls), generated block, float, margin and inline
+//! documents and generated nested flex documents, the `LH_NO_*` layout switches, the budget crossed, and deep
+//! documents on a small stack. A case whose layout reaches a later stage's (absolute and fixed placement, tables,
+//! grid) is laid out by the port as far as it goes but not compared, and counted. Each run reports what it reached.
 
 mod common;
 
@@ -60,6 +62,7 @@ impl Run {
             "LH_NO_POSITIONED_REUSE" => run.switches.positioned_reuse = false,
             "LH_NO_FIXED_LAYOUT_REUSE" => run.switches.fixed_layout_reuse = false,
             "LH_LAYOUT_CACHE_CHECK" => run.switches.layout_cache_check = true,
+            "LH_NO_COLUMN_REUSE" => run.switches.column_reuse = false,
             other => panic!("no switch {other}"),
         }
         run
@@ -72,6 +75,9 @@ impl Run {
         self.tally.documents += 1;
         if let Some(stage) = unported {
             *self.tally.skipped.entry(stage).or_default() += 1;
+            if std::env::var_os("LAYOUT_SKIPPED").is_some() {
+                eprintln!("not compared ({stage}): {}", what.into());
+            }
             // The case changed the process's name table and declaration cache, which lhdump never sees: the cases
             // before it are compared now, and the next start afresh on both sides.
             self.flush();
@@ -600,6 +606,487 @@ fn written_documents() -> Vec<(&'static str, String)> {
     ]
 }
 
+// ---- Flex inputs (stage L10) --------------------------------------------------------------------------------
+
+/// A container's flex declaration: direction, wrapping, the three alignments with every value the fork parses, gaps,
+/// and the container's own sizes.
+fn flex_container_declaration(random: &mut Lcg) -> String {
+    match random.below(16) {
+        0 | 1 => format!("flex-direction:{}", pick(random, &["row", "row-reverse", "column", "column-reverse"])),
+        2 | 3 => format!("flex-wrap:{}", pick(random, &["nowrap", "wrap", "wrap-reverse", "wrap"])),
+        4 => format!("flex-flow:{} {}", pick(random, &["row", "column", "row-reverse"]), pick(random, &["wrap", "wrap-reverse", "nowrap"])),
+        5 | 6 => format!(
+            "justify-content:{}",
+            pick(
+                random,
+                &[
+                    "normal",
+                    "flex-start",
+                    "flex-end",
+                    "center",
+                    "space-between",
+                    "space-around",
+                    "start",
+                    "end",
+                    "left",
+                    "right",
+                    "space-evenly",
+                    "stretch",
+                    "safe center",
+                ]
+            )
+        ),
+        7 | 8 => format!(
+            "align-items:{}",
+            pick(
+                random,
+                &[
+                    "normal",
+                    "stretch",
+                    "baseline",
+                    "first baseline",
+                    "last baseline",
+                    "center",
+                    "start",
+                    "end",
+                    "self-start",
+                    "self-end",
+                    "flex-start",
+                    "flex-end",
+                    "safe center",
+                    "unsafe end",
+                ]
+            )
+        ),
+        9 => format!(
+            "align-content:{}",
+            pick(random, &["flex-start", "start", "flex-end", "end", "center", "space-between", "space-around", "stretch", "normal"])
+        ),
+        10 => format!("gap:{}", pick(random, &["0", "4px", "10px", "1em", "5%", "10px 3px", "calc(2% + 3px)"])),
+        11 => format!("{}:{}", pick(random, &["row-gap", "column-gap"]), pick(random, &["6px", "10%", "0", "0.5em"])),
+        12 => format!("width:{}", pick(random, &["300px", "50%", "auto", "120px", "min-content", "max-content", "fit-content"])),
+        13 => format!("height:{}", pick(random, &["100px", "auto", "50%", "40px", "0"])),
+        14 => format!(
+            "{}:{}",
+            pick(random, &["min-height", "max-height", "min-width", "max-width"]),
+            pick(random, &["50px", "200px", "30%", "none", "10px"])
+        ),
+        _ => format!("box-sizing:border-box;padding:{};border:2px solid", pick(random, &["3px", "10px", "5%"])),
+    }
+}
+
+/// A flex item's declaration: the factors and basis (every keyword, lengths, %, negative, calc), `order`,
+/// `align-self`, `auto` margins, sizes with min and max, box-sizing, overflow, `aspect-ratio`.
+fn flex_item_declaration(random: &mut Lcg) -> String {
+    match random.below(22) {
+        0 | 1 => format!(
+            "flex:{}",
+            pick(
+                random,
+                &["1", "auto", "none", "0 0 auto", "2 1 30%", "1 0 0", "0.5", "1 1 calc(20% + 5px)", "3 2 40px", "0 1 auto", "initial"]
+            )
+        ),
+        2 => format!("flex-grow:{}", pick(random, &["0", "1", "2.5", "0.3", "-1", "0.0005", "1e9"])),
+        3 => format!("flex-shrink:{}", pick(random, &["0", "1", "3", "0.2", "-1", "0.0004"])),
+        4 | 5 => format!(
+            "flex-basis:{}",
+            pick(
+                random,
+                &[
+                    "auto",
+                    "content",
+                    "min-content",
+                    "max-content",
+                    "fit-content",
+                    "0",
+                    "50px",
+                    "30%",
+                    "-10px",
+                    "calc(10% + 8px)",
+                    "2em",
+                    "100%"
+                ]
+            )
+        ),
+        6 => format!("order:{}", pick(random, &["-1", "0", "1", "2", "5"])),
+        7 | 8 => format!(
+            "align-self:{}",
+            pick(
+                random,
+                &[
+                    "auto",
+                    "normal",
+                    "stretch",
+                    "baseline",
+                    "last baseline",
+                    "center",
+                    "start",
+                    "end",
+                    "self-start",
+                    "self-end",
+                    "flex-start",
+                    "flex-end",
+                    "safe end",
+                ]
+            )
+        ),
+        9 => format!("margin:{}", pick(random, &["auto", "0 auto", "auto 0", "5px auto", "auto 5px auto 0", "10px", "0 0 0 auto", "-5px"])),
+        10 => format!("margin-{}:auto", pick(random, &["left", "right", "top", "bottom"])),
+        11 | 12 => {
+            format!("width:{}", pick(random, &["50px", "30%", "auto", "150px", "min-content", "max-content", "fit-content", "100%"]))
+        }
+        13 => format!("height:{}", pick(random, &["20px", "auto", "50%", "3em", "100px"])),
+        14 | 15 => format!(
+            "{}:{}",
+            pick(random, &["min-width", "max-width", "min-height", "max-height"]),
+            pick(random, &["0", "40px", "80px", "20%", "none", "auto", "min-content"])
+        ),
+        16 => format!("padding:{}", pick(random, &["2px", "5px 10px", "10%", "1em"])),
+        17 => format!("border:{} solid", pick(random, &["1px", "3px", "0"])),
+        18 => format!("box-sizing:{}", pick(random, &["border-box", "content-box"])),
+        19 => format!("overflow:{}", pick(random, &["hidden", "auto", "visible", "clip", "scroll"])),
+        20 => format!("aspect-ratio:{}", pick(random, &["1", "2", "0.5"])),
+        _ => pick(
+            random,
+            &[
+                "display:inline-block",
+                "display:list-item",
+                "position:relative;top:3px",
+                "white-space:nowrap",
+                "float:left",
+                "display:none",
+                "font-size:20px",
+                "line-height:2",
+                "vertical-align:middle",
+            ],
+        )
+        .to_string(),
+    }
+}
+
+/// A generated document of nested flex containers (row and column, inline-flex too) with items of every kind:
+/// blocks, runs of text, inlines, images, controls, inline blocks, nested containers.
+fn flex_document(random: &mut Lcg) -> Vec<u8> {
+    fn content(random: &mut Lcg, depth: u32, out: &mut String) {
+        match random.below(12) {
+            0..=2 => words(random, out),
+            3 => out.push_str(&format!("<img src=\"{}.png\">", pick(random, &["a", "bb", "photo", "x9"]))),
+            4 => out.push_str(pick(
+                random,
+                &["<span>s <b>t</b></span>", "<b>bold</b> ", "<br>", "<span style=\"display:inline-block;width:30px\">ib</span>"],
+            )),
+            5 => out.push_str(pick(
+                random,
+                &[
+                    "<input type=\"text\" value=\"v\">",
+                    "<select><option>o</option></select>",
+                    "<input type=\"number\">",
+                    "<button>b</button>",
+                ],
+            )),
+            6 if depth < 4 => container(random, depth + 1, out),
+            _ => item(random, depth, out),
+        }
+    }
+    fn item(random: &mut Lcg, depth: u32, out: &mut String) {
+        let tag = pick(random, &["div", "div", "p", "span", "section", "li", "a"]);
+        out.push_str(&format!("<{tag}"));
+        if random.chance(3) {
+            out.push_str(&format!(" class=\"{}\"", pick(random, &["i", "j", "i j"])));
+        }
+        if !random.chance(4) {
+            let decls: Vec<String> = (0..1 + random.below(4)).map(|_| flex_item_declaration(random)).collect();
+            out.push_str(&format!(" style=\"{}\"", decls.join(";")));
+        }
+        out.push('>');
+        for _ in 0..random.below(3) {
+            if depth < 4 && random.chance(5) {
+                container(random, depth + 1, out);
+            } else {
+                words(random, out);
+            }
+        }
+        out.push_str(&format!("</{tag}>"));
+    }
+    fn container(random: &mut Lcg, depth: u32, out: &mut String) {
+        let display = if random.chance(5) { "inline-flex" } else { "flex" };
+        let mut decls: Vec<String> = (0..1 + random.below(5)).map(|_| flex_container_declaration(random)).collect();
+        decls.insert(0, format!("display:{display}"));
+        if random.chance(3) {
+            decls.push(flex_item_declaration(random));
+        }
+        let class = if random.chance(3) { " class=\"f\"" } else { "" };
+        out.push_str(&format!("<div{class} style=\"{}\">", decls.join(";")));
+        let n = if depth > 3 { random.below(3) } else { random.below(6) };
+        for _ in 0..n {
+            content(random, depth, out);
+        }
+        out.push_str("</div>");
+    }
+    let mut out = String::new();
+    if !random.chance(8) {
+        out.push_str("<!DOCTYPE html>");
+    }
+    out.push_str("<html><head><style>");
+    for _ in 0..random.below(4) {
+        let selector = pick(random, &[".f", ".i", ".j", ".f > div", "div", "p", ".f > :first-child", ".f > :last-child"]);
+        let decls: Vec<String> = (0..1 + random.below(3))
+            .map(|_| if random.chance(2) { flex_container_declaration(random) } else { flex_item_declaration(random) })
+            .collect();
+        let rule = format!("{selector}{{{}}}", decls.join(";"));
+        if random.chance(3) {
+            out.push_str(&format!("@media (min-width:{}px){{{rule}}}", pick(random, &["300", "450", "700"])));
+        } else {
+            out.push_str(&rule);
+        }
+    }
+    out.push_str("</style></head><body>");
+    for _ in 0..1 + random.below(3) {
+        if random.chance(4) {
+            content(random, 1, &mut out);
+        } else {
+            container(random, 0, &mut out);
+        }
+    }
+    out.push_str("</body></html>");
+    out.into_bytes()
+}
+
+/// Flex shapes for each branch, written out.
+fn written_flex_documents() -> Vec<(&'static str, String)> {
+    let page = |body: &str| format!("<!DOCTYPE html><html><head></head><body>{body}</body></html>");
+    let items = "<div>one</div><div>two words</div><div>three more words here</div>";
+    let mut docs = vec![
+        ("grow", page("<div style=\"display:flex\"><div style=\"flex:1\">a</div><div style=\"flex:2\">b</div><div>c</div></div>")),
+        (
+            "grow under one in all",
+            page("<div style=\"display:flex\"><div style=\"flex-grow:0.2\">a</div><div style=\"flex-grow:0.3\">b</div></div>"),
+        ),
+        (
+            "shrink with content minimums",
+            page(
+                "<div style=\"display:flex;width:150px\"><div>supercalifragilistic</div><div style=\"flex-shrink:3\">aaaa bbbb cccc dddd</div><div style=\"flex-shrink:0;width:60px\">x</div></div>",
+            ),
+        ),
+        (
+            "shrink under one in all",
+            page(
+                "<div style=\"display:flex;width:100px\"><div style=\"flex:0 0.2 80px\">a</div><div style=\"flex:0 0.3 90px\">b</div></div>",
+            ),
+        ),
+        (
+            "min and max clamps",
+            page(
+                "<div style=\"display:flex;width:400px\"><div style=\"flex:1;max-width:50px\">a</div><div style=\"flex:1;min-width:250px\">b</div><div style=\"flex:1\">c</div></div><div style=\"display:flex;width:100px\"><div style=\"flex:1 1 200px;min-width:90px\">d</div><div style=\"flex:1 1 200px;max-width:20px\">e</div></div>",
+            ),
+        ),
+        ("wrap", page(&format!("<div style=\"display:flex;flex-wrap:wrap;width:120px\">{items}{items}</div>"))),
+        (
+            "wrap-reverse",
+            page(&format!("<div style=\"display:flex;flex-wrap:wrap-reverse;width:120px;height:200px\">{items}{items}</div>")),
+        ),
+        (
+            "row-reverse and column-reverse",
+            page(&format!(
+                "<div style=\"display:flex;flex-direction:row-reverse\">{items}</div><div style=\"display:flex;flex-direction:column-reverse;height:120px\">{items}</div>"
+            )),
+        ),
+        ("column with an auto height", page(&format!("<div style=\"display:flex;flex-direction:column\">{items}</div>"))),
+        (
+            "column with a height and wrapping",
+            page(&format!("<div style=\"display:flex;flex-direction:column;flex-wrap:wrap;height:60px\">{items}{items}</div>")),
+        ),
+        (
+            "column wrapping under a max-height",
+            page(&format!("<div style=\"display:flex;flex-direction:column;flex-wrap:wrap;max-height:50px\">{items}</div>")),
+        ),
+        (
+            "column min and max heights",
+            page(&format!(
+                "<div style=\"display:flex;flex-direction:column;min-height:200px\">{items}</div><div style=\"display:flex;flex-direction:column;height:300px;max-height:100px\"><div style=\"flex:1\">a</div><div style=\"flex:1;max-height:10px\">b</div><div style=\"min-height:50px;flex:0 1 0\">c</div></div>"
+            )),
+        ),
+        (
+            "column bases",
+            page(
+                "<div style=\"display:flex;flex-direction:column;height:200px\"><div style=\"flex-basis:30%\">a</div><div style=\"flex-basis:20px\">b</div><div style=\"flex-basis:min-content\">c</div><div style=\"flex-basis:max-content;height:10px\">d</div><div style=\"height:40px\">e</div><div style=\"overflow:hidden;flex:1 1 0\">f</div></div><div style=\"display:flex;flex-direction:column\"><div style=\"flex-basis:50%\">g</div></div>",
+            ),
+        ),
+        (
+            "row bases",
+            page(
+                "<div style=\"display:flex\"><div style=\"flex-basis:30%\">a</div><div style=\"flex-basis:content\">b b</div><div style=\"flex-basis:min-content\">c c c</div><div style=\"flex-basis:max-content\">d d</div><div style=\"flex-basis:fit-content\">e</div><div style=\"flex-basis:-5px\">f</div><div style=\"width:40px\">g</div><div style=\"width:20%;overflow:hidden\">h</div></div>",
+            ),
+        ),
+        (
+            "order",
+            page(
+                "<div style=\"display:flex\"><div style=\"order:2\">a</div><div style=\"order:-1\">b</div><div>c</div><div style=\"order:2\">d</div></div>",
+            ),
+        ),
+        (
+            "gaps",
+            page(&format!(
+                "<div style=\"display:flex;gap:10px 5px;flex-wrap:wrap;width:150px\">{items}{items}</div><div style=\"display:flex;flex-direction:column;row-gap:10%;column-gap:2em\">{items}</div><div style=\"display:flex;column-gap:10%;flex-wrap:wrap;row-gap:5%\">{items}</div><div style=\"display:flex;gap:1em\">{items}</div>"
+            )),
+        ),
+        (
+            "auto margins on the main axis",
+            page(
+                "<div style=\"display:flex\"><div style=\"margin-left:auto\">a</div><div style=\"margin:0 auto\">b</div><div style=\"margin-right:auto\">c</div></div><div style=\"display:flex;flex-direction:column;height:200px\"><div style=\"margin-top:auto\">d</div><div style=\"margin-bottom:auto\">e</div></div>",
+            ),
+        ),
+        (
+            "auto margins on the cross axis",
+            page(
+                "<div style=\"display:flex;height:100px;flex-wrap:wrap;width:80px\"><div style=\"margin:auto\">a</div><div style=\"margin-top:auto\">b</div><div style=\"margin-bottom:auto\">c</div><div style=\"margin:auto 0\">dd dd</div></div><div style=\"display:flex;flex-direction:column\"><div style=\"margin:0 auto\">e</div><div style=\"margin-left:auto;align-self:center\">f</div><div style=\"margin-right:auto\">g</div></div>",
+            ),
+        ),
+        (
+            "baselines",
+            page(
+                "<div style=\"display:flex;align-items:baseline\"><div style=\"font-size:30px\">big</div><div>small</div><div style=\"padding-top:20px\">pad</div></div><div style=\"display:flex;align-items:last baseline\"><div>a<br>b</div><div style=\"font-size:24px\">c</div></div><div style=\"display:flex;flex-wrap:wrap-reverse;align-items:baseline\"><div>x</div><div style=\"align-self:last baseline\">y<br>z</div></div><div style=\"display:flex;flex-direction:column;align-items:baseline\"><div>c1</div><div style=\"align-self:last baseline\">c2</div></div><div style=\"display:flex;flex-direction:column;flex-wrap:wrap-reverse;height:40px;align-items:baseline\"><div>c3</div><div style=\"align-self:last baseline\">c4</div></div>",
+            ),
+        ),
+        (
+            "inline flex on a line",
+            page(
+                "<p>before <span style=\"display:inline-flex;align-items:baseline\"><span style=\"font-size:20px\">a</span><span>b</span></span> between <span style=\"display:inline-flex;flex-direction:column\"><span>c</span><span>d</span></span> after <span style=\"display:inline-flex\"></span> end</p>",
+            ),
+        ),
+        (
+            "nested flex",
+            page(
+                "<div style=\"display:flex\"><div style=\"display:flex;flex-direction:column;flex:1\"><div style=\"display:flex\"><div style=\"flex:1\">a</div><div>b</div></div><div>c</div></div><div style=\"display:flex;flex-wrap:wrap;flex:2\"><div style=\"width:60%\">d</div><div style=\"width:60%\">e</div></div></div>",
+            ),
+        ),
+        (
+            "texts, inlines and images as items",
+            page(
+                "<div style=\"display:flex\">text before <b>bold</b> <img src=\"a.png\"> <span>span</span> text after   <svg width=\"20\" height=\"10\"></svg><img src=\"b.png\" style=\"flex:1;min-width:0\"></div>",
+            ),
+        ),
+        (
+            "controls",
+            page(
+                "<input type=\"text\" value=\"a value\"><select><option>one</option><option selected>two</option></select><input type=\"number\" value=\"3\"><input type=\"date\"><input type=\"color\"><input type=\"search\" placeholder=\"s\"><input type=\"password\" style=\"width:40px\"><select multiple size=\"2\"><option>a</option></select>",
+            ),
+        ),
+        ("a range input", page("<input type=\"range\"><input type=\"range\" value=\"10\" min=\"0\" max=\"20\" style=\"width:30px\">")),
+        (
+            "stretch with fixed sizes",
+            page(
+                "<div style=\"display:flex;height:80px;align-content:stretch;flex-wrap:wrap;width:100px\"><div style=\"width:60px\">a</div><div style=\"width:60px;height:10px\">b</div></div><div style=\"display:flex;flex-direction:column;width:200px\"><div>c</div><div style=\"width:50px\">d</div><div style=\"align-self:center\">e</div></div>",
+            ),
+        ),
+        (
+            "a fixed flex box laid out again",
+            page(
+                "<div style=\"display:flex;width:200px;height:60px;margin:5px;padding:3px;border:1px solid\"><div style=\"flex:1\">a</div><div>b</div></div><div style=\"display:flex;width:100px;height:30px\"><img src=\"c.png\"></div>",
+            ),
+        ),
+        (
+            "a flex box in a measured box",
+            page(
+                "<div style=\"display:inline-block\"><div style=\"display:flex\"><div>a b c</div><div style=\"flex:1\">d</div></div></div><div style=\"float:left\"><div style=\"display:flex;flex-direction:column\"><div>e e</div></div></div><div style=\"width:max-content\"><div style=\"display:flex;flex-wrap:wrap\"><div>f</div><div>g</div></div></div>",
+            ),
+        ),
+        (
+            "box-sizing and percentages",
+            page(
+                "<div style=\"display:flex;box-sizing:border-box;padding:10px;width:50%;border:5px solid\"><div style=\"box-sizing:border-box;width:50%;padding:5px\">a</div><div style=\"flex-basis:25%;padding:2%;margin:3%\">b</div></div>",
+            ),
+        ),
+        (
+            "aspect ratio items",
+            page(
+                "<div style=\"display:flex\"><div style=\"aspect-ratio:1;flex:1\"></div><div style=\"aspect-ratio:2;width:50px\"></div></div>",
+            ),
+        ),
+        (
+            "an empty flex box",
+            page(
+                "<div style=\"display:flex\"></div><div style=\"display:flex;flex-direction:column;height:20px\"></div><div style=\"display:flex\">   </div>",
+            ),
+        ),
+        (
+            "size containment and overflow",
+            page(
+                "<div style=\"display:flex;contain:size\"><div>a</div></div><div style=\"display:flex;overflow:auto;height:20px;flex-direction:column\"><div>b</div><div>c</div><div>d</div></div>",
+            ),
+        ),
+        (
+            "intrinsic container widths",
+            page(&format!(
+                "<div style=\"display:flex;width:min-content\">{items}</div><div style=\"display:flex;width:max-content;flex-direction:column\">{items}</div><div style=\"display:flex;width:fit-content;flex-wrap:wrap\">{items}</div>"
+            )),
+        ),
+    ];
+    for (what, body) in [
+        (
+            "negative bases through calc",
+            "<div style=\"display:flex\"><div style=\"flex-basis:calc(10px - 30px)\">a</div><div style=\"flex-basis:calc(-10%)\">b</div><div style=\"flex-basis:calc(-10% - 5px)\">b2</div></div><div style=\"display:flex;flex-direction:column;height:90px\"><div style=\"flex-basis:calc(5px - 9px)\">c</div><div style=\"flex-basis:calc(-20% + 2px)\">d</div><div style=\"flex-basis:calc(-10% - 5px)\">d2</div></div>",
+        ),
+        (
+            "factors past every int",
+            "<div style=\"display:flex\"><div style=\"flex-grow:1e40\">a</div><div style=\"flex-grow:3e9\">b</div></div><div style=\"display:flex;width:50px\"><div style=\"flex-shrink:1e40;width:80px\">c</div><div style=\"flex:0 4e9 60px\">d</div></div>",
+        ),
+    ] {
+        docs.push((what, page(body)));
+    }
+    // A split of 1794.9px in 3, 6 or 7 leaves a remainder past pixel_t's band, handed out a pixel at a time.
+    for (justify, n) in [("space-between", 4), ("space-around", 3), ("space-evenly", 6)] {
+        let empty = "<div></div>".repeat(n);
+        docs.push((
+            "remainders of a split",
+            page(&format!(
+                "<div style=\"display:flex;justify-content:{justify};width:1794.9px\">{empty}</div><div style=\"display:flex;justify-content:{justify};flex-direction:column;height:1794.9px\">{empty}</div><div style=\"display:flex;justify-content:{justify};width:100003.7px\">{items}</div>"
+            )),
+        ));
+    }
+    // Every justify-content, align-items and align-content value in a row and a column.
+    for justify in [
+        "normal",
+        "flex-start",
+        "flex-end",
+        "center",
+        "space-between",
+        "space-around",
+        "start",
+        "end",
+        "left",
+        "right",
+        "space-evenly",
+        "stretch",
+    ] {
+        docs.push((
+            "justify-content",
+            page(&format!(
+                "<div style=\"display:flex;justify-content:{justify};width:300px\">{items}</div><div style=\"display:flex;justify-content:{justify};flex-direction:column-reverse;height:150px\">{items}</div><div style=\"display:flex;justify-content:{justify};flex-direction:row-reverse\"><div>solo</div></div><div style=\"display:flex;justify-content:{justify};width:50px\">{items}</div>"
+            )),
+        ));
+    }
+    for align in
+        ["normal", "stretch", "baseline", "last baseline", "center", "start", "end", "self-start", "self-end", "flex-start", "flex-end"]
+    {
+        docs.push((
+            "align-items",
+            page(&format!(
+                "<div style=\"display:flex;align-items:{align};height:80px\">{items}<div style=\"height:20px\">h</div></div><div style=\"display:flex;align-items:{align};flex-wrap:wrap-reverse;width:100px\">{items}</div><div style=\"display:flex;flex-direction:column;align-items:{align}\">{items}<div style=\"width:30px\">w</div></div><div style=\"display:flex;flex-direction:column;flex-wrap:wrap-reverse;height:50px;align-items:{align}\">{items}</div>"
+            )),
+        ));
+    }
+    for content in ["flex-start", "start", "flex-end", "end", "center", "space-between", "space-around", "stretch"] {
+        docs.push((
+            "align-content",
+            page(&format!(
+                "<div style=\"display:flex;flex-wrap:wrap;align-content:{content};width:100px;height:300px\">{items}{items}</div><div style=\"display:flex;flex-wrap:wrap-reverse;align-content:{content};width:100px;min-height:250px\">{items}</div><div style=\"display:flex;flex-direction:column;flex-wrap:wrap;align-content:{content};height:60px\">{items}{items}</div><div style=\"display:flex;flex-wrap:wrap;align-content:{content};width:100px;height:10px\">{items}</div>"
+            )),
+        ));
+    }
+    docs
+}
+
 /// The widths a case is laid out at: its own, another, its own again (the cache).
 fn layout_steps(width: f32, other: f32) -> Vec<Step> {
     vec![Step::Layout(width, None), Step::Dump, Step::Layout(other, None), Step::Dump, Step::Layout(width, None), Step::Dump]
@@ -636,7 +1123,37 @@ fn the_corpus_lays_out_alike() {
         }
     }
     let tally = run.finish();
-    assert!(run_compared(&tally) > 300);
+    assert!(run_compared(&tally) > 600);
+}
+
+/// The corpus again at narrower and wider viewports (flex lines wrap and stretch differently there): light at 150 and
+/// 768 px, dark at 1440 and 240 px, each with a media change between.
+#[test]
+fn the_corpus_lays_out_alike_at_more_widths() {
+    let mut run = Run::new("corpus at more widths");
+    let pages = corpus_pages();
+    let light = themed_master(false);
+    let dark = themed_master(true);
+    for (name, text) in pages.iter() {
+        let snap = snapshot(text);
+        for (dark_theme, (master, vars)) in [(false, &light), (true, &dark)] {
+            let html = themed_html(&snap, dark_theme, vars);
+            let (width, other) = if dark_theme { (1440.0, 240.0) } else { (150.0, 768.0) };
+            let steps = vec![
+                Step::Layout(width, None),
+                Step::Dump,
+                Step::Media(other, 900.0),
+                Step::Layout(other, None),
+                Step::Dump,
+                Step::Layout(width, None),
+                Step::Dump,
+            ];
+            let theme = if dark_theme { "dark" } else { "light" };
+            run.case(layout_record(width, 900.0, 2.0, master, b"", &html, &steps), format!("{name} ({theme}, {width} and {other} px)"));
+        }
+    }
+    let tally = run.finish();
+    assert!(run_compared(&tally) > 550);
 }
 
 fn run_compared(tally: &LayoutTally) -> usize {
@@ -656,21 +1173,16 @@ fn every_tag_lays_out_alike() {
         for tag in ["table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td"] {
             html = html.replace(&format!("<{tag} "), "<div data-was-table ").replace(&format!("</{tag}>"), "</div>");
         }
-        let html = html.into_bytes();
-        // Text fields, ranges and selects are flex boxes (stage L10): every input is a checkbox, button or radio here.
-        let html = String::from_utf8(html).expect("UTF-8");
-        let mut html = html.replace("<select", "<span").replace("</select>", "</span>");
-        for ty in ["text", "password", "number", "date", "email", "search", "range", "color", "hidden"] {
-            html = html.replace(&format!("type=\"{ty}\""), if ty.len() % 2 == 0 { "type=\"button\"" } else { "type=\"radio\"" });
-        }
-        let html = html.into_bytes();
+        // A range input's thumb is absolutely positioned (stage L9): ranges are text fields here.
+        let html = html.replace("type=\"range\"", "type=\"text\"").into_bytes();
         let what = if quirks { "every tag in quirks mode" } else { "every tag" };
         run.case(layout_record(375.0, 667.0, 1.0, &master, b"", &html, &steps), format!("{what}, master CSS"));
         run.case(layout_record(375.0, 667.0, 2.0, &light, b"", &html, &steps), format!("{what}, light UA layers"));
         run.case(layout_record(412.0, 915.0, 3.0, &dark, b"", &themed_html(&html, true, &vars), &steps), format!("{what}, dark UA layers"));
         run.case(layout_record(375.0, 667.0, 2.0, b"", b"", &html, &steps), format!("{what}, no sheet"));
     }
-    run.finish();
+    let tally = run.finish();
+    assert_eq!(run_compared(&tally), tally.documents);
 }
 
 #[test]
@@ -710,6 +1222,88 @@ fn written_shapes_lay_out_alike() {
 }
 
 #[test]
+fn written_flex_shapes_lay_out_alike() {
+    let mut run = Run::new("written flex shapes");
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    for (what, html) in written_flex_documents() {
+        for sheet in [&master, &light] {
+            for (width, other) in [(375.0, 200.0), (120.0, 800.0)] {
+                let mut steps = layout_steps(width, other);
+                steps.extend([
+                    Step::Hover(2),
+                    Step::Layout(width, None),
+                    Step::Dump,
+                    Step::Media(900.0, 700.0),
+                    Step::Layout(900.0, None),
+                    Step::Dump,
+                ]);
+                run.case(layout_record(375.0, 667.0, 2.0, sheet, b"", html.as_bytes(), &steps), what);
+            }
+        }
+    }
+    let tally = run.finish();
+    // A range input's thumb is absolutely positioned (stage L9): its shape is the one not compared.
+    assert_eq!(run_compared(&tally) + 4, tally.documents);
+    for what in [
+        "flex-direction row",
+        "flex-direction row-reverse",
+        "flex-direction column",
+        "flex-direction column-reverse",
+        "flex-wrap wrap",
+        "flex-wrap wrap-reverse",
+        "flex containers of several lines",
+        "flex items grown",
+        "flex items shrunk",
+        "flex items clamped by their minimum",
+        "flex items clamped by their maximum",
+        "flex items out of source order",
+        "flex lines with first baselines",
+        "flex lines with last baselines",
+        "flex items with main auto margins given room",
+        "flex items with cross auto margins",
+        "flex main gaps",
+        "inline flex containers",
+        "fixed flex boxes looked up for their resolved input",
+    ] {
+        assert!(tally.counts.contains_key(what), "no {what}");
+    }
+}
+
+#[test]
+fn generated_flex_documents_lay_out_alike() {
+    let mut run = Run::new("generated flex documents");
+    let mut random = Lcg::new(0x1A_0001);
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    let only: Option<usize> = std::env::var("LAYOUT_ONLY").ok().and_then(|v| v.parse().ok());
+    for k in 0..2500 {
+        let html = flex_document(&mut random);
+        if only.is_some_and(|only| only != k) {
+            continue;
+        }
+        let width = [320.0, 375.0, 150.0, 600.0][k % 4];
+        let other = [700.0, 240.0, 500.0, 90.0][(k / 4) % 4];
+        let sheet = if k % 2 == 0 { &master } else { &light };
+        let mut steps = layout_steps(width, other);
+        steps.extend([
+            Step::Media(other, 640.0),
+            Step::Layout(other, None),
+            Step::Dump,
+            Step::Hover(k as u32),
+            Step::Layout(other, None),
+            Step::Dump,
+        ]);
+        run.case(
+            layout_record(width, 640.0, 2.0, sheet, b"", &html, &steps),
+            format!("generated flex {k}: {}", String::from_utf8_lossy(&html)),
+        );
+    }
+    let tally = run.finish();
+    assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
+}
+
+#[test]
 fn generated_documents_lay_out_alike() {
     let mut run = Run::new("generated documents");
     let mut random = Lcg::new(0x17_0001);
@@ -739,21 +1333,28 @@ fn generated_documents_lay_out_alike() {
     assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
 }
 
-/// The layout switches, each on both sides over generated documents.
+/// The layout switches, each on both sides over generated documents and the written flex shapes.
 #[test]
 fn the_layout_switches_lay_out_alike() {
     let master = master_css();
-    for switch in ["LH_NO_LAYOUT_CACHE", "LH_NO_POSITIONED_REUSE", "LH_NO_FIXED_LAYOUT_REUSE", "LH_LAYOUT_CACHE_CHECK"] {
+    for switch in
+        ["LH_NO_LAYOUT_CACHE", "LH_NO_POSITIONED_REUSE", "LH_NO_FIXED_LAYOUT_REUSE", "LH_LAYOUT_CACHE_CHECK", "LH_NO_COLUMN_REUSE"]
+    {
         let mut run = Run::with_switch("switch", switch);
         let mut random = Lcg::new(0x17_0002);
-        for k in 0..300 {
-            let html = layout_document(&mut random);
+        for k in 0..450 {
+            let html = if k % 3 == 2 { flex_document(&mut random) } else { layout_document(&mut random) };
             let mut steps = layout_steps(320.0, 500.0);
             steps.extend([Step::Hover(k as u32), Step::Layout(320.0, None), Step::Dump]);
             run.case(
                 layout_record(320.0, 640.0, 2.0, &master, b"", &html, &steps),
                 format!("{switch} {k}: {}", String::from_utf8_lossy(&html)),
             );
+        }
+        for (what, html) in written_flex_documents() {
+            let mut steps = layout_steps(375.0, 200.0);
+            steps.extend([Step::Hover(2), Step::Layout(375.0, None), Step::Dump]);
+            run.case(layout_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &steps), format!("{switch}: {what}"));
         }
         run.finish();
     }
@@ -819,5 +1420,38 @@ fn a_deep_document_lays_out_on_a_small_stack() {
     });
     let items = thread.expect("a thread").join().expect("the layout ran");
     eprintln!("a deep document: {items} items laid out");
+    assert!(items > 200);
+}
+
+/// 124 levels of flex boxes, row and column, wrapping and not, with blocks and inline blocks between, lay out on the
+/// same stacks.
+#[test]
+fn a_deep_flex_document_lays_out_on_a_small_stack() {
+    let stack = if cfg!(debug_assertions) { 1 << 20 } else { 512 << 10 };
+    let thread = std::thread::Builder::new().stack_size(stack).spawn(|| {
+        let mut html = String::from("<!DOCTYPE html><html><head></head><body>");
+        for k in 0..124 {
+            html += match k % 4 {
+                0 => "<div style=\"display:flex;align-items:baseline\">a ",
+                1 => "<div style=\"display:flex;flex-direction:column;flex:1\">b ",
+                2 => "<div style=\"display:inline-flex;flex-wrap:wrap;margin:auto\">c ",
+                _ => "<div style=\"display:inline-block\">",
+            };
+        }
+        html += "<div>deep</div>";
+        for _ in 0..124 {
+            html += "</div>";
+        }
+        html += "</body></html>";
+        let lh = Lh::new();
+        let mut tally = LayoutTally::default();
+        let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
+        let (answer, unported) = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        assert_eq!(answer.0, 1);
+        assert_eq!(unported, None);
+        tally.items
+    });
+    let items = thread.expect("a thread").join().expect("the layout ran");
+    eprintln!("a deep flex document: {items} items laid out");
     assert!(items > 200);
 }

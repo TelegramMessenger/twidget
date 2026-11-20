@@ -5,7 +5,8 @@
 //! and their layout (stages L7 and L8, in `layout.rs`).
 //!
 //! The C++'s `shared_ptr` tree is an arena, [`RenderTree`], of [`RenderItem`]s by [`RenderId`]. What owns an item in
-//! the C++ owns it here, counted: its parent's children, the document's root and its tabular list, a table's grid.
+//! the C++ owns it here, counted: its parent's children, the document's root and its tabular list, a table's grid,
+//! a flex's lines.
 //! An item no owner keeps is gone, as the C++ frees it, which shows: an element's render items are weak
 //! references (`get_render_item` answers nothing when the first has gone) and so is an item's parent. An id says
 //! which use of a slot it names, so a reference to a gone item stays gone when the slot is used again.
@@ -17,6 +18,7 @@ use crate::Px;
 use crate::css_values::*;
 use crate::document::{Document, StyleCx};
 use crate::element::{ElementId, ElementKind};
+use crate::flex_line::FlexLine;
 use crate::line_box::LineBox;
 use crate::string_id::*;
 use crate::table::TableGrid;
@@ -251,9 +253,15 @@ pub struct InlineState {
     pub cut: bool,
 }
 
+/// `render_item_flex`'s own: `m_lines`, the lines its last layout made, whose items own their render items.
+#[derive(Clone, Debug, Default)]
+pub struct FlexState {
+    pub lines: Vec<FlexLine>,
+}
+
 /// A render item of any class: what `render_item` holds, a table's grid, and the layout state of each class (a
-/// block context's `m_va_applied`, an inline's boxes, a text's pieces, an inline context's line boxes). The ink is
-/// painting's (L13).
+/// block context's `m_va_applied`, an inline's boxes, a text's pieces, an inline context's line boxes, a flex's
+/// lines). The ink is painting's (L13).
 #[derive(Clone, Debug)]
 pub struct RenderItem {
     pub kind: RenderKind,
@@ -290,6 +298,8 @@ pub struct RenderItem {
     pub text: Option<Box<TextItem>>,
     /// A `render_item_inline_context`'s own.
     pub inline: Option<Box<InlineState>>,
+    /// A `render_item_flex`'s own.
+    pub flex: Option<Box<FlexState>>,
     /// The owners that hold the item.
     strong: u32,
     generation: u32,
@@ -478,6 +488,7 @@ impl Document {
             inline_boxes: Vec::new(),
             text: (kind == RenderKind::render_text).then(Box::default),
             inline: (kind == RenderKind::render_item_inline_context).then(Box::default),
+            flex: (kind == RenderKind::render_item_flex).then(Box::default),
             strong: 0,
             generation: 0,
             live: false,
@@ -521,6 +532,11 @@ impl Document {
         pending.append(&mut item.positioned);
         if let Some(text) = item.text.as_mut() {
             pending.append(&mut text.fragments);
+        }
+        if let Some(flex) = item.flex.take() {
+            for line in flex.lines {
+                pending.extend(line.items.iter().map(|flex_item| flex_item.el));
+            }
         }
         if let Some(table) = item.table.take()
             && let Some(grid) = table.grid

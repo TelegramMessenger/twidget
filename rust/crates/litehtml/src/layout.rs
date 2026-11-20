@@ -7,9 +7,10 @@
 //! `render_block_context.rs` and `render_inline_context.rs`), `render_image.rs`.
 //!
 //! Not yet ported, and where the seam is: placing absolute and fixed boxes after the flow (`render_positioned`,
-//! stage L9; their in-flow pass, `render_out_of_flow`, is here), a table's `_render` (L12), a flex's and a grid's
-//! `_render_content` (L10, L11). Reaching one records it in [`DocLayout::unported`] and does what the C++'s base
-//! class does (nothing, `{0, 0}`), so the boxes around it are laid out as the port can.
+//! stage L9; their in-flow pass, `render_out_of_flow`, is here), a table's `_render` (L12), a grid's
+//! `_render_content` (L11). Reaching one records it in [`DocLayout::unported`] and does what the C++'s base class
+//! does (nothing, `{0, 0}`), so the boxes around it are laid out as the port can. Flex layout (L10) is in
+//! `render_flex.rs`, `flex_line.rs` and `flex_item.rs`.
 
 use crate::Px;
 use crate::css_properties::CssProperties;
@@ -44,7 +45,7 @@ pub struct DocLayout {
     pub hits: u64,
     pub misses: u64,
     pub mismatches: u64,
-    /// The first layout reached that is a later stage's (`"positioned"`, `"table"`, `"flex"`, `"grid"`).
+    /// The first layout reached that is a later stage's (`"positioned"`, `"table"`, `"grid"`).
     pub unported: Option<&'static str>,
 }
 
@@ -654,7 +655,7 @@ impl Document {
 
     /// `measure(x, y, cb, fmt_ctx, second_pass, measured_height)` of the item's class: the last layout or one of the
     /// two last measures when the input is the same, else a layout, kept as a measure. Only flex, grid and table
-    /// layout measure (stages L10–L12).
+    /// layout measure (stages L10–L12; L10's flex items measure their minimum and base sizes).
     pub fn measure(
         &mut self,
         cx: &StyleCx,
@@ -686,7 +687,7 @@ impl Document {
     ) -> RenderedWidth {
         let cacheable = self.layout_cacheable(cx, id, fmt_ctx.is_none());
         if cacheable && self.layout_reusable(id) && !cx.switches.layout_cache_check {
-            let l = self.render.item(id).layout;
+            let l = &self.render.item(id).layout;
             if same_layout_input(&l.last_layout, cb, second_pass) {
                 self.layout.hits += 1;
                 if let Some(h) = measured_height {
@@ -890,17 +891,6 @@ impl Document {
                 it.height() - it.margins.bottom
             }
         }
-    }
-
-    /// `render_item_flex`'s baselines, from its lines (stage L10): until then the base class's.
-    fn flex_first_baseline(&self, id: RenderId) -> Px {
-        let it = self.render.item(id);
-        it.height() - it.margins.bottom
-    }
-
-    fn flex_last_baseline(&self, id: RenderId) -> Px {
-        let it = self.render.item(id);
-        it.height() - it.margins.bottom
     }
 
     /// `apply_vertical_align()` of the item's class (a table cell's, stage L12, asks it).

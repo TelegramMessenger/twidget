@@ -330,3 +330,88 @@ impl Margins {
         self.top + self.bottom
     }
 }
+
+/// `def_value<T>`: a value and whether it is still the one it was made with (assigning a `T` makes it not).
+#[derive(Clone, Copy, Debug)]
+pub struct DefValue<T: Copy> {
+    pub value: T,
+    pub is_default: bool,
+}
+
+impl<T: Copy> DefValue<T> {
+    /// `def_value(def_val)`.
+    pub const fn new(def_val: T) -> DefValue<T> {
+        DefValue { value: def_val, is_default: true }
+    }
+
+    /// `operator=(T)`.
+    pub fn set(&mut self, new_val: T) {
+        self.value = new_val;
+        self.is_default = false;
+    }
+
+    /// `is_default()`.
+    pub fn is_default(&self) -> bool {
+        self.is_default
+    }
+
+    /// `value()` and `operator T()`.
+    pub fn get(&self) -> T {
+        self.value
+    }
+}
+
+/// `baseline::_baseline_type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BaselineType {
+    baseline_type_none,
+    baseline_type_top,
+    baseline_type_bottom,
+}
+
+/// `baseline`: an offset and the edge it is measured from.
+#[derive(Clone, Copy, Debug)]
+pub struct Baseline {
+    pub value: Px,
+    pub ty: BaselineType,
+}
+
+impl Default for Baseline {
+    fn default() -> Baseline {
+        Baseline { value: Px(0.0), ty: BaselineType::baseline_type_none }
+    }
+}
+
+impl Baseline {
+    /// `set(value, type)`.
+    pub fn set(&mut self, value: Px, ty: BaselineType) {
+        self.value = value;
+        self.ty = ty;
+    }
+
+    /// `get_offset_from_top(height)`.
+    pub fn get_offset_from_top(&self, height: Px) -> Px {
+        if self.ty == BaselineType::baseline_type_top {
+            return self.value;
+        }
+        height - self.value
+    }
+
+    /// `get_offset_from_bottom(height)`.
+    pub fn get_offset_from_bottom(&self, height: Px) -> Px {
+        if self.ty == BaselineType::baseline_type_bottom {
+            return self.value;
+        }
+        height - self.value
+    }
+
+    /// `calc(top, bottom)`: the baseline of a box aligned on 0 that reaches from `top` to `bottom`.
+    pub fn calc(&mut self, top: Px, bottom: Px) {
+        if self.ty == BaselineType::baseline_type_top {
+            self.value = -top;
+        } else if self.ty == BaselineType::baseline_type_bottom {
+            self.value = bottom;
+        }
+    }
+}

@@ -42,6 +42,8 @@ pub mod el_title;
 pub mod el_tr;
 pub mod element;
 pub mod encodings;
+pub mod flex_item;
+pub mod flex_line;
 pub mod font_description;
 pub mod formatting_context;
 pub mod gradient;

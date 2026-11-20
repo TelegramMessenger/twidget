@@ -14,7 +14,12 @@
 //! vertical-align shift, u8 cut, u32 ellipses (4 f32), u32 cut texts (an item ref), u32 lines, each f32 top, left,
 //! right, height, width, baseline, i32 text-align, u8 rtl, f32 natural and min width, f32 line height, u8 its CSS
 //! value a keyword, the font metrics, u32 items, each u8 type, u8 wrapped, an item ref, f32 min width, items' top and
-//! bottom, a marker's own place, f32 left, right, top, bottom, width, height, min width, natural width. An item ref is
+//! bottom, a marker's own place, f32 left, right, top, bottom, width, height, min width, natural width. A flex's (stage
+//! L10) f32 first and last baselines, u32 lines, each f32 cross start, main size, cross size, base size, i32 auto
+//! margins at the main start and end, the first and last baselines (f32, u8 type), u8 main and cross axes reversed, f32
+//! main gap, u32 items, each u8 row class, i32 the item, f32 base and min size, f32 max size and u8 its default, f32 main
+//! size, i32 grow and shrink, f32 scaled shrink factor, u8 frozen, u8 clamp state, i32 order and source order, the main
+//! start and end auto margins (f32, u8 default), u8 cross start and end auto margins, i32 alignment. An item ref is
 //! i32 the item and i32 -1, or for a text's piece i32 the text and i32 which piece. Then u32 DOM elements, each f32 line
 //! height, i32 first render item, a text's u8 breaker kept; u32 anonymous elements, each f32 line height and i32 first
 //! render item.
@@ -25,6 +30,7 @@ use super::cascade::*;
 use super::*;
 use twidget_litehtml::css_values::*;
 use twidget_litehtml::document::{Document, Switches};
+use twidget_litehtml::flex_line::FlexLine;
 use twidget_litehtml::line_box::LbiType;
 use twidget_litehtml::render_item::{LayoutEntry, RenderId, RenderKind};
 use twidget_litehtml::types::{ContainingBlockContext, Margins, Position, TypedPixel};
@@ -36,6 +42,8 @@ pub struct LayoutTally {
     pub dumps: usize,
     pub items: usize,
     pub lines: usize,
+    pub flex_lines: usize,
+    pub flex_items: usize,
     pub skipped: BTreeMap<&'static str, usize>,
     pub counts: BTreeMap<String, usize>,
 }
@@ -52,6 +60,8 @@ impl LayoutTally {
         self.dumps += other.dumps;
         self.items += other.items;
         self.lines += other.lines;
+        self.flex_lines += other.flex_lines;
+        self.flex_items += other.flex_items;
         for (k, n) in other.counts {
             *self.counts.entry(k).or_default() += n;
         }
@@ -61,14 +71,79 @@ impl LayoutTally {
         let counts: Vec<String> = self.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
         let skipped: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{k} {n}")).collect();
         format!(
-            "{} documents, {} dumps, {} items, {} lines; not compared (a later stage's layout): {}; {}",
+            "{} documents, {} dumps, {} items, {} lines, {} flex lines of {} items; not compared (a later stage's layout): {}; {}",
             self.documents,
             self.dumps,
             self.items,
             self.lines,
+            self.flex_lines,
+            self.flex_items,
             if skipped.is_empty() { "none".to_string() } else { skipped.join(", ") },
             counts.join(", ")
         )
+    }
+
+    /// The branches a flex container's layout shows it took (stage L10).
+    fn flex_note(
+        &mut self,
+        add: &mut dyn FnMut(&str, bool),
+        doc: &Document,
+        it: &twidget_litehtml::render_item::RenderItem,
+        css: &twidget_litehtml::css_properties::CssProperties,
+        lines: &[FlexLine],
+    ) {
+        use twidget_litehtml::flex_item::FlexClampState;
+        use twidget_litehtml::types::BaselineType;
+        if lines.is_empty() {
+            return;
+        }
+        self.flex_lines += lines.len();
+        let direction = ["row", "row-reverse", "column", "column-reverse"].get(css.m_flex_direction as usize).copied().unwrap_or("?");
+        add(&format!("flex-direction {direction}"), true);
+        let wrap = ["nowrap", "wrap", "wrap-reverse"].get(css.m_flex_wrap as usize).copied().unwrap_or("?");
+        add(&format!("flex-wrap {wrap}"), true);
+        add("flex containers of several lines", lines.len() > 1);
+        add(&format!("justify-content {}", css.m_flex_justify_content), lines.iter().any(|l| l.items.len() > 1));
+        add(&format!("align-content {}", css.m_flex_align_content), lines.len() > 1);
+        add("inline flex containers", css.m_display == StyleDisplay::display_inline_flex.index());
+        add("flex main gaps", lines[0].main_gap != Px(0.0));
+        add("flex lines with first baselines", lines.iter().any(|l| l.first_baseline.ty != BaselineType::baseline_type_none));
+        add("flex lines with last baselines", lines.iter().any(|l| l.last_baseline.ty != BaselineType::baseline_type_none));
+        add("flex lines with main auto margins", lines.iter().any(|l| l.num_auto_margin_main_start + l.num_auto_margin_main_end > 0));
+        add("flex containers measured", it.layout.measured.iter().any(|m| m.valid));
+        add("fixed flex boxes looked up for their resolved input", it.layout.resolved_layout_safe >= 0);
+        let mut sorted = false;
+        let mut previous = -1;
+        for line in lines {
+            for item in &line.items {
+                sorted |= item.src_order < previous;
+                previous = item.src_order;
+                self.flex_items += 1;
+                add("flex items grown", item.main_size > item.base_size && item.grow > 0);
+                add("flex items shrunk", item.main_size < item.base_size && item.shrink > 0);
+                add("flex items frozen inflexible", item.clamp_state == FlexClampState::flex_clamp_state_inflexible);
+                add("flex items clamped by their minimum", item.clamp_state == FlexClampState::flex_clamp_state_min_violation);
+                add("flex items clamped by their maximum", item.clamp_state == FlexClampState::flex_clamp_state_max_violation);
+                add("flex items with a maximum", !item.max_size.is_default());
+                add("flex items with fractional factors", item.grow % 1000 != 0 || item.shrink % 1000 != 0);
+                add("flex items with cross auto margins", item.auto_margin_cross_start || item.auto_margin_cross_end);
+                add("flex items with main auto margins given room", item.auto_margin_main_start.value > Px(0.0));
+                add(&format!("align-self {:#x}", item.align), true);
+                let item_css = &doc.el(doc.render.item(item.el).element).css;
+                let basis = &item_css.m_flex_basis;
+                let basis_kind = if basis.is_predefined() {
+                    ["auto", "content", "fit-content", "min-content", "max-content"].get(basis.predef() as usize).copied().unwrap_or("?")
+                } else if basis.units() == CssUnits::css_units_percentage {
+                    "%"
+                } else if basis.val() < 0.0 {
+                    "negative"
+                } else {
+                    "length"
+                };
+                add(&format!("flex-basis {basis_kind}"), true);
+            }
+        }
+        add("flex items out of source order", sorted);
     }
 
     /// The branches the layout shows it took.
@@ -140,6 +215,9 @@ impl LayoutTally {
                         add("inline boxes on lines", doc.is_inline_box(r.item(lbi.element).element));
                     }
                 }
+            }
+            if let Some(flex) = it.flex.as_ref() {
+                self.flex_note(&mut add, doc, it, css, &flex.lines);
             }
             if let Some(t) = it.text.as_ref() {
                 add("text pieces", !t.fragments.is_empty());
@@ -236,6 +314,38 @@ fn inline_boxes_out(o: &mut Out, boxes: &[Position]) {
     o.u32(boxes.len() as u32);
     for b in boxes {
         pos_out(o, b);
+    }
+}
+
+/// lhdump's `write_flex`.
+fn flex_out(o: &mut Out, doc: &Document, t: &Index, id: RenderId) {
+    mark(o, "flex's baselines", -1);
+    o.f32(doc.get_first_baseline(id).value()).f32(doc.get_last_baseline(id).value());
+    let lines = doc.render.item(id).flex.as_ref().map_or(&[][..], |f| &f.lines[..]);
+    o.u32(lines.len() as u32);
+    for (n, line) in lines.iter().enumerate() {
+        mark(o, "flex line", n as i32);
+        for v in [line.cross_start, line.main_size, line.cross_size, line.base_size] {
+            o.f32(v.value());
+        }
+        o.i32(line.num_auto_margin_main_start).i32(line.num_auto_margin_main_end);
+        for b in [&line.first_baseline, &line.last_baseline] {
+            o.f32(b.value.value()).u8(b.ty as u8);
+        }
+        o.u8(u8::from(line.reverse_main)).u8(u8::from(line.reverse_cross)).f32(line.main_gap.value());
+        o.u32(line.items.len() as u32);
+        for (k, item) in line.items.iter().enumerate() {
+            mark(o, "flex item", k as i32);
+            o.u8(u8::from(item.row)).i32(t.of(doc, Some(item.el)));
+            o.f32(item.base_size.value()).f32(item.min_size.value());
+            o.f32(item.max_size.value.value()).u8(u8::from(item.max_size.is_default()));
+            o.f32(item.main_size.value()).i32(item.grow).i32(item.shrink).f32(item.scaled_flex_shrink_factor.value());
+            o.u8(u8::from(item.frozen)).u8(item.clamp_state as u8).i32(item.order).i32(item.src_order);
+            for m in [&item.auto_margin_main_start, &item.auto_margin_main_end] {
+                o.f32(m.value.value()).u8(u8::from(m.is_default()));
+            }
+            o.u8(u8::from(item.auto_margin_cross_start)).u8(u8::from(item.auto_margin_cross_end)).i32(item.align);
+        }
     }
 }
 
@@ -383,6 +493,9 @@ pub fn layout_out(o: &mut Out, doc: &Document, tally: &mut LayoutTally) {
                     }
                 }
             }
+        }
+        if it.kind == RenderKind::render_item_flex {
+            flex_out(o, doc, &t, id);
         }
     }
     mark(o, "DOM elements", -2);

@@ -148,6 +148,7 @@ LHDUMP_ROB_L(IcRendered, render_item_inline_context::m_rendered_width)
 LHDUMP_ROB_L(IcVaApplied, render_item_inline_context::m_va_applied)
 LHDUMP_ROB_L(IcEllipses, render_item_inline_context::m_ellipses)
 LHDUMP_ROB_L(IcCut, render_item_inline_context::m_cut)
+LHDUMP_ROB_L(FlexLines, render_item_flex::m_lines)
 LHDUMP_ROB_L(LbDefaultLineHeight, line_box::m_default_line_height)
 LHDUMP_ROB_L(LbFontMetrics, line_box::m_font_metrics)
 LHDUMP_ROB_L(LbTextAlign, line_box::m_text_align)
@@ -1324,7 +1325,50 @@ void write_sides(Out& o, const margins& m) {
     for (pixel_t v : {m.left, m.right, m.top, m.bottom}) o.f32(v.value());
 }
 
-// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip; its cache and marks; its positioned items; its scroll view; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
+// Stage L10: a flex's first and last baselines, then its lines (cross start, main, cross and base sizes, auto margin counts, both baselines with their types, reversed axes, the main gap) and each line's items (the class, the item, base, min and max sizes, main size, factors, scaled shrink factor, frozen, clamp state, order, source order, main auto margins, cross auto margins, alignment).
+void write_flex(Out& o, TreeIndex& t, render_item_flex& flex) {
+    o.f32(flex.get_first_baseline().value());
+    o.f32(flex.get_last_baseline().value());
+    const auto& lines = lhdump_dom::field<lhdump_dom::FlexLines>(flex);
+    o.u32(uint32_t(lines.size()));
+    for (const flex_line& line : lines) {
+        for (pixel_t v : {line.cross_start, line.main_size, line.cross_size, line.base_size}) o.f32(v.value());
+        o.i32(line.num_auto_margin_main_start);
+        o.i32(line.num_auto_margin_main_end);
+        for (const baseline* b : {&line.first_baseline, &line.last_baseline}) {
+            o.f32(b->value().value());
+            o.u8(uint8_t(b->type()));
+        }
+        o.u8(line.reverse_main ? 1 : 0);
+        o.u8(line.reverse_cross ? 1 : 0);
+        o.f32(line.main_gap.value());
+        o.u32(uint32_t(line.items.size()));
+        for (const auto& item : line.items) {
+            o.u8(dynamic_cast<const flex_item_row_direction*>(item.get()) ? 1 : 0);
+            o.i32(t.of(item->el.get()));
+            for (pixel_t v : {item->base_size, item->min_size}) o.f32(v.value());
+            o.f32(item->max_size.value().value());
+            o.u8(item->max_size.is_default() ? 1 : 0);
+            o.f32(item->main_size.value());
+            o.i32(item->grow);
+            o.i32(item->shrink);
+            o.f32(item->scaled_flex_shrink_factor.value());
+            o.u8(item->frozen ? 1 : 0);
+            o.u8(uint8_t(item->clamp_state));
+            o.i32(item->order);
+            o.i32(item->src_order);
+            for (const def_value<pixel_t>* m : {&item->auto_margin_main_start, &item->auto_margin_main_end}) {
+                o.f32(m->value().value());
+                o.u8(m->is_default() ? 1 : 0);
+            }
+            o.u8(item->auto_margin_cross_start ? 1 : 0);
+            o.u8(item->auto_margin_cross_end ? 1 : 0);
+            o.i32(int32_t(item->align));
+        }
+    }
+}
+
+// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip; its cache and marks; its positioned items; its scroll view; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps, a flex's baselines and lines with their items), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
 void write_layout(Out& o, document& doc) {
     using lhdump_dom::field;
     TreeIndex t;
@@ -1461,6 +1505,7 @@ void write_layout(Out& o, document& doc) {
                 }
             }
         }
+        if (kind == 10) write_flex(o, t, static_cast<render_item_flex&>(*ri));
     }
     o.u32(uint32_t(nodes.size()));
     for (const auto& [el, parent] : nodes) {
