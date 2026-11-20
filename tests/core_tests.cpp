@@ -2311,6 +2311,28 @@ int main() {
               "a link is --tg-theme-link-color, not underlined (got " + link["color"].asString() + ", " + link["text-decoration-line"].asString() + ")");
     }
 
+    // ── an SVG's paint key names the rules it matched by their sheet and their order there, not by address ──
+    {
+        // A sheet with @media is parsed again for every document, so each document has selectors of its own.
+        const char* page = R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":"@media (min-width:1px){.r{fill:#00a}} .r{stroke:#a00}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","40"],["height","40"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"rect","svg":true,"attrs":[["class","r"],["width","20"],["height","20"]]},{"op":"ins","parent":10,"id":11,"before":null}]})J";
+        auto keys = [](Renderer& r) {
+            std::vector<uint64_t> out;
+            for (const Command& c : r.paint())
+                if (c.kind == Cmd::GroupPush && c.key) out.push_back(c.key);
+            return out;
+        };
+        StubBackend fb, sb;
+        Renderer first(300, 1, false, fb), second(300, 1, false, sb);
+        first.receive(parse(page));
+        second.receive(parse(page));
+        const auto a = keys(first), b = keys(second);
+        check(!a.empty() && a == b, "two documents of one page give their SVG the same paint key, each with its own parse of the sheet (" + std::to_string(a.size()) + " keyed groups)");
+    }
+
     // ── SVG <use>: paint inherits through nested instances, and mutual references end ──
     {
         auto fills = [](const DisplayList& d) {

@@ -379,9 +379,13 @@ private:
     // In-place patching (the Swift renderer's patch log): which attributes and sole texts the ops of
     // a batch changed, for the fork's `update_holes`, so the document is not serialised again.
     struct PatchLog {
+        // By node id, the order the changes go into the document in: a node keeps its id while the log is valid.
+        struct ById {
+            bool operator()(const Node* a, const Node* b) const;
+        };
         bool valid = true;
-        std::map<const Node*, std::set<std::string>> attributes;
-        std::set<const Node*> texts;
+        std::map<const Node*, std::set<std::string>, ById> attributes;
+        std::set<const Node*, ById> texts;
     };
     bool attached(const Node* n) const;
     void note_attribute(const Node* n, const std::string& name);

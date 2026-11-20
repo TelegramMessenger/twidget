@@ -185,18 +185,19 @@ pub struct Node {
 }
 
 /// What a batch changed that the fork can patch into the live document in place (the Swift renderer's
-/// patch log): attributes of attached elements, and attached elements whose sole text changed. Keyed by
-/// node place where the C++ keys by `Node*`.
+/// patch log): attributes of attached elements, and attached elements whose sole text changed. By node
+/// id, as the C++ keeps it and hands the changes on: a node keeps its id while the log is valid.
 #[derive(Clone, Debug)]
 pub struct PatchLog {
     pub valid: bool,
-    pub attributes: BTreeMap<NodeRef, BTreeSet<Vec<u8>>>,
-    pub texts: BTreeSet<NodeRef>,
+    /// Each element's place and the names of its attributes that changed.
+    pub attributes: BTreeMap<i64, (NodeRef, BTreeSet<Vec<u8>>)>,
+    pub texts: BTreeMap<i64, NodeRef>,
 }
 
 impl Default for PatchLog {
     fn default() -> PatchLog {
-        PatchLog { valid: true, attributes: BTreeMap::new(), texts: BTreeSet::new() }
+        PatchLog { valid: true, attributes: BTreeMap::new(), texts: BTreeMap::new() }
     }
 }
 
@@ -579,7 +580,8 @@ impl Document {
             self.patch_log.valid = false;
             return;
         }
-        self.patch_log.attributes.entry(n).or_default().insert(name.to_vec());
+        let id = node.id;
+        self.patch_log.attributes.entry(id).or_insert_with(|| (n, BTreeSet::new())).1.insert(name.to_vec());
     }
 
     fn note_children(&mut self, parent: Option<NodeRef>, child: NodeRef) {
@@ -591,7 +593,8 @@ impl Document {
             self.patch_log.valid = false;
             return;
         }
-        self.patch_log.texts.insert(parent);
+        let id = self.get(parent).id;
+        self.patch_log.texts.insert(id, parent);
     }
 
     /// The log of the ops since the last build, a fresh one in its place.
@@ -1038,7 +1041,8 @@ impl Document {
                     if !self.get(n).children.is_empty() {
                         self.patch_log.valid = false;
                     } else if self.attached(Some(n)) {
-                        self.patch_log.texts.insert(n);
+                        let id = self.get(n).id;
+                        self.patch_log.texts.insert(id, n);
                     }
                     let children = std::mem::take(&mut self.get_mut(n).children);
                     self.get_mut(n).data = v.clone();

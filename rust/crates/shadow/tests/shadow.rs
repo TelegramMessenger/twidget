@@ -510,10 +510,18 @@ fn the_patch_log() {
     p.ops(r#"[{"op":"attr","id":10,"name":"class","value":"x"},{"op":"style","id":12,"name":"color","value":"red"}]"#);
     let log = p.doc.take_patch_log();
     let (a, b) = (p.doc.node(10).expect("10"), p.doc.node(12).expect("12"));
-    assert!(log.valid && log.attributes[&a].contains(&b"class"[..]) && log.attributes[&b].contains(&b"style"[..]));
+    assert!(log.valid && log.attributes[&10] == (a, [b"class".to_vec()].into()) && log.attributes[&12] == (b, [b"style".to_vec()].into()));
     p.ops(r#"[{"op":"text","id":70,"data":"x"},{"op":"ins","parent":11,"id":70,"before":null},{"op":"data","id":70,"data":"y"}]"#);
     let log = p.doc.take_patch_log();
-    assert!(log.valid && log.texts.contains(&p.doc.node(11).expect("11")), "text in and out of an attached element patches its holes");
+    assert!(
+        log.valid && log.texts == [(11, p.doc.node(11).expect("11"))].into(),
+        "text in and out of an attached element patches its holes"
+    );
+    p.ops(r#"[{"op":"style","id":12,"name":"color","value":"blue"},{"op":"attr","id":11,"name":"class","value":"y"},{"op":"attr","id":10,"name":"style","value":"color:red"}]"#);
+    assert!(
+        p.doc.take_patch_log().attributes.keys().eq([10, 11, 12].iter()),
+        "the changes go on in node order, whatever order the ops made them in"
+    );
     p.ops(r#"[{"op":"attr","id":10,"name":"title","value":"x"}]"#);
     assert!(!p.doc.take_patch_log().valid, "any other attribute builds");
     p.ops(r#"[{"op":"el","id":71,"tag":"p","attrs":[]},{"op":"attr","id":71,"name":"title","value":"x"}]"#);

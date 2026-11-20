@@ -77,7 +77,7 @@ namespace litehtml
         }
         for(const auto& used : m_used_styles)
         {
-            const void* selector = used->m_selector.get();
+            const uint64_t selector = used->m_selector->place();
             mix(&selector, sizeof(selector));
             mix(&used->m_used, sizeof(used->m_used));
         }

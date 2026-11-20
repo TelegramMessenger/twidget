@@ -629,6 +629,8 @@ struct Renderer::Node {
     std::vector<Node*> children;
 };
 
+bool Renderer::PatchLog::ById::operator()(const Node* a, const Node* b) const { return a->id < b->id; }
+
 #ifdef TW_LITEHTML_TWIDGET
 class Container;
 

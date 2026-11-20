@@ -142,7 +142,7 @@ namespace litehtml
         document_container*                     m_container;
         fonts_map                               m_fonts;
         css_text::vector                        m_css;
-        litehtml::css                           m_styles;
+        litehtml::css                           m_styles{1};
         litehtml::web_color                     m_def_color;
         litehtml::css                           m_master_css;
 
@@ -150,7 +150,7 @@ namespace litehtml
         const litehtml::css& master_css() const { return m_master_css; }
 
       private:
-        litehtml::css                           m_user_css;
+        litehtml::css                           m_user_css{2};
         litehtml::size                          m_size;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
