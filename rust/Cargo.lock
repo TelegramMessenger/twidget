@@ -3,6 +3,20 @@
 version = 4
 
 [[package]]
+name = "twidget_css"
+version = "0.1.0"
+dependencies = [
+ "twidget_cstd",
+ "twidget_json",
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
+name = "twidget_cstd"
+version = "0.1.0"
+
+[[package]]
 name = "twidget_json"
 version = "0.1.0"
 dependencies = [

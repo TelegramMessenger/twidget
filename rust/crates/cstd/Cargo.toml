@@ -1,0 +1,11 @@
+[package]
+name = "twidget_cstd"
+description = "The C library behaviours the ported C++ leans on, in the C locale: strtod, atof, atoi, %.*f"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

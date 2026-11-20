@@ -31,3 +31,6 @@ target_include_directories(json_oracle PRIVATE "${TW_SANDBOX_INCLUDE}")
 
 add_executable(remote_oracle remote_oracle.cpp "${TW_CORE}/remote.cpp" "${TW_CORE}/wire.cpp")
 target_include_directories(remote_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+
+add_executable(css_oracle css_oracle.cpp "${TW_CORE}/css.cpp")
+target_include_directories(css_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")

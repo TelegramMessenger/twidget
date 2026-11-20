@@ -274,6 +274,7 @@ runs with the `LH_NO_*` switches off by default and on where a stage says so, on
 | 1.1 | done: `twidget_wire`; `wire_tests.cpp` ported (18 tests: documented bytes, round trips, cuts, count sites, references, enums, masks, flags, forms, defaults, the C++ suite's seeded mutations), and ~165k cases through the C++ and the Rust codec with identical answers (samples and their cuts, mutated samples, generated values, encoders under single caps) |
 | 1.2 | done: `twidget_json`; widget-sandbox's JSON tests ported, and ~400k cases through json.h and the port with identical answers (its fuzz texts both surrogate modes, depths around the bound, every escape and surrogate order, `quote`, 160k doubles through both number forms and `asInt`, 30k number texts through `strtod`, 37 real JSON files and their mutations); `twidget_testkit` holds what the tests share |
 | 1.3 | done: `twidget_remote` at version 1 as of twidget 5bc9639 (the freeze of 0.4 decides what stage 5 meets); `remote_tests.cpp`'s message checks ported (documented bytes, kinds, pixels, nested caps, value lengths, encoder room, cuts, seeded changes), and ~270k cases through remote.cpp and the port with identical answers (samples and their cuts under default and eight tight caps, their mutations, 20k generated messages and their mutations, encoders under tight caps, `kind_of` of every header, 24k pixel answers against the requests they answer) |
+| 2.1 | done: `twidget_css` (core `css.cpp`: colours, `light-dark()`, `var()`, `:where()`, declarations, names, opaque runs, times, `calc()`, transforms, origin, opacity, fonts, theme and safe-area variables) on `twidget_cstd` (C's `strtod` with its whole grammar, hex floats rounded to even, `atof`, `atoi`, `%.*f`); ~645k answers alike with css.cpp and MSVC's C library (140k numbers, 252k generated values through every helper and their changes, 12k themes and safe areas, 241k from the 2088 style texts and 12947 declarations of widget-sandbox's corpus) |
 
 ## Findings
 
@@ -288,3 +289,9 @@ What the comparisons found about the C++, kept for the stages that meet it again
   shortest of 15, 16 and 17 `%g` digits, so `0.0001` is `0.0001` there and `1e-04` elsewhere. The helper's
   JSON already differs between macOS and the other platforms; the port keeps both forms, chosen as the
   C++ chooses them.
+- core `format_number` prints into a 64-byte buffer: a number past 63 characters in `%.4f` (a huge
+  percentage, a hex float) is cut there, and the port cuts it the same way.
+- The Windows C runtime's `strtod("nan")` sets every payload bit (`0x7fffffffffffffff`), not the default
+  quiet NaN; `twidget_cstd` gives each platform's. No ported caller lets a NaN through so far.
+- The CSS helpers read numbers with `strtod`, so `0x10`, `1e3` and `5` are numbers to them: the
+  validator, not this code, keeps such text out of widgets.

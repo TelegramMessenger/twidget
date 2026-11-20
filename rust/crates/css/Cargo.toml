@@ -1,0 +1,19 @@
+[package]
+name = "twidget_css"
+description = "TwidgetCore's small CSS helpers: colours, light-dark(), var(), transforms, fonts, theme variables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_cstd = { path = "../cstd" }
+twidget_json = { path = "../json" }
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_testkit = { path = "../testkit" }
