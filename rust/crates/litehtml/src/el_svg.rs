@@ -1,59 +1,46 @@
 //! `el_svg.cpp` and `el_svg.h`: an `<svg>` as a document is built (it marks its document and its `width` and
-//! `height` are dimensions), and the geometry of what it draws: path data with its error handling, arcs as
-//! cubics, the outlines of `rect`, `circle`, `ellipse`, `line`, `polyline` and `polygon`, the `transform`
-//! attribute and CSS transforms on SVG elements (with `transform-box: fill-box`), the current transformation
-//! matrix, the view box and `preserveAspectRatio`, the intrinsic size, a `<use>`'s placement with its caps,
-//! the parents a `<use>` lends its target, a gradient's coordinates over a path's box, and path length and the
-//! point at a length.
+//! `height` are dimensions), the geometry of what it draws, and its painting.
 //!
-//! What it reads of an element that the DOM does not hold (the cascade's own declarations and transforms,
-//! layout's placement) comes through [`SvgElements`], which later stages implement on the document.
+//! The geometry: path data with its error handling, arcs as cubics, the outlines of `rect`, `circle`, `ellipse`,
+//! `line`, `polyline` and `polygon`, the `transform` attribute and CSS transforms on SVG elements (with
+//! `transform-box: fill-box`), the current transformation matrix, the view box and `preserveAspectRatio`, the
+//! intrinsic size, a `<use>`'s placement with its caps, the parents a `<use>` lends its target, a gradient's
+//! coordinates over a path's box, and path length and the point at a length.
 //!
-//! Not here yet (the painting half of stage L14): `svg_painter`'s walk (groups, opacity, visibility, the group
-//! cache and its keys, hit testing), `svg_property` and the paints read through it (`svg_paint`,
-//! `svg_number`, `svg_ident`, a gradient's stops, dashes, caps), text runs (`svg_text_runs`, `svg_text_box`:
-//! fonts and layout), and `el_svg::draw` with its paint cache and `<use>` budget per paint generation: painting
-//! (stage L13) draws an `<svg>`'s box as a tag's and reaches what it draws inside as a seam.
+//! The painting: `svg_painter`'s walk (groups with opacity and transforms, `display` and `visibility` as
+//! attributes and as style, the elements it never draws, shapes filled and stroked through `svg_paint.rs`'s
+//! lookups, gradients, dashes, caps and joins, texts and their `<tspan>`s, `<use>` with its budget, nested
+//! `<svg>`s drawn as groups, a top-level group drawn through the container's cache under its key), text runs
+//! (`svg_text_runs`, `svg_text_box`), `el_svg::draw` with its clip, its paint key (`cached_paint_key`,
+//! `cacheable_paint_key`, the elements' `paint_signature`), the container's cache or an isolated paint, and the
+//! `<use>` budget its draws share per paint generation, and `el_svg::paint_shapes`. Hit testing (`element_at`,
+//! the painter's hit mode) is stage L16's.
+//!
+//! What it reads of an element comes through [`SvgElements`]: tests implement it on what svg_oracle writes, and
+//! [`DocSvg`] on the document.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::borders::BorderRadiuses;
 use crate::css_effects::{PaintGroup, PathOp, SvgGradient, TransformFunction, TransformKind, TransformMatrix, VectorPath};
 use crate::css_length::CssLength;
+use crate::css_tokenizer::{DIMENSION, NUMBER};
+use crate::css_values::{StyleDisplay, Visibility};
 use crate::cxx;
-use crate::document::{Document, Env};
-use crate::element::ElementId;
-use crate::html::lowcase;
-use crate::string_id::{_height_, _transform_, _transform_origin_, _width_};
+use crate::document::{Document, Env, StyleCx};
+use crate::element::{ElementId, ElementKind, ElementState};
+use crate::html::{WHITESPACE, lowcase, trim};
+use crate::string_id::{
+    _fill_, _fill_opacity_, _fill_rule_, _height_, _stroke_, _stroke_dasharray_, _stroke_dashoffset_, _stroke_linecap_, _stroke_linejoin_,
+    _stroke_miterlimit_, _stroke_opacity_, _stroke_width_, _text_anchor_, _transform_, _transform_origin_, _width_,
+};
+use crate::style::{Value, has_var};
+use crate::svg_paint::{svg_url_id, with_opacity};
 use crate::types::{Position, Size};
+use crate::web_color::WebColor;
 use crate::{Px, StringId};
 
 impl Document {
-    /// `el_svg::draw(hdc, x, y, clip, ri)`: the tag's drawing; then, unless tracing, where its box is not empty and
-    /// the clip meets it, what it draws inside (stage L14: the seam, logged as unported).
-    #[allow(clippy::too_many_arguments)]
-    pub fn el_svg_draw(
-        &self,
-        cx: &crate::document::StyleCx,
-        id: ElementId,
-        hdc: u64,
-        x: Px,
-        y: Px,
-        clip: Option<&Position>,
-        ri: crate::render_item::RenderId,
-    ) {
-        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
-        if self.paint.trace.is_some() {
-            return;
-        }
-        let mut pos = self.render.item(ri).pos;
-        pos.x += x;
-        pos.y += y;
-        if pos.width <= Px(0.0) || pos.height <= Px(0.0) || !pos.does_intersect(clip, false) {
-            return;
-        }
-        cx.container.paint_unported(hdc, "svg");
-    }
-
     /// `el_svg::parse_attributes()`: `html_tag`'s, then a non-empty `width` and `height`.
     pub fn el_svg_parse_attributes(&mut self, env: &Env, id: ElementId) {
         self.html_tag_parse_attributes(env, id);
@@ -1205,5 +1192,935 @@ impl<N: Copy + Eq> SvgUses<N> {
             m = TransformMatrix::new(s, 0.0, 0.0, s, -b[0] * s + (w - b[2] * s) / 2.0, -b[1] * s + (h - b[3] * s) / 2.0).then(&m);
         }
         Ok(UsePlacement { target, matrix: m, symbol })
+    }
+}
+
+// ---- The document's elements --------------------------------------------------------------------------------------
+
+/// FNV-1a's prime, which every paint key multiplies by.
+const FNV_PRIME: u64 = 1099511628211;
+
+/// FNV-1a's offset basis, where `paint_signature` and `cacheable_paint_key` start.
+const FNV_BASIS: u64 = 1469598103934665603;
+
+/// The document's elements as [`SvgElements`]: the DOM, the cascade's own declarations and computed transform, and
+/// where an element's render items are placed.
+#[derive(Clone, Copy)]
+pub struct DocSvg<'a> {
+    pub doc: &'a Document,
+    pub cx: &'a StyleCx<'a>,
+}
+
+impl std::fmt::Debug for DocSvg<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocSvg").finish_non_exhaustive()
+    }
+}
+
+impl SvgElements for DocSvg<'_> {
+    type Node = ElementId;
+    fn parent(&self, el: ElementId) -> Option<ElementId> {
+        self.doc.parent(el)
+    }
+    fn tag_name(&self, el: ElementId) -> Vec<u8> {
+        self.doc.get_tag_name(self.cx.names, el)
+    }
+    fn get_attr(&self, el: ElementId, name: &[u8]) -> Option<&[u8]> {
+        self.doc.get_attr(el, name)
+    }
+    fn is_html_tag(&self, el: ElementId) -> bool {
+        self.doc.kind(el).is_html_tag()
+    }
+    fn is_svg(&self, el: ElementId) -> bool {
+        self.doc.kind(el) == ElementKind::el_svg
+    }
+    fn root(&self) -> Option<ElementId> {
+        self.doc.root
+    }
+    fn select_one(&self, root: ElementId, selector: &[u8]) -> Option<ElementId> {
+        let sel = crate::css_selector::CssSelector::parse(self.cx.names, selector, self.doc.mode)?;
+        self.doc.matcher(self.cx).select_one(root, &sel)
+    }
+    fn has_own_property(&self, el: ElementId, name: StringId) -> bool {
+        self.doc.kind(el).is_html_tag() && !matches!(self.doc.el(el).style.get_property(name).value, Value::Invalid)
+    }
+    fn transform(&self, el: ElementId) -> &[TransformFunction] {
+        &self.doc.el(el).css.m_transform
+    }
+    fn transform_origin_x(&self, el: ElementId) -> &CssLength {
+        &self.doc.el(el).css.m_transform_origin_x
+    }
+    fn transform_origin_y(&self, el: ElementId) -> &CssLength {
+        &self.doc.el(el).css.m_transform_origin_y
+    }
+    fn transform_fill_box(&self, el: ElementId) -> bool {
+        self.doc.el(el).css.m_transform_fill_box
+    }
+    /// `element::get_placement()`: the first live render item's placement, moved right and down to any later
+    /// one's that starts further right or down.
+    fn placement(&self, el: ElementId) -> Position {
+        let mut pos = Position::default();
+        let mut is_first = true;
+        for &ri in &self.doc.el(el).renders {
+            if !self.doc.render.alive(ri) {
+                continue;
+            }
+            let ri_pos = self.doc.get_placement(self.cx, ri);
+            if is_first {
+                is_first = false;
+                pos = ri_pos;
+            } else {
+                if pos.x < ri_pos.x {
+                    pos.x = ri_pos.x;
+                }
+                if pos.y < ri_pos.y {
+                    pos.y = ri_pos.y;
+                }
+            }
+        }
+        pos
+    }
+}
+
+/// What an `<svg>` keeps between its paints: the last paint key and how many draws in a row it held
+/// (`m_last_paint_key`, `m_stable_draws`), its content's key, the paint generation it was made in and whether
+/// there is one (`m_content_key`, `m_content_generation`, `m_content_cacheable`), whether its groups may be drawn
+/// through the cache (`m_group_cache_eligible`, once the content changed while it had a key), and the `<use>`
+/// budget its draws took in a paint generation (`m_use_generation`, `m_use_allowance`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SvgPaintState {
+    pub last_paint_key: u64,
+    pub stable_draws: i32,
+    pub content_key: u64,
+    pub content_generation: u32,
+    pub content_cacheable: bool,
+    pub group_cache_eligible: bool,
+    pub use_generation: u32,
+    pub use_allowance: i32,
+}
+
+/// `svg_text_run`: a piece of an SVG `<text>`, its own characters or a `<tspan>`'s, styled by `style`, its box in
+/// user space.
+#[derive(Clone, Debug)]
+pub struct SvgTextRun {
+    pub style: ElementId,
+    pub text: Vec<u8>,
+    pub r#box: Position,
+}
+
+/// A paint signature mixed into a paint key.
+fn mix_key(key: u64, signature: u64) -> u64 {
+    (key ^ signature).wrapping_mul(FNV_PRIME)
+}
+
+/// A float's bits mixed into a paint key.
+fn mix_bits(key: u64, v: f32) -> u64 {
+    (key ^ u64::from(v.to_bits())).wrapping_mul(FNV_PRIME)
+}
+
+/// The tags a cached paint never holds: what they draw comes from elsewhere.
+fn uncacheable_tag(name: &[u8]) -> bool {
+    matches!(name, b"use" | b"image" | b"foreignobject" | b"canvas" | b"img")
+}
+
+/// The attributes whose `url(…)` a paint key looks at.
+const URL_ATTRIBUTES: [&[u8]; 9] =
+    [b"fill", b"stroke", b"style", b"mask", b"clip-path", b"filter", b"marker-start", b"marker-mid", b"marker-end"];
+
+/// Where `needle` is in `hay` at or after `from`, as `strstr` from there finds it.
+fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    hay.get(from..)?.windows(needle.len()).position(|w| w == needle).map(|p| from + p)
+}
+
+impl Document {
+    /// `element::paint_signature()`, and `html_tag::paint_signature()` for a tag: an FNV-1a hash of a text's
+    /// characters, every selector it matched (its place and whether it is used), and for a tag its name's id as a
+    /// decimal number and each attribute's name and value, each of those ended by 0xff.
+    pub fn paint_signature(&self, id: ElementId) -> u64 {
+        fn mix(h: &mut u64, bytes: &[u8]) {
+            for &b in bytes {
+                *h ^= u64::from(b);
+                *h = h.wrapping_mul(FNV_PRIME);
+            }
+        }
+        fn mix_str(h: &mut u64, value: &[u8]) {
+            mix(h, value);
+            *h ^= 0xff;
+            *h = h.wrapping_mul(FNV_PRIME);
+        }
+        let mut h = FNV_BASIS;
+        if self.is_text(id) {
+            let mut text = Vec::new();
+            self.get_text(id, &mut text);
+            mix(&mut h, &text);
+        }
+        let el = self.el(id);
+        for used in &el.used_styles {
+            mix(&mut h, &used.selector.place().to_le_bytes());
+            mix(&mut h, &[u8::from(used.used)]);
+        }
+        if el.kind.is_html_tag() {
+            mix_str(&mut h, &cxx::to_string_int(el.tag.0 as i32));
+            for (name, value) in &el.attrs {
+                mix_str(&mut h, name);
+                mix_str(&mut h, value);
+            }
+        }
+        h
+    }
+
+    /// What an `<svg>`'s paints kept (the default for an element that is no `<svg>`).
+    pub fn svg_paint_state(&self, id: ElementId) -> SvgPaintState {
+        match self.el(id).state {
+            ElementState::Svg(state) => state,
+            _ => SvgPaintState::default(),
+        }
+    }
+
+    fn set_svg_paint_state(&mut self, id: ElementId, state: SvgPaintState) {
+        self.el_mut(id).state = ElementState::Svg(state);
+    }
+
+    /// `svg_text_runs(el, container, runs, box)`: what an SVG `<text>` draws, run by run, and where all of it goes,
+    /// in its user space. Its own characters and each displayed `<tspan>`'s are one text with whitespace collapsed
+    /// across them; a run starts at each `<tspan>` and where the text goes on after one. Each starts at its own
+    /// `x`, `y` (their first numbers) when it has them, moved by `dx`, `dy` (`em` in its font size), and is as
+    /// wide as the container measures it in its font (a run without characters or a font is skipped); the whole
+    /// is moved by `text-anchor` (`middle`, `end`). None without a run.
+    pub fn svg_text_runs(&self, cx: &StyleCx, hosts: &UseHosts<ElementId>, el: ElementId) -> Option<(Vec<SvgTextRun>, Position)> {
+        struct Pending<'d> {
+            style: ElementId,
+            text: Vec<u8>,
+            x: Option<&'d [u8]>,
+            y: Option<&'d [u8]>,
+            dx: Option<&'d [u8]>,
+            dy: Option<&'d [u8]>,
+        }
+        let part = |style: ElementId, attrs: bool| Pending {
+            style,
+            text: Vec::new(),
+            x: if attrs { self.get_attr(style, b"x") } else { None },
+            y: if attrs { self.get_attr(style, b"y") } else { None },
+            dx: if attrs { self.get_attr(style, b"dx") } else { None },
+            dy: if attrs { self.get_attr(style, b"dy") } else { None },
+        };
+        let mut parts = vec![part(el, true)];
+        let (mut space, mut any) = (false, false);
+        // collect(node, style) as a walk: each node's children in order, a <tspan>'s before the rest of its parent's.
+        let mut stack: Vec<(ElementId, ElementId, usize)> = vec![(el, el, 0)];
+        while let Some(top) = stack.last_mut() {
+            let (node, style, i) = *top;
+            let Some(&child) = self.children(node).get(i) else {
+                stack.pop();
+                continue;
+            };
+            top.2 += 1;
+            if self.is_text(child) {
+                let mut text = Vec::new();
+                self.get_text(child, &mut text);
+                if parts.last().is_none_or(|p| p.style != style) {
+                    parts.push(part(style, false));
+                }
+                let Some(last) = parts.last_mut() else { continue };
+                for &ch in &text {
+                    if twidget_cstd::is_space(ch) {
+                        space = any;
+                        continue;
+                    }
+                    if space {
+                        last.text.push(b' ');
+                    }
+                    space = false;
+                    any = true;
+                    last.text.push(ch);
+                }
+            } else if lowcase(&self.get_tag_name(cx.names, child)) == b"tspan"
+                && self.el(child).css.m_display != StyleDisplay::display_none.index()
+            {
+                parts.push(part(child, true));
+                stack.push((child, child, 0));
+            }
+        }
+        let first = |value: &[u8]| numbers(Some(value)).first().copied().unwrap_or(0.0);
+        let shift = |value: Option<&[u8]>, em: f32| -> f32 {
+            let Some(value) = value else { return 0.0 };
+            if ch(value, 0) == 0 {
+                return 0.0;
+            }
+            let mut p = 0;
+            let Some(v) = next_number(value, &mut p) else { return 0.0 };
+            if ch(value, p) == b'e' && ch(value, p + 1) == b'm' { v * em } else { v }
+        };
+        let mut runs = Vec::new();
+        let (mut x, mut y, mut start) = (0.0f32, 0.0f32, 0.0f32);
+        for (n, part) in parts.iter().enumerate() {
+            let css = &self.el(part.style).css;
+            let em = css.m_font_size.val();
+            if let Some(v) = part.x {
+                x = first(v);
+            }
+            if let Some(v) = part.y {
+                y = first(v);
+            }
+            x += shift(part.dx, em);
+            y += shift(part.dy, em);
+            if n == 0 {
+                start = x;
+            }
+            let font = css.m_font;
+            if part.text.is_empty() || font == 0 {
+                continue;
+            }
+            let fm = css.m_font_metrics;
+            let width = cx.container.text_width(&part.text, font);
+            runs.push(SvgTextRun {
+                style: part.style,
+                text: part.text.clone(),
+                r#box: Position::new(Px(x), Px(y) - fm.ascent, width, fm.height),
+            });
+            x += width.value();
+        }
+        if runs.is_empty() {
+            return None;
+        }
+        let anchor = self.svg_ident_in(cx, hosts, el, _text_anchor_);
+        let total = x - start;
+        let offset = if anchor == b"middle" {
+            -total / 2.0
+        } else if anchor == b"end" {
+            -total
+        } else {
+            0.0
+        };
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for run in &mut runs {
+            run.r#box.x += Px(offset);
+            x0 = cxx::min_f32(x0, run.r#box.x.value());
+            y0 = cxx::min_f32(y0, run.r#box.y.value());
+            x1 = cxx::max_f32(x1, run.r#box.right().value());
+            y1 = cxx::max_f32(y1, run.r#box.bottom().value());
+        }
+        Some((runs, Position::new(Px(x0), Px(y0), Px(x1 - x0), Px(y1 - y0))))
+    }
+
+    /// `svg_text_box(el, container, box)`: where all of an SVG `<text>` goes, with no `<use>` being drawn.
+    pub fn svg_text_box(&self, cx: &StyleCx, el: ElementId) -> Option<Position> {
+        self.svg_text_runs(cx, &UseHosts::new(), el).map(|(_, b)| b)
+    }
+
+    /// `svg_group_key(root, key)`: a group's key for the container's cache: its own and every descendant's paint
+    /// signature in tree order, then each ancestor's, unless one of them names a `url(…)` in a paint, style, mask,
+    /// clip path, filter or marker attribute (or a paint of its style does, or holds a `var()`), a `var(` in its
+    /// `fill` or `stroke` attribute, or the group holds a `use`, `image`, `foreignObject`, `canvas` or `img`, more
+    /// than 4000 elements or fewer than 8.
+    pub fn svg_group_key(&self, cx: &StyleCx, root: ElementId) -> Option<u64> {
+        let mut hash: u64 = 0x67726f7570;
+        let mut count = 0;
+        let include = |hash: &mut u64, el: ElementId| -> bool {
+            for attribute in URL_ATTRIBUTES {
+                if let Some(value) = self.get_attr(el, attribute)
+                    && contains(&lowcase(value), b"url(")
+                {
+                    return false;
+                }
+            }
+            if self.kind(el).is_html_tag() {
+                for name in [_fill_, _stroke_] {
+                    if let Value::Tokens(tokens) = &self.el(el).style.get_property(name).value
+                        && (has_var(tokens) || !svg_url_id(tokens).is_empty())
+                    {
+                        return false;
+                    }
+                }
+            }
+            for attribute in [&b"fill"[..], b"stroke"] {
+                if let Some(value) = self.get_attr(el, attribute)
+                    && contains(&lowcase(value), b"var(")
+                {
+                    return false;
+                }
+            }
+            *hash = mix_key(*hash, self.paint_signature(el));
+            true
+        };
+        // visit(root) as a walk in tree order.
+        let mut stack = vec![root];
+        while let Some(el) = stack.pop() {
+            count += 1;
+            if count > 4000 || !include(&mut hash, el) {
+                return None;
+            }
+            if uncacheable_tag(&lowcase(&self.get_tag_name(cx.names, el))) {
+                return None;
+            }
+            stack.extend(self.children(el).iter().rev());
+        }
+        if count < 8 {
+            return None;
+        }
+        let mut parent = self.parent(root);
+        while let Some(p) = parent {
+            if !include(&mut hash, p) {
+                return None;
+            }
+            parent = self.parent(p);
+        }
+        Some(hash)
+    }
+
+    /// `el_svg::cacheable_paint_key(key)`: the key of what an `<svg>` draws: its own and every descendant's paint
+    /// signature in tree order, then each ancestor's; none when it holds a `use`, `image`, `foreignObject`,
+    /// `canvas` or `img` or more than 4000 elements, or a `url(#id)` in a paint (its style's or attribute's, the
+    /// ancestors' too) or in an attribute that may name one names an id none of its elements has.
+    fn cacheable_paint_key(&self, cx: &StyleCx, id: ElementId) -> Option<u64> {
+        let mut h = FNV_BASIS;
+        let mut ids: BTreeSet<Vec<u8>> = BTreeSet::new();
+        let mut references: Vec<Vec<u8>> = Vec::new();
+        let collect_paint_references = |el: ElementId, references: &mut Vec<Vec<u8>>| {
+            if !self.kind(el).is_html_tag() {
+                return;
+            }
+            for name in [_fill_, _stroke_] {
+                let id = if let Value::Tokens(tokens) = &self.el(el).style.get_property(name).value {
+                    svg_url_id(tokens)
+                } else if self.get_attr(el, &cx.names.s(name)).is_some_and(|value| value.contains(&b'(')) {
+                    svg_url_id(&self.svg_property(cx, el, name, false))
+                } else {
+                    Vec::new()
+                };
+                if !id.is_empty() {
+                    references.push(id);
+                }
+            }
+        };
+        let mut count = 0;
+        // visit(this) as a walk in tree order.
+        let mut stack = vec![id];
+        while let Some(el) = stack.pop() {
+            count += 1;
+            if count > 4000 {
+                return None;
+            }
+            if uncacheable_tag(&lowcase(&self.get_tag_name(cx.names, el))) {
+                return None;
+            }
+            if let Some(value) = self.get_attr(el, b"id") {
+                ids.insert(value.to_vec());
+            }
+            collect_paint_references(el, &mut references);
+            for attribute in URL_ATTRIBUTES {
+                let Some(value) = self.get_attr(el, attribute) else { continue };
+                let mut at = find_from(value, b"url(", 0);
+                while let Some(a) = at {
+                    let hash = value[a..].iter().position(|&c| c == b'#').map(|p| a + p);
+                    let end = value[a..].iter().position(|&c| c == b')').map(|p| a + p);
+                    let (Some(hash), Some(end)) = (hash, end) else { break };
+                    if hash > end {
+                        break;
+                    }
+                    let mut reference = value[hash + 1..end].to_vec();
+                    while matches!(reference.last(), Some(b'"' | b'\'' | b' ')) {
+                        reference.pop();
+                    }
+                    references.push(reference);
+                    at = find_from(value, b"url(", end);
+                }
+            }
+            h = mix_key(h, self.paint_signature(el));
+            stack.extend(self.children(el).iter().rev());
+        }
+        let mut parent = self.parent(id);
+        while let Some(p) = parent {
+            collect_paint_references(p, &mut references);
+            h = mix_key(h, self.paint_signature(p));
+            parent = self.parent(p);
+        }
+        if references.iter().any(|r| !ids.contains(r)) {
+            return None;
+        }
+        Some(h)
+    }
+
+    /// `el_svg::cached_paint_key(key)`: the content's key, made again in a new paint generation (a key not made
+    /// leaves the last one), and whether there is one. Once the key changed between two generations that both had
+    /// one, the `<svg>`'s groups may be drawn through the cache.
+    pub fn cached_paint_key(&mut self, cx: &StyleCx, id: ElementId) -> (bool, u64) {
+        let generation = self.paint_generation();
+        let mut st = self.svg_paint_state(id);
+        if st.content_generation != generation {
+            let previous_cacheable = st.content_cacheable;
+            let previous_key = st.content_key;
+            st.content_generation = generation;
+            let key = self.cacheable_paint_key(cx, id);
+            st.content_cacheable = key.is_some();
+            if let Some(key) = key {
+                st.content_key = key;
+            }
+            st.group_cache_eligible =
+                st.group_cache_eligible || (previous_cacheable && st.content_cacheable && previous_key != st.content_key);
+            self.set_svg_paint_state(id, st);
+        }
+        (st.content_cacheable, st.content_key)
+    }
+
+    /// `el_svg::draw(hdc, x, y, clip, ri)`: the tag's drawing; then, unless tracing, where its box is not empty and
+    /// the clip meets it, what it draws inside, clipped to its box: through the container's cache under its paint
+    /// key (once the key held for as many draws as `LH_SVG_LATE_CACHE` asks), else isolated, the view's group
+    /// around the painter's walk. Its draws in a paint generation share the document's `<use>` budget: the first
+    /// takes what is left, and later ones what the first spent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_svg_draw(
+        &mut self,
+        cx: &StyleCx,
+        id: ElementId,
+        hdc: u64,
+        x: Px,
+        y: Px,
+        clip: Option<&Position>,
+        ri: crate::render_item::RenderId,
+    ) {
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        if self.paint.trace.is_some() {
+            return;
+        }
+        let mut pos = self.render.item(ri).pos;
+        pos.x += x;
+        pos.y += y;
+        if pos.width <= Px(0.0) || pos.height <= Px(0.0) || !pos.does_intersect(clip, false) {
+            return;
+        }
+        let (view, group) = view_group(&DocSvg { doc: self, cx }, id, &pos);
+        let sx = group.matrix.a;
+        let sy = group.matrix.d;
+        let tx = group.matrix.tx + view[0] * sx;
+        let ty = group.matrix.ty + view[1] * sy;
+        let container = cx.container;
+        container.set_clip(&pos, &BorderRadiuses::default());
+        let cache_bounds = Position::new(
+            Px((pos.x.value() - group.matrix.tx) / sx),
+            Px((pos.y.value() - group.matrix.ty) / sy),
+            Px(pos.width.value() / sx),
+            Px(pos.height.value() / sy),
+        );
+        let generation = self.paint_generation();
+        let budget = self.svg_use_budget(use_budget);
+        let granted = self.svg_paint_state(id).use_generation == generation;
+        let allowance = if granted { self.svg_paint_state(id).use_allowance } else { budget };
+        let mut spent = 0;
+        let (cacheable, mut key) = self.cached_paint_key(cx, id);
+        let mut try_cache = false;
+        if cacheable {
+            for v in [pos.width.value(), pos.height.value(), view[0], view[1], view[2], view[3], sx, sy, tx - tx.floor(), ty - ty.floor()] {
+                key = mix_bits(key, v);
+            }
+            let mut st = self.svg_paint_state(id);
+            if key == st.last_paint_key {
+                st.stable_draws += 1;
+            } else {
+                st.last_paint_key = key;
+                st.stable_draws = 0;
+            }
+            self.set_svg_paint_state(id, st);
+            let stable_draws_needed = if cx.switches.svg_late_cache { 2 } else { 0 };
+            try_cache = st.stable_draws >= stable_draws_needed;
+        }
+        let eligible = self.svg_paint_state(id).group_cache_eligible;
+        let doc: &Document = self;
+        let mut paint = |target: u64| {
+            container.begin_group(target, &group);
+            let mut painter = SvgPainter::new(doc, cx, target, view, eligible.then_some(cache_bounds), allowance);
+            painter.draw_children(id, -1, 0);
+            spent = allowance - painter.use_left();
+            container.end_group(target);
+        };
+        let mut cached = false;
+        if try_cache {
+            cached = container.draw_cached(hdc, &pos, key, &mut paint);
+        }
+        if !cached {
+            container.draw_isolated(hdc, &pos, &mut paint);
+        }
+        if !granted {
+            let mut st = self.svg_paint_state(id);
+            st.use_generation = generation;
+            st.use_allowance = spent;
+            self.set_svg_paint_state(id, st);
+            self.paint.svg_use_budget -= spent;
+        }
+        container.del_clip();
+    }
+
+    /// `el_svg::paint_shapes(hdc, pos)`: what the `<svg>` draws inside, its view fitted to `pos`, with a budget of
+    /// its own and no cache; false for an empty box.
+    pub fn el_svg_paint_shapes(&self, cx: &StyleCx, id: ElementId, hdc: u64, pos: &Position) -> bool {
+        if pos.width <= Px(0.0) || pos.height <= Px(0.0) {
+            return false;
+        }
+        let (view, group) = view_group(&DocSvg { doc: self, cx }, id, pos);
+        cx.container.begin_group(hdc, &group);
+        SvgPainter::new(self, cx, hdc, view, None, kMaxUseDrawn).draw_children(id, -1, 0);
+        cx.container.end_group(hdc);
+        true
+    }
+}
+
+// ---- The painter ----------------------------------------------------------------------------------------------
+
+/// `svg_painter::attribute_visibility(el)`: the `visibility` attribute: 1 hidden (`hidden`, `collapse`), 0
+/// `visible`, -1 none or another word.
+fn attribute_visibility(doc: &Document, el: ElementId) -> i32 {
+    let Some(value) = doc.get_attr(el, b"visibility") else { return -1 };
+    let v = trim(&lowcase(value), WHITESPACE);
+    if v == b"hidden" || v == b"collapse" {
+        1
+    } else if v == b"visible" {
+        0
+    } else {
+        -1
+    }
+}
+
+/// `svg_painter::attribute_hides(el)`: the `display` attribute is `none`.
+fn attribute_hides(doc: &Document, el: ElementId) -> bool {
+    doc.get_attr(el, b"display").is_some_and(|value| trim(&lowcase(value), WHITESPACE) == b"none")
+}
+
+/// The elements the painter never draws: definitions, metadata, and what only a reference draws.
+fn never_drawn(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"defs"
+            | b"style"
+            | b"title"
+            | b"desc"
+            | b"lineargradient"
+            | b"radialgradient"
+            | b"clippath"
+            | b"mask"
+            | b"pattern"
+            | b"symbol"
+            | b"marker"
+            | b"filter"
+            | b"script"
+            | b"metadata"
+    )
+}
+
+/// What a child the painter draws is.
+#[derive(Clone, Copy, Debug)]
+enum ChildKind {
+    /// `g` (which the cache may hold at the top), `a`, `svg`, `switch`: its children are drawn.
+    Group {
+        g: bool,
+    },
+    Text,
+    Use,
+    /// A shape, or anything else (which draws nothing).
+    Other,
+}
+
+/// What `draw_child` decided about a child: what it is, its visibility (-1 none, 0 visible, 1 hidden) and whether
+/// it is hidden, and whether a group was begun for it.
+#[derive(Clone, Copy, Debug)]
+struct ChildLook {
+    kind: ChildKind,
+    visibility: i32,
+    hidden: bool,
+    grouped: bool,
+}
+
+/// The bounds of the painter's groups: everything near the view.
+const GROUP_BOUNDS: Position = Position { x: Px(-100000.0), y: Px(-100000.0), width: Px(200000.0), height: Px(200000.0) };
+
+/// `svg_painter` drawing (its hit mode is stage L16's): the walk over what an `<svg>` holds in its view, with the
+/// `<use>` budget it was given, the references it looked up, the `<use>`s it is inside, and, when an `<svg>`'s
+/// draw lets it, its top-level groups drawn through the container's cache in `cache_bounds`.
+pub struct SvgPainter<'a> {
+    doc: &'a Document,
+    cx: &'a StyleCx<'a>,
+    hdc: u64,
+    view: [f32; 4],
+    cache_groups: bool,
+    cache_bounds: Position,
+    uses: SvgUses<ElementId>,
+    hosts: UseHosts<ElementId>,
+}
+
+impl std::fmt::Debug for SvgPainter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SvgPainter").field("hdc", &self.hdc).field("view", &self.view).field("uses", &self.uses).finish_non_exhaustive()
+    }
+}
+
+impl<'a> SvgPainter<'a> {
+    /// `svg_painter(container, hdc, view, cache_bounds, use_left)`: the group cache is on when bounds are given and
+    /// `svg_group_cache_enabled`.
+    pub fn new(
+        doc: &'a Document,
+        cx: &'a StyleCx<'a>,
+        hdc: u64,
+        view: [f32; 4],
+        cache_bounds: Option<Position>,
+        use_left: i32,
+    ) -> SvgPainter<'a> {
+        SvgPainter {
+            doc,
+            cx,
+            hdc,
+            view,
+            cache_groups: cache_bounds.is_some() && cx.switches.svg_group_cache,
+            cache_bounds: cache_bounds.unwrap_or_default(),
+            uses: SvgUses::new(use_left),
+            hosts: UseHosts::new(),
+        }
+    }
+
+    /// `use_left()`.
+    pub fn use_left(&self) -> i32 {
+        self.uses.use_left
+    }
+
+    fn tree(&self) -> DocSvg<'a> {
+        DocSvg { doc: self.doc, cx: self.cx }
+    }
+
+    /// `draw_children(el, inherited, depth)`: each child in order; inside a `<use>` a list costs one unit for every
+    /// 256 children.
+    pub fn draw_children(&mut self, el: ElementId, inherited: i32, depth: i32) {
+        let doc = self.doc;
+        let children = doc.children(el);
+        if self.uses.use_depth > 0 && !self.uses.use_charge(children.len() / 256) {
+            return;
+        }
+        for &child in children {
+            self.draw_child(child, inherited, depth);
+        }
+    }
+
+    /// `draw_child(child, inherited, depth)`: nothing for a text, an element its style or `display` attribute hides,
+    /// or one never drawn; else, in a group when it has opacity (its style's times its attribute's) or a
+    /// transform, a group's children (a top-level `<g>` through the cache when it may be), or unless its
+    /// visibility (its attribute's, else the one inherited, else its style's) hides it, a shape, a text or a
+    /// `<use>`. Inside a `<use>` every element costs one unit. Recursion goes through here once a level: what is
+    /// decided about the child is in [`SvgPainter::open_child`], what is drawn of a leaf in its own function.
+    fn draw_child(&mut self, child: ElementId, inherited: i32, depth: i32) {
+        if self.uses.use_depth > 0 && !self.doc.is_text(child) && !self.uses.use_charge(1) {
+            return;
+        }
+        let Some(child_look) = self.open_child(child, inherited) else { return };
+        match child_look.kind {
+            ChildKind::Group { g } => {
+                let cached = g
+                    && self.cache_groups
+                    && depth == 0
+                    && !child_look.grouped
+                    && self.draw_cached_group(child, child_look.visibility, depth);
+                if !cached {
+                    self.draw_children(child, child_look.visibility, depth + 1);
+                }
+            }
+            _ if child_look.hidden => {}
+            ChildKind::Text => self.draw_text(child),
+            ChildKind::Use => self.draw_use(child, child_look.visibility, depth),
+            ChildKind::Other => self.draw_shape(child),
+        }
+        if child_look.grouped {
+            self.cx.container.end_group(self.hdc);
+        }
+    }
+
+    /// The start of `draw_child` past the budget: none when the child is a text, its style or `display` attribute
+    /// hides it or it is never drawn; else what it is, its visibility and whether that hides it, and whether it is
+    /// drawn in a group of its opacity and transform, which is begun here.
+    #[inline(never)]
+    fn open_child(&mut self, child: ElementId, inherited: i32) -> Option<ChildLook> {
+        let doc = self.doc;
+        let css = &doc.el(child).css;
+        if doc.is_text(child) || css.m_display == StyleDisplay::display_none.index() || attribute_hides(doc, child) {
+            return None;
+        }
+        let mut visibility = attribute_visibility(doc, child);
+        if visibility < 0 {
+            visibility = inherited;
+        }
+        let hidden = if visibility >= 0 { visibility == 1 } else { css.m_visibility != Visibility::visibility_visible.index() };
+        let name = lowcase(&doc.get_tag_name(self.cx.names, child));
+        if never_drawn(&name) {
+            return None;
+        }
+        let mut opacity = css.m_opacity;
+        if let Some(attr) = doc.get_attr(child, b"opacity") {
+            opacity *= cxx::max_f32(0.0, cxx::min_f32(1.0, twidget_cstd::strtof(attr).0));
+        }
+        let view = self.view;
+        let view_box = Position::new(Px(view[0]), Px(view[1]), Px(view[2]), Px(view[3]));
+        let group = PaintGroup {
+            matrix: svg_own_transform(&self.tree(), child, &view_box),
+            opacity,
+            bounds: GROUP_BOUNDS,
+            ..PaintGroup::default()
+        };
+        let grouped = opacity < 1.0 || !group.matrix.is_identity();
+        if grouped {
+            self.cx.container.begin_group(self.hdc, &group);
+        }
+        let kind = match &name[..] {
+            b"g" | b"a" | b"svg" | b"switch" => ChildKind::Group { g: name == b"g" },
+            b"text" => ChildKind::Text,
+            b"use" => ChildKind::Use,
+            _ => ChildKind::Other,
+        };
+        Some(ChildLook { kind, visibility, hidden, grouped })
+    }
+
+    /// A top-level group through `draw_cached` under its key (none: not drawn so), drawn (when the container asks)
+    /// by a painter of its own: a full budget, no cache.
+    #[inline(never)]
+    fn draw_cached_group(&mut self, child: ElementId, visibility: i32, depth: i32) -> bool {
+        let (doc, cx, view) = (self.doc, self.cx, self.view);
+        let Some(mut key) = doc.svg_group_key(cx, child) else { return false };
+        let b = self.cache_bounds;
+        for v in [view[0], view[1], view[2], view[3], b.x.value(), b.y.value(), b.width.value(), b.height.value()] {
+            key = mix_bits(key, v);
+        }
+        let mut hosts = std::mem::take(&mut self.hosts);
+        let cached = cx.container.draw_cached(self.hdc, &self.cache_bounds, key, &mut |target| {
+            let mut painter = SvgPainter::new(doc, cx, target, view, None, kMaxUseDrawn);
+            painter.hosts = std::mem::take(&mut hosts);
+            painter.draw_children(child, visibility, depth + 1);
+            hosts = std::mem::take(&mut painter.hosts);
+        });
+        self.hosts = hosts;
+        cached
+    }
+
+    /// `draw_use(use, visibility, depth)`: the element a `<use>` names in a group at its placement, its target
+    /// lending it the `<use>`'s parents; a `<symbol>`'s children rather than itself.
+    #[inline(never)]
+    fn draw_use(&mut self, r#use: ElementId, visibility: i32, depth: i32) {
+        let tree = self.tree();
+        let Ok(placement) = self.uses.use_placement(&tree, r#use, depth, &self.view) else { return };
+        let group = PaintGroup { matrix: placement.matrix, bounds: GROUP_BOUNDS, ..PaintGroup::default() };
+        let container = self.cx.container;
+        container.begin_group(self.hdc, &group);
+        self.hosts.push(placement.target, r#use);
+        self.uses.use_depth += 1;
+        if placement.symbol {
+            self.draw_children(placement.target, visibility, depth + 1);
+        } else {
+            self.draw_child(placement.target, visibility, depth + 1);
+        }
+        self.uses.use_depth -= 1;
+        self.hosts.pop();
+        container.end_group(self.hdc);
+    }
+
+    /// A shape's outline in the painter's view (a radius in percent of its diagonal), painted.
+    #[inline(never)]
+    fn draw_shape(&mut self, child: ElementId) {
+        let view = self.view;
+        let diag = ((view[2] * view[2] + view[3] * view[3]) / 2.0).sqrt();
+        let name = lowcase(&self.doc.get_tag_name(self.cx.names, child));
+        let mut builder = PathBuilder::new();
+        if shape_path(&self.tree(), child, &name, view[2], view[3], diag, &mut builder) {
+            self.paint(child, &mut builder.path);
+        }
+    }
+
+    /// `paint(el, path)`: an outline that is not empty filled and stroked as the element's properties say (inside
+    /// a `<use>` it costs one unit for every 256 points): the fill (black by default) or else its gradient, the
+    /// stroke (none by default) or else, when it names one, its gradient, each at its opacity; the fill rule, the
+    /// stroke's width, caps, joins, miter limit, dashes (an odd list twice) and their offset; drawn when it fills
+    /// or strokes with a width.
+    fn paint(&mut self, el: ElementId, path: &mut VectorPath) {
+        if path.ops.is_empty() {
+            return;
+        }
+        if self.uses.use_depth > 0 && !self.uses.use_charge(path.points.len() / 256) {
+            return;
+        }
+        let (doc, cx, tree) = (self.doc, self.cx, self.tree());
+        let hosts = &self.hosts;
+        let uses = &mut self.uses;
+        path.fill = doc.svg_paint_in(cx, hosts, el, _fill_, WebColor::BLACK, true, &mut path.fill_color, None);
+        let mut stroke_gradient = false;
+        path.stroke = doc.svg_paint_in(cx, hosts, el, _stroke_, WebColor::BLACK, false, &mut path.stroke_color, Some(&mut stroke_gradient));
+        path.fill_color = with_opacity(path.fill_color, doc.svg_number_in(cx, hosts, el, _fill_opacity_, 1.0, true));
+        if !path.fill {
+            let opacity = doc.svg_number_in(cx, hosts, el, _fill_opacity_, 1.0, true);
+            if let Some(g) = doc.svg_gradient_paint(cx, hosts, el, _fill_, path, opacity, &mut |id| uses.reference(&tree, id)) {
+                path.fill_gradient = g;
+                path.fill = true;
+                if let Some(&(_, color)) = path.fill_gradient.stops.last() {
+                    path.fill_color = color;
+                }
+            }
+        }
+        path.stroke_color = with_opacity(path.stroke_color, doc.svg_number_in(cx, hosts, el, _stroke_opacity_, 1.0, true));
+        if !path.stroke && stroke_gradient {
+            let opacity = doc.svg_number_in(cx, hosts, el, _stroke_opacity_, 1.0, true);
+            if let Some(g) = doc.svg_gradient_paint(cx, hosts, el, _stroke_, path, opacity, &mut |id| uses.reference(&tree, id)) {
+                path.stroke_gradient = g;
+                path.stroke = true;
+                if let Some(&(_, color)) = path.stroke_gradient.stops.last() {
+                    path.stroke_color = color;
+                }
+            }
+        }
+        path.evenodd = doc.svg_ident_in(cx, hosts, el, _fill_rule_) == b"evenodd";
+        path.stroke_width = cxx::max_f32(0.0, doc.svg_number_in(cx, hosts, el, _stroke_width_, 1.0, true));
+        let cap = doc.svg_ident_in(cx, hosts, el, _stroke_linecap_);
+        path.line_cap = if cap == b"round" {
+            1
+        } else if cap == b"square" {
+            2
+        } else {
+            0
+        };
+        let join = doc.svg_ident_in(cx, hosts, el, _stroke_linejoin_);
+        path.line_join = if join == b"round" {
+            1
+        } else if join == b"bevel" {
+            2
+        } else {
+            0
+        };
+        path.miter_limit = doc.svg_number_in(cx, hosts, el, _stroke_miterlimit_, 4.0, true);
+        path.dash_offset = doc.svg_number_in(cx, hosts, el, _stroke_dashoffset_, 0.0, true);
+        let dashes = doc.svg_property_in(cx, hosts, el, _stroke_dasharray_, true);
+        for tok in &dashes {
+            if tok.ty == NUMBER || tok.ty == DIMENSION {
+                path.dashes.push(cxx::max_f32(0.0, tok.n.number));
+            }
+        }
+        if path.dashes.len() % 2 == 1 {
+            let copy = path.dashes.clone();
+            path.dashes.extend(copy);
+        }
+        if path.stroke_width == 0.0 {
+            path.stroke = false;
+        }
+        if path.fill || path.stroke {
+            cx.container.draw_path(self.hdc, path);
+        }
+    }
+
+    /// `draw_text(el)`: each run of a `<text>` (inside a `<use>` costing one unit for every 256 bytes) in its fill
+    /// at its fill opacity, unless its fill is none.
+    #[inline(never)]
+    fn draw_text(&mut self, el: ElementId) {
+        let (doc, cx) = (self.doc, self.cx);
+        let Some((runs, _)) = doc.svg_text_runs(cx, &self.hosts, el) else { return };
+        for run in &runs {
+            if self.uses.use_depth > 0 && !self.uses.use_charge(run.text.len() / 256) {
+                return;
+            }
+            let mut color = WebColor::default();
+            if !doc.svg_paint_in(cx, &self.hosts, run.style, _fill_, WebColor::BLACK, true, &mut color, None) {
+                continue;
+            }
+            color = with_opacity(color, doc.svg_number_in(cx, &self.hosts, run.style, _fill_opacity_, 1.0, true));
+            cx.container.draw_text(self.hdc, &run.text, doc.el(run.style).css.m_font, color, &run.r#box);
+        }
     }
 }

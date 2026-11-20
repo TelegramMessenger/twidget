@@ -104,6 +104,8 @@ pub enum ElementState {
     Input { ty: Vec<u8>, checked: bool, fraction: f32, swatch: WebColor },
     /// `el_before_after_base`: how many rules gave it content, and the boxes and bytes it took of the document's.
     Generated { generations: i32, boxes: i32, bytes: usize },
+    /// `el_svg`: what its paints keep (stage L14).
+    Svg(crate::el_svg::SvgPaintState),
 }
 
 /// `used_selector`: a selector that matched the element when a sheet was applied, and whether its style is in the
@@ -269,6 +271,7 @@ impl Document {
             ElementKind::el_svg => {
                 self.has_svg = true;
                 el.css.m_display = StyleDisplay::display_inline_block.index();
+                el.state = ElementState::Svg(crate::el_svg::SvgPaintState::default());
             }
             ElementKind::el_input => {
                 el.state = ElementState::Input { ty: Vec::new(), checked: false, fraction: 0.5, swatch: WebColor::BLACK }

@@ -5,11 +5,10 @@
 //! elements it skips or paints bare, the scroller it leaves unclipped, the paint trace), and the element classes'
 //! `draw` dispatch. Each class's own drawing is in its module: `html_tag.rs` (backgrounds, shadows, borders,
 //! outlines, list markers), `el_text.rs`, `el_form.rs`, `render_inline_context.rs` (ellipses), `render_table.rs`
-//! (rows, cells and collapsed borders), `background.rs` (the layers).
+//! (rows, cells and collapsed borders), `background.rs` (the layers), `el_svg.rs` (what an `<svg>` draws, L14).
 //!
-//! Not yet ported, and where the seam is: an `<svg>`'s own painting after its box (L14) and an `<img>`'s image
-//! after its box (L15). Reaching one tells the container ([`DocumentContainer::paint_unported`]) and draws nothing
-//! there.
+//! Not yet ported, and where the seam is: an `<img>`'s image after its box (L15). Reaching it tells the container
+//! ([`DocumentContainer::paint_unported`]) and draws nothing there.
 //!
 //! [`DocumentContainer::paint_unported`]: crate::document_container::DocumentContainer::paint_unported
 
@@ -49,6 +48,10 @@ pub struct DocPaint {
     pub snap_scale: f32,
     /// `g_paint_trace`: while set, every render item drawn, in order, and no culling.
     pub trace: Option<Vec<RenderId>>,
+    /// `m_svg_use_generation` and `m_svg_use_budget`: the paint generation the `<use>` budget the document's
+    /// `<svg>`s share was last filled in, and what is left of it.
+    pub svg_use_generation: u32,
+    pub svg_use_budget: i32,
 }
 
 impl Default for DocPaint {
@@ -64,6 +67,8 @@ impl Default for DocPaint {
             unclipped_scroll: None,
             snap_scale: 1.0,
             trace: None,
+            svg_use_generation: 0,
+            svg_use_budget: 0,
         }
     }
 }
@@ -229,6 +234,16 @@ impl Document {
     /// `culls_paint()`.
     pub fn culls_paint(&self) -> bool {
         self.paint.cull
+    }
+
+    /// `svg_use_budget(refill)`: the `<use>` budget the document's `<svg>`s share in this paint generation,
+    /// refilled to `refill` in a new one.
+    pub fn svg_use_budget(&mut self, refill: i32) -> i32 {
+        if self.paint.svg_use_generation != self.paint.generation {
+            self.paint.svg_use_generation = self.paint.generation;
+            self.paint.svg_use_budget = refill;
+        }
+        self.paint.svg_use_budget
     }
 
     /// `g_paint_trace->push_back(ri)` when tracing.

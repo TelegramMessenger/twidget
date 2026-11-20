@@ -10,8 +10,11 @@
 //! attachment, clip and origin; every border style and radius; shadows; gradients with hints and repeats; opacity,
 //! filters, `backdrop-filter`, transforms and their origins, clip paths, overflow clips with radii, z-index stacking,
 //! fixed boxes, form controls, list markers, text decorations, right to left, collapsed table borders), generated
-//! documents, the `LH_NO_*` switches, and a deep document on a small stack. A later stage's paint (an `<svg>`'s
-//! inside, L14; an `<img>`'s image, L15) is the port's seam, standing for the C++'s calls there, and counted.
+//! documents, the `LH_NO_*` switches, and a deep document on a small stack. SVG (stage L14) is compared in every case
+//! and on its own: the corpus's SVGs, written SVG shapes for each branch, generated SVG documents, the group cache's
+//! and late cache's switches, the container's cache answering as one (`draw_cached` with its keys), each `<svg>`'s
+//! `paint_shapes`, and a deep SVG on a small stack. A later stage's paint (an `<img>`'s image, L15) is the port's
+//! seam, standing for the C++'s call there, and counted.
 
 mod common;
 
@@ -67,6 +70,8 @@ impl Run {
             "LH_LAYOUT_CACHE_CHECK" => run.switches.layout_cache_check = true,
             "LH_NO_COLUMN_REUSE" => run.switches.column_reuse = false,
             "LH_NO_TRANSFORMED_CULLING" => run.switches.transformed_culling = false,
+            "LH_NO_SVG_GROUP_CACHE" => run.switches.svg_group_cache = false,
+            "LH_SVG_LATE_CACHE" => run.switches.svg_late_cache = true,
             other => panic!("no switch {other}"),
         }
         run
@@ -1179,4 +1184,804 @@ fn a_deep_document_paints_on_a_small_stack() {
     let calls = thread.expect("a thread").join().expect("the paint ran");
     eprintln!("a deep document: {calls} paint calls");
     assert!(calls > 200);
+}
+
+// ---- SVG (stage L14) -----------------------------------------------------------------------------------------
+
+/// The paints of an SVG case laid out at `width` in a `height` viewport: the viewport with the container's cache
+/// answering false, then as a cache (a key drawn, then found), scrolled and culled, traced, offset by a fraction
+/// with each `<svg>`'s `paint_shapes`; after a `:hover` restyle (which changes paint keys, and so lets an `<svg>`'s
+/// groups through the cache), again; after a media change, and after the hover left. `k` picks the elements.
+fn svg_steps(width: f32, height: f32, k: u32) -> Vec<Step> {
+    let view = |cache: bool| {
+        let mut step = PaintStep::viewport(width, height);
+        step.cache = cache;
+        step
+    };
+    let mut scrolled = view(true);
+    scrolled.y = -(height * 0.5).floor();
+    scrolled.cull = true;
+    scrolled.hdc = 3;
+    let mut traced = view(false);
+    traced.trace = true;
+    traced.cull = true;
+    let mut offset = view(true);
+    offset.x = 0.25;
+    offset.y = 10.5;
+    offset.snap = 2.0;
+    offset.shapes = true;
+    let mut unclipped = view(k.is_multiple_of(2));
+    unclipped.clip = None;
+    unclipped.shapes = true;
+    vec![
+        Step::Layout(width, None),
+        paint(view(false)),
+        Step::Dump,
+        paint(view(true)),
+        paint(view(true)),
+        Step::Dump,
+        paint(scrolled),
+        paint(traced),
+        paint(offset),
+        Step::Dump,
+        Step::Hover(k),
+        Step::Layout(width, None),
+        paint(view(true)),
+        paint(view(true)),
+        Step::Dump,
+        Step::Media(width * 2.0, height),
+        Step::Layout(width * 2.0, None),
+        paint(view(true)),
+        paint(unclipped),
+        Step::Dump,
+        Step::Leave(k),
+        Step::Layout(width * 2.0, None),
+        paint(view(true)),
+        Step::Dump,
+    ]
+}
+
+/// The corpus's SVGs as svg.rs takes them: each page that writes `<svg` as it is, and every `<svg>…</svg>` the corpus
+/// writes (in its pages and in its scripts' strings) alone in a page. The renderer's snapshots are not used: they
+/// name every element Gumbo does not know (`path`, `rect`, …) `x-unknown`.
+fn corpus_svg_documents() -> Vec<(String, Vec<u8>)> {
+    let texts = common::svg::corpus_texts();
+    let mut documents: Vec<(String, Vec<u8>)> = texts
+        .iter()
+        .filter(|(name, text)| {
+            name.ends_with(".html")
+                && !name.contains("render-nested-")
+                && text.len() < 300_000
+                && text.windows(4).any(|w| w.eq_ignore_ascii_case(b"<svg"))
+        })
+        .cloned()
+        .collect();
+    for (name, snippet) in common::svg::corpus_svg_snippets(&texts) {
+        let mut html = b"<!doctype html><html><body>".to_vec();
+        html.extend_from_slice(&snippet);
+        html.extend_from_slice(b"</body></html>");
+        documents.push((name, html));
+    }
+    documents
+}
+
+/// The written SVG documents that draw thousands of shapes a paint: painted once (and then from the cache) at a width,
+/// and not again under every switch.
+fn heavy_svg_document(what: &str) -> bool {
+    what.starts_with("the use budget") || what.starts_with("an svg of more than")
+}
+
+/// What an SVG run must have reached.
+fn assert_svg_reached(tally: &PaintTally, what: &[&str]) {
+    for name in what {
+        assert!(tally.counts.contains_key(*name), "no {name}: {}", tally.report());
+    }
+}
+
+#[test]
+fn the_corpus_svgs_paint_alike() {
+    let mut run = Run::new("corpus SVGs");
+    let documents = corpus_svg_documents();
+    assert!(documents.len() > 250, "the corpus's SVGs are there ({})", documents.len());
+    let light = themed_master(false);
+    let dark = themed_master(true);
+    for (k, (name, html)) in documents.iter().enumerate() {
+        for (dark_theme, (master, vars)) in [(false, &light), (true, &dark)] {
+            let html = themed_html(html, dark_theme, vars);
+            let (width, height) = if dark_theme { ([412.0, 240.0][k % 2], 915.0) } else { ([375.0, 768.0][k % 2], 667.0) };
+            let theme = if dark_theme { "dark" } else { "light" };
+            run.case(
+                paint_record(width, height, 2.0, master, b"", &html, &svg_steps(width, height, k as u32)),
+                format!("{name} ({theme}, {width} px)"),
+            );
+        }
+    }
+    let tally = run.finish();
+    assert_eq!(tally.documents, documents.len() * 2);
+    assert_svg_reached(
+        &tally,
+        &["paths drawn", "isolated paints", "cached paints drawn", "texts drawn", "groups", "paths stroked", "dashed paths"],
+    );
+}
+
+/// Written SVG documents for each branch of SVG painting.
+fn written_svg_documents() -> Vec<(&'static str, String)> {
+    // Every document carries rules that a :hover on any element changes (body is its ancestor): its paint keys move.
+    let page = |css: &str, body: &str| {
+        format!(
+            "<!DOCTYPE html><html><head><style>body:hover svg rect{{stroke-width:3}}body:hover text{{fill:teal}}{css}</style></head><body>{body}</body></html>"
+        )
+    };
+    let mut docs = vec![
+        (
+            "every shape",
+            page(
+                "",
+                "<svg width=\"200\" height=\"130\"><rect x=\"5\" y=\"5\" width=\"30\" height=\"20\"/><rect x=\"40\" y=\"5\" width=\"30\" height=\"20\" rx=\"5\"/><rect x=\"75\" y=\"5\" width=\"30\" height=\"20\" ry=\"8\"/><rect x=\"110\" y=\"5\" width=\"30\" height=\"20\" rx=\"50\" ry=\"2\"/><rect width=\"0\" height=\"5\"/><rect width=\"5\" height=\"-5\"/><rect x=\"150\" width=\"10\" height=\"10\" rx=\"-2\" ry=\"3\"/><circle cx=\"20\" cy=\"50\" r=\"10\"/><circle cx=\"50\" cy=\"50\" r=\"0\"/><circle cx=\"80\" cy=\"50\" r=\"-3\"/><ellipse cx=\"110\" cy=\"50\" rx=\"15\" ry=\"8\"/><ellipse cx=\"140\" cy=\"50\" rx=\"0\" ry=\"8\"/><line x1=\"0\" y1=\"80\" x2=\"100\" y2=\"90\" stroke=\"black\"/><line x1=\"0\" y1=\"80\" x2=\"100\" y2=\"90\"/><polyline points=\"0,100 20,110 40,100 60,115\" fill=\"none\" stroke=\"blue\"/><polygon points=\"100,100 120,110 110,118\"/><polygon points=\"150 100\"/><polygon points=\"150 100 160\"/><polyline points=\"\"/><path d=\"M150 5 L190 5 L170 40 Z\"/></svg>",
+            ),
+        ),
+        (
+            "percent lengths",
+            page(
+                "",
+                "<svg width=\"50%\" height=\"100\"><rect x=\"10%\" y=\"10%\" width=\"50%\" height=\"25%\"/><circle cx=\"50%\" cy=\"50%\" r=\"10%\"/><ellipse rx=\"20%\" ry=\"10%\" cx=\"50%\" cy=\"50%\" fill=\"red\"/><line x1=\"0%\" y1=\"0\" x2=\"100%\" y2=\"100%\" stroke=\"red\"/><rect x=\"5px\" y=\"1em\" width=\"3em\" height=\"10pt\"/></svg><svg viewBox=\"0 0 50 20\"><rect width=\"100%\" height=\"50%\" fill=\"blue\"/></svg>",
+            ),
+        ),
+        (
+            "path commands",
+            page(
+                "",
+                "<svg width=\"200\" height=\"140\"><path d=\"M10 10 H50 V30 h-20 v10 L5 45 l10 5 Z\" fill=\"red\"/><path d=\"m60 10 c10 0 20 10 20 20 s-10 20 -20 20 C50 40 40 30 60 10z\"/><path d=\"M100 10 Q120 0 140 10 T180 10 q10 10 0 20 t-20 0\" fill=\"none\" stroke=\"green\"/><path d=\"M10 60 A20 10 0 0 1 50 60 a20 10 30 1 0 40 0 A0 5 0 0 0 100 70 A5 5 0 1 1 100 70.001\"/><path d=\"M0,0 1,1 2,2 3,3\" stroke=\"black\"/><path d=\"M 10 80 L 20 90 30 80 Z M 40 80 L 50 90 Z\"/><path d=\"M1e3 1e-2 L.5.5 L-.5-.5\" stroke=\"red\"/><path d=\"M10 100 L20 110 X 30 120\" stroke=\"blue\"/><path d=\"L10 10\"/><path d=\"\"/><path d=\"M10 120 z m 5 5 z\" stroke=\"red\"/><path d=\"M150 100 a10 10 0 1 1 0.01 0 A 10 10 0 01160 110 a 5 5 0 1020 0\"/><path d=\"M150 60 S 160 50 170 60 T 190 60\" fill=\"none\" stroke=\"black\"/></svg>",
+            ),
+        ),
+        (
+            "arcs on edges",
+            page(
+                "",
+                "<svg width=\"200\" height=\"100\"><path d=\"M10 10 A0 0 0 0 0 30 30\" stroke=\"red\"/><path d=\"M10 10 A10 10 0 0 0 10 10\" stroke=\"red\"/><path d=\"M40 10 A1 1 0 1 1 80 10\" stroke=\"red\"/><path d=\"M40 50 A-10 -5 45 0 1 80 50\" stroke=\"red\"/><path d=\"M100 10 A1e39 1e39 0 0 0 110 10\" stroke=\"red\"/><path d=\"M100 40 A10 10 720 1 0 140 40\" stroke=\"red\"/><path d=\"M100 70 A10 10 0 2 0 140 70\" stroke=\"red\"/><path d=\"M150 70 A10 1e-30 0 0 0 190 70\" stroke=\"red\"/></svg>",
+            ),
+        ),
+        (
+            "transform attributes",
+            page(
+                "",
+                "<svg width=\"200\" height=\"200\"><g transform=\"translate(10,20) rotate(30) scale(2,1)\"><rect width=\"10\" height=\"10\"/></g><rect transform=\"matrix(1 0.5 0 1 50 0)\" width=\"10\" height=\"10\"/><rect transform=\"rotate(45 60 60)\" width=\"10\" height=\"10\" x=\"55\" y=\"55\"/><rect transform=\"skewX(20) skewY(10)\" x=\"100\" width=\"10\" height=\"10\"/><rect transform=\"translate(5)\" y=\"100\" width=\"10\" height=\"10\"/><rect transform=\"scale(0)\" width=\"10\" height=\"10\"/><rect transform=\"SCALE(2)\" x=\"60\" y=\"60\" width=\"5\" height=\"5\"/><rect transform=\"foo(1) translate(10 10)\" width=\"5\" height=\"5\"/><rect transform=\"rotate(10,20)\" width=\"5\" height=\"5\"/><rect transform=\"translate(10 10\" width=\"5\" height=\"5\"/><rect transform=\"matrix(1 0 0 1 0)\" width=\"5\" height=\"5\"/><g transform=\"translate(0 150)\"><g transform=\"scale(.5)\"><circle r=\"20\" cx=\"20\" cy=\"20\"/></g></g></svg>",
+            ),
+        ),
+        (
+            "CSS transforms",
+            page(
+                ".spin{transform:rotate(45deg)}.grow{transform:scale(1.5);transform-origin:10px 10px}.box{transform:translate(10px,20%);transform-box:fill-box;transform-origin:center}",
+                "<svg width=\"200\" height=\"120\"><rect style=\"transform:rotate(20deg);transform-origin:center;transform-box:fill-box\" x=\"20\" y=\"20\" width=\"30\" height=\"10\"/><g style=\"transform:translate(10px,20%)\"><rect width=\"10\" height=\"10\"/></g><circle class=\"spin\" cx=\"80\" cy=\"40\" r=\"10\"/><circle class=\"grow\" cx=\"120\" cy=\"40\" r=\"10\"/><rect class=\"box\" x=\"140\" y=\"10\" width=\"20\" height=\"40\"/><rect style=\"transform:rotateY(80deg) skew(10deg,5deg)\" x=\"10\" y=\"80\" width=\"20\" height=\"20\"/><rect style=\"transform:matrix(1,0,0,1,5,5)\" transform=\"scale(3)\" x=\"60\" y=\"80\" width=\"5\" height=\"5\"/></svg>",
+            ),
+        ),
+        (
+            "view boxes and aspect ratios",
+            page(
+                "svg{border:1px solid}",
+                "<svg width=\"100\" height=\"50\" viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg width=\"100\" height=\"50\" viewBox=\"0 0 10 10\" preserveAspectRatio=\"none\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg width=\"100\" height=\"50\" viewBox=\"0 0 10 10\" preserveAspectRatio=\"xMinYMin meet\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg width=\"100\" height=\"50\" viewBox=\"0 0 10 10\" preserveAspectRatio=\"xMidYMid slice\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg width=\"50\" height=\"100\" viewBox=\"0 0 10 10\" preserveAspectRatio=\"xMaxYMax\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg width=\"50\" height=\"100\" viewBox=\"-5 -5 10 10\" preserveAspectRatio=\"xMinYMax slice\"><circle r=\"5\"/></svg><svg width=\"50\" height=\"100\" viewBox=\"0 0 10 10\" preserveAspectRatio=\"XMAXYMIN\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg width=\"50\" height=\"30\" viewBox=\"0 0 0 10\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg width=\"50\" height=\"30\" viewBox=\"0 0 10\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg><svg viewBox=\"0 0 30 10\"><rect width=\"30\" height=\"10\"/></svg><svg height=\"40\" viewBox=\"0,0,20,10\" preserveAspectRatio=\"foo\"><rect width=\"20\" height=\"10\"/></svg>",
+            ),
+        ),
+        (
+            "svgs sized by CSS",
+            page(
+                "",
+                "<svg style=\"width:100px;height:50px\" viewBox=\"0 0 10 10\"><rect width=\"10\" height=\"10\"/></svg><svg style=\"display:block;width:50%\"><rect width=\"100%\" height=\"10\"/></svg><svg width=\"0\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg><svg width=\"100\" height=\"0\"><rect width=\"10\" height=\"10\"/></svg><svg><rect width=\"10\" height=\"10\"/></svg><svg width=\"30\" height=\"30\" style=\"padding:5px;border:3px solid red;background:yellow;box-shadow:0 0 4px;border-radius:6px\"><rect width=\"100\" height=\"100\"/></svg>",
+            ),
+        ),
+        (
+            "fills",
+            page(
+                "rect.c{fill:orange}",
+                "<svg width=\"300\" height=\"40\" style=\"color:green\"><rect width=\"9\" height=\"9\" fill=\"red\"/><rect x=\"10\" width=\"9\" height=\"9\" fill=\"#0f08\"/><rect x=\"20\" width=\"9\" height=\"9\" fill=\"rgb(1,2,3)\"/><rect x=\"30\" width=\"9\" height=\"9\" fill=\"hsl(120,50%,50%)\"/><rect x=\"40\" width=\"9\" height=\"9\" fill=\"none\"/><rect x=\"50\" width=\"9\" height=\"9\" fill=\"transparent\"/><rect x=\"60\" width=\"9\" height=\"9\" fill=\"currentColor\"/><rect x=\"70\" width=\"9\" height=\"9\" fill=\"inherit\"/><rect x=\"80\" width=\"9\" height=\"9\" fill=\"url(#none) red\"/><rect x=\"90\" width=\"9\" height=\"9\" fill=\"url(#missing)\"/><rect x=\"100\" width=\"9\" height=\"9\" fill=\"url(#missing) none\"/><rect x=\"110\" width=\"9\" height=\"9\" fill=\"\"/><rect x=\"120\" width=\"9\" height=\"9\" fill=\"  \"/><rect x=\"130\" width=\"9\" height=\"9\" fill=\"red blue\"/><rect x=\"140\" width=\"9\" height=\"9\" fill=\"rgba(0,0,0,.5)\"/><rect x=\"150\" width=\"9\" height=\"9\" fill=\"color-mix(in srgb, red, blue)\"/><rect x=\"160\" width=\"9\" height=\"9\" fill=\"light-dark(red, blue)\"/><rect x=\"170\" width=\"9\" height=\"9\" fill=\"calc(1)\"/><rect x=\"180\" width=\"9\" height=\"9\" fill=\"red\" style=\"fill:blue\"/><rect x=\"190\" width=\"9\" height=\"9\" class=\"c\" fill=\"red\"/><g fill=\"purple\"><rect x=\"200\" width=\"9\" height=\"9\"/><g><rect x=\"210\" width=\"9\" height=\"9\"/></g></g><rect x=\"220\" width=\"9\" height=\"9\" fill=\"CurrentColor\" style=\"color:red\"/><rect x=\"230\" width=\"9\" height=\"9\" fill=\"#zzz\"/><rect x=\"240\" width=\"9\" height=\"9\" fill=\"NONE\"/><rect x=\"250\" width=\"9\" height=\"9\" fill=\"rgb(0 0 0 / 30%)\"/><rect x=\"260\" width=\"9\" height=\"9\" fill=\"url(#none)\" stroke=\"red\"/></svg>",
+            ),
+        ),
+        (
+            "strokes",
+            page(
+                "line.k{stroke:blue;stroke-width:4}",
+                "<svg width=\"300\" height=\"100\"><line x1=\"5\" y1=\"5\" x2=\"50\" y2=\"5\" stroke=\"red\" stroke-width=\"0\"/><line x1=\"5\" y1=\"15\" x2=\"50\" y2=\"15\" stroke=\"red\" stroke-width=\"2\"/><line x1=\"5\" y1=\"25\" x2=\"50\" y2=\"25\" stroke=\"red\" stroke-width=\"2px\"/><line x1=\"5\" y1=\"35\" x2=\"50\" y2=\"35\" stroke=\"red\" stroke-width=\"50%\"/><line x1=\"5\" y1=\"45\" x2=\"50\" y2=\"45\" stroke=\"red\" stroke-width=\"-1\"/><line x1=\"5\" y1=\"55\" x2=\"50\" y2=\"55\" stroke=\"red\" stroke-width=\"1em\"/><line x1=\"60\" y1=\"5\" x2=\"100\" y2=\"5\" stroke=\"red\" stroke-linecap=\"round\"/><line x1=\"60\" y1=\"15\" x2=\"100\" y2=\"15\" stroke=\"red\" stroke-linecap=\"square\"/><line x1=\"60\" y1=\"25\" x2=\"100\" y2=\"25\" stroke=\"red\" stroke-linecap=\"ROUND\"/><line x1=\"60\" y1=\"35\" x2=\"100\" y2=\"35\" stroke=\"red\" stroke-linecap=\"butt\"/><polyline points=\"110,5 130,30 150,5\" fill=\"none\" stroke=\"black\" stroke-width=\"5\" stroke-linejoin=\"miter\" stroke-miterlimit=\"1\"/><polyline points=\"160,5 180,30 200,5\" fill=\"none\" stroke=\"black\" stroke-width=\"5\" stroke-linejoin=\"round\"/><polyline points=\"210,5 230,30 250,5\" fill=\"none\" stroke=\"black\" stroke-width=\"5\" stroke-linejoin=\"bevel\"/><polyline points=\"110,50 130,80 150,50\" fill=\"none\" stroke=\"black\" stroke-linejoin=\"arcs\" stroke-miterlimit=\"-3\"/><rect x=\"160\" y=\"50\" width=\"20\" height=\"20\" stroke=\"none\"/><rect x=\"190\" y=\"50\" width=\"20\" height=\"20\" stroke=\"green\" stroke-opacity=\".3\"/><line class=\"k\" x1=\"5\" y1=\"80\" x2=\"100\" y2=\"80\"/><g stroke=\"orange\" stroke-width=\"3\"><circle cx=\"250\" cy=\"60\" r=\"10\"/></g></svg>",
+            ),
+        ),
+        (
+            "dashes",
+            page(
+                "",
+                "<svg width=\"200\" height=\"150\"><g stroke=\"black\" stroke-width=\"2\"><line x1=\"5\" y1=\"5\" x2=\"190\" y2=\"5\" stroke-dasharray=\"5\"/><line x1=\"5\" y1=\"15\" x2=\"190\" y2=\"15\" stroke-dasharray=\"5 3\"/><line x1=\"5\" y1=\"25\" x2=\"190\" y2=\"25\" stroke-dasharray=\"5,3,2\"/><line x1=\"5\" y1=\"35\" x2=\"190\" y2=\"35\" stroke-dasharray=\"0\"/><line x1=\"5\" y1=\"45\" x2=\"190\" y2=\"45\" stroke-dasharray=\"-5 3\"/><line x1=\"5\" y1=\"55\" x2=\"190\" y2=\"55\" stroke-dasharray=\"5px 2em\"/><line x1=\"5\" y1=\"65\" x2=\"190\" y2=\"65\" stroke-dasharray=\"10%\"/><line x1=\"5\" y1=\"75\" x2=\"190\" y2=\"75\" stroke-dasharray=\"none\"/><line x1=\"5\" y1=\"85\" x2=\"190\" y2=\"85\" stroke-dasharray=\"\"/><line x1=\"5\" y1=\"95\" x2=\"190\" y2=\"95\" stroke-dasharray=\"4 2\" stroke-dashoffset=\"3\"/><line x1=\"5\" y1=\"105\" x2=\"190\" y2=\"105\" stroke-dasharray=\"4 2\" stroke-dashoffset=\"-2\"/><line x1=\"5\" y1=\"115\" x2=\"190\" y2=\"115\" stroke-dasharray=\"4 2\" stroke-dashoffset=\"50%\"/><g stroke-dasharray=\"1 1 1\"><line x1=\"5\" y1=\"125\" x2=\"190\" y2=\"125\"/></g><line x1=\"5\" y1=\"135\" x2=\"190\" y2=\"135\" style=\"stroke-dasharray:6 2\"/></g></svg>",
+            ),
+        ),
+        (
+            "fill rules",
+            page(
+                ".eo{fill-rule:evenodd}",
+                "<svg width=\"200\" height=\"60\"><path d=\"M10 10 h40 v40 h-40 z M20 20 h20 v20 h-20 z\" fill-rule=\"evenodd\"/><path d=\"M60 10 h40 v40 h-40 z M70 20 h20 v20 h-20 z\" fill-rule=\"nonzero\"/><path d=\"M110 10 h40 v40 h-40 z M120 20 h20 v20 h-20 z\" fill-rule=\"EVENODD\"/><path class=\"eo\" d=\"M160 10 h30 v30 h-30 z\"/><g fill-rule=\"evenodd\"><path d=\"M0 0 h5 v5 z\"/></g></svg>",
+            ),
+        ),
+        (
+            "opacity at each level",
+            page(
+                ".half{opacity:.5}",
+                "<svg width=\"300\" height=\"60\" style=\"opacity:.8\"><g opacity=\".5\"><rect width=\"20\" height=\"20\"/></g><g class=\"half\"><rect x=\"25\" width=\"20\" height=\"20\" opacity=\".5\"/></g><rect x=\"50\" width=\"20\" height=\"20\" opacity=\"2\"/><rect x=\"75\" width=\"20\" height=\"20\" opacity=\"-1\"/><rect x=\"100\" width=\"20\" height=\"20\" opacity=\"50%\"/><rect x=\"125\" width=\"20\" height=\"20\" opacity=\"abc\"/><rect x=\"150\" width=\"20\" height=\"20\" fill-opacity=\".5\"/><rect x=\"175\" width=\"20\" height=\"20\" fill-opacity=\"50%\" stroke=\"red\" stroke-opacity=\"0.25\"/><rect x=\"200\" width=\"20\" height=\"20\" fill-opacity=\"2\"/><rect x=\"225\" width=\"20\" height=\"20\" fill-opacity=\"-1\" stroke=\"red\" stroke-opacity=\"x\"/><g opacity=\".5\"><g opacity=\".5\" fill-opacity=\".5\"><circle cx=\"260\" cy=\"10\" r=\"8\"/></g></g><rect x=\"0\" y=\"30\" width=\"20\" height=\"20\" style=\"opacity:.3\" opacity=\".5\"/><rect x=\"25\" y=\"30\" width=\"20\" height=\"20\" opacity=\"1e39\"/><rect x=\"50\" y=\"30\" width=\"20\" height=\"20\" opacity=\" .7 \"/></svg>",
+            ),
+        ),
+        (
+            "gradients",
+            page(
+                "",
+                "<svg width=\"300\" height=\"200\" style=\"color:navy\"><defs><linearGradient id=\"g1\"><stop offset=\"0\" stop-color=\"red\"/><stop offset=\"100%\" stop-color=\"blue\"/></linearGradient><linearGradient id=\"g2\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"20%\" stop-color=\"red\" stop-opacity=\".5\"/><stop offset=\"10%\" style=\"stop-color:green\"/><stop offset=\"1.5\" stop-color=\"currentColor\"/><stop stop-color=\"x\"/><stop offset=\"-1\" stop-color=\"#0f0\" style=\"stop-opacity:30%\"/></linearGradient><linearGradient id=\"g3\" gradientUnits=\"userSpaceOnUse\" x1=\"10\" y1=\"0\" x2=\"90\" y2=\"0\" spreadMethod=\"reflect\" gradientTransform=\"rotate(30)\"><stop offset=\".5\" stop-color=\"orange\"/></linearGradient><linearGradient id=\"g4\" gradientUnits=\"userspaceonuse\"><stop offset=\"0\" stop-color=\"red\"/></linearGradient><linearGradient id=\"empty\"></linearGradient><radialGradient id=\"r1\"><stop offset=\"0\" stop-color=\"white\"/><stop offset=\"1\" stop-color=\"black\"/></radialGradient><radialGradient id=\"r2\" cx=\"30%\" cy=\"40%\" r=\"70%\" fx=\"10%\" fy=\"20%\" spreadMethod=\"repeat\"><stop offset=\"0\" stop-color=\"yellow\"/><stop offset=\".5\" stop-color=\"green\" stop-opacity=\"0\"/></radialGradient><radialGradient id=\"r3\" gradientUnits=\"userSpaceOnUse\" cx=\"200\" cy=\"100\" r=\"30\"><stop offset=\"0\" stop-color=\"pink\"/><stop offset=\"1\" stop-color=\"purple\"/></radialGradient><linearGradient id=\"chain\" xlink:href=\"#g1\"></linearGradient></defs><rect width=\"40\" height=\"40\" fill=\"url(#g1)\"/><rect x=\"45\" width=\"40\" height=\"40\" fill=\"url(#g2)\" fill-opacity=\".5\"/><rect x=\"90\" width=\"40\" height=\"40\" fill=\"url(#g3)\"/><rect x=\"135\" width=\"40\" height=\"40\" fill=\"url(#g4)\"/><rect x=\"180\" width=\"40\" height=\"40\" fill=\"url(#empty)\"/><rect x=\"225\" width=\"40\" height=\"40\" fill=\"url(#empty) red\"/><circle cx=\"20\" cy=\"70\" r=\"20\" fill=\"url(#r1)\"/><circle cx=\"70\" cy=\"70\" r=\"20\" fill=\"url(#r2)\"/><circle cx=\"200\" cy=\"100\" r=\"30\" fill=\"url(#r3)\"/><rect x=\"10\" y=\"100\" width=\"60\" height=\"20\" fill=\"none\" stroke=\"url(#g1)\" stroke-width=\"4\" stroke-opacity=\".5\"/><line x1=\"10\" y1=\"130\" x2=\"100\" y2=\"130\" stroke=\"url(#g1)\" stroke-width=\"5\"/><rect x=\"110\" y=\"100\" width=\"30\" height=\"30\" fill=\"url('#g1')\"/><rect x=\"150\" y=\"100\" width=\"30\" height=\"30\" style=\"fill:url(#r1)\"/><rect x=\"10\" y=\"140\" width=\"30\" height=\"30\" fill=\"url(#chain)\"/><rect x=\"50\" y=\"140\" width=\"30\" height=\"30\" fill=\"url(#rect1)\"/><rect id=\"rect1\" x=\"90\" y=\"140\" width=\"30\" height=\"30\" fill=\"url(#g1) red\" stroke=\"url(#r2) blue\"/><text x=\"130\" y=\"160\" fill=\"url(#g1)\">gradient text</text><path d=\"M250 150 L250 190\" stroke=\"url(#g1)\" stroke-width=\"8\"/><circle cx=\"280\" cy=\"170\" r=\"12\" fill=\"none\" stroke=\"url(#r1)\" stroke-width=\"6\"/><circle cx=\"280\" cy=\"130\" r=\"12\" stroke=\"url(#r3)\"/></svg>",
+            ),
+        ),
+        (
+            "text and tspans",
+            page(
+                "text{font-size:14px}.big{font-size:20px}",
+                "<svg width=\"300\" height=\"200\"><text x=\"10\" y=\"20\">Hello <tspan fill=\"red\">red</tspan> world</text><text x=\"150\" y=\"20\" text-anchor=\"middle\">middle</text><text x=\"290\" y=\"20\" text-anchor=\"end\">end</text><text x=\"10\" y=\"40\" style=\"text-anchor:middle\">styled</text><text x=\"10\" y=\"60\" dx=\"5\" dy=\"1em\">shifted <tspan dx=\"2em\" dy=\"-0.5em\" class=\"big\">big</tspan><tspan x=\"200\" y=\"60\">placed</tspan> after</text><text x=\"10 20 30\" y=\"100\">list</text><text y=\"120\">  lots   of   space  </text><text x=\"10\" y=\"140\"><tspan>nested <tspan fill=\"blue\">deep <tspan style=\"display:none\">hidden</tspan>end</tspan></tspan></text><text x=\"10\" y=\"160\"></text><text x=\"10\" y=\"160\">   </text><text x=\"10\" y=\"180\" fill=\"none\">no fill</text><text x=\"100\" y=\"180\" fill-opacity=\".5\" fill=\"green\">half</text><g fill=\"orange\" text-anchor=\"end\"><text x=\"290\" y=\"180\">group <a href=\"#x\">link</a> <tspan fill=\"none\">none</tspan>done</text></g><text x=\"10\" y=\"195\" style=\"font-size:0\">zero</text><text x=\"200\" y=\"100\" visibility=\"hidden\">hidden</text><text x=\"200\" y=\"120\" dx=\"x\" dy=\"3px\">bad shift</text></svg>",
+            ),
+        ),
+        (
+            "use",
+            page(
+                "",
+                "<svg width=\"300\" height=\"120\"><defs><rect id=\"r\" width=\"10\" height=\"10\"/><symbol id=\"s\" viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"5\"/></symbol><symbol id=\"s0\"><rect width=\"4\" height=\"4\"/></symbol><g id=\"grp\"><rect width=\"5\" height=\"5\"/><use href=\"#r\" x=\"10\"/></g><text id=\"t\" y=\"10\">used</text></defs><use href=\"#r\" x=\"5\" y=\"5\"/><use xlink:href=\"#s\" x=\"20\" width=\"20\" height=\"40\"/><use href=\"#s\" x=\"50\"/><use href=\"#s0\" x=\"80\"/><use href=\"#grp\" x=\"100\"/><use href=\"#missing\"/><use href=\"r\"/><use href=\"#\"/><use href=\"#1a\"/><use href=\"\" xlink:href=\"#r\" x=\"120\"/><use href=\"#self\" id=\"self\"/><use href=\"#r\" x=\"140\" fill=\"red\"/><use href=\"#r\" x=\"160\" style=\"fill:blue\" stroke=\"black\"/><use href=\"#t\" x=\"180\" fill=\"green\" text-anchor=\"middle\"/><use href=\"#r\" x=\"200\" visibility=\"hidden\"/><use href=\"#r\" x=\"220\" opacity=\".5\" transform=\"rotate(10)\"/><use href=\"#r\" x=\"50%\" y=\"50%\"/><use href=\"#s\" x=\"10\" y=\"60\" width=\"50%\" height=\"0\"/><g id=\"c1\"><use href=\"#c2\" x=\"1\"/></g><g id=\"c2\"><use href=\"#c1\" x=\"1\"/></g></svg>",
+            ),
+        ),
+        (
+            "use chains deeper than eight",
+            page(
+                "",
+                "<svg width=\"200\" height=\"50\"><defs><rect id=\"u0\" width=\"3\" height=\"3\" fill=\"red\"/><use id=\"u1\" href=\"#u0\" x=\"2\"/><use id=\"u2\" href=\"#u1\" x=\"2\"/><use id=\"u3\" href=\"#u2\" x=\"2\"/><use id=\"u4\" href=\"#u3\" x=\"2\"/><use id=\"u5\" href=\"#u4\" x=\"2\"/><use id=\"u6\" href=\"#u5\" x=\"2\"/><use id=\"u7\" href=\"#u6\" x=\"2\"/><use id=\"u8\" href=\"#u7\" x=\"2\"/><use id=\"u9\" href=\"#u8\" x=\"2\"/><use id=\"u10\" href=\"#u9\" x=\"2\"/></defs><use href=\"#u7\"/><use href=\"#u8\" y=\"10\"/><use href=\"#u9\" y=\"20\"/><use href=\"#u10\" y=\"30\"/></svg>",
+            ),
+        ),
+        (
+            "nested svgs",
+            page(
+                "",
+                "<svg width=\"200\" height=\"100\"><svg x=\"10\" y=\"10\" width=\"20\" height=\"20\" viewBox=\"0 0 100 100\"><rect width=\"100\" height=\"100\" fill=\"red\"/><svg><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg></svg><switch><rect x=\"50\" width=\"10\" height=\"10\"/><circle cx=\"80\" cy=\"10\" r=\"5\"/></switch><a href=\"#\"><rect x=\"100\" width=\"10\" height=\"10\"/></a><foreignObject width=\"50\" height=\"50\"><div>html</div></foreignObject><image href=\"a.png\" width=\"10\" height=\"10\"/><unknown><rect y=\"50\" width=\"5\" height=\"5\"/></unknown></svg>",
+            ),
+        ),
+        (
+            "clip paths and masks",
+            page(
+                ".clipped{clip-path:circle(40%)}",
+                "<svg width=\"200\" height=\"100\" class=\"clipped\"><defs><clipPath id=\"c\"><rect width=\"10\" height=\"10\"/></clipPath><mask id=\"m\"><rect width=\"100\" height=\"100\" fill=\"white\"/></mask><filter id=\"f\"><feGaussianBlur stdDeviation=\"2\"/></filter><marker id=\"mk\"><path d=\"M0 0 L5 5\"/></marker><pattern id=\"pt\" width=\"4\" height=\"4\"><rect width=\"2\" height=\"2\"/></pattern></defs><rect clip-path=\"url(#c)\" width=\"50\" height=\"50\"/><g mask=\"url(#m)\"><circle cx=\"70\" cy=\"30\" r=\"20\"/></g><rect x=\"100\" width=\"30\" height=\"30\" filter=\"url(#f)\"/><path d=\"M140 10 L180 40\" stroke=\"black\" marker-start=\"url('#mk')\" marker-end=\"url(#mk )\"/><rect x=\"140\" y=\"50\" width=\"30\" height=\"30\" fill=\"url(#pt)\"/><clipPath><rect width=\"5\" height=\"5\"/></clipPath></svg><svg width=\"50\" height=\"50\"><rect width=\"20\" height=\"20\" clip-path=\"url(#elsewhere)\"/></svg>",
+            ),
+        ),
+        (
+            "currentColor and var()",
+            page(
+                ":root{--root:pink}",
+                "<svg width=\"300\" height=\"40\" style=\"color:green;--c:blue;--w:3\"><rect width=\"9\" height=\"9\" fill=\"currentColor\"/><rect x=\"10\" width=\"9\" height=\"9\" fill=\"var(--c)\"/><rect x=\"20\" width=\"9\" height=\"9\" style=\"fill:var(--c)\"/><rect x=\"30\" width=\"9\" height=\"9\" fill=\"var(--missing)\"/><rect x=\"40\" width=\"9\" height=\"9\" fill=\"var(--missing, red)\"/><rect x=\"50\" width=\"9\" height=\"9\" stroke=\"var(--c)\" stroke-width=\"var(--w)\"/><rect x=\"60\" width=\"9\" height=\"9\" fill=\"var(--root)\"/><g style=\"color:red\" fill=\"currentColor\"><rect x=\"70\" width=\"9\" height=\"9\"/><rect x=\"80\" width=\"9\" height=\"9\" style=\"color:orange\"/></g><rect x=\"90\" width=\"9\" height=\"9\" fill=\"var(--c\"/><rect x=\"100\" width=\"9\" height=\"9\" style=\"--c:yellow\" fill=\"var(--c)\"/><text x=\"120\" y=\"20\" fill=\"var(--c)\" style=\"color:red\">var</text><rect x=\"200\" width=\"9\" height=\"9\" fill-opacity=\"var(--o, .5)\"/><rect x=\"210\" width=\"9\" height=\"9\" fill=\"calc(var(--w) * 1px)\"/></svg>",
+            ),
+        ),
+        (
+            "NaN and degenerate geometry",
+            page(
+                "",
+                "<svg width=\"100\" height=\"100\"><rect width=\"1e39\" height=\"10\"/><circle r=\"1e39\"/><rect x=\"1e39\" width=\"10\" height=\"10\" rx=\"1e39\"/><path d=\"M 1e39 0 L -1e39 0 L 0 1e39 Z\" stroke=\"red\"/><path d=\"M0 0 A1e39 5 0 0 0 1e39 1e39\" stroke=\"red\"/><g transform=\"scale(1e39)\"><rect width=\"1\" height=\"1\"/></g><g transform=\"rotate(1e39)\"><rect width=\"1\" height=\"1\"/></g><rect width=\"1e-45\" height=\"1e-45\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"0\" stroke=\"black\"/><polygon points=\"1e39,1e39 -1e39,0 0,0\"/><rect style=\"transform:scale(0)\" width=\"10\" height=\"10\"/><rect x=\"-1e39\" width=\"1e39\" height=\"10\" rx=\"3\" stroke=\"red\"/><ellipse cx=\"-1e39\" rx=\"1e39\" ry=\"5\" fill=\"url(#gn)\"/><linearGradient id=\"gn\"><stop stop-color=\"red\"/></linearGradient></svg><svg width=\"50\" height=\"50\" viewBox=\"0 0 1e39 1\"><rect width=\"10\" height=\"10\"/></svg><svg width=\"50\" height=\"50\" viewBox=\"0 0 1e-45 1e-45\"><rect width=\"10\" height=\"10\"/></svg><svg width=\"50\" height=\"50\" viewBox=\"-1e39 0 10 10\"><rect width=\"10\" height=\"10\"/></svg>",
+            ),
+        ),
+        (
+            "visibility and display",
+            page(
+                ".gone{display:none}.inv{visibility:hidden}",
+                "<svg width=\"300\" height=\"40\"><g visibility=\"hidden\"><rect width=\"9\" height=\"9\"/><rect x=\"10\" width=\"9\" height=\"9\" visibility=\"visible\"/></g><g class=\"inv\"><rect x=\"20\" width=\"9\" height=\"9\"/><rect x=\"30\" width=\"9\" height=\"9\" style=\"visibility:visible\"/><rect x=\"40\" width=\"9\" height=\"9\" visibility=\" Visible \"/></g><g display=\"none\"><rect x=\"50\" width=\"9\" height=\"9\"/></g><rect x=\"60\" width=\"9\" height=\"9\" class=\"gone\"/><rect x=\"70\" width=\"9\" height=\"9\" visibility=\"collapse\"/><rect x=\"80\" width=\"9\" height=\"9\" display=\" NONE \"/><rect x=\"90\" width=\"9\" height=\"9\" display=\"inline\"/><rect x=\"100\" width=\"9\" height=\"9\" visibility=\"bogus\" class=\"inv\"/><g visibility=\"hidden\"><g><rect x=\"110\" width=\"9\" height=\"9\"/></g><use href=\"#vr\"/></g><rect id=\"vr\" x=\"120\" width=\"9\" height=\"9\"/><text x=\"130\" y=\"9\" class=\"inv\">x</text><text x=\"140\" y=\"9\" visibility=\"hidden\"><tspan visibility=\"visible\">v</tspan></text></svg>",
+            ),
+        ),
+        (
+            "elements never drawn",
+            page(
+                "",
+                "<svg width=\"100\" height=\"40\"><defs><rect width=\"9\" height=\"9\"/></defs><title>t</title><desc>d</desc><symbol><rect width=\"9\" height=\"9\"/></symbol><marker><rect width=\"9\" height=\"9\"/></marker><pattern><rect width=\"9\" height=\"9\"/></pattern><filter><rect width=\"9\" height=\"9\"/></filter><metadata>m</metadata><style>rect{}</style><script>1</script><linearGradient><stop/></linearGradient><mask><rect width=\"9\" height=\"9\"/></mask><!-- a comment --><![CDATA[cdata]]><rect x=\"50\" width=\"9\" height=\"9\"/></svg>",
+            ),
+        ),
+        (
+            "paint keys and their references",
+            page(
+                "",
+                "<svg width=\"100\" height=\"40\"><defs><linearGradient id=\"in\"><stop stop-color=\"red\"/></linearGradient></defs><rect width=\"9\" height=\"9\" fill=\"url(#in)\"/><rect x=\"10\" width=\"9\" height=\"9\" style=\"fill:url(#in)\"/><rect x=\"20\" width=\"9\" height=\"9\" filter=\"url(#in) url(#in2)\"/></svg><svg width=\"100\" height=\"40\"><rect width=\"9\" height=\"9\" fill=\"url(#in)\"/></svg><svg width=\"100\" height=\"40\"><rect width=\"9\" height=\"9\" mask=\"url(&quot;#nothing&quot;)\"/><rect x=\"10\" width=\"9\" height=\"9\" style=\"x:url(in)\"/></svg><svg width=\"100\" height=\"40\"><g id=\"inside\"><rect width=\"9\" height=\"9\" marker-mid=\"url(#inside) url(#inside\"/></g></svg><svg width=\"100\" height=\"40\"><use href=\"#inside\"/></svg><svg width=\"100\" height=\"40\"><image href=\"a.png\"/><rect width=\"9\" height=\"9\"/></svg><svg width=\"100\" height=\"40\" fill=\"url(#in)\"><rect width=\"9\" height=\"9\"/></svg>",
+            ),
+        ),
+        ("use budget shared by svgs", {
+            let mut fan = String::from("<defs><rect id=\"f0\" width=\"1\" height=\"1\"/>");
+            for level in 1..=6 {
+                fan += &format!("<g id=\"f{level}\">");
+                for k in 0..6 {
+                    fan += &format!("<use href=\"#f{}\" x=\"{k}\"/>", level - 1);
+                }
+                fan += "</g>";
+            }
+            fan += "</defs>";
+            page(
+                "",
+                &format!(
+                    "<svg width=\"100\" height=\"30\">{fan}<use href=\"#f5\"/></svg><svg width=\"100\" height=\"30\"><use href=\"#f4\"/><use href=\"#f2\" y=\"5\"/></svg><svg width=\"100\" height=\"30\"><use href=\"#f6\"/></svg><svg width=\"100\" height=\"30\"><use href=\"#f1\"/></svg>"
+                ),
+            )
+        }),
+        (
+            "svgs in clips and groups",
+            page(
+                ".o{opacity:.5}.t{transform:rotate(10deg)}.f{filter:blur(1px)}.h{overflow:hidden;width:30px;height:20px}",
+                "<div class=\"h\"><svg width=\"60\" height=\"60\"><rect width=\"60\" height=\"60\"/></svg></div><div class=\"o\"><svg width=\"30\" height=\"30\"><circle cx=\"15\" cy=\"15\" r=\"15\"/></svg></div><div class=\"t\"><svg width=\"30\" height=\"30\"><rect width=\"30\" height=\"30\" fill=\"red\"/></svg></div><div class=\"f\"><svg width=\"30\" height=\"30\"><rect width=\"30\" height=\"30\" fill=\"blue\"/></svg></div><div style=\"margin-top:2000px\"><svg width=\"30\" height=\"30\"><rect width=\"30\" height=\"30\"/></svg></div><p>text <svg width=\"12\" height=\"12\" style=\"vertical-align:middle\"><circle cx=\"6\" cy=\"6\" r=\"6\"/></svg> inline</p><div style=\"position:fixed;top:0;right:0\"><svg width=\"20\" height=\"20\"><rect width=\"20\" height=\"20\"/></svg></div>",
+            ),
+        ),
+    ];
+    // The group cache: top-level groups of eight elements and more, through draw_cached once the paint key moves.
+    let mut cached_groups = String::from("<svg width=\"300\" height=\"100\">");
+    for g in 0..4 {
+        cached_groups += &format!("<g{}>", ["", " opacity=\".5\"", " id=\"g2\"", " transform=\"translate(1 1)\""][g]);
+        for k in 0..6 {
+            cached_groups += &format!("<rect x=\"{}\" y=\"{}\" width=\"8\" height=\"8\" fill=\"#{k}{g}0\"/>", k * 10, g * 20);
+        }
+        cached_groups += "<text x=\"70\" y=\"10\">group</text></g>";
+    }
+    cached_groups += "<g><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/></g>";
+    cached_groups += "<g><rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\" fill=\"url(#x)\"/> </g>";
+    cached_groups += "<g><rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\" fill=\"var(--v)\"/> </g>";
+    cached_groups +=
+        "<g><rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <use href=\"#g2\"/> </g>";
+    cached_groups += "<g><rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\" style=\"fill:var(--v)\"/> </g>";
+    cached_groups += "<g><g><rect width=\"1\" height=\"1\"/> <rect width=\"1\" height=\"1\"/></g> <rect width=\"1\" height=\"1\"/> <circle r=\"1\"/> </g></svg>";
+    docs.push(("cached groups", page("", &cached_groups)));
+    let eight = |extra: &str| format!("<g>{}{extra}</g>", "<rect width=\"1\" height=\"1\"/>".repeat(7));
+    docs.push((
+        "groups the cache refuses",
+        page(
+            "rect.u{fill:url(#ga)}",
+            &format!(
+                "<svg width=\"50\" height=\"20\"><defs><linearGradient id=\"ga\"><stop stop-color=\"red\"/></linearGradient></defs>{}</svg><svg width=\"50\" height=\"20\">{}</svg><svg width=\"50\" height=\"20\">{}</svg><div style=\"fill:url(#gc)\"><svg width=\"50\" height=\"20\"><linearGradient id=\"gc\"><stop stop-color=\"red\"/></linearGradient>{}</svg></div>",
+                eight("<rect class=\"u\" width=\"1\" height=\"1\"/>"),
+                eight("<rect fill=\"var(--v)\" width=\"1\" height=\"1\"/>"),
+                eight("<rect stroke=\"VAR(--v, red)\" width=\"1\" height=\"1\"/>"),
+                eight("<rect width=\"1\" height=\"1\"/>")
+            ),
+        ),
+    ));
+    docs.push((
+        "gradient children that are no stops, and empty shifts",
+        page(
+            "",
+            "<svg width=\"100\" height=\"40\"><linearGradient id=\"gw\"> <stop offset=\"0\" stop-color=\"red\"/> <!-- c --> <rect width=\"9\" height=\"9\"/> <stop offset=\"1\" stop-color=\"blue\"/> </linearGradient><rect width=\"30\" height=\"30\" fill=\"url(#gw)\"/><text x=\"40\" y=\"20\" dx=\"\" dy=\"\">e</text></svg>",
+        ),
+    ));
+    docs.push((
+        "an svg of more than 4000 elements",
+        page("", &format!("<svg width=\"100\" height=\"40\"><g>{}</g></svg>", "<rect width=\"1\" height=\"1\"/>".repeat(4100))),
+    ));
+    // The <use> budget spent to its last 2 units by 32 uses of a group of 300 rects (303 each) and 151 of a rect (2
+    // each); then a use of the group, of a path of 300 points, or of a text of 300 bytes finds it short.
+    for (what, target, last) in [
+        ("the use budget short at a group's children", "", "big"),
+        ("the use budget short at a path's points", "", "P"),
+        ("the use budget short at a text's bytes", "", "T"),
+    ] {
+        let _ = target;
+        let points: String = (0..300).map(|k| format!(" L{k} {}", k % 7)).collect();
+        let defs = format!(
+            "<defs><g id=\"big\">{}</g><rect id=\"r\" width=\"1\" height=\"1\"/><path id=\"P\" d=\"M0 0{points}\"/><text id=\"T\" y=\"10\">{}</text></defs>",
+            "<rect width=\"1\" height=\"1\"/>".repeat(300),
+            "a".repeat(300)
+        );
+        let uses = format!("{}{}<use href=\"#{last}\"/>", "<use href=\"#big\"/>".repeat(32), "<use href=\"#r\"/>".repeat(151));
+        docs.push((what, page("", &format!("<svg width=\"100\" height=\"40\">{defs}{uses}</svg>"))));
+    }
+    docs.push((
+        "cached groups under a gradient ancestor",
+        page(
+            "",
+            &format!("<div style=\"fill:url(#nothing)\">{cached_groups}</div><div class=\"x\" fill=\"var(--q)\">{cached_groups}</div>"),
+        ),
+    ));
+    docs
+}
+
+#[test]
+fn written_svg_shapes_paint_alike() {
+    let mut run = Run::new("written SVG shapes");
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    let (dark, vars) = themed_master(true);
+    let docs = written_svg_documents();
+    for (k, (what, html)) in docs.iter().enumerate() {
+        for (sheet, theme) in [(&master, "master"), (&light, "light"), (&dark, "dark")] {
+            let html = if theme == "dark" { themed_html(html.as_bytes(), true, &vars) } else { html.clone().into_bytes() };
+            for width in [375.0, 180.0] {
+                let mut steps = svg_steps(width, 667.0, k as u32);
+                if heavy_svg_document(what) {
+                    steps.truncate(5);
+                }
+                run.case(paint_record(375.0, 667.0, 2.0, sheet, b"", &html, &steps), format!("{what} ({theme}, {width} px)"));
+            }
+        }
+    }
+    let tally = run.finish();
+    assert_eq!(tally.documents, docs.len() * 6);
+    assert_svg_reached(
+        &tally,
+        &[
+            "paths drawn",
+            "paths filled",
+            "paths stroked",
+            "paths even-odd",
+            "dashed paths",
+            "stroke caps 0",
+            "stroke caps 1",
+            "stroke caps 2",
+            "stroke joins 0",
+            "stroke joins 1",
+            "stroke joins 2",
+            "fill gradients of type 1",
+            "fill gradients of type 2",
+            "stroke gradients of type 1",
+            "stroke gradients of type 2",
+            "isolated paints",
+            "cached paints asked",
+            "cached paints drawn",
+            "groups with opacity",
+            "transformed groups",
+            "paths with NaN points",
+            "texts drawn",
+        ],
+    );
+}
+
+// ---- Generated SVG documents ---------------------------------------------------------------------------------
+
+const SVG_IDS: [&str; 8] = ["g1", "g2", "r1", "s1", "p1", "c", "x-y", "1a"];
+
+fn svg_color(random: &mut Lcg) -> &'static str {
+    pick(
+        random,
+        &[
+            "red",
+            "#00f",
+            "rgba(0,128,0,.5)",
+            "none",
+            "currentColor",
+            "transparent",
+            "url(#g1)",
+            "url(#r1) red",
+            "url(#missing)",
+            "url(#g2) none",
+            "var(--c)",
+            "inherit",
+            "",
+            "#fff8",
+        ],
+    )
+}
+
+fn svg_number_text(random: &mut Lcg) -> String {
+    match random.below(8) {
+        0 => pick(random, &["0", "-1", "1e39", "50%", "2px", "1em", "x", "", ".5", "-0"]).to_string(),
+        _ => common::svg::path_number(random),
+    }
+}
+
+/// Paint properties of an SVG element: names and values.
+fn svg_paint_pairs(random: &mut Lcg) -> Vec<(&'static str, String)> {
+    (0..random.below(5))
+        .map(|_| match random.below(17) {
+            0 | 1 => ("fill", svg_color(random).to_string()),
+            2 | 3 => ("stroke", svg_color(random).to_string()),
+            4 => ("fill-opacity", svg_number_text(random)),
+            5 => ("stroke-opacity", svg_number_text(random)),
+            6 | 7 => ("stroke-width", svg_number_text(random)),
+            8 => ("stroke-linecap", pick(random, &["butt", "round", "square", "ROUND", "x"]).to_string()),
+            9 => ("stroke-linejoin", pick(random, &["miter", "round", "bevel", "arcs"]).to_string()),
+            10 => ("stroke-miterlimit", svg_number_text(random)),
+            11 => (
+                "stroke-dasharray",
+                (0..random.below(5)).map(|_| svg_number_text(random)).collect::<Vec<_>>().join(pick(random, &[" ", ",", ", "])),
+            ),
+            12 => ("stroke-dashoffset", svg_number_text(random)),
+            13 => ("fill-rule", pick(random, &["evenodd", "nonzero", "EvenOdd"]).to_string()),
+            14 => ("opacity", svg_number_text(random)),
+            15 => ("visibility", pick(random, &["hidden", "visible", "collapse", " Visible "]).to_string()),
+            _ => ("display", pick(random, &["none", "inline", " NONE "]).to_string()),
+        })
+        .collect()
+}
+
+/// Paint attributes of an SVG element, as attributes or in its `style`.
+fn svg_paint_attributes(random: &mut Lcg, out: &mut String) {
+    let mut style = String::new();
+    for (name, value) in svg_paint_pairs(random) {
+        if random.chance(4) {
+            style += &format!("{name}:{value};");
+        } else {
+            out.push_str(&format!(" {name}=\"{value}\""));
+        }
+    }
+    if random.chance(6) {
+        style += pick(
+            random,
+            &[
+                "color:green;",
+                "--c:orange;",
+                "opacity:.5;",
+                "transform:rotate(10deg);",
+                "visibility:hidden;",
+                "display:none;",
+                "text-anchor:middle;",
+            ],
+        );
+    }
+    if !style.is_empty() {
+        out.push_str(&format!(" style=\"{style}\""));
+    }
+}
+
+fn svg_paint_element(random: &mut Lcg, out: &mut String, depth: u32) {
+    let tag = pick(
+        random,
+        &[
+            "rect",
+            "circle",
+            "ellipse",
+            "line",
+            "polyline",
+            "polygon",
+            "path",
+            "path",
+            "g",
+            "g",
+            "use",
+            "use",
+            "text",
+            "text",
+            "symbol",
+            "linearGradient",
+            "radialGradient",
+            "defs",
+            "svg",
+            "a",
+            "switch",
+            "image",
+            "clipPath",
+        ],
+    );
+    out.push('<');
+    out.push_str(tag);
+    if random.chance(3) || matches!(tag, "symbol" | "linearGradient" | "radialGradient") {
+        out.push_str(&format!(" id=\"{}\"", SVG_IDS[random.below(SVG_IDS.len())]));
+    }
+    let lengths: &[&str] = match tag {
+        "circle" => &["cx", "cy", "r"],
+        "ellipse" => &["cx", "cy", "rx", "ry"],
+        "rect" => &["x", "y", "width", "height", "rx", "ry"],
+        "line" => &["x1", "y1", "x2", "y2"],
+        "use" => &["x", "y", "width", "height"],
+        "linearGradient" => &["x1", "y1", "x2", "y2"],
+        "radialGradient" => &["cx", "cy", "r", "fx", "fy"],
+        "text" => &["x", "y", "dx", "dy"],
+        _ => &[],
+    };
+    for name in lengths {
+        if !random.chance(4) {
+            let value = if random.chance(3) { format!("{}%", random.below(120)) } else { format!("{}", random.below(120) as i64 - 10) };
+            out.push_str(&format!(" {name}=\"{value}\""));
+        }
+    }
+    match tag {
+        "polyline" | "polygon" => {
+            let points: Vec<String> = (0..random.below(9)).map(|_| format!("{}", random.below(100))).collect();
+            out.push_str(&format!(" points=\"{}\"", points.join(" ")));
+        }
+        "path" => {
+            let d = common::svg::any_path_data(random);
+            out.push_str(&format!(" d=\"{}\"", String::from_utf8_lossy(&d).replace(['\0', '"'], "")));
+        }
+        "use" => out.push_str(&format!(" href=\"#{}\"", SVG_IDS[random.below(SVG_IDS.len())])),
+        "symbol" if random.chance(2) => out.push_str(&format!(" viewBox=\"0 0 {} {}\"", 1 + random.below(50), 1 + random.below(50))),
+        "linearGradient" | "radialGradient" if random.chance(2) => {
+            out.push_str(&format!(" gradientUnits=\"{}\"", pick(random, &["userSpaceOnUse", "objectBoundingBox", "x"])))
+        }
+        _ => {}
+    }
+    if random.chance(4) {
+        out.push_str(&format!(" transform=\"{}\"", String::from_utf8_lossy(&common::svg::any_transform_text(random)).replace('"', "")));
+    }
+    if !matches!(tag, "linearGradient" | "radialGradient") {
+        svg_paint_attributes(random, out);
+    }
+    if random.chance(8) {
+        out.push_str(&format!(" class=\"{}\"", pick(random, &["a", "b", "a b"])));
+    }
+    out.push('>');
+    match tag {
+        "g" | "symbol" | "defs" | "svg" | "a" | "switch" | "clipPath" if depth < 5 => {
+            for _ in 0..random.below(6) {
+                svg_paint_element(random, out, depth + 1);
+            }
+        }
+        "linearGradient" | "radialGradient" => {
+            for _ in 0..random.below(4) {
+                out.push_str(&format!(
+                    "<stop offset=\"{}\" stop-color=\"{}\"{}></stop>",
+                    svg_number_text(random),
+                    pick(random, &["red", "#00f", "currentColor", "x", "rgba(1,2,3,.5)"]),
+                    if random.chance(3) { format!(" stop-opacity=\"{}\"", svg_number_text(random)) } else { String::new() }
+                ));
+            }
+        }
+        "text" => {
+            for _ in 0..1 + random.below(3) {
+                if random.chance(2) {
+                    out.push_str(pick(random, &["Hi ", "  spaced  out ", "word", "\u{5e9}\u{5dc}\u{5d5}\u{5dd} "]));
+                } else {
+                    out.push_str("<tspan");
+                    for name in ["x", "y", "dx", "dy"] {
+                        if random.chance(3) {
+                            out.push_str(&format!(" {name}=\"{}{}\"", random.below(60), pick(random, &["", "em", "px"])));
+                        }
+                    }
+                    svg_paint_attributes(random, out);
+                    out.push_str(">tspan</tspan>");
+                }
+            }
+        }
+        _ => {}
+    }
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+}
+
+/// A generated document of SVGs for painting: sizes, view boxes and aspect ratios, every shape, groups, `<use>`
+/// of shapes, groups and symbols, gradients with stops, texts with `<tspan>`s, nested `<svg>`s, every paint
+/// attribute as an attribute or in a style, sheets that style them (with `:hover` rules that move the paint keys).
+fn svg_paint_document(random: &mut Lcg) -> Vec<u8> {
+    let mut out = String::from("<!doctype html><html><head><style>");
+    for _ in 0..random.below(4) {
+        let selector =
+            pick(random, &["rect", "circle", "g", ".a", ".b", "text", "svg", "body:hover rect", "svg:hover circle", "path", "tspan"]);
+        let decls: String = svg_paint_pairs(random).iter().map(|(name, value)| format!("{name}:{value};")).collect();
+        out.push_str(&format!("{selector}{{{decls}}}"));
+    }
+    out.push_str("</style></head><body>");
+    for _ in 0..1 + random.below(3) {
+        out.push_str("<svg");
+        if !random.chance(4) {
+            out.push_str(&format!(" width=\"{}\"", pick(random, &["100", "50%", "0", "300", "40", "1e39"])));
+        }
+        if !random.chance(4) {
+            out.push_str(&format!(" height=\"{}\"", pick(random, &["80", "100%", "0", "150", "40"])));
+        }
+        if random.chance(2) {
+            out.push_str(&format!(
+                " viewBox=\"{} {} {} {}\"",
+                random.below(20) as i64 - 10,
+                random.below(20) as i64 - 10,
+                random.below(200),
+                random.below(200)
+            ));
+        }
+        if random.chance(3) {
+            out.push_str(&format!(
+                " preserveAspectRatio=\"{}\"",
+                pick(random, &["none", "xMinYMin meet", "xMidYMid slice", "xMaxYMax", "xMinYMax slice"])
+            ));
+        }
+        if random.chance(3) {
+            out.push_str(&format!(
+                " style=\"{}\"",
+                pick(
+                    random,
+                    &[
+                        "color:purple",
+                        "--c:teal;color:red",
+                        "opacity:.5",
+                        "display:block;width:120px",
+                        "transform:rotate(5deg)",
+                        "border:2px solid"
+                    ]
+                )
+            ));
+        }
+        out.push('>');
+        for _ in 0..1 + random.below(8) {
+            svg_paint_element(random, &mut out, 0);
+        }
+        out.push_str("</svg>");
+        if random.chance(4) {
+            out.push_str("<p>text</p>");
+        }
+    }
+    out.push_str("</body></html>");
+    out.into_bytes()
+}
+
+#[test]
+fn generated_svg_documents_paint_alike() {
+    let mut run = Run::new("generated SVG documents");
+    let master = master_css();
+    let mut random = Lcg::new(0x1D_5001);
+    for k in 0..2500u32 {
+        let html = if k % 5 == 4 { common::svg::any_svg_document(&mut random) } else { svg_paint_document(&mut random) };
+        let width = [320.0, 375.0, 200.0, 480.0][k as usize % 4];
+        let steps = if k % 3 == 0 { svg_steps(width, 600.0, k) } else { svg_steps(width, 600.0, k).into_iter().take(10).collect() };
+        run.case(
+            paint_record(width, 600.0, 2.0, &master, b"", &html, &steps),
+            format!("generated SVG {k}: {}", String::from_utf8_lossy(&html)),
+        );
+    }
+    let tally = run.finish();
+    assert_eq!(tally.documents, 2500);
+    assert_svg_reached(
+        &tally,
+        &["paths drawn", "texts drawn", "fill gradients of type 1", "fill gradients of type 2", "cached paints drawn", "dashed paths"],
+    );
+}
+
+/// The switches over SVG documents, each on both sides: the group cache off (`LH_NO_SVG_GROUP_CACHE`), the late cache
+/// (`LH_SVG_LATE_CACHE`), `LH_NO_TRANSFORMED_CULLING` and the five layout switches.
+#[test]
+fn the_switches_paint_svgs_alike() {
+    let master = master_css();
+    let docs = written_svg_documents();
+    for switch in [
+        "LH_NO_SVG_GROUP_CACHE",
+        "LH_SVG_LATE_CACHE",
+        "LH_NO_TRANSFORMED_CULLING",
+        "LH_NO_LAYOUT_CACHE",
+        "LH_NO_POSITIONED_REUSE",
+        "LH_NO_FIXED_LAYOUT_REUSE",
+        "LH_LAYOUT_CACHE_CHECK",
+        "LH_NO_COLUMN_REUSE",
+    ] {
+        let mut run = Run::with_switch("SVG switch", switch);
+        let mut random = Lcg::new(0x1D_5002);
+        for k in 0..150u32 {
+            let html = svg_paint_document(&mut random);
+            run.case(
+                paint_record(320.0, 600.0, 2.0, &master, b"", &html, &svg_steps(320.0, 600.0, k)),
+                format!("{switch} {k}: {}", String::from_utf8_lossy(&html)),
+            );
+        }
+        for (k, (what, html)) in docs.iter().enumerate().filter(|(_, (what, _))| !heavy_svg_document(what)) {
+            run.case(
+                paint_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &svg_steps(375.0, 667.0, k as u32)),
+                format!("{switch}: {what}"),
+            );
+        }
+        let tally = run.finish();
+        let groups_cached = tally.counts.get("cached paint keys").copied().unwrap_or(0);
+        assert!(groups_cached > 0, "{switch}: no cached paint");
+    }
+}
+
+/// An `<svg>` 124 levels deep (100 groups, a text and 20 `<tspan>`s, then `<use>`s of the outermost group and one
+/// within) paints on a thread whose stack is the size the layout's measures asked (1 MiB unoptimized, 512 KiB
+/// optimized); the painter takes 112 bytes of stack a level optimized, 304 unoptimized.
+#[test]
+fn a_deep_svg_paints_on_a_small_stack() {
+    let stack = if cfg!(debug_assertions) { 1 << 20 } else { 512 << 10 };
+    let thread = std::thread::Builder::new().stack_size(stack).spawn(|| {
+        let mut html = String::from("<!DOCTYPE html><html><head></head><body><svg width=\"100\" height=\"100\">");
+        for k in 0..100 {
+            html += &format!("<g transform=\"translate(1 0)\" opacity=\".99\" id=\"d{k}\">");
+        }
+        html += "<text x=\"1\" y=\"10\">";
+        for _ in 0..20 {
+            html += "<tspan dx=\"1\">t";
+        }
+        html += &"</tspan>".repeat(20);
+        html += "</text>";
+        html += &"</g>".repeat(100);
+        html += "<use href=\"#d0\"/><use href=\"#d3\" x=\"5\"/></svg></body></html>";
+        let lh = Lh::new();
+        let mut tally = PaintTally::default();
+        let mut cached = PaintStep::viewport(375.0, 667.0);
+        cached.cache = true;
+        cached.shapes = true;
+        let steps = [Step::Layout(375.0, None), paint(PaintStep::viewport(375.0, 667.0)), paint(cached), Step::Dump];
+        let input = paint_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &steps);
+        let answer = paint_answer(&lh, Switches::default(), &input, &mut tally);
+        assert_eq!(answer.0, 1);
+        tally.counts.get("groups").copied().unwrap_or(0)
+    });
+    let groups = thread.expect("a thread").join().expect("the paint ran");
+    eprintln!("a deep svg: {groups} groups");
+    assert!(groups > 100);
 }

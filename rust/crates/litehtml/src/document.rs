@@ -151,6 +151,12 @@ pub struct Switches {
     pub transformed_culling: bool,
     /// The patching switches (stage L19).
     pub patch: crate::patch::PatchSwitches,
+    /// `svg_group_cache_enabled`: an `<svg>`'s top-level groups may be drawn through `draw_cached`: not
+    /// `LH_NO_SVG_GROUP_CACHE` (read once per process in the C++) nor `svg_set_group_cache_enabled(false)`.
+    pub svg_group_cache: bool,
+    /// `stable_draws_needed` is 2: an `<svg>` is drawn through `draw_cached` once its key held for two draws, not
+    /// at once: `LH_SVG_LATE_CACHE` (read at the first draw in the C++).
+    pub svg_late_cache: bool,
 }
 
 impl Default for Switches {
@@ -167,6 +173,8 @@ impl Default for Switches {
             column_reuse: true,
             transformed_culling: true,
             patch: crate::patch::PatchSwitches::default(),
+            svg_group_cache: true,
+            svg_late_cache: false,
         }
     }
 }

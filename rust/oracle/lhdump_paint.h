@@ -4,13 +4,16 @@
 #include "document.h"
 #include "document_container.h"
 #include "el_form.h"
+#include "el_svg.h"
 #include "lhdump_dom.h"
 #include "render_item.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,6 +30,16 @@ LHDUMP_ROB_P(SelectLookP, el_select::m_look)
 LHDUMP_ROB_P(ButtonLookP, el_button::m_look)
 LHDUMP_ROB_P(TextareaLookP, el_textarea::m_look)
 LHDUMP_ROB_P(MeterLookP, el_meter::m_look)
+LHDUMP_ROB_P(SvgLastPaintKey, el_svg::m_last_paint_key)
+LHDUMP_ROB_P(SvgStableDraws, el_svg::m_stable_draws)
+LHDUMP_ROB_P(SvgContentKey, el_svg::m_content_key)
+LHDUMP_ROB_P(SvgContentGeneration, el_svg::m_content_generation)
+LHDUMP_ROB_P(SvgContentCacheable, el_svg::m_content_cacheable)
+LHDUMP_ROB_P(SvgGroupCacheEligible, el_svg::m_group_cache_eligible)
+LHDUMP_ROB_P(SvgUseGeneration, el_svg::m_use_generation)
+LHDUMP_ROB_P(SvgUseAllowance, el_svg::m_use_allowance)
+LHDUMP_ROB_P(DocSvgUseGeneration, document::m_svg_use_generation)
+LHDUMP_ROB_P(DocSvgUseBudget, document::m_svg_use_budget)
 #undef LHDUMP_ROB_P
 } // namespace lhdump_dom
 
@@ -34,7 +47,16 @@ namespace lhdump_paint {
 
 using namespace litehtml;
 
-// A paint call's arguments as bytes, every float as its bits.
+// Every NaN as one, since which NaN an operation gives where two meet is the compiler's choice (rust/PLAN.md, Findings).
+inline float nan1(float v) {
+    if (!std::isnan(v)) return v;
+    const uint32_t bits = 0x7fc00000;
+    float one;
+    std::memcpy(&one, &bits, sizeof one);
+    return one;
+}
+
+// A paint call's arguments as bytes, every float as its bits (every NaN as one).
 struct Bytes {
     std::string s;
 
@@ -46,7 +68,7 @@ struct Bytes {
     Bytes& i32(int32_t v) { return raw(v); }
     Bytes& u32(uint32_t v) { return raw(v); }
     Bytes& u64(uint64_t v) { return raw(v); }
-    Bytes& f32(float v) { return raw(v); }
+    Bytes& f32(float v) { return raw(nan1(v)); }
     Bytes& str(const std::string& v) {
         u32(uint32_t(v.size()));
         s.append(v);
@@ -131,10 +153,13 @@ struct Bytes {
     }
 };
 
-// The paint calls of a container, each logged through log() (kind, text, arguments, the hdc); a filtered or isolated paint draws into hdc * 2 + 1.
+// The paint calls of a container, each logged through log() (kind, text, arguments, the hdc); a filtered, isolated or newly cached paint draws into hdc * 2 + 1.
 template <class Base> class Painting : public Base {
 public:
     bool active = false;
+    // While caching, draw_cached answers as a cache would: a key not drawn before is painted and kept, a kept one is drawn as it is.
+    bool caching = false;
+    std::set<uint64_t> cached_keys;
     web_color accent = web_color(0, 122, 255);
     const std::map<const element*, int32_t>* owners = nullptr;
 
@@ -246,11 +271,16 @@ public:
         log('p', {}, b.s, int64_t(hdc));
     }
     void end_group(uint_ptr hdc) override { log('E', {}, {}, int64_t(hdc)); }
-    bool draw_cached(uint_ptr hdc, const position& box, uint64_t key, const std::function<void(uint_ptr)>&) override {
+    bool draw_cached(uint_ptr hdc, const position& box, uint64_t key, const std::function<void(uint_ptr)>& paint) override {
         Bytes b;
         b.pos(box).u64(key);
         log('A', {}, b.s, int64_t(hdc));
-        return false;
+        if (!caching) return false;
+        if (cached_keys.insert(key).second) {
+            paint(hdc * 2 + 1);
+            log('a', {}, {}, int64_t(hdc));
+        }
+        return true;
     }
     void draw_isolated(uint_ptr hdc, const position& box, const std::function<void(uint_ptr)>& paint) override {
         Bytes b;
@@ -270,7 +300,7 @@ public:
 };
 
 template <class Out> void write_paint_ink(Out& o, const paint_ink& ink) {
-    for (float v : {ink.l, ink.t, ink.r, ink.b}) o.f32(v);
+    for (float v : {ink.l, ink.t, ink.r, ink.b}) o.f32(nan1(v));
     o.u8(ink.empty ? 1 : 0);
     o.u8(ink.unbounded ? 1 : 0);
 }
@@ -280,7 +310,7 @@ template <class Out> void write_paint_look(Out& o, const form_look& look) {
     for (byte v : {look.accent.red, look.accent.green, look.accent.blue, look.accent.alpha}) o.u8(v);
 }
 
-// What painting keeps, as the 'Q' record's dump step writes it: the paint generation and culling, every item's ink cache and visual transform (in the numbering given), each control's look as its last paint left it.
+// What painting keeps, as the 'Q' record's dump step writes it: the paint generation and culling, every item's ink cache and visual transform (in the numbering given), each control's look as its last paint left it, every element's paint signature, what each <svg> kept, each SVG <text>'s box, and the document's <use> budget.
 template <class Out> void write_paint_state(Out& o, const document& doc, const std::vector<render_item*>& items, const std::vector<element*>& nodes) {
     using lhdump_dom::field;
     o.u32(doc.paint_generation());
@@ -291,7 +321,7 @@ template <class Out> void write_paint_state(Out& o, const document& doc, const s
         lhdump_paint::write_paint_ink(o, field<lhdump_dom::RiInk>(*ri));
         lhdump_paint::write_paint_ink(o, field<lhdump_dom::RiDrawnInk>(*ri));
         const transform_matrix m = ri->get_visual_transform();
-        for (float v : {m.a, m.b, m.c, m.d, m.tx, m.ty}) o.f32(v);
+        for (float v : {m.a, m.b, m.c, m.d, m.tx, m.ty}) o.f32(nan1(v));
     }
     o.u32(uint32_t(nodes.size()));
     for (element* el : nodes) {
@@ -302,7 +332,28 @@ template <class Out> void write_paint_state(Out& o, const document& doc, const s
         if (kind == 17) lhdump_paint::write_paint_look(o, field<lhdump_dom::ButtonLookP>(static_cast<el_button&>(*el)));
         if (kind == 18) lhdump_paint::write_paint_look(o, field<lhdump_dom::TextareaLookP>(static_cast<el_textarea&>(*el)));
         if (kind == 20) lhdump_paint::write_paint_look(o, field<lhdump_dom::MeterLookP>(static_cast<el_meter&>(*el)));
+        o.u64(el->paint_signature());
+        if (kind == 14) {
+            auto& svg = static_cast<el_svg&>(*el);
+            o.u64(field<lhdump_dom::SvgLastPaintKey>(svg));
+            o.i32(field<lhdump_dom::SvgStableDraws>(svg));
+            o.u64(field<lhdump_dom::SvgContentKey>(svg));
+            o.u32(field<lhdump_dom::SvgContentGeneration>(svg));
+            o.u8(field<lhdump_dom::SvgContentCacheable>(svg) ? 1 : 0);
+            o.u8(field<lhdump_dom::SvgGroupCacheEligible>(svg) ? 1 : 0);
+            o.u32(field<lhdump_dom::SvgUseGeneration>(svg));
+            o.i32(field<lhdump_dom::SvgUseAllowance>(svg));
+        }
+        if (dynamic_cast<html_tag*>(el) && lowcase(el->get_tagName()) == "text") {
+            position box;
+            const bool ok = svg_text_box(el->shared_from_this(), doc.container(), box);
+            o.u8(ok ? 1 : 0);
+            if (ok)
+                for (pixel_t v : {box.x, box.y, box.width, box.height}) o.f32(nan1(v.value()));
+        }
     }
+    o.u32(field<lhdump_dom::DocSvgUseGeneration>(doc));
+    o.i32(field<lhdump_dom::DocSvgUseBudget>(doc));
 }
 
 } // namespace lhdump_paint

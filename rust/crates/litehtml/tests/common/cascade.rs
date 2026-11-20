@@ -334,9 +334,17 @@ impl DocumentContainer for CascadeContainer {
     fn end_group(&self, hdc: u64) {
         self.log(b'E', b"", Vec::new(), hdc);
     }
-    fn draw_cached(&self, hdc: u64, bx: &Position, key: u64, _paint: &mut dyn FnMut(u64)) -> bool {
+    fn draw_cached(&self, hdc: u64, bx: &Position, key: u64, paint: &mut dyn FnMut(u64)) -> bool {
         self.log(b'A', b"", PaintLog::boxed(bx, Some(key)), hdc);
-        false
+        if !self.paint.caching.get() {
+            return false;
+        }
+        let new = self.paint.cached_keys.borrow_mut().insert(key);
+        if new {
+            paint(hdc * 2 + 1);
+            self.log(b'a', b"", Vec::new(), hdc);
+        }
+        true
     }
     fn draw_isolated(&self, hdc: u64, bx: &Position, paint: &mut dyn FnMut(u64)) {
         self.log(b'O', b"", PaintLog::boxed(bx, None), hdc);

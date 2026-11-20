@@ -1624,7 +1624,7 @@ struct PaintIndex {
     }
 };
 
-// A paint step: f32 x, y, u8 flags (1 a clip, 2 cull, 4 trace, 8 controls active, 16 bare shadows), the clip, f32 snap scale, u32 hdc, the elements (as k-th of the walk) skipped, without background images and without scroll content (u32 count, each u32), i32 the element with bare effects and the unclipped scroller (-1 none), u8 r, g, b, a the controls' accent; answered with u8 1 and, when tracing, u32 items drawn and each i32.
+// A paint step: f32 x, y, u8 flags (1 a clip, 2 cull, 4 trace, 8 controls active, 16 bare shadows, 32 draw_cached as a cache, 64 then each <svg>'s paint_shapes at its placement), the clip, f32 snap scale, u32 hdc, the elements (as k-th of the walk) skipped, without background images and without scroll content (u32 count, each u32), i32 the element with bare effects and the unclipped scroller (-1 none), u8 r, g, b, a the controls' accent; answered with u8 1 and, when tracing, u32 items drawn and each i32.
 void paint_step(In& in, Out& o, document& doc, CascadeContainer& container) {
     const float x = in.f32();
     const float y = in.f32();
@@ -1653,6 +1653,7 @@ void paint_step(In& in, Out& o, document& doc, CascadeContainer& container) {
     const uint8_t r = in.u8(), g = in.u8(), b = in.u8(), a = in.u8();
     container.accent = web_color(r, g, b, a);
     container.active = (flags & 8) != 0;
+    container.caching = (flags & 32) != 0;
     std::map<const element*, int32_t> owners;
     for (size_t k = 0; k < index.nodes.size(); k++) owners[index.nodes[k].first.get()] = int32_t(k);
     container.owners = &owners;
@@ -1660,6 +1661,10 @@ void paint_step(In& in, Out& o, document& doc, CascadeContainer& container) {
     if (flags & 4) g_paint_trace = &trace;
     pixel_snap_scale() = snap;
     doc.draw(uint_ptr(hdc), pixel_t(x), pixel_t(y), (flags & 1) ? &clip : nullptr, (flags & 2) != 0);
+    if (flags & 64)
+        for (const auto& [el, parent] : index.nodes)
+            if (auto* svg = dynamic_cast<el_svg*>(el.get())) svg->paint_shapes(uint_ptr(hdc), el->get_placement());
+    container.caching = false;
     pixel_snap_scale() = 1;
     g_paint_trace = nullptr;
     container.owners = nullptr;
@@ -2105,6 +2110,8 @@ bool run(int op, std::string_view input) {
 #else
         setenv(text.substr(0, eq).c_str(), text.substr(eq + 1).c_str(), 1);
 #endif
+        // The group cache's switch is read as the process starts: it is set through its function.
+        if (text.compare(0, eq, "LH_NO_SVG_GROUP_CACHE") == 0) svg_set_group_cache_enabled(false);
         return true;
     }
     case 'd': { // t_strtod and t_strtof of the text: f64 bits, u32 end, f32 bits
@@ -2754,6 +2761,7 @@ bool run(int op, std::string_view input) {
 
 int main() {
     clear_switches();
+    svg_set_group_cache_enabled(true);
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);

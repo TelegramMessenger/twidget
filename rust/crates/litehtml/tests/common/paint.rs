@@ -1,39 +1,47 @@
 //! The Rust side of lhdump's `Q` record (stage L13, painting): a `Y` record whose steps may also paint (`p`), with
 //! every paint call the container gets logged among its other calls, and whose dump steps dump what painting keeps.
 //!
-//! A paint step: f32 x, y, u8 flags (1 a clip, 2 cull, 4 trace, 8 controls active, 16 bare shadows), the clip (4 f32),
+//! A paint step: f32 x, y, u8 flags (1 a clip, 2 cull, 4 trace, 8 controls active, 16 bare shadows, 32 `draw_cached`
+//! answering as a cache, 64 then each `<svg>`'s `paint_shapes` at its placement), the clip (4 f32),
 //! f32 snap scale, u32 hdc, the elements skipped, drawn without background images and without scroll content (u32
 //! count, each u32 k: the k-th element of the cascade's walk), i32 the element with bare effects and the unclipped
 //! scroller (-1 none), u8 r, g, b, a the controls' accent. Answered with u8 1 and, when tracing, u32 items drawn and
 //! each i32 (the render tree's numbering).
 //!
 //! A dump: u32 the paint generation, u8 culling; u32 items, each u32 its ink's generation, its ink and drawn ink (4
-//! f32, u8 empty, u8 unbounded) and its visual transform (6 f32); u32 DOM elements, each u8 class and a control's look as its last paint left it (u8
-//! active, u8 r, g, b, a accent).
+//! f32, u8 empty, u8 unbounded) and its visual transform (6 f32); u32 DOM elements, each u8 class, a control's look as
+//! its last paint left it (u8 active, u8 r, g, b, a accent), u64 its paint signature, what an `<svg>` kept (u64 last
+//! paint key, i32 stable draws, u64 content key, u32 its generation, u8 cacheable, u8 groups eligible, u32 the
+//! `<use>` budget's generation, i32 its allowance) and an SVG `<text>`'s box (u8 found, then 4 f32); then u32 the
+//! generation of the document's `<use>` budget and i32 what is left of it.
 //!
-//! The paint calls (u8 kind, text, arguments, u64 hdc; every float its bits, a colour u8 r, g, b, a, current, a box 4
-//! f32, radii 8 f32): `t` text (u64 font, colour, box), `k` list marker (image; u8 base url given, base url, i32 type,
+//! The paint calls (u8 kind, text, arguments, u64 hdc; every float its bits, every NaN as one since which NaN comes out
+//! where two meet is the compiler's choice, as svg_oracle writes them; a colour u8 r, g, b, a, current, a box 4 f32,
+//! radii 8 f32): `t` text (u64 font, colour, box), `k` list marker (image; u8 base url given, base url, i32 type,
 //! colour, box, i32 index, u64 font), `g` image (url; layer, base url), `f` solid fill (layer, colour), `l`, `r`, `c`
 //! linear, radial and conic gradients (layer, stops, then end points, centre and radii, centre, angle and reach), `d`
 //! borders (each side's f32 width, i32 style, colour, the radii, the box, u8 root), `C` clip (box, radii), `D` clip's
 //! end, `U` and `R` clips suspended and resumed, `h` box shadow (box, radii, f32 x, y, blur, spread, colour, u8
 //! inset), `P` clip path (a path), `G` group (f32 opacity, matrix, u8 backface hidden, bounds, u8 exact, i32 owner),
 //! `X` filtered (a filter paint) then the paint into hdc * 2 + 1 then `x`, `K` backdrop (a filter paint), `p` path,
-//! `E` group's end, `A` cached (box, u64 key; answered false), `O` isolated (box) then the paint into hdc * 2 + 1
-//! then `o`, `Q` controls active, `q` the accent. A layer is its border box, radii, clip box, origin box, i32
-//! attachment, i32 repeat, u8 root. The port's seams (a later stage's paint) are `Z` with the stage's name: an image
-//! stands for the C++'s one `g`, an SVG for its calls from a `C` to the matching `D`.
+//! `E` group's end, `A` cached (box, u64 key; answered false, or while caching true, a key not drawn before painted
+//! into hdc * 2 + 1 then `a`), `O` isolated (box) then the paint into hdc * 2 + 1 then `o`, `Q` controls active, `q`
+//! the accent. A layer is its border box, radii, clip box, origin box, i32 attachment, i32 repeat, u8 root. The port's
+//! seam (a later stage's paint) is `Z` with the stage's name: an image stands for the C++'s one `g`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::cascade::*;
+use super::svg::Answer;
 use super::*;
 use twidget_litehtml::background::{BackgroundLayer, ConicGradient, GradientBase, LinearGradient, RadialGradient};
 use twidget_litehtml::borders::{BorderRadiuses, Borders};
 use twidget_litehtml::css_effects::{FilterPaint, PaintGroup, ShadowPaint, SvgGradient, VectorPath};
 use twidget_litehtml::document::{Document, StyleCx, Switches};
 use twidget_litehtml::document_container::ListMarker;
+use twidget_litehtml::el_svg::{DocSvg, SvgElements};
 use twidget_litehtml::element::{ElementId, ElementKind};
+use twidget_litehtml::html::lowcase;
 use twidget_litehtml::render_item::RenderId;
 use twidget_litehtml::types::Position;
 use twidget_litehtml::web_color::WebColor;
@@ -48,6 +56,10 @@ pub struct PaintStep {
     pub trace: bool,
     pub active: bool,
     pub bare_shadows: bool,
+    /// `draw_cached` answers as a cache.
+    pub cache: bool,
+    /// Each `<svg>`'s `paint_shapes` at its placement after the paint.
+    pub shapes: bool,
     pub snap: f32,
     pub hdc: u32,
     pub skip: Vec<u32>,
@@ -69,6 +81,8 @@ impl PaintStep {
             trace: false,
             active: false,
             bare_shadows: false,
+            cache: false,
+            shapes: false,
             snap: 1.0,
             hdc: 7,
             skip: Vec::new(),
@@ -86,7 +100,9 @@ impl PaintStep {
             | u8::from(self.cull) << 1
             | u8::from(self.trace) << 2
             | u8::from(self.active) << 3
-            | u8::from(self.bare_shadows) << 4;
+            | u8::from(self.bare_shadows) << 4
+            | u8::from(self.cache) << 5
+            | u8::from(self.shapes) << 6;
         o.f32(self.x).f32(self.y).u8(flags);
         if let Some(c) = self.clip {
             o.f32(c[0]).f32(c[1]).f32(c[2]).f32(c[3]);
@@ -108,14 +124,14 @@ impl PaintStep {
 // ---- The container's paint calls, as lhdump_paint.h logs them ------------------------------------------------
 
 pub fn pos_out(o: &mut Out, p: &Position) {
-    o.f32(p.x.value()).f32(p.y.value()).f32(p.width.value()).f32(p.height.value());
+    o.a32(p.x.value()).a32(p.y.value()).a32(p.width.value()).a32(p.height.value());
 }
 
 pub fn radius_out(o: &mut Out, r: &BorderRadiuses) {
     for v in
         [r.top_left_x, r.top_left_y, r.top_right_x, r.top_right_y, r.bottom_right_x, r.bottom_right_y, r.bottom_left_x, r.bottom_left_y]
     {
-        o.f32(v.value());
+        o.a32(v.value());
     }
 }
 
@@ -130,30 +146,30 @@ pub fn layer_out(o: &mut Out, l: &BackgroundLayer) {
 pub fn points_out(o: &mut Out, g: &GradientBase) {
     o.u32(g.color_points.len() as u32);
     for p in &g.color_points {
-        o.f32(p.offset).color(&p.color).u8(u8::from(p.hint.is_some())).f32(p.hint.unwrap_or(0.0));
+        o.a32(p.offset).color(&p.color).u8(u8::from(p.hint.is_some())).a32(p.hint.unwrap_or(0.0));
     }
     o.i32(g.color_space.index()).i32(g.hue_interpolation.index());
 }
 
 pub fn borders_out(o: &mut Out, b: &Borders) {
     for side in [&b.left, &b.top, &b.right, &b.bottom] {
-        o.f32(side.width.value()).i32(side.style).color(&side.color);
+        o.a32(side.width.value()).i32(side.style).color(&side.color);
     }
     radius_out(o, &b.radius);
 }
 
 fn length_out(o: &mut Out, len: &CssLength) {
-    o.u8(u8::from(len.is_predefined())).i32(len.predef()).u8(len.units().index() as u8).f32(len.val());
+    o.u8(u8::from(len.is_predefined())).i32(len.predef()).u8(len.units().index() as u8).a32(len.val());
 }
 
 fn svg_gradient_out(o: &mut Out, g: &SvgGradient) {
     o.i32(g.ty);
     for v in [g.x1, g.y1, g.x2, g.y2, g.r, g.fx, g.fy] {
-        o.f32(v);
+        o.a32(v);
     }
     o.u32(g.stops.len() as u32);
     for (offset, c) in &g.stops {
-        o.f32(*offset).color(c);
+        o.a32(*offset).color(c);
     }
 }
 
@@ -164,15 +180,15 @@ pub fn path_out(o: &mut Out, p: &VectorPath) {
     }
     o.u32(p.points.len() as u32);
     for &v in &p.points {
-        o.f32(v);
+        o.a32(v);
     }
     o.u8(u8::from(p.fill)).color(&p.fill_color).u8(u8::from(p.evenodd)).u8(u8::from(p.stroke)).color(&p.stroke_color);
-    o.f32(p.stroke_width).i32(p.line_cap).i32(p.line_join).f32(p.miter_limit);
+    o.a32(p.stroke_width).i32(p.line_cap).i32(p.line_join).a32(p.miter_limit);
     o.u32(p.dashes.len() as u32);
     for &v in &p.dashes {
-        o.f32(v);
+        o.a32(v);
     }
-    o.f32(p.dash_offset);
+    o.a32(p.dash_offset);
     svg_gradient_out(o, &p.fill_gradient);
     svg_gradient_out(o, &p.stroke_gradient);
 }
@@ -182,6 +198,10 @@ pub struct PaintLog {
     pub active: std::cell::Cell<bool>,
     pub accent: std::cell::Cell<WebColor>,
     pub owners: std::cell::RefCell<BTreeMap<ElementId, i32>>,
+    /// While caching, `draw_cached` answers as a cache would: a key not drawn before is painted and kept, a kept one
+    /// is drawn as it is.
+    pub caching: std::cell::Cell<bool>,
+    pub cached_keys: std::cell::RefCell<BTreeSet<u64>>,
 }
 
 impl Default for PaintLog {
@@ -190,6 +210,8 @@ impl Default for PaintLog {
             active: std::cell::Cell::new(false),
             accent: std::cell::Cell::new(WebColor::rgba(0, 122, 255, 255)),
             owners: std::cell::RefCell::new(BTreeMap::new()),
+            caching: std::cell::Cell::new(false),
+            cached_keys: std::cell::RefCell::new(BTreeSet::new()),
         }
     }
 }
@@ -206,7 +228,7 @@ impl PaintLog {
         let mut o = Out::default();
         o.u32(f.steps.len() as u32);
         for step in f.steps {
-            o.u8(step.kind as u8).f32(step.amount);
+            o.u8(step.kind as u8).a32(step.amount);
             length_out(&mut o, &step.x);
             length_out(&mut o, &step.y);
             length_out(&mut o, &step.radius);
@@ -252,7 +274,7 @@ impl PaintLog {
         let mut o = Out::default();
         layer_out(&mut o, layer);
         points_out(&mut o, &g.base);
-        o.f32(g.start.x).f32(g.start.y).f32(g.end.x).f32(g.end.y);
+        o.a32(g.start.x).a32(g.start.y).a32(g.end.x).a32(g.end.y);
         o.take()
     }
 
@@ -260,7 +282,7 @@ impl PaintLog {
         let mut o = Out::default();
         layer_out(&mut o, layer);
         points_out(&mut o, &g.base);
-        o.f32(g.position.x).f32(g.position.y).f32(g.radius.x).f32(g.radius.y);
+        o.a32(g.position.x).a32(g.position.y).a32(g.radius.x).a32(g.radius.y);
         o.take()
     }
 
@@ -268,7 +290,7 @@ impl PaintLog {
         let mut o = Out::default();
         layer_out(&mut o, layer);
         points_out(&mut o, &g.base);
-        o.f32(g.position.x).f32(g.position.y).f32(g.angle).f32(g.radius);
+        o.a32(g.position.x).a32(g.position.y).a32(g.angle).a32(g.radius);
         o.take()
     }
 
@@ -291,7 +313,7 @@ impl PaintLog {
         let mut o = Out::default();
         pos_out(&mut o, bx);
         radius_out(&mut o, r);
-        o.f32(s.x.value()).f32(s.y.value()).f32(s.blur.value()).f32(s.spread.value()).color(&s.color).u8(u8::from(s.inset));
+        o.a32(s.x.value()).a32(s.y.value()).a32(s.blur.value()).a32(s.spread.value()).color(&s.color).u8(u8::from(s.inset));
         o.take()
     }
 
@@ -303,10 +325,10 @@ impl PaintLog {
 
     pub fn group(&self, g: &PaintGroup) -> Vec<u8> {
         let mut o = Out::default();
-        o.f32(g.opacity);
+        o.a32(g.opacity);
         let m = &g.matrix;
         for v in [m.a, m.b, m.c, m.d, m.tx, m.ty] {
-            o.f32(v);
+            o.a32(v);
         }
         o.u8(u8::from(g.backface_hidden));
         pos_out(&mut o, &g.bounds);
@@ -411,6 +433,7 @@ pub fn paint_step(i: &mut In, o: &mut Out, cx: &StyleCx, doc: &mut Document, log
     let (r, g, b, a) = (i.u8(), i.u8(), i.u8(), i.u8());
     log.accent.set(WebColor::rgba(r, g, b, a));
     log.active.set(flags & 8 != 0);
+    log.caching.set(flags & 32 != 0);
     *log.owners.borrow_mut() = index.nodes.iter().enumerate().map(|(k, &el)| (el, k as i32)).collect();
     if flags & 4 != 0 {
         doc.paint.trace = Some(Vec::new());
@@ -418,6 +441,15 @@ pub fn paint_step(i: &mut In, o: &mut Out, cx: &StyleCx, doc: &mut Document, log
     doc.paint.snap_scale = snap;
     PAINTS.with(|p| p.set(p.get() + 1));
     doc.draw(cx, u64::from(hdc), Px(x), Px(y), (flags & 1 != 0).then_some(&clip), flags & 2 != 0);
+    if flags & 64 != 0 {
+        for &el in &index.nodes {
+            if doc.kind(el) == ElementKind::el_svg {
+                let placement = DocSvg { doc: &*doc, cx }.placement(el);
+                doc.el_svg_paint_shapes(cx, el, u64::from(hdc), &placement);
+            }
+        }
+    }
+    log.caching.set(false);
     doc.paint.snap_scale = 1.0;
     let trace = doc.paint.trace.take();
     log.owners.borrow_mut().clear();
@@ -448,11 +480,11 @@ pub fn paint_out(o: &mut Out, cx: &StyleCx, doc: &Document) {
         let ink = &doc.render.item(ri).ink;
         o.u32(ink.generation);
         for i in [&ink.ink, &ink.drawn] {
-            o.f32(i.l).f32(i.t).f32(i.r).f32(i.b).u8(u8::from(i.empty)).u8(u8::from(i.unbounded));
+            o.a32(i.l).a32(i.t).a32(i.r).a32(i.b).u8(u8::from(i.empty)).u8(u8::from(i.unbounded));
         }
         let m = doc.get_visual_transform(cx, ri);
         for v in [m.a, m.b, m.c, m.d, m.tx, m.ty] {
-            o.f32(v);
+            o.a32(v);
         }
     }
     o.u32(index.nodes.len() as u32);
@@ -467,7 +499,25 @@ pub fn paint_out(o: &mut Out, cx: &StyleCx, doc: &Document) {
             let look = &doc.el(el).look;
             o.u8(u8::from(look.active)).u8(look.accent.red).u8(look.accent.green).u8(look.accent.blue).u8(look.accent.alpha);
         }
+        mark(o, "paint signature", k as i32);
+        o.u64(doc.paint_signature(el));
+        if kind == ElementKind::el_svg {
+            mark(o, "what an svg kept", k as i32);
+            let st = doc.svg_paint_state(el);
+            o.u64(st.last_paint_key).i32(st.stable_draws).u64(st.content_key).u32(st.content_generation);
+            o.u8(u8::from(st.content_cacheable)).u8(u8::from(st.group_cache_eligible)).u32(st.use_generation).i32(st.use_allowance);
+        }
+        if kind.is_html_tag() && lowcase(&doc.get_tag_name(cx.names, el)) == b"text" {
+            mark(o, "svg text box", k as i32);
+            let found = doc.svg_text_box(cx, el);
+            o.u8(u8::from(found.is_some()));
+            if let Some(b) = found {
+                pos_out(o, &b);
+            }
+        }
     }
+    mark(o, "the use budget", -2);
+    o.u32(doc.paint.svg_use_generation).i32(doc.paint.svg_use_budget);
 }
 
 /// What the paints reached, for the report.
@@ -516,6 +566,30 @@ impl PaintTally {
     pub fn note_calls(&mut self, answer: &[u8]) {
         let (_, phases) = split_answer(answer);
         for phase in &phases {
+            // An <svg>'s paint: its clip (a `C` right before its `A` or `O`) to the matching `D`, which the port's seam
+            // stood for before stage L14.
+            let mut k = 0;
+            while k + 1 < phase.len() {
+                if phase[k].0 == b'C' && matches!(phase[k + 1].0, b'A' | b'O') {
+                    let mut depth = 0;
+                    let start = k;
+                    while k < phase.len() {
+                        match phase[k].0 {
+                            b'C' | b'P' => depth += 1,
+                            b'D' => depth -= 1,
+                            _ => {}
+                        }
+                        k += 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    self.count("SVG paints", 1);
+                    self.count("calls of SVG paints", k - start);
+                    continue;
+                }
+                k += 1;
+            }
             for (kind, a, b, _) in phase {
                 let name = match kind {
                     b't' => "texts drawn",
@@ -534,10 +608,13 @@ impl PaintTally {
                     b'X' => "filtered paints",
                     b'K' => "backdrops",
                     b'p' => "paths drawn",
+                    b'A' => "cached paints asked",
+                    b'a' => "cached paints drawn",
+                    b'O' => "isolated paints",
                     b'Q' => "controls asked active",
                     b'q' => "accents asked",
                     b'Z' => {
-                        *self.seams.entry(if a == b"svg" { "svg (L14)" } else { "image (L15)" }).or_default() += 1;
+                        *self.seams.entry(if a == b"image" { "image (L15)" } else { "unknown" }).or_default() += 1;
                         continue;
                     }
                     _ => continue,
@@ -579,6 +656,32 @@ impl PaintTally {
                         self.count("root background fills", usize::from(b.get(88) == Some(&1)));
                     }
                     b't' => self.count("text bytes drawn", a.len()),
+                    b'p' => {
+                        // A path: u32 ops and each u8, u32 points and each f32, then u8 fill, colour (5), u8 even-odd, u8 stroke.
+                        let ops = i(0).max(0) as usize;
+                        let points = i(4 + ops).max(0) as usize;
+                        let at = 8 + ops + points * 4;
+                        self.count("paths filled", usize::from(b.get(at) == Some(&1)));
+                        self.count("paths even-odd", usize::from(b.get(at + 6) == Some(&1)));
+                        self.count("paths stroked", usize::from(b.get(at + 7) == Some(&1)));
+                        // Then colour (5), f32 width, i32 cap, i32 join, f32 miter, u32 dashes.
+                        let after = at + 13;
+                        self.count(&format!("stroke caps {}", i(after + 4)), usize::from(b.get(at + 7) == Some(&1)));
+                        self.count(&format!("stroke joins {}", i(after + 8)), usize::from(b.get(at + 7) == Some(&1)));
+                        let dashes = i(after + 16).max(0) as usize;
+                        self.count("dashed paths", usize::from(dashes > 0));
+                        // Then the dashes, f32 offset, and the fill and stroke gradients (i32 type first).
+                        let gradient = after + 20 + dashes * 4 + 4;
+                        let fill_type = i(gradient);
+                        self.count(&format!("fill gradients of type {fill_type}"), usize::from(fill_type != 0));
+                        let fill_stops = i(gradient + 32).max(0) as usize;
+                        let stroke_type = i(gradient + 36 + fill_stops * 9);
+                        self.count(&format!("stroke gradients of type {stroke_type}"), usize::from(stroke_type != 0));
+                        self.count("path points", points / 2);
+                        let nan = (0..points).any(|k| f(8 + ops + k * 4).is_nan());
+                        self.count("paths with NaN points", usize::from(nan));
+                    }
+                    b'A' => self.count("cached paint keys", 1),
                     _ => {}
                 }
             }
@@ -604,8 +707,7 @@ pub fn paint_record(width: f32, height: f32, dpr: f32, master: &[u8], user: &[u8
 }
 
 /// Where the paint calls of the two sides part, `None` when they are alike: each phase call by call, a seam of the
-/// port's (`Z`) standing for the C++'s calls of that later stage (an image's one `g`, an SVG's from its `C` to the
-/// matching `D`), which are counted in `skipped`.
+/// port's (`Z`) standing for the C++'s calls of that later stage (an image's one `g`), which are counted in `skipped`.
 pub fn compare_paint_calls(cpp: &[u8], rust: &[u8], skipped: &mut usize) -> Option<String> {
     let (_, c) = split_answer(cpp);
     let (_, r) = split_answer(rust);
@@ -624,31 +726,14 @@ pub fn compare_paint_calls(cpp: &[u8], rust: &[u8], skipped: &mut usize) -> Opti
         while i < cp.len() && j < rp.len() {
             let rc = &rp[j];
             if rc.0 == b'Z' {
-                if rc.1 == b"image" {
-                    if cp[i].0 != b'g' {
-                        return Some(format!("phase {p}: the port's image seam at {j} meets C++ {:?}", shown(&cp[i..])));
-                    }
-                    i += 1;
-                } else {
-                    if cp[i].0 != b'C' {
-                        return Some(format!("phase {p}: the port's SVG seam at {j} meets C++ {:?}", shown(&cp[i..])));
-                    }
-                    let mut depth = 0;
-                    loop {
-                        match cp.get(i).map(|c| c.0) {
-                            Some(b'C') | Some(b'P') => depth += 1,
-                            Some(b'D') => depth -= 1,
-                            None => return Some(format!("phase {p}: the C++'s SVG paint at {j} never ends")),
-                            _ => {}
-                        }
-                        i += 1;
-                        *skipped += 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    }
-                    *skipped -= 1;
+                if rc.1 != b"image" || cp[i].0 != b'g' {
+                    return Some(format!(
+                        "phase {p}: the port's {} seam at {j} meets C++ {:?}",
+                        String::from_utf8_lossy(&rc.1),
+                        shown(&cp[i..])
+                    ));
                 }
+                i += 1;
                 *skipped += 1;
                 j += 1;
                 continue;

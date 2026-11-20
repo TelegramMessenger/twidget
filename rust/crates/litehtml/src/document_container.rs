@@ -217,8 +217,8 @@ pub trait DocumentContainer: ResolveColor {
         WebColor::rgba(0, 122, 255, 255)
     }
 
-    /// No call in the C++: painting reached what a later stage ports (`"svg"`, L14: an `<svg>`'s own painting
-    /// after its box; `"image"`, L15: an `<img>`'s image after its box) and drew nothing there.
+    /// No call in the C++: painting reached what a later stage ports (`"image"`, L15: an `<img>`'s image after its
+    /// box) and drew nothing there.
     fn paint_unported(&self, _hdc: u64, _what: &'static str) {}
 }
 
