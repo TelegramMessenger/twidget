@@ -1,15 +1,13 @@
-//! The renderer's seams: [`Engine`], litehtml's document as the renderer's container holds it (what the fork
-//! parses, patches, lays out and answers, with the container's own parts of stage 4.2 behind it), and [`Layers`],
-//! what stage 4.5 ports (heavy boxes, compositor layers, damage, the paint). Each method is one call the C++
-//! makes there, asked where and in the order renderer.cpp asks it.
+//! The renderer's seam [`Engine`]: litehtml's document as the renderer's container holds it (what the fork
+//! parses, patches, lays out, paints and answers, with the container's own parts of stage 4.2 behind it). Each
+//! method is one call the C++ makes there, asked where and in the order renderer.cpp asks it.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
-use twidget_animations::{Declared, StyleOverrides, StyleValues};
+use twidget_animations::{Declared, StyleValues};
 use twidget_events::{EditorStyle, TextRun};
 use twidget_json::Json;
-use twidget_shadow::Document;
-use twidget_wire::{Affine, Command, Rect};
+use twidget_wire::{DisplayList, Radii, Rect};
 
 /// A hole of the fork's document template patched in place (`litehtml::document::hole_change`): an attribute
 /// value of element `owner` (by its widget id), or with `text` the text it holds, byte for byte what the
@@ -145,8 +143,8 @@ pub trait Engine {
 
     // ── what the input asks (twidget_events::EventHost's questions of the document) ──
 
-    /// `widget_id_at`: the widget id of what is at (x, y), the layers' tracks included; its border box into
-    /// `placement` when asked for and there is one.
+    /// `widget_id(element_at(x, y))`: the widget id of what the document has at (x, y), 0 for none; its border
+    /// box into `placement` when asked for and there is one. The layers above it are the renderer's.
     fn hit(&mut self, x: f64, y: f64, placement: Option<&mut Rect>) -> i64;
     fn box_of(&mut self, id: i64) -> Rect;
     fn touch_action(&mut self, id: i64) -> Option<Vec<u8>>;
@@ -164,132 +162,83 @@ pub trait Engine {
     fn font_info(&mut self, font: u64) -> Option<(i32, f32, f32, f32)>;
     fn selectable_key(&mut self) -> [u64; 2];
     fn any_selectable(&mut self) -> bool;
+
+    // ── stage 4.5: heavy boxes, layers, the paint ──
+
+    /// `scan_boxes`' walk of the document: every box it builds, keyed as the paint policy counts them (a widget
+    /// element's id × 4; the ::before of an element with an id + 1, its ::after + 2), whether it is a
+    /// pseudo-element's, and what `box_paint_of` reads of it; in the walk's order, none without a document.
+    fn boxes(&mut self) -> Vec<(i64, bool, BoxStyle)>;
+    /// What `box_paint_of` reads of element `id`'s own box.
+    fn box_style(&mut self, id: i64) -> BoxStyle;
+    /// `Container::background_is_local`: an animated background-color on `id` repaints `id` alone.
+    fn background_is_local(&mut self, id: i64) -> bool;
+    /// `Container::layer_candidate`: element `id`'s border box when it can be painted on its own, inside no paint
+    /// group but those of `movers` (when given).
+    fn layer_candidate(&mut self, id: i64, movers: Option<&BTreeSet<i64>>) -> Option<Rect>;
+    /// `Container::clip_of`: the ancestor that clips element `id`; None when an outer clip could cut what the
+    /// inner one lets through.
+    fn clip_of(&mut self, id: i64) -> Option<Clip>;
+    /// `Container::background_tile`: a shimmer's tile, None when element `id`'s background is no lone tile.
+    fn background_tile(&mut self, id: i64) -> Option<Tile>;
+    /// `Container::declared`: what element `id` declares for `names` after the cascade.
+    fn declared(&mut self, id: i64, names: &[&str]) -> Declared;
+    /// `Container::paint_order`: the render items in the order a full paint draws them, traced again when the
+    /// document laid out or its paint changed; `paint_index`, `covered` and `obscurers` read that trace.
+    fn paint_order(&mut self);
+    /// Where element `id`'s render item is in the trace; the trace's length when it is not there.
+    fn paint_index(&mut self, id: i64) -> usize;
+    /// `Container::covered`: something painted after element `id` meets `area`, but its descendants and the
+    /// elements of `ignore`.
+    fn covered(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>) -> bool;
+    /// `Container::obscurers`: the widget elements painted after `id` that meet `area`, as `covered` finds them;
+    /// None past `limit` or for one without a widget id.
+    fn obscurers(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>, limit: usize) -> Option<Vec<i64>>;
+    /// `Container::draw()`: the document's paint.
+    fn draw(&mut self) -> DisplayList;
+    /// `Container::draw(skip, backgrounds)`: the document without the elements of `skip` and without the
+    /// background images of `backgrounds`, each in the order given.
+    fn draw_skipping(&mut self, skip: &[i64], backgrounds: &[i64]) -> DisplayList;
+    /// `Container::draw_layer`: element `id` and its descendants alone, without the others of `skip`; with the
+    /// area the paint can reach.
+    fn draw_layer(&mut self, id: i64, skip: &[i64]) -> (DisplayList, Rect);
+    /// The document's half of `Container::paint_key`: which document, and its paint generation.
+    fn paint_key(&mut self) -> (u64, u32);
+    /// `widget_id(element_at_within(element(id), x, y))`: what element `id` has at (x, y) in document
+    /// coordinates, as `hit` answers.
+    fn hit_within(&mut self, id: i64, x: f32, y: f32, placement: Option<&mut Rect>) -> i64;
 }
 
-/// What a count of the heavy boxes left: the messages it queued (`paint`, `limit`) and whether it stopped the
-/// widget past the paint limit.
-#[derive(Clone, Debug, Default)]
-pub struct PaintCount {
-    pub messages: Vec<Json>,
-    pub stopped: bool,
+/// What `box_paint_of` reads of a box's computed values (paint_policy.h, rules 1 to 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoxStyle {
+    /// `backdrop-filter` is set.
+    pub backdrop: bool,
+    /// `filter` is set.
+    pub filter: bool,
+    /// A box shadow is blurred.
+    pub blurred: bool,
+    /// A disabled or pressed `<button>`'s own box: its opacity is its own dimming.
+    pub dimmed: bool,
+    pub opacity: f32,
 }
 
-/// What stage 4.5 ports: the paint policy's heavy boxes, compositor and scripted layers, damage and the paint.
-/// The renderer calls it where renderer.cpp calls that code; `dirty` and `touched_all` are the renderer's,
-/// which that code sets too.
-pub trait Layers {
-    /// `compositing_`.
-    fn compositing(&self) -> bool;
-    /// `set_compositing`: false when it was so already; the composition is planned again.
-    fn set_compositing(&mut self, enabled: bool) -> bool;
-    /// `scripted_only`: the batch only moves scripted layers through their layer properties; the ids it moves.
-    fn scripted_only(&mut self, doc: &Document, ops: &[Json], still: bool) -> Option<Vec<i64>>;
-    /// `apply_scripted`: the layers moved without a build; false when one moved past what its layer allows.
-    fn apply_scripted(&mut self, ids: &[i64], now: f64, dirty: &mut bool) -> bool;
-    /// `recount_boxes`: the boxes of scripted layers counted with their new opacity.
-    fn recount_boxes(&mut self, ids: &[i64], now: f64, still: bool) -> PaintCount;
-    /// `note_scripted`: the streaks of elements moved by style ops.
-    fn note_scripted(&mut self, ops: &[Json], now: f64);
-    /// `note_svg`: the streaks of SVGs changed batch after batch.
-    fn note_svg(&mut self, doc: &Document, ops: &[Json]);
-    /// `composition_key_ = 0`.
-    fn forget_key(&mut self);
-    /// `composition_key_ == 0`.
-    fn key_forgotten(&self) -> bool;
-    /// What a rebuild does first: scripted layers follow what the build declares.
-    fn rebuild_begins(&mut self);
-    /// `paint_scan_ = true`: every box is read again at the next count.
-    fn rescan(&mut self);
-    /// `update_composition`.
-    fn update_composition(&mut self, now: f64, still: bool, dirty: &mut bool, touched_all: &mut bool);
-    /// `strip_layers`: what the layers animate leaves the sampled values.
-    fn strip_layers(&mut self, sampled: &mut StyleOverrides);
-    /// `count_paint`.
-    fn count_paint(&mut self, now: f64, still: bool) -> PaintCount;
-    /// What `stop_paint` does past the container's `set_no_effects`: the layers back in the document.
-    fn paint_stopped(&mut self, now: f64);
-    /// `wake_at_`: when a layer's track needs a frame, in seconds; infinity for never.
-    fn wake_at(&self) -> f64;
-    /// `layer_ids_`: the elements the compositor animates.
-    fn layer_ids(&self) -> HashSet<i64>;
-    /// `layer_shown`.
-    fn layer_shown(&mut self, id: i64, now: f64) -> Option<(Affine, f32)>;
-    /// The `policy` message: counted unless compat, and `paint` reports.
-    fn policy(&mut self, on: bool, reports: bool);
-    /// A canvas drew (`run_canvas` after the backend's run); `clean` when the paint was not dirty before.
-    fn canvas_drew(&mut self, canvas: i32, clean: bool);
-    /// A canvas was released.
-    fn canvas_released(&mut self, canvas: i32);
-    /// `trim`'s part: the paint summary and the last list.
-    fn trim(&mut self);
-    /// The rest of `paint()` after its build.
-    fn paint(&mut self) -> Vec<Command>;
-    /// `damage`.
-    fn damage(&self, out: &mut Vec<Rect>) -> bool;
+/// The ancestor that clips an element (`clip_of`): when there is one, the innermost one's padding box and inner
+/// radii.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Clip {
+    pub has: bool,
+    pub rect: Rect,
+    pub radii: Radii,
 }
 
-/// The layers of a renderer that composites nothing and counts no box: every call as the C++ makes it with
-/// `compositing_` off and the policy `compat`.
-#[derive(Debug, Default)]
-pub struct NoLayers {
-    compositing: bool,
-    key_forgotten: bool,
-}
-
-impl Layers for NoLayers {
-    fn compositing(&self) -> bool {
-        self.compositing
-    }
-    fn set_compositing(&mut self, enabled: bool) -> bool {
-        if enabled == self.compositing {
-            return false;
-        }
-        self.compositing = enabled;
-        self.key_forgotten = true;
-        true
-    }
-    fn scripted_only(&mut self, _doc: &Document, _ops: &[Json], _still: bool) -> Option<Vec<i64>> {
-        None
-    }
-    fn apply_scripted(&mut self, _ids: &[i64], _now: f64, _dirty: &mut bool) -> bool {
-        true
-    }
-    fn recount_boxes(&mut self, _ids: &[i64], _now: f64, _still: bool) -> PaintCount {
-        PaintCount::default()
-    }
-    fn note_scripted(&mut self, _ops: &[Json], _now: f64) {}
-    fn note_svg(&mut self, _doc: &Document, _ops: &[Json]) {}
-    fn forget_key(&mut self) {
-        self.key_forgotten = true;
-    }
-    fn key_forgotten(&self) -> bool {
-        self.key_forgotten
-    }
-    fn rebuild_begins(&mut self) {}
-    fn rescan(&mut self) {}
-    fn update_composition(&mut self, _now: f64, _still: bool, _dirty: &mut bool, _touched_all: &mut bool) {}
-    fn strip_layers(&mut self, _sampled: &mut StyleOverrides) {}
-    fn count_paint(&mut self, _now: f64, _still: bool) -> PaintCount {
-        PaintCount::default()
-    }
-    fn paint_stopped(&mut self, _now: f64) {}
-    fn wake_at(&self) -> f64 {
-        f64::INFINITY
-    }
-    fn layer_ids(&self) -> HashSet<i64> {
-        HashSet::new()
-    }
-    fn layer_shown(&mut self, _id: i64, _now: f64) -> Option<(Affine, f32)> {
-        None
-    }
-    fn policy(&mut self, _on: bool, _reports: bool) {}
-    fn canvas_drew(&mut self, _canvas: i32, _clean: bool) {}
-    fn canvas_released(&mut self, _canvas: i32) {}
-    fn trim(&mut self) {}
-    fn paint(&mut self) -> Vec<Command> {
-        Vec::new()
-    }
-    fn damage(&self, _out: &mut Vec<Rect>) -> bool {
-        false
-    }
+/// A shimmer's tile (`background_tile`): where it is, the padding box it slides in, the clip and radii over it,
+/// and its content drawn whole.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tile {
+    pub tile: Rect,
+    pub area: Rect,
+    pub clip: Rect,
+    pub radii: Radii,
+    pub content: DisplayList,
 }

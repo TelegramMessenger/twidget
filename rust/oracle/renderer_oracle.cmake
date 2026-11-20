@@ -1,4 +1,4 @@
-# renderer_oracle: renderer.cpp and renderer.h copied with the probes of renderer_probe.h at every call the ported renderer makes into litehtml's document, the container's stage 4.2 parts and stage 4.5's code (the input's from input_probes.cmake, the rest here; each pattern found exactly as often as written, or the configure stops), the copy included whole by the driver over the rest of the core.
+# renderer_oracle: renderer.cpp and renderer.h copied with the probes of renderer_probe.h at every call the ported renderer makes into litehtml's document and the container (stage 4.2's parts, the paint and what stage 4.5 reads among them; the input's from input_probes.cmake, the rest here; each pattern found exactly as often as written, or the configure stops), the copy included whole by the driver over the rest of the core.
 include("${CMAKE_CURRENT_SOURCE_DIR}/probe.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/input_probes.cmake")
 set(TW_PROBE_WHAT renderer_oracle)
@@ -121,35 +121,95 @@ tw_probe(RENDERER_CPP 1 [=[            litehtml::svg_path_length(path, std::isfi
             twp::path_length(shadow->id, std::isfinite(at) ? float(std::max(0.0, at)) : 0.0f, 0, x, y);]=])
 tw_probe(RENDERER_CPP 1 [=[if (!path_bounds(path, x0, y0, x1, y1)) return Json::object()]=] [=[if (!twp::bounds(shadow->id, path_bounds(path, x0, y0, x1, y1), x0, y0, x1, y1)) return Json::object()]=])
 
-# Stage 4.5's code: what each call left, recorded as the outermost one returns, and its answers.
-tw_probe(RENDERER_CPP 1 [=[bool fast = scripted_only(ops, scripted);]=] [=[bool fast = twp::scripted(scripted_only(ops, scripted), scripted);]=])
-tw_probe(RENDERER_CPP 1 [=[if (fast && apply_scripted(scripted)) {]=] [=[if (fast && twp::applied(apply_scripted(scripted), dirty_)) {]=])
-tw_probe(RENDERER_CPP 1 [=[void Renderer::update_composition(double now) {]=] [=[void Renderer::update_composition(double now) {
-    TWP_STAGE45('U', [&] { twp::raw(now); }, [this] {
-        twp::u8(dirty_);
-        twp::u8(touched_all_);
-        twp::raw(wake_at_);
-        twp::ids(layer_ids_);
-        twp::promoted(promoted_);
-    });]=])
-tw_probe(RENDERER_CPP 1 [=[void Renderer::strip_layers(StyleOverrides& sampled) const {]=] [=[void Renderer::strip_layers(StyleOverrides& sampled) const {
-    TWP_STAGE45('T', [this] { twp::promoted(promoted_); }, nullptr);]=])
-tw_probe(RENDERER_CPP 1 [=[void Renderer::count_paint() {]=] [=[void Renderer::count_paint() {
-    const size_t twp_events = pending_events_.size();
-    TWP_STAGE45('P', nullptr, [this, twp_events] {
-        twp::messages(pending_events_, twp_events);
-        twp::u8(paint_stopped_);
-    });]=])
-tw_probe(RENDERER_CPP 1 [=[void Renderer::recount_boxes(const std::vector<int64_t>& ids) {]=] [=[void Renderer::recount_boxes(const std::vector<int64_t>& ids) {
-    const size_t twp_events = pending_events_.size();
-    TWP_STAGE45('B', nullptr, [this, twp_events] {
-        twp::messages(pending_events_, twp_events);
-        twp::u8(paint_stopped_);
-    });]=])
-tw_probe(RENDERER_CPP 1 [=[void Renderer::note_scripted(const Json::Array& ops) {]=] [=[void Renderer::note_scripted(const Json::Array& ops) {
-    TWP_STAGE45('G', nullptr, nullptr);]=])
-tw_probe(RENDERER_CPP 1 [=[void Renderer::note_svg(const Json::Array& ops) {]=] [=[void Renderer::note_svg(const Json::Array& ops) {
-    TWP_STAGE45('W', nullptr, nullptr);]=])
+# Stage 4.5's questions: the elements its code looks up, the boxes the paint policy counts, the clips, tiles and coverage the composition reads, the paints it asks for, the hits through layers.
+tw_probe(RENDERER_CPP 1 [=[        if (auto el = container_->element(p.id)) mover_elements.insert(el.get());]=] [=[        if (auto el = twp::element(p.id, container_->element(p.id))) mover_elements.insert(el.get());]=])
+tw_probe(RENDERER_CPP 1 [=[&& container_->background_is_local(ancestor);]=] [=[&& twp::local(ancestor, container_->background_is_local(ancestor));]=])
+tw_probe(RENDERER_CPP 1 [=[        auto el = container_->element(id);
+        Rect box;
+        if (!el || !container_->layer_candidate(el, box, &mover_elements)) continue;]=] [=[        auto el = twp::element(id, container_->element(id));
+        Rect box;
+        if (!el || !twp::candidate(id, &mover_elements, box, container_->layer_candidate(el, box, &mover_elements))) continue;]=])
+tw_probe(RENDERER_CPP 1 [=[if (!container_->clip_of(want.el, p.has_clip, p.clip, p.clip_radii)) continue;]=] [=[if (!twp::clip(id, p.has_clip, p.clip, p.clip_radii, container_->clip_of(want.el, p.has_clip, p.clip, p.clip_radii))) continue;]=])
+tw_probe(RENDERER_CPP 1 [=[        auto el = container_->element(id);
+        Promotion p;
+        Rect area;
+        if (blocked || !el || !container_->background_tile(el, p.box, area, p.clip, p.clip_radii, p.tile)) continue;]=] [=[        auto el = twp::element(id, container_->element(id));
+        Promotion p;
+        Rect area;
+        if (blocked || !el || !twp::tile(id, p.box, area, p.clip, p.clip_radii, p.tile, container_->background_tile(el, p.box, area, p.clip, p.clip_radii, p.tile))) continue;]=])
+tw_probe(RENDERER_CPP 1 [=[if (!container_->clip_of(el, outer, outer_clip, outer_radii)) continue;]=] [=[if (!twp::clip(id, outer, outer_clip, outer_radii, container_->clip_of(el, outer, outer_clip, outer_radii))) continue;]=])
+tw_probe(RENDERER_CPP 1 [=[    const auto& trace = container_->paint_order();]=] [=[    const auto& trace = container_->paint_order();
+    twp::command('|');]=])
+tw_probe(RENDERER_CPP 1 [=[            auto el = container_->element(id);
+            if (!alone || !el) continue;]=] [=[            auto el = twp::element(id, container_->element(id));
+            if (!alone || !el) continue;]=])
+tw_probe(RENDERER_CPP 3 [=[container_->layer_candidate(el, p.box)]=] [=[twp::candidate(id, nullptr, p.box, container_->layer_candidate(el, p.box))]=])
+tw_probe(RENDERER_CPP 3 [=[container_->clip_of(el, p.has_clip, p.clip, p.clip_radii)]=] [=[twp::clip(id, p.has_clip, p.clip, p.clip_radii, container_->clip_of(el, p.has_clip, p.clip, p.clip_radii))]=])
+tw_probe(RENDERER_CPP 2 [=[container_->declared(id, {"transform", "translate", "rotate", "scale", "opacity", "transform-origin"})]=] [=[twp::declared(id, container_->declared(id, {"transform", "translate", "rotate", "scale", "opacity", "transform-origin"}))]=])
+tw_probe(RENDERER_CPP 1 [=[if (!container_->covered(el, p.reach, trace, others)) break;]=] [=[if (!twp::covered(id, p.reach, others, container_->covered(el, p.reach, trace, others))) break;]=])
+tw_probe(RENDERER_CPP 2 [=[        auto el = container_->element(id);
+        Promotion p;
+        if (!alone || !el]=] [=[        auto el = twp::element(id, container_->element(id));
+        Promotion p;
+        if (!alone || !el]=])
+tw_probe(RENDERER_CPP 1 [=[!container_->covered(elements[id], wanted_layer.reach, trace, ignore_all)) continue;]=] [=[!twp::covered(id, wanted_layer.reach, ignore_all, container_->covered(elements[id], wanted_layer.reach, trace, ignore_all))) continue;]=])
+tw_probe(RENDERER_CPP 1 [=[auto found = container_->obscurers(elements[id], wanted_layer.reach, trace, ignore_all, MAX_OBSCURERS);]=] [=[auto found = twp::obscurers(id, wanted_layer.reach, ignore_all, MAX_OBSCURERS, container_->obscurers(elements[id], wanted_layer.reach, trace, ignore_all, MAX_OBSCURERS));]=])
+tw_probe(RENDERER_CPP 1 [=[                auto el = container_->element(other);]=] [=[                auto el = twp::element(other, container_->element(other));]=])
+tw_probe(RENDERER_CPP 1 [=[!container_->layer_candidate(el, s.box) || !container_->clip_of(el, s.has_clip, s.clip, s.clip_radii)) {]=] [=[!twp::candidate(other, nullptr, s.box, container_->layer_candidate(el, s.box)) || !twp::clip(other, s.has_clip, s.clip, s.clip_radii, container_->clip_of(el, s.has_clip, s.clip, s.clip_radii))) {]=])
+tw_probe(RENDERER_CPP 1 [=[        p.order = size_t(std::find(trace.begin(), trace.end(), ri.get()) - trace.begin());]=] [=[        p.order = twp::order(id, size_t(std::find(trace.begin(), trace.end(), ri.get()) - trace.begin()));]=])
+tw_probe(RENDERER_CPP 1 [=[if (p.reach.empty() || container_->covered(elements[id], p.reach, trace, ignore)) continue;]=] [=[if (p.reach.empty() || twp::covered(id, p.reach, ignore, container_->covered(elements[id], p.reach, trace, ignore))) continue;]=])
+
+# The paint: the document drawn with or without its layers, each layer's content, the key of a list kept.
+tw_probe(RENDERER_CPP 1 [=[        painted_key_ = container_->paint_key();]=] [=[        painted_key_ = twp::paint_key(container_->paint_key());]=])
+tw_probe(RENDERER_CPP 1 [=[    if (container_->paint_key() != painted_key_ ||]=] [=[    if (twp::paint_key(container_->paint_key()) != painted_key_ ||]=])
+tw_probe(RENDERER_CPP 1 [=[            if (auto el = container_->element(id)) {
+                order.emplace_back(p.order, id);]=] [=[            if (auto el = twp::element(id, container_->element(id))) {
+                order.emplace_back(p.order, id);]=])
+tw_probe(RENDERER_CPP 1 [=[        DisplayList list = container_->draw(skip, backgrounds);]=] [=[        DisplayList list = twp::drawn(skip, backgrounds, container_->draw(skip, backgrounds));]=])
+tw_probe(RENDERER_CPP 1 [=[                layer.content = container_->draw_layer(container_->element(id), skip, layer.bounds);]=] [=[                layer.content = twp::layer_drawn(id, skip, layer.bounds, container_->draw_layer(container_->element(id), skip, layer.bounds));]=])
+tw_probe(RENDERER_CPP 1 [=[    return container_->draw();
+}]=] [=[    return twp::plain(container_->draw());
+}]=])
+
+# The hits: inside a layer where its track shows it, then the document.
+tw_probe(RENDERER_CPP 1 [=[if (int64_t hit = container_->widget_id(container_->element_at_within(container_->element(id), mx, my), placement)) return hit;]=] [=[if (int64_t hit = twp::hit_within(id, mx, my, placement, container_->widget_id(container_->element_at_within(container_->element(id), mx, my), placement))) return hit;]=])
+tw_probe(RENDERER_CPP 1 [=[    return container_->widget_id(container_->element_at(x, y), placement);]=] [=[    return twp::hit_answer(x, y, placement, container_->widget_id(container_->element_at(x, y), placement));]=])
+
+# The heavy boxes: the walk between its markers, a box's facts where it is set, the no-effects switch past the limit.
+tw_probe(RENDERER_CPP 1 [=[std::optional<float> Renderer::layer_opacity(int64_t id) const {]=] [=[// What box_paint_of reads of a box, recorded where the walk or a recount sets it.
+int64_t twp_box(int64_t key, const litehtml::element& el, bool pseudo) {
+    if (twp::question('%')) {
+        twp::raw(key);
+        twp::u8(pseudo);
+        const auto& css = el.css();
+        twp::u8(!css.get_backdrop_filter().empty());
+        twp::u8(!css.get_filter().empty());
+        bool blurred = false;
+        for (const auto& shadow : css.get_box_shadows()) {
+            if (!(shadow.blur.val() <= 0)) {
+                blurred = true;
+                break;
+            }
+        }
+        twp::u8(blurred);
+        twp::u8(!pseudo && el.tag() == litehtml::_button_ && (el.get_attr("disabled") || el.has_pseudo_class(litehtml::_active_)));
+        twp::raw(float(css.get_opacity()));
+    }
+    return key;
+}
+
+std::optional<float> Renderer::layer_opacity(int64_t id) const {]=])
+tw_probe(RENDERER_CPP 1 [=[    paint_.begin_scan();]=] [=[    paint_.begin_scan();
+    twp::command('Q');]=])
+tw_probe(RENDERER_CPP 1 [=[    if (paint_.end_scan()) motion_stale_ = true;]=] [=[    twp::command(';');
+    if (paint_.end_scan()) motion_stale_ = true;]=])
+tw_probe(RENDERER_CPP 1 [=[paint_.set_box(parent * 4 + (tag == litehtml::__tag_before_ ? 1 : 2), box_paint_of(*el, true, std::nullopt));]=] [=[paint_.set_box(twp_box(parent * 4 + (tag == litehtml::__tag_before_ ? 1 : 2), *el, true), box_paint_of(*el, true, std::nullopt));]=])
+tw_probe(RENDERER_CPP 2 [=[paint_.set_box(id * 4, box_paint_of(*el, false, layer_opacity(id)));]=] [=[paint_.set_box(twp_box(id * 4, *el, false), box_paint_of(*el, false, layer_opacity(id)));]=])
+tw_probe(RENDERER_CPP 1 [=[        auto el = container_->element(id);
+        if (el && paint_.has_box(id * 4))]=] [=[        auto el = twp::element(id, container_->element(id));
+        if (el && paint_.has_box(id * 4))]=])
+tw_probe(RENDERER_CPP 1 [=[    container_->set_no_effects();]=] [=[    container_->set_no_effects();
+    twp::command('-');]=])
 
 file(WRITE "${RENDERER_SEAM}/renderer.cpp.tmp" "${RENDERER_CPP}")
 file(WRITE "${RENDERER_SEAM}/renderer.h.tmp" "${RENDERER_H}")

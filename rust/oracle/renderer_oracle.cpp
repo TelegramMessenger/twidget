@@ -1,4 +1,4 @@
-// The whole renderer with the probes of renderer_probe.h at its calls into the document, the container and stage 4.5's code (renderer_oracle.cmake's copy of renderer.cpp, included whole so that its Node is complete here), driven by scripts for rust/crates/renderer: scripts, the tape and the transcript are laid out in that crate's tests/common/mod.rs.
+// The whole renderer with the probes of renderer_probe.h at its calls into the document and the container (renderer_oracle.cmake's copy of renderer.cpp, included whole so that its Node is complete here), driven by scripts for rust/crates/renderer: scripts, the tape and the transcript are laid out in that crate's tests/common/mod.rs.
 #include "renderer.cpp"
 #include "wire.h"
 
@@ -357,14 +357,20 @@ struct RendererOracle {
         o.raw(r.press_y_);
         o.raw(r.press_at_);
         o.u8(r.patch_log_.valid);
-        o.raw(uint32_t(r.patch_log_.attributes.size()));
+        // An invalid log can hold nodes removed since: only a valid one's are read.
+        const bool log = r.patch_log_.valid;
+        o.raw(uint32_t(log ? r.patch_log_.attributes.size() : 0));
         for (const auto& [n, names] : r.patch_log_.attributes) {
+            if (!log) break;
             o.raw(int64_t(n->id));
             o.raw(uint32_t(names.size()));
             for (const std::string& name : names) o.str(name);
         }
-        o.raw(uint32_t(r.patch_log_.texts.size()));
-        for (const auto* n : r.patch_log_.texts) o.raw(int64_t(n->id));
+        o.raw(uint32_t(log ? r.patch_log_.texts.size() : 0));
+        for (const auto* n : r.patch_log_.texts) {
+            if (!log) break;
+            o.raw(int64_t(n->id));
+        }
         std::vector<int64_t> touched(r.touched_.begin(), r.touched_.end());
         std::sort(touched.begin(), touched.end());
         o.raw(uint32_t(touched.size()));
@@ -435,6 +441,166 @@ struct RendererOracle {
     }
 
     static uint64_t generation(const Renderer& r) { return r.editor() ? r.editor()->generation : 0; }
+
+    // A display list as the transcript keeps it: whether the wire takes it, the digest and length of its wire form.
+    static void list(const twlite::DisplayList& l, ro::Out& o) {
+        std::string bytes;
+        o.u8(twlite::wire::encode(l, twlite::wire::Caps{}, bytes) ? 1 : 0);
+        o.raw(ro::fnv64(bytes));
+        o.raw(uint32_t(bytes.size()));
+    }
+    static void radii(const twlite::Radii& k, ro::Out& o) {
+        for (float v : {k.tlx, k.tly, k.trx, k.try_, k.brx, k.bry, k.blx, k.bly}) o.raw(v);
+    }
+    // A track by the digest of its fields and keys, every float by its bits.
+    static void track(const twlite::LayerTrack& t, ro::Out& o) {
+        ro::Out k;
+        k.raw(t.start);
+        k.raw(t.duration);
+        k.u8(t.repeat);
+        for (const auto& key : t.keys) {
+            k.raw(key.t);
+            for (float v : {key.matrix.a, key.matrix.b, key.matrix.c, key.matrix.d, key.matrix.e, key.matrix.f}) k.raw(v);
+            k.raw(key.opacity);
+        }
+        o.raw(uint32_t(t.keys.size()));
+        o.raw(ro::fnv64(k.s));
+    }
+    static void composition(const twlite::Composition& c, ro::Out& o) {
+        o.raw(uint64_t(c.version));
+        o.raw(uint32_t(c.layers.size()));
+        for (const auto& l : c.layers) {
+            o.raw(int64_t(l.id));
+            o.rect(l.bounds);
+            o.raw(uint64_t(l.content_version));
+            list(l.content, o);
+            o.raw(l.raster_scale);
+            o.u8(l.has_clip);
+            o.rect(l.clip);
+            radii(l.clip_radii, o);
+            o.raw(uint64_t(l.track_version));
+            track(l.track, o);
+            o.raw(int64_t(l.parent));
+        }
+    }
+    template <class Set> static void sorted_ids(const Set& set, ro::Out& o) {
+        std::vector<int64_t> ids(set.begin(), set.end());
+        std::sort(ids.begin(), ids.end());
+        o.raw(uint32_t(ids.size()));
+        for (int64_t id : ids) o.raw(id);
+    }
+
+    // What stage 4.5 left: the layers, the scripted, SVG and canvas streaks, the last paint and its damage, the heavy boxes.
+    static void layers(Renderer& r, ro::Out& o) {
+        o.u8(r.compositing_);
+        o.raw(uint32_t(r.promoted_.size()));
+        for (const auto& [id, p] : r.promoted_) {
+            o.raw(int64_t(id));
+            o.rect(p.box);
+            o.rect(p.reach);
+            o.raw(p.raster_scale);
+            o.u8(p.has_clip);
+            o.rect(p.clip);
+            radii(p.clip_radii, o);
+            o.raw(uint64_t(p.signature));
+            o.raw(uint64_t(p.track_version));
+            track(p.track, o);
+            o.raw(uint64_t(p.order));
+            o.u8(p.scripted);
+            std::map<std::string, std::string> base(p.base.begin(), p.base.end());
+            o.raw(uint32_t(base.size()));
+            for (const auto& [k, v] : base) {
+                o.str(k);
+                o.str(v);
+            }
+            o.u8(p.shimmer);
+            list(p.tile, o);
+            o.raw(uint64_t(p.tile_version));
+            o.u8(p.svg);
+            o.u8(p.canvas);
+            o.raw(int64_t(p.parent));
+            o.u8(p.found_clip);
+            o.rect(p.found_clip_rect);
+        }
+        sorted_ids(r.layer_ids_, o);
+        composition(r.composition_, o);
+        o.raw(r.wake_at_);
+        o.raw(uint64_t(r.composition_key_));
+        o.raw(uint64_t(r.next_version_));
+        std::map<int64_t, int> svg_streaks(r.svg_streaks_.begin(), r.svg_streaks_.end());
+        o.raw(uint32_t(svg_streaks.size()));
+        for (const auto& [id, n] : svg_streaks) {
+            o.raw(int64_t(id));
+            o.raw(int32_t(n));
+        }
+        sorted_ids(r.svg_layers_, o);
+        std::map<int, uint64_t> draws(r.canvas_draws_.begin(), r.canvas_draws_.end());
+        o.raw(uint32_t(draws.size()));
+        for (const auto& [canvas, n] : draws) {
+            o.raw(int32_t(canvas));
+            o.raw(uint64_t(n));
+        }
+        sorted_ids(r.canvas_layers_, o);
+        std::map<int64_t, Renderer::ScriptedHit> hits(r.scripted_hits_.begin(), r.scripted_hits_.end());
+        o.raw(uint32_t(hits.size()));
+        for (const auto& [id, h] : hits) {
+            o.raw(int64_t(id));
+            o.raw(int32_t(h.count));
+            o.raw(uint64_t(h.batch));
+            o.raw(h.at);
+        }
+        o.raw(uint64_t(r.ops_batch_));
+        sorted_ids(r.scripted_candidates_, o);
+        o.u8(r.composition_only_);
+        list(r.painted_list_, o);
+        o.u8(r.painted_list_valid_);
+        o.raw(uint64_t(uintptr_t(std::get<0>(r.painted_key_))));
+        o.raw(uint32_t(std::get<1>(r.painted_key_)));
+        o.raw(uint64_t(std::get<2>(r.painted_key_)));
+        o.raw(uint32_t(r.painted_.entries.size()));
+        for (const auto& e : r.painted_.entries) {
+            o.raw(uint64_t(e.key));
+            o.rect(e.ink);
+            o.raw(int32_t(e.canvas));
+            o.u8(e.backdrop);
+        }
+        o.u8(r.painted_valid_);
+        o.raw(uint32_t(r.painted_size_.first));
+        o.raw(uint32_t(r.painted_size_.second));
+        o.raw(uint32_t(r.damage_.size()));
+        for (const auto& d : r.damage_) o.rect(d);
+        o.u8(r.damage_valid_);
+        std::vector<int> drawn(r.canvases_drawn_.begin(), r.canvases_drawn_.end());
+        std::sort(drawn.begin(), drawn.end());
+        o.raw(uint32_t(drawn.size()));
+        for (int c : drawn) o.raw(int32_t(c));
+        o.raw(uint64_t(r.painted_layouts_));
+        o.u8(r.paint_on_);
+        o.u8(r.paint_reports_);
+        o.raw(int32_t(r.paint_reported_.first));
+        o.raw(int32_t(r.paint_reported_.second));
+        o.u8(r.paint_scan_);
+        for (int v : {r.paint_.heavy(), r.paint_.backdrop(), r.paint_.peak_heavy(), r.paint_.peak_backdrop()}) o.raw(int32_t(v));
+        o.raw(uint64_t(r.motion_hash_));
+        o.u8(r.motion_stale_);
+        o.raw(uint32_t(r.motions_.size()));
+        for (const auto& m : r.motions_) {
+            o.raw(int64_t(m.id));
+            o.u8(uint8_t(m.kind));
+            // Its name is a view into the animator, which can have let it go since: only the length is the motion's own.
+            o.raw(uint32_t(m.name.size()));
+            o.raw(int64_t(m.aid));
+            o.u8(m.paint.heavy);
+            o.u8(m.paint.backdrop);
+        }
+        o.raw(uint32_t(r.motion_counted_.size()));
+        for (const auto& c : r.motion_counted_) {
+            o.raw(int64_t(c.key));
+            o.str(c.id);
+            o.u8(c.paint.heavy);
+            o.u8(c.paint.backdrop);
+        }
+    }
 };
 
 } // namespace twlite
@@ -465,6 +631,7 @@ void script(In& in, Out& o) {
     transcript.str(log.s);
     log.s.clear();
     RendererOracle::build(*r, transcript);
+    RendererOracle::layers(*r, transcript);
     const uint32_t steps = in.u32();
     for (uint32_t i = 0; i < steps && in.at < in.s.size(); i++) {
         const uint8_t kind = in.u8();
@@ -540,6 +707,17 @@ void script(In& in, Out& o) {
         }
         case 'f': out = r->tick(); break;
         case 'l': extra.str(r->last_html()); break;
+        case 'p': {
+            RendererOracle::list(r->paint(), extra);
+            std::vector<Rect> damage;
+            const bool valid = r->damage(damage);
+            extra.u8(valid);
+            extra.raw(uint32_t(damage.size()));
+            for (const Rect& d : damage) extra.rect(d);
+            extra.str(r->damage_json());
+            RendererOracle::composition(r->composition(), extra);
+            break;
+        }
         case 'q': {
             extra.str(r->cursor());
             extra.u8(r->has_selection());
@@ -574,6 +752,7 @@ void script(In& in, Out& o) {
         log.s.clear();
         RendererOracle::input(*r, transcript);
         RendererOracle::build(*r, transcript);
+        RendererOracle::layers(*r, transcript);
         transcript.raw(RendererOracle::tree(*r, max_id));
     }
     twp::tape.on = false;

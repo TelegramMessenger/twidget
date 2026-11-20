@@ -1,6 +1,7 @@
 //! The renderer against renderer.cpp (`oracle/renderer_oracle`): scripts through the C++ renderer with probes at its
-//! calls into the document and stage 4.5's code, then through the port on the tape of those answers, every message,
-//! returned value, backend call and the whole state compared after every step. Skipped without `TWIDGET_ORACLE_DIR`.
+//! calls into the document and the container, then through the port on the tape of those answers, every message,
+//! returned value, backend call and the whole state (stage 4.5's included) compared after every step. Skipped without
+//! `TWIDGET_ORACLE_DIR`; stage 4.5's own scripts are in `layers.rs`.
 
 mod common;
 

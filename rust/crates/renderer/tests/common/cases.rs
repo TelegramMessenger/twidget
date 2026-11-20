@@ -17,7 +17,7 @@ pub fn compare(oracle: &Oracle, scripts: &[(Script, String)], tally: &mut Tally)
         let answers = oracle.run(input, chunk.len());
         for ((script, what), (status, answer)) in chunk.iter().zip(&answers) {
             let (tape, cpp) = split(answer);
-            let r = run(script, tape, tally);
+            let mut r = run(script, tape, tally);
             if *status != 1 || !r.errors.is_empty() || cpp != r.transcript.as_slice() {
                 let rust = &r.transcript;
                 let at = cpp.iter().zip(rust).position(|(a, b)| a != b).unwrap_or(cpp.len().min(rust.len()));
@@ -38,6 +38,8 @@ pub fn compare(oracle: &Oracle, scripts: &[(Script, String)], tally: &mut Tally)
                     near(rust)
                 ));
             }
+            // Compared: the transcript is let go, so that a long list of runs stays small.
+            r.transcript = Vec::new();
             runs.push(r);
         }
     }

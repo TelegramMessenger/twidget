@@ -1,6 +1,6 @@
 //! What the renderer comparison shares with `oracle/renderer_oracle`: scripts of messages, settings and input through one
-//! renderer, the tape of the C++ document's and stage 4.5's answers the port replays, the transcript both sides write,
-//! and the inputs (the input stage's, `inputs.rs` of twidget_events' tests, and this stage's own in `scripts.rs`).
+//! renderer, the tape of the C++ document's answers the port replays, the transcript both sides write, and the inputs
+//! (the input stage's, `inputs.rs` of twidget_events' tests, and this stage's own in `scripts.rs` and `layer_scripts.rs`).
 //!
 //! A script is 'S', a u32 length and: f64 width, f64 dpr, u8 dark, f64 the clock at construction (ms), u32 the largest
 //! node id the tree digest walks to, u32 steps, each a u8 kind, f64 the clock (ms) and its fields ([`Step`]).
@@ -11,13 +11,16 @@
 //! i32 width, i32 height, u32 ops, u8 encoded, u64 FNV-1a of the batch in wire form with every NaN as one; 'X' i32
 //! canvas_release; 'G' i32 canvas_read's five; 'F' create_canvas_font str family, f32 size, i32 weight, u8 italic, i32
 //! handle; 'D' i32 delete_font; 'W' i32 font, str text_width: the renderer's own calls, its canvas fonts numbered from
-//! 2^20), the input's state ([`input_state`]), the renderer's ([`build_state`]) and the tree's digest ([`tree`]).
+//! 2^20), the input's state ([`input_state`]), the renderer's ([`build_state`]), stage 4.5's ([`layers_state`]) and the
+//! tree's digest ([`tree`]). A paint step returns its list ([`list`]), the damage (u8 valid, u32 rects, the rects, str
+//! damage_json) and the composition ([`composition`]); lists and tracks go by digest.
 
 #![allow(dead_code)]
 
 pub mod cases;
 #[path = "../../../events/tests/common/inputs.rs"]
 pub mod inputs;
+pub mod layer_scripts;
 pub mod scripts;
 pub mod tape;
 
@@ -27,11 +30,11 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use twidget_json::Json;
-use twidget_renderer::{Backend, Clock, Renderer};
+use twidget_renderer::{Backend, Clock, Composition, LayerTrack, Renderer};
 pub use twidget_testkit::Fields;
-use twidget_wire::{CanvasOp, Caps, FontMetrics, encode_batch};
+use twidget_wire::{CanvasOp, Caps, DisplayList, FontMetrics, Radii, Rect, encode_batch, encode_list};
 
-use tape::{Entry, Shared, TapeEngine, TapeLayers};
+use tape::{Entry, Shared, TapeEngine};
 
 pub fn fnv64(v: &[u8]) -> u64 {
     fnv64_from(1469598103934665603u64, v)
@@ -145,7 +148,7 @@ pub enum Step {
         modifiers: i32,
     },
     Tick,
-    /// A paint is stage 4.5's: its build is `last_html`'s, which this runs.
+    /// paint(), damage(), damage_json(), composition().
     Paint,
     LastHtml,
     /// cursor(), has_selection(), selected_text(), selectable_text_json().
@@ -182,7 +185,8 @@ impl Step {
             Step::Wheel { .. } => b'W',
             Step::Key { .. } => b'k',
             Step::Tick => b'f',
-            Step::Paint | Step::LastHtml => b'l',
+            Step::Paint => b'p',
+            Step::LastHtml => b'l',
             Step::Observe => b'q',
             Step::Trim => b'T',
             Step::ResizeTracking { .. } => b'r',
@@ -210,7 +214,8 @@ impl Step {
             Step::Wheel { .. } => "wheel",
             Step::Key { .. } => "key",
             Step::Tick => "tick",
-            Step::Paint | Step::LastHtml => "last_html",
+            Step::Paint => "paint",
+            Step::LastHtml => "last_html",
             Step::Observe => "observe",
             Step::Trim => "trim",
             Step::ResizeTracking { .. } => "set_resize_tracking",
@@ -230,11 +235,13 @@ pub struct Script {
     pub max_id: u32,
     /// Each step with the clock (ms) it runs at.
     pub steps: Vec<(f64, Step)>,
+    /// The run keeps each paint's list, damage and composition for the tests (not part of the script's bytes).
+    pub keep_paints: bool,
 }
 
 impl Script {
     pub fn new(max_id: u32) -> Script {
-        Script { width: 300.0, dpr: 1.0, dark: false, t0: 1000.0, max_id, steps: Vec::new() }
+        Script { width: 300.0, dpr: 1.0, dark: false, t0: 1000.0, max_id, steps: Vec::new(), keep_paints: false }
     }
 
     /// The clock of the last step, or of the construction.
@@ -513,7 +520,7 @@ impl Clock for StepClock {
     }
 }
 
-pub type Port = Renderer<TapeEngine, Stub, TapeLayers>;
+pub type Port = Renderer<TapeEngine, Stub>;
 
 // ---- The transcript -----------------------------------------------------------------------------------------
 
@@ -666,16 +673,18 @@ pub fn build_state(r: &mut Port, o: &mut Out) {
     o.f64(press_at);
     let log = &doc.patch_log;
     o.flag(log.valid);
-    o.u32(log.attributes.len() as u32);
-    for (r, names) in log.attributes.values() {
+    // An invalid log can hold nodes removed since: only a valid one's are read.
+    let valid = log.valid;
+    o.u32(if valid { log.attributes.len() as u32 } else { 0 });
+    for (r, names) in log.attributes.values().filter(|_| valid) {
         o.i64(doc.get(*r).id);
         o.u32(names.len() as u32);
         for name in names {
             o.str(name);
         }
     }
-    o.u32(log.texts.len() as u32);
-    for r in log.texts.values() {
+    o.u32(if valid { log.texts.len() as u32 } else { 0 });
+    for r in log.texts.values().filter(|_| valid) {
         o.i64(doc.get(*r).id);
     }
     let (touched, touched_all) = c.touched();
@@ -758,6 +767,192 @@ pub fn build_state(r: &mut Port, o: &mut Out) {
     }
 }
 
+/// A display list as the transcript keeps it: whether the wire takes it, the FNV-1a and length of its wire form.
+pub fn list(l: &[twidget_wire::Command], o: &mut Out) {
+    let mut bytes = Vec::new();
+    o.flag(encode_list(l, &Caps::default(), &mut bytes));
+    o.u64(fnv64(&bytes));
+    o.u32(bytes.len() as u32);
+}
+
+fn radii(k: &Radii, o: &mut Out) {
+    for v in [k.tlx, k.tly, k.trx, k.try_, k.brx, k.bry, k.blx, k.bly] {
+        o.f32(v);
+    }
+}
+
+/// A track by the digest of its fields and keys, every float by its bits.
+fn track(t: &LayerTrack, o: &mut Out) {
+    let mut k = Out::default();
+    k.f64(t.start);
+    k.f64(t.duration);
+    k.flag(t.repeat);
+    for key in &t.keys {
+        k.f32(key.t);
+        for v in [key.matrix.a, key.matrix.b, key.matrix.c, key.matrix.d, key.matrix.e, key.matrix.f] {
+            k.f32(v);
+        }
+        k.f32(key.opacity);
+    }
+    o.u32(t.keys.len() as u32);
+    o.u64(fnv64(&k.0));
+}
+
+/// The layers above the document, as RendererOracle::composition writes them.
+pub fn composition(c: &Composition, o: &mut Out) {
+    o.u64(c.version);
+    o.u32(c.layers.len() as u32);
+    for l in &c.layers {
+        o.i64(l.id);
+        o.rect(&l.bounds);
+        o.u64(l.content_version);
+        list(&l.content, o);
+        o.f32(l.raster_scale);
+        o.flag(l.has_clip);
+        o.rect(&l.clip);
+        radii(&l.clip_radii, o);
+        o.u64(l.track_version);
+        track(&l.track, o);
+        o.i64(l.parent);
+    }
+}
+
+fn sorted_ids(ids: impl Iterator<Item = i64>, o: &mut Out) {
+    let mut v: Vec<i64> = ids.collect();
+    v.sort_unstable();
+    o.u32(v.len() as u32);
+    for id in v {
+        o.i64(id);
+    }
+}
+
+/// What stage 4.5 left, as RendererOracle::layers writes it.
+pub fn layers_state(r: &Port, o: &mut Out) {
+    let l = &r.core().layers;
+    o.flag(l.compositing);
+    o.u32(l.promoted.len() as u32);
+    for (&id, p) in &l.promoted {
+        o.i64(id);
+        o.rect(&p.rect);
+        o.rect(&p.reach);
+        o.f32(p.raster_scale);
+        o.flag(p.has_clip);
+        o.rect(&p.clip);
+        radii(&p.clip_radii, o);
+        o.u64(p.signature);
+        o.u64(p.track_version);
+        track(&p.track, o);
+        o.u64(p.order as u64);
+        o.flag(p.scripted);
+        o.u32(p.base.len() as u32);
+        for (k, v) in &p.base {
+            o.str(k);
+            o.str(v);
+        }
+        o.flag(p.shimmer);
+        list(&p.tile, o);
+        o.u64(p.tile_version);
+        o.flag(p.svg);
+        o.flag(p.canvas);
+        o.i64(p.parent);
+        o.flag(p.found_clip);
+        o.rect(&p.found_clip_rect);
+    }
+    sorted_ids(l.layer_ids.iter().copied(), o);
+    composition(&l.composition, o);
+    o.f64(l.wake_at);
+    o.u64(l.composition_key);
+    o.u64(l.next_version);
+    let streaks: BTreeMap<i64, i32> = l.svg_streaks.iter().map(|(&k, &v)| (k, v)).collect();
+    o.u32(streaks.len() as u32);
+    for (id, n) in streaks {
+        o.i64(id);
+        o.i32(n);
+    }
+    sorted_ids(l.svg_layers.iter().copied(), o);
+    let draws: BTreeMap<i32, u64> = l.canvas_draws.iter().map(|(&k, &v)| (k, v)).collect();
+    o.u32(draws.len() as u32);
+    for (canvas, n) in draws {
+        o.i32(canvas);
+        o.u64(n);
+    }
+    sorted_ids(l.canvas_layers.iter().copied(), o);
+    let hits: BTreeMap<i64, twidget_renderer::ScriptedHit> = l.scripted_hits.iter().map(|(&k, &v)| (k, v)).collect();
+    o.u32(hits.len() as u32);
+    for (id, h) in hits {
+        o.i64(id);
+        o.i32(h.count);
+        o.u64(h.batch);
+        o.f64(h.at);
+    }
+    o.u64(l.ops_batch);
+    sorted_ids(l.scripted_candidates.iter().copied(), o);
+    o.flag(l.composition_only);
+    list(&l.painted_list, o);
+    o.flag(l.painted_list_valid);
+    o.u64(l.painted_key.0);
+    o.u32(l.painted_key.1);
+    o.u64(l.painted_key.2);
+    o.u32(l.painted.entries.len() as u32);
+    for e in &l.painted.entries {
+        o.u64(e.key);
+        o.rect(&e.ink);
+        o.i32(e.canvas);
+        o.flag(e.backdrop);
+    }
+    o.flag(l.painted_valid);
+    o.u32(l.painted_size.0);
+    o.u32(l.painted_size.1);
+    o.u32(l.damage.len() as u32);
+    for d in &l.damage {
+        o.rect(d);
+    }
+    o.flag(l.damage_valid);
+    let mut drawn: Vec<i32> = l.canvases_drawn.iter().copied().collect();
+    drawn.sort_unstable();
+    o.u32(drawn.len() as u32);
+    for c in drawn {
+        o.i32(c);
+    }
+    o.u64(l.painted_layouts);
+    o.flag(l.paint_on);
+    o.flag(l.paint_reports);
+    o.i32(l.paint_reported.0);
+    o.i32(l.paint_reported.1);
+    o.flag(l.paint_scan);
+    for v in [l.paint.heavy(), l.paint.backdrop(), l.paint.peak_heavy(), l.paint.peak_backdrop()] {
+        o.i32(v);
+    }
+    o.u64(l.motion_hash);
+    o.flag(l.motion_stale);
+    o.u32(l.motions.len() as u32);
+    for m in &l.motions {
+        o.i64(m.id);
+        o.u8(m.kind);
+        // The C++'s name is a view into the animator, which can have let it go since: the length only.
+        o.u32(m.name.len() as u32);
+        o.i64(m.aid);
+        o.flag(m.paint.heavy);
+        o.flag(m.paint.backdrop);
+    }
+    o.u32(l.motion_counted.len() as u32);
+    for c in &l.motion_counted {
+        o.i64(c.key);
+        o.str(&c.id);
+        o.flag(c.paint.heavy);
+        o.flag(c.paint.backdrop);
+    }
+}
+
+/// What a paint step gave the tests: the list, the damage (None: paint everything) and the composition.
+#[derive(Debug, Clone)]
+pub struct Painted {
+    pub step: usize,
+    pub list: DisplayList,
+    pub damage: Option<Vec<Rect>>,
+    pub composition: Composition,
+}
+
 /// The tree's nodes up to `max_id`: kind, tag, attributes and data, as RendererOracle::tree digests them.
 pub fn tree(doc: &twidget_shadow::Document, max_id: u32) -> u64 {
     let mut h = 1469598103934665603u64;
@@ -830,6 +1025,12 @@ pub struct Run {
     /// The backend's own calls the renderer made, in order, for the tests: (canvas releases, fonts deleted, fonts made,
     /// fonts measured in, canvas runs).
     pub stub: Stub,
+    /// Each paint step's, when the script keeps them.
+    pub paints: Vec<Painted>,
+    /// The composition after each step, when the script keeps the paints.
+    pub compositions: Vec<Composition>,
+    /// Each step's dirty(), after it.
+    pub dirty: Vec<bool>,
 }
 
 /// The query step's result in a run's messages.
@@ -851,7 +1052,6 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
         script.dark,
         TapeEngine { tape: shared.clone() },
         Stub::new(),
-        TapeLayers::new(shared.clone()),
         Some(Box::new(StepClock(clock.clone()))),
     );
     let mut run = Run::default();
@@ -859,6 +1059,7 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
     let log = std::mem::take(&mut r.core_mut().backend.log);
     o.str(&log.0);
     build_state(&mut r, &mut o);
+    layers_state(&r, &mut o);
     for (i, (t, step)) in script.steps.iter().enumerate() {
         clock.set(*t);
         shared.borrow_mut().step = i;
@@ -917,7 +1118,29 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
             Step::Wheel { x, y, dx, dy, mode, modifiers } => out = r.wheel(*x, *y, *dx, *dy, *mode, *modifiers),
             Step::Key { kind, key, code, repeat, modifiers } => out = r.key(kind, key, code, *repeat, *modifiers),
             Step::Tick => out = r.tick(),
-            Step::Paint | Step::LastHtml => {
+            Step::Paint => {
+                let painted = r.paint();
+                list(&painted, &mut extra);
+                let mut rects = Vec::new();
+                let valid = r.damage(&mut rects);
+                extra.flag(valid);
+                extra.u32(rects.len() as u32);
+                for d in &rects {
+                    extra.rect(d);
+                }
+                extra.str(&r.damage_json());
+                composition(r.composition(), &mut extra);
+                tally_paint(&r, valid, &rects, tally);
+                if script.keep_paints {
+                    run.paints.push(Painted {
+                        step: i,
+                        list: painted,
+                        damage: valid.then_some(rects),
+                        composition: r.composition().clone(),
+                    });
+                }
+            }
+            Step::LastHtml => {
                 let html = r.last_html().to_vec();
                 extra.str(&html);
                 run.html.push(html);
@@ -953,11 +1176,16 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
         o.str(&log.0);
         input_state(&mut r, &mut o);
         build_state(&mut r, &mut o);
+        layers_state(&r, &mut o);
         o.u64(tree(r.document(), script.max_id));
         run.extras.push(extra.0);
         run.stats.push(r.stats().clone());
         run.viewports.push(r.viewport_height());
         run.layouts.push(r.layouts());
+        run.dirty.push(r.dirty());
+        if script.keep_paints {
+            run.compositions.push(r.composition().clone());
+        }
         let doc = r.document();
         run.frozen.push((doc.frozen(), doc.frozen_reason().to_vec(), doc.layout_stopped()));
         run.outs.push(out);
@@ -982,6 +1210,35 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
     let stub = std::mem::replace(&mut r.core_mut().backend, Stub::new());
     run.stub = stub;
     run
+}
+
+/// What a paint shows of stage 4.5, for the tallies: its layers by kind, its damage.
+fn tally_paint(r: &Port, valid: bool, rects: &[Rect], tally: &mut Tally) {
+    let l = &r.core().layers;
+    for layer in &r.composition().layers {
+        let kind = match l.promoted.get(&layer.id) {
+            Some(p) if p.shimmer => "shimmer",
+            Some(p) if p.scripted => "scripted",
+            Some(p) if p.svg => "svg",
+            Some(p) if p.canvas => "canvas",
+            Some(p) if p.track.keys.len() == 1 && p.track.duration == 0.0 => "still",
+            Some(_) => "animated",
+            None => "gone",
+        };
+        tally.add(format!("layer {kind}"));
+        if layer.parent != 0 {
+            tally.add("layer nested");
+        }
+        if layer.has_clip {
+            tally.add("layer clipped");
+        }
+    }
+    tally.add(match (valid, rects.len()) {
+        (false, _) => "damage whole",
+        (true, 0) => "damage none",
+        (true, 1) => "damage one rect",
+        (true, _) => "damage rects",
+    });
 }
 
 /// An oracle answer: the tape, then the transcript.

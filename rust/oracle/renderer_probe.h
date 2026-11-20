@@ -1,4 +1,4 @@
-// The probes renderer_oracle compiles into its copy of core/src/renderer.cpp (renderer_oracle.cmake puts them at the document's, the container's and stage 4.5's calls): the tape rust/crates/renderer/tests/common/tape.rs reads.
+// The probes renderer_oracle compiles into its copy of core/src/renderer.cpp (renderer_oracle.cmake puts them at the calls into the document and the container, stage 4.5's among them): the tape rust/crates/renderer/tests/common/tape.rs reads.
 #pragma once
 
 #include "display_list.h"
@@ -6,6 +6,7 @@
 #include "twidget/json.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -23,16 +24,15 @@
 
 namespace twp {
 
-// Every answer of the document and of stage 4.5's code to the renderer, in order; nothing while stage 4.5's code runs (`layers` deep), which asks the document itself.
+// Every answer of the document to the renderer, in order.
 struct Tape {
     std::string bytes;
     bool on = false;
-    int layers = 0;
 };
 inline Tape tape;
 
 inline bool recording() {
-    return tape.on && tape.layers == 0;
+    return tape.on;
 }
 inline void u8(uint8_t v) { tape.bytes.push_back(char(v)); }
 template <class T> void raw(T v) { tape.bytes.append(reinterpret_cast<const char*>(&v), sizeof v); }
@@ -159,16 +159,8 @@ inline bool font_info(uintptr_t font, int& handle, float& descent, float& letter
     }
     return ok;
 }
-inline bool layer(int64_t id, double now, const twlite::Affine& shown, float opacity, bool ok) {
-    if (question('L')) {
-        raw(id);
-        raw(now);
-        u8(ok);
-        if (ok) {
-            for (float v : {shown.a, shown.b, shown.c, shown.d, shown.e, shown.f}) raw(v);
-            raw(opacity);
-        }
-    }
+// The renderer's own (stage 4.5): ported, not answered.
+inline bool layer(int64_t, double, const twlite::Affine&, float, bool ok) {
     return ok;
 }
 template <class Key> void selectable_key(const Key& key) {
@@ -517,55 +509,172 @@ inline bool bounds(int64_t id, bool ok, const float& x0, const float& y0, const 
     return ok;
 }
 
-// ── stage 4.5's calls: what each left the renderer, recorded as the outermost one returns ──
+// ── stage 4.5's questions: the elements, boxes, clips, coverage and paint of the container ──
 
-inline bool scripted(bool fast, const std::vector<int64_t>& ids) {
-    if (question('O')) {
-        u8(fast);
-        raw(uint32_t(ids.size()));
-        for (int64_t id : ids) raw(id);
+template <class El> El element(int64_t id, El el) {
+    if (question('x')) {
+        raw(id);
+        u8(el != nullptr);
     }
-    return fast;
+    return el;
 }
-inline bool applied(bool ok, const bool& dirty) {
-    if (question('Y')) {
+inline bool local(int64_t id, bool yes) {
+    if (question('A')) {
+        raw(id);
+        u8(yes);
+    }
+    return yes;
+}
+// A set of litehtml elements by their widget ids, sorted.
+template <class Set> void id_set(const Set& set) {
+    std::vector<int64_t> ids;
+    for (const auto* e : set) ids.push_back(std::strtoll(twid(e), nullptr, 10));
+    std::sort(ids.begin(), ids.end());
+    raw(uint32_t(ids.size()));
+    for (int64_t id : ids) raw(id);
+}
+// A list of litehtml elements by their widget ids, in order.
+template <class List> void id_list(const List& list) {
+    raw(uint32_t(list.size()));
+    for (const auto& e : list) raw(int64_t(std::strtoll(twid(e), nullptr, 10)));
+}
+template <class Set> bool candidate(int64_t id, const Set* movers, const twlite::Rect& box, bool ok) {
+    if (question('[')) {
+        raw(id);
+        u8(movers != nullptr);
+        if (movers) id_set(*movers);
         u8(ok);
-        u8(dirty);
+        if (ok) rect(box);
     }
     return ok;
 }
-struct Stage45 {
-    char tag;
-    bool outermost;
-    std::function<void()> done;
-    Stage45(char t, std::function<void()> at_entry, std::function<void()> at_exit) : tag(t), outermost(recording()), done(std::move(at_exit)) {
-        if (outermost) {
-            u8(uint8_t(tag));
-            if (at_entry) at_entry();
+inline bool candidate(int64_t id, std::nullptr_t, const twlite::Rect& box, bool ok) {
+    if (question('[')) {
+        raw(id);
+        u8(0);
+        u8(ok);
+        if (ok) rect(box);
+    }
+    return ok;
+}
+inline void radii(const twlite::Radii& r) {
+    for (float v : {r.tlx, r.tly, r.trx, r.try_, r.brx, r.bry, r.blx, r.bly}) raw(v);
+}
+inline bool clip(int64_t id, const bool& has, const twlite::Rect& r, const twlite::Radii& k, bool ok) {
+    if (question(']')) {
+        raw(id);
+        u8(ok);
+        if (ok) {
+            u8(has);
+            if (has) {
+                rect(r);
+                radii(k);
+            }
         }
-        tape.layers++;
     }
-    ~Stage45() {
-        tape.layers--;
-        if (outermost && done) done();
-    }
-};
-template <class Ids> void ids(const Ids& set) {
-    std::vector<int64_t> sorted(set.begin(), set.end());
-    std::sort(sorted.begin(), sorted.end());
-    raw(uint32_t(sorted.size()));
-    for (int64_t id : sorted) raw(id);
+    return ok;
 }
-template <class Promoted> void promoted(const Promoted& map) {
-    raw(uint32_t(map.size()));
-    for (const auto& [id, p] : map) {
-        raw(int64_t(id));
-        u8(p.shimmer);
-    }
+// A display list in wire form, and whether the wire takes it.
+inline void list(const twlite::DisplayList& l) {
+    std::string bytes;
+    u8(twlite::wire::encode(l, twlite::wire::Caps{}, bytes) ? 1 : 0);
+    str(bytes);
 }
-inline void messages(const std::vector<twidget::Json>& list, size_t from) {
-    raw(uint32_t(list.size() - std::min(from, list.size())));
-    for (size_t i = from; i < list.size(); i++) str(list[i].dump());
+inline bool tile(int64_t id, const twlite::Rect& t, const twlite::Rect& area, const twlite::Rect& c, const twlite::Radii& k, const twlite::DisplayList& content, bool ok) {
+    if (question('~')) {
+        raw(id);
+        u8(ok);
+        if (ok) {
+            rect(t);
+            rect(area);
+            rect(c);
+            radii(k);
+            list(content);
+        }
+    }
+    return ok;
+}
+template <class Map> Map declared(int64_t id, Map found) {
+    if (question('{')) {
+        raw(id);
+        std::map<std::string, std::string> sorted(found.begin(), found.end());
+        raw(uint32_t(sorted.size()));
+        for (const auto& [k, v] : sorted) {
+            str(k);
+            str(v);
+        }
+    }
+    return found;
+}
+inline size_t order(int64_t id, size_t index) {
+    if (question('<')) {
+        raw(id);
+        raw(uint64_t(index));
+    }
+    return index;
+}
+template <class Set> bool covered(int64_t id, const twlite::Rect& area, const Set& ignore, bool yes) {
+    if (question('?')) {
+        raw(id);
+        rect(area);
+        id_set(ignore);
+        u8(yes);
+    }
+    return yes;
+}
+template <class Set, class Found> Found obscurers(int64_t id, const twlite::Rect& area, const Set& ignore, size_t limit, Found found) {
+    if (question('&')) {
+        raw(id);
+        rect(area);
+        id_set(ignore);
+        raw(uint64_t(limit));
+        u8(found.has_value());
+        if (found) {
+            raw(uint32_t(found->size()));
+            for (int64_t v : *found) raw(v);
+        }
+    }
+    return found;
+}
+template <class List> twlite::DisplayList drawn(const List& skip, const List& backgrounds, twlite::DisplayList l) {
+    if (question('+')) {
+        id_list(skip);
+        id_list(backgrounds);
+        list(l);
+    }
+    return l;
+}
+template <class List> twlite::DisplayList layer_drawn(int64_t id, const List& skip, const twlite::Rect& bounds, twlite::DisplayList l) {
+    if (question('*')) {
+        raw(id);
+        id_list(skip);
+        rect(bounds);
+        list(l);
+    }
+    return l;
+}
+inline twlite::DisplayList plain(twlite::DisplayList l) {
+    if (question('=')) list(l);
+    return l;
+}
+template <class Key> Key paint_key(Key key) {
+    if (question('^')) {
+        raw(uint64_t(uintptr_t(std::get<0>(key))));
+        raw(uint32_t(std::get<1>(key)));
+        raw(uint64_t(std::get<2>(key)));
+    }
+    return key;
+}
+inline int64_t hit_within(int64_t id, float x, float y, twlite::Rect* p, int64_t hit) {
+    if (question('/')) {
+        raw(id);
+        raw(x);
+        raw(y);
+        u8(p != nullptr);
+        raw(hit);
+        if (p && hit) rect(*p);
+    }
+    return hit;
 }
 
 } // namespace twp
@@ -582,5 +691,4 @@ inline void messages(const std::vector<twidget::Json>& list, size_t from) {
     do {                   \
         CALL;              \
     } while (0)
-#define TWP_HIT(X, Y, P) twp::hit_answer(X, Y, P, widget_id_at(X, Y, P))
-#define TWP_STAGE45(TAG, ...) twp::Stage45 twp_stage45(TAG, __VA_ARGS__)
+#define TWP_HIT(X, Y, P) widget_id_at(X, Y, P)

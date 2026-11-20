@@ -7,16 +7,16 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use common::cases::compare;
 use common::*;
 use twidget_animations::{Declared, StyleValues};
 use twidget_events::{EditorStyle, TextRun};
 use twidget_json::Json;
-use twidget_renderer::{Engine, HoleChange, NoLayers, Renderer, ScrollExtent, TextContent};
+use twidget_renderer::{BoxStyle, Clip, Engine, HoleChange, Renderer, ScrollExtent, TextContent, Tile};
 use twidget_testkit::Oracle;
-use twidget_wire::Rect;
+use twidget_wire::{DisplayList, Rect};
 
 /// html(2) head(3) body(4); A(10) > A1(11); B(12) at the right; a style element (20).
 const PAGE: &str = r##"[
@@ -802,6 +802,52 @@ impl Engine for NoDocument {
     fn any_selectable(&mut self) -> bool {
         false
     }
+    fn boxes(&mut self) -> Vec<(i64, bool, BoxStyle)> {
+        Vec::new()
+    }
+    fn box_style(&mut self, _id: i64) -> BoxStyle {
+        BoxStyle::default()
+    }
+    fn background_is_local(&mut self, _id: i64) -> bool {
+        false
+    }
+    fn layer_candidate(&mut self, _id: i64, _movers: Option<&BTreeSet<i64>>) -> Option<Rect> {
+        None
+    }
+    fn clip_of(&mut self, _id: i64) -> Option<Clip> {
+        None
+    }
+    fn background_tile(&mut self, _id: i64) -> Option<Tile> {
+        None
+    }
+    fn declared(&mut self, _id: i64, _names: &[&str]) -> Declared {
+        Declared::new()
+    }
+    fn paint_order(&mut self) {}
+    fn paint_index(&mut self, _id: i64) -> usize {
+        0
+    }
+    fn covered(&mut self, _id: i64, _area: Rect, _ignore: &BTreeSet<i64>) -> bool {
+        true
+    }
+    fn obscurers(&mut self, _id: i64, _area: Rect, _ignore: &BTreeSet<i64>, _limit: usize) -> Option<Vec<i64>> {
+        None
+    }
+    fn draw(&mut self) -> DisplayList {
+        DisplayList::new()
+    }
+    fn draw_skipping(&mut self, _skip: &[i64], _backgrounds: &[i64]) -> DisplayList {
+        DisplayList::new()
+    }
+    fn draw_layer(&mut self, _id: i64, _skip: &[i64]) -> (DisplayList, Rect) {
+        (DisplayList::new(), Rect::default())
+    }
+    fn paint_key(&mut self) -> (u64, u32) {
+        (0, 0)
+    }
+    fn hit_within(&mut self, _id: i64, _x: f32, _y: f32, _placement: Option<&mut Rect>) -> i64 {
+        0
+    }
 }
 
 fn parse(text: &str) -> Json {
@@ -828,7 +874,7 @@ fn canvases_and_canvas_fonts_released_in_order() {
     let mut ops = Json::object();
     ops.set("type", "ops").set("ops", parse(&page));
     let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let mut r = Renderer::new(300.0, 1.0, false, NoDocument, Recorder { next: 0, calls: calls.clone() }, NoLayers::default(), None);
+    let mut r = Renderer::new(300.0, 1.0, false, NoDocument, Recorder { next: 0, calls: calls.clone() }, None);
     r.receive(&ops);
     r.receive(&draw(95, 30, 40));
     r.receive(&draw(12, 1, 25));
@@ -881,8 +927,8 @@ impl twidget_renderer::Backend for Recorder {
 
 #[test]
 fn queries_without_a_document() {
-    let mut r = Renderer::new(300.0, 2.0, true, NoDocument, Stub::new(), NoLayers::default(), None);
-    let ask = |r: &mut Renderer<NoDocument, Stub, NoLayers>, q: &str| -> Json {
+    let mut r = Renderer::new(300.0, 2.0, true, NoDocument, Stub::new(), None);
+    let ask = |r: &mut Renderer<NoDocument, Stub>, q: &str| -> Json {
         let out = r.receive(&parse(&format!(r#"{{"type":"query","qid":3,"query":{q}}}"#)));
         assert_eq!(out[0].get("qid").as_number(0.0), 3.0);
         result(&out)

@@ -1,11 +1,11 @@
-//! The tape `oracle/renderer_probe.h` writes: every answer litehtml's document, the container and stage 4.5's code
-//! gave renderer.cpp, in order, with the arguments it was asked with. [`TapeEngine`] and [`TapeLayers`] answer the
-//! port's [`Engine`] and [`Layers`] from one shared tape, checking every question is the C++'s, in its order, with
-//! its arguments (floats by their bits, texts by FNV-1a where the tape keeps a digest).
+//! The tape `oracle/renderer_probe.h` writes: every answer litehtml's document and the container gave renderer.cpp, in
+//! order, with the arguments it was asked with. [`TapeEngine`] answers the port's [`Engine`] from it, checking every
+//! question is the C++'s, in its order, with its arguments (floats by their bits, texts by FNV-1a where the tape keeps
+//! a digest).
 //!
 //! Entries (a tag, then little-endian fields; `str` is a u32 length and bytes, `rect` four f32): 'S' u32 a step
 //! begins; 'V' str a violation the container pushed, which the next answer brings. The input's questions as
-//! events_probe.h writes them ('h' 'b' 'x' 'a' 'u' 'm' 'v' 'c' 'K' 'R' 'w' 'f' 'k' 'j' 'e' 'i' 'I' 'p' 'L'). The
+//! events_probe.h writes them ('h' 'b' 'x' 'a' 'u' 'm' 'v' 'c' 'K' 'R' 'w' 'f' 'k' 'j' 'e' 'i' 'I' 'p'; 'L' is the port's). The
 //! document's life: 'n' u64 elements; 'r' f32 width, u64 budget; 'E' u8; 's' u64 boxes; 'z' u64 html digest, u32
 //! length, u8; 'D' the same, u8 patched, u8 changed; 'M'; 'y' u8; 'C' html digest and length, master digest and
 //! length, u8 made; 'X' index; 'H' f64; 'o' u8; 'q' u8; 'F' u64 fonts; 'J' u32 changes (i64 owner, str name, str
@@ -15,20 +15,25 @@
 //! rect out; '4' i64 id, rect; '5' i64 id, u8 has, 4 f32; '6' i64 id, f64 left, f64 top, i64 parent; '7' i64 id, u8
 //! scroller, 4 f32; '8' i64 id, u8 has, 6 f32; '9' i64 id, str pseudo, u32 animated (str, str), str JSON; '0' i64 id,
 //! str name, str value; '!' i64 id, u8 ok, 4 f32; '@' i64 id, u8; '#' i64 id, f32 at, f32 length, f32 x, f32 y;
-//! '$' i64 id, u8 ok, 4 f32. Stage 4.5: 'O' u8 fast, u32 ids; 'Y' u8 ok, u8 dirty; 'U' f64 now, u8 dirty, u8
-//! touched all, f64 wake, u32 layer ids, u32 promoted (i64, u8 shimmer); 'T' u32 promoted; 'P' and 'B' u32
-//! messages, u8 paint stopped; 'G' and 'W' commands.
+//! '$' i64 id, u8 ok, 4 f32. Stage 4.5's (a list is u8 the wire takes it, str its wire form; ids are u32 and i64s,
+//! a set of elements sorted): 'A' i64 id, u8 background is local; '[' i64 id, u8 movers given, ids, u8 ok, rect
+//! when ok; ']' i64 id, u8 ok, when ok u8 has, when has rect and 8 f32 radii; '~' i64 id, u8 ok, when ok tile,
+//! area and clip rects, radii, list; '{' i64 id, u32 declarations (str, str); '|' paint_order; '<' i64 id, u64
+//! index; '?' i64 id, rect, ignored ids, u8; '&' i64 id, rect, ignored ids, u64 limit, u8 found, ids when found;
+//! '+' skipped ids, background ids, list; '*' i64 id, skipped ids, rect bounds, list; '=' list; '^' u64 document,
+//! u32 paint generation, u64 layouts; '/' i64 id, f32 x, f32 y, u8 placement, i64 hit, rect when asked and hit;
+//! 'Q' a walk of the boxes begins, ';' it ends; '%' i64 key, u8 pseudo, u8 backdrop, u8 filter, u8 blurred, u8
+//! dimmed, f32 opacity; '-' set_no_effects.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
-use twidget_animations::{Declared, StyleOverrides, StyleValues};
+use twidget_animations::{Declared, StyleValues};
 use twidget_events::{EditorStyle, TextRun};
 use twidget_json::Json;
-use twidget_renderer::{Engine, HoleChange, Layers, PaintCount, ScrollExtent, TextContent};
-use twidget_shadow::Document;
-use twidget_wire::{Affine, Color, Command, Rect};
+use twidget_renderer::{BoxStyle, Clip, Engine, HoleChange, ScrollExtent, TextContent, Tile};
+use twidget_wire::{Caps, Color, DisplayList, Radii, Rect, decode_list};
 
 use super::{Tally, fnv64};
 
@@ -49,7 +54,6 @@ pub enum Entry {
     Runs(Vec<TextRun>),
     Width { text: Vec<u8>, font: u64, w: f32 },
     FontInfo { font: u64, info: Option<(i32, f32, f32, f32)> },
-    Layer { id: i64, now: f64, shown: Option<(Affine, f32)> },
     SelectableKey([u64; 2]),
     Selectable(bool),
     EditorStyle { id: i64, style: Option<EditorStyle> },
@@ -93,13 +97,24 @@ pub enum Entry {
     PathLength { id: i64, at: f32, length: f32, x: f32, y: f32 },
     Bounds { id: i64, bounds: Option<[f32; 4]> },
     // stage 4.5's
-    Scripted { fast: bool, ids: Vec<i64> },
-    Applied { ok: bool, dirty: bool },
-    Composition { now: f64, dirty: bool, touched_all: bool, wake: f64, layer_ids: Vec<i64>, promoted: Vec<(i64, bool)> },
-    Strip(Vec<(i64, bool)>),
-    CountPaint { recount: bool, messages: Vec<Vec<u8>>, stopped: bool },
-    NoteScripted,
-    NoteSvg,
+    Local { id: i64, yes: bool },
+    Candidate { id: i64, movers: Option<Vec<i64>>, rect: Option<Rect> },
+    ClipOf { id: i64, clip: Option<Clip> },
+    TileOf { id: i64, tile: Option<Tile> },
+    Declared { id: i64, values: Declared },
+    PaintOrder,
+    Order { id: i64, index: u64 },
+    Covered { id: i64, area: Rect, ignore: Vec<i64>, yes: bool },
+    Obscurers { id: i64, area: Rect, ignore: Vec<i64>, limit: u64, found: Option<Vec<i64>> },
+    Drawn { skip: Vec<i64>, backgrounds: Vec<i64>, list: DisplayList },
+    LayerDrawn { id: i64, skip: Vec<i64>, bounds: Rect, list: DisplayList },
+    Plain(DisplayList),
+    PaintKey(u64, u32, u64),
+    HitWithin { id: i64, x: f32, y: f32, placement: bool, hit: i64, rect: Rect },
+    ScanBegins,
+    ScanEnds,
+    BoxFacts { key: i64, pseudo: bool, style: BoxStyle },
+    NoEffects,
 }
 
 impl Entry {
@@ -119,7 +134,6 @@ impl Entry {
             Entry::Runs(_) => "text_runs",
             Entry::Width { .. } => "text_width",
             Entry::FontInfo { .. } => "font_info",
-            Entry::Layer { .. } => "layer_shown",
             Entry::SelectableKey(_) => "selectable_key",
             Entry::Selectable(_) => "any_selectable",
             Entry::EditorStyle { .. } => "editor_style",
@@ -160,14 +174,24 @@ impl Entry {
             Entry::SvgGeometry { .. } => "svg_geometry",
             Entry::PathLength { .. } => "svg_path_length",
             Entry::Bounds { .. } => "svg_path_bounds",
-            Entry::Scripted { .. } => "scripted_only",
-            Entry::Applied { .. } => "apply_scripted",
-            Entry::Composition { .. } => "update_composition",
-            Entry::Strip(_) => "strip_layers",
-            Entry::CountPaint { recount: false, .. } => "count_paint",
-            Entry::CountPaint { recount: true, .. } => "recount_boxes",
-            Entry::NoteScripted => "note_scripted",
-            Entry::NoteSvg => "note_svg",
+            Entry::Local { .. } => "background_is_local",
+            Entry::Candidate { .. } => "layer_candidate",
+            Entry::ClipOf { .. } => "clip_of",
+            Entry::TileOf { .. } => "background_tile",
+            Entry::Declared { .. } => "declared",
+            Entry::PaintOrder => "paint_order",
+            Entry::Order { .. } => "paint_index",
+            Entry::Covered { .. } => "covered",
+            Entry::Obscurers { .. } => "obscurers",
+            Entry::Drawn { .. } => "draw_skipping",
+            Entry::LayerDrawn { .. } => "draw_layer",
+            Entry::Plain(_) => "draw",
+            Entry::PaintKey(..) => "paint_key",
+            Entry::HitWithin { .. } => "hit_within",
+            Entry::ScanBegins => "boxes",
+            Entry::ScanEnds => "the end of the boxes",
+            Entry::BoxFacts { .. } => "a box's facts",
+            Entry::NoEffects => "set_no_effects",
         }
     }
 }
@@ -231,9 +255,29 @@ impl Take<'_> {
     fn digest(&mut self) -> Result<(u64, u32), String> {
         Ok((self.u64()?, self.u32()?))
     }
-    fn promoted(&mut self) -> Result<Vec<(i64, bool)>, String> {
+    fn ids(&mut self) -> Result<Vec<i64>, String> {
         let n = self.count()?;
-        (0..n).map(|_| Ok((self.i64()?, self.flag()?))).collect()
+        (0..n).map(|_| self.i64()).collect()
+    }
+    fn radii(&mut self) -> Result<Radii, String> {
+        Ok(Radii {
+            tlx: self.f32()?,
+            tly: self.f32()?,
+            trx: self.f32()?,
+            try_: self.f32()?,
+            brx: self.f32()?,
+            bry: self.f32()?,
+            blx: self.f32()?,
+            bly: self.f32()?,
+        })
+    }
+    fn list(&mut self) -> Result<DisplayList, String> {
+        let taken = self.flag()?;
+        let bytes = self.str()?;
+        if !taken {
+            return Err(format!("a display list the wire does not take, at {}", self.at));
+        }
+        decode_list(&bytes, &Caps::default()).ok_or_else(|| format!("a display list that does not decode, at {}", self.at))
     }
 
     fn entry(&mut self) -> Result<Entry, String> {
@@ -281,16 +325,6 @@ impl Take<'_> {
                 let font = self.u64()?;
                 let info = if self.flag()? { Some((self.i32()?, self.f32()?, self.f32()?, self.f32()?)) } else { None };
                 Entry::FontInfo { font, info }
-            }
-            b'L' => {
-                let (id, now) = (self.i64()?, self.f64()?);
-                let shown = if self.flag()? {
-                    let m = Affine { a: self.f32()?, b: self.f32()?, c: self.f32()?, d: self.f32()?, e: self.f32()?, f: self.f32()? };
-                    Some((m, self.f32()?))
-                } else {
-                    None
-                };
-                Entry::Layer { id, now, shown }
             }
             b'k' => Entry::SelectableKey([self.u64()?, self.u64()?]),
             b'j' => Entry::Selectable(self.flag()?),
@@ -432,26 +466,73 @@ impl Take<'_> {
                 let bounds = if self.flag()? { Some(self.four()?) } else { None };
                 Entry::Bounds { id, bounds }
             }
-            b'O' => {
-                let fast = self.flag()?;
-                let n = self.count()?;
-                Entry::Scripted { fast, ids: (0..n).map(|_| self.i64()).collect::<Result<Vec<_>, _>>()? }
+            b'A' => Entry::Local { id: self.i64()?, yes: self.flag()? },
+            b'[' => {
+                let id = self.i64()?;
+                let movers = if self.flag()? { Some(self.ids()?) } else { None };
+                let rect = if self.flag()? { Some(self.rect()?) } else { None };
+                Entry::Candidate { id, movers, rect }
             }
-            b'Y' => Entry::Applied { ok: self.flag()?, dirty: self.flag()? },
-            b'U' => {
-                let (now, dirty, touched_all, wake) = (self.f64()?, self.flag()?, self.flag()?, self.f64()?);
-                let n = self.count()?;
-                let layer_ids = (0..n).map(|_| self.i64()).collect::<Result<Vec<_>, _>>()?;
-                Entry::Composition { now, dirty, touched_all, wake, layer_ids, promoted: self.promoted()? }
+            b']' => {
+                let id = self.i64()?;
+                let clip = if self.flag()? {
+                    let has = self.flag()?;
+                    Some(if has { Clip { has, rect: self.rect()?, radii: self.radii()? } } else { Clip::default() })
+                } else {
+                    None
+                };
+                Entry::ClipOf { id, clip }
             }
-            b'T' => Entry::Strip(self.promoted()?),
-            b'P' | b'B' => {
-                let n = self.count()?;
-                let messages = (0..n).map(|_| self.str()).collect::<Result<Vec<_>, _>>()?;
-                Entry::CountPaint { recount: tag == b'B', messages, stopped: self.flag()? }
+            b'~' => {
+                let id = self.i64()?;
+                let tile = if self.flag()? {
+                    Some(Tile { tile: self.rect()?, area: self.rect()?, clip: self.rect()?, radii: self.radii()?, content: self.list()? })
+                } else {
+                    None
+                };
+                Entry::TileOf { id, tile }
             }
-            b'G' => Entry::NoteScripted,
-            b'W' => Entry::NoteSvg,
+            b'{' => {
+                let id = self.i64()?;
+                let n = self.count()?;
+                let mut values = Declared::new();
+                for _ in 0..n {
+                    let k = self.str()?;
+                    values.insert(k, self.str()?);
+                }
+                Entry::Declared { id, values }
+            }
+            b'|' => Entry::PaintOrder,
+            b'<' => Entry::Order { id: self.i64()?, index: self.u64()? },
+            b'?' => Entry::Covered { id: self.i64()?, area: self.rect()?, ignore: self.ids()?, yes: self.flag()? },
+            b'&' => {
+                let (id, area, ignore, limit) = (self.i64()?, self.rect()?, self.ids()?, self.u64()?);
+                let found = if self.flag()? { Some(self.ids()?) } else { None };
+                Entry::Obscurers { id, area, ignore, limit, found }
+            }
+            b'+' => Entry::Drawn { skip: self.ids()?, backgrounds: self.ids()?, list: self.list()? },
+            b'*' => Entry::LayerDrawn { id: self.i64()?, skip: self.ids()?, bounds: self.rect()?, list: self.list()? },
+            b'=' => Entry::Plain(self.list()?),
+            b'^' => Entry::PaintKey(self.u64()?, self.u32()?, self.u64()?),
+            b'/' => {
+                let (id, x, y, placement, hit) = (self.i64()?, self.f32()?, self.f32()?, self.flag()?, self.i64()?);
+                let rect = if placement && hit != 0 { self.rect()? } else { Rect::default() };
+                Entry::HitWithin { id, x, y, placement, hit, rect }
+            }
+            b'Q' => Entry::ScanBegins,
+            b';' => Entry::ScanEnds,
+            b'%' => Entry::BoxFacts {
+                key: self.i64()?,
+                pseudo: self.flag()?,
+                style: BoxStyle {
+                    backdrop: self.flag()?,
+                    filter: self.flag()?,
+                    blurred: self.flag()?,
+                    dimmed: self.flag()?,
+                    opacity: self.f32()?,
+                },
+            },
+            b'-' => Entry::NoEffects,
             other => return Err(format!("an unknown entry {:?} at {}", other as char, self.at - 1)),
         })
     }
@@ -647,7 +728,9 @@ impl Engine for TapeEngine {
     fn trim(&mut self) {
         answer!(self.tape, "trim", Entry::Trim => (), ())
     }
-    fn set_no_effects(&mut self) {}
+    fn set_no_effects(&mut self) {
+        answer!(self.tape, "set_no_effects", Entry::NoEffects => (), ())
+    }
     fn take_violations(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.tape.borrow_mut().violations)
     }
@@ -782,6 +865,102 @@ impl Engine for TapeEngine {
     fn any_selectable(&mut self) -> bool {
         answer!(self.tape, "any_selectable", Entry::Selectable(yes) => yes, false)
     }
+    fn boxes(&mut self) -> Vec<(i64, bool, BoxStyle)> {
+        if !answer!(self.tape, "boxes", Entry::ScanBegins => true, false) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        loop {
+            let next = self.tape.borrow_mut().next("a box of the walk");
+            match next {
+                Some(Entry::BoxFacts { key, pseudo, style }) => out.push((key, pseudo, style)),
+                Some(Entry::ScanEnds) => break,
+                Some(other) => {
+                    self.tape.borrow_mut().error(format!("the walk of the boxes ran into {}: {other:?}", other.name()));
+                    break;
+                }
+                None => break,
+            }
+        }
+        self.tape.borrow_mut().tally.add_n("boxes walked", out.len());
+        out
+    }
+    fn box_style(&mut self, id: i64) -> BoxStyle {
+        answer!(self.tape, "box_style", Entry::BoxFacts { key, pseudo, style } => {
+            self.check(key == id.wrapping_mul(4) && !pseudo, || format!("box_style of key {key} in C++, of element {id} in Rust"));
+            style
+        }, BoxStyle::default())
+    }
+    fn background_is_local(&mut self, id: i64) -> bool {
+        answer!(self.tape, "background_is_local", Entry::Local { id: i, yes } => { self.check(i == id, || format!("background_is_local({i}) in C++, ({id}) in Rust")); yes }, false)
+    }
+    fn layer_candidate(&mut self, id: i64, movers: Option<&BTreeSet<i64>>) -> Option<Rect> {
+        let asked: Option<Vec<i64>> = movers.map(|m| m.iter().copied().collect());
+        answer!(self.tape, "layer_candidate", Entry::Candidate { id: i, movers: m, rect } => {
+            self.check(i == id && m == asked, || format!("layer_candidate({i}, {m:?}) in C++, ({id}, {asked:?}) in Rust"));
+            rect
+        }, None)
+    }
+    fn clip_of(&mut self, id: i64) -> Option<Clip> {
+        answer!(self.tape, "clip_of", Entry::ClipOf { id: i, clip } => { self.check(i == id, || format!("clip_of({i}) in C++, ({id}) in Rust")); clip }, None)
+    }
+    fn background_tile(&mut self, id: i64) -> Option<Tile> {
+        answer!(self.tape, "background_tile", Entry::TileOf { id: i, tile } => { self.check(i == id, || format!("background_tile({i}) in C++, ({id}) in Rust")); tile }, None)
+    }
+    fn declared(&mut self, id: i64, _names: &[&str]) -> Declared {
+        answer!(self.tape, "declared", Entry::Declared { id: i, values } => { self.check(i == id, || format!("declared({i}) in C++, ({id}) in Rust")); values }, Declared::new())
+    }
+    fn paint_order(&mut self) {
+        answer!(self.tape, "paint_order", Entry::PaintOrder => (), ())
+    }
+    fn paint_index(&mut self, id: i64) -> usize {
+        answer!(self.tape, "paint_index", Entry::Order { id: i, index } => { self.check(i == id, || format!("paint_index({i}) in C++, ({id}) in Rust")); index as usize }, 0)
+    }
+    fn covered(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>) -> bool {
+        let asked: Vec<i64> = ignore.iter().copied().collect();
+        answer!(self.tape, "covered", Entry::Covered { id: i, area: a, ignore: g, yes } => {
+            self.check(i == id && bits(&a) == bits(&area) && g == asked, || format!("covered({i}, {a:?}, {g:?}) in C++, ({id}, {area:?}, {asked:?}) in Rust"));
+            yes
+        }, false)
+    }
+    fn obscurers(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>, limit: usize) -> Option<Vec<i64>> {
+        let asked: Vec<i64> = ignore.iter().copied().collect();
+        answer!(self.tape, "obscurers", Entry::Obscurers { id: i, area: a, ignore: g, limit: l, found } => {
+            self.check(i == id && bits(&a) == bits(&area) && g == asked && l == limit as u64, || format!("obscurers({i}, {a:?}, {g:?}, {l}) in C++, ({id}, {area:?}, {asked:?}, {limit}) in Rust"));
+            found
+        }, None)
+    }
+    fn draw(&mut self) -> DisplayList {
+        answer!(self.tape, "draw", Entry::Plain(list) => list, DisplayList::new())
+    }
+    fn draw_skipping(&mut self, skip: &[i64], backgrounds: &[i64]) -> DisplayList {
+        answer!(self.tape, "draw_skipping", Entry::Drawn { skip: s, backgrounds: b, list } => {
+            self.check(s == skip && b == backgrounds, || format!("draw without {s:?}, backgrounds {b:?} in C++, {skip:?}, {backgrounds:?} in Rust"));
+            list
+        }, DisplayList::new())
+    }
+    fn draw_layer(&mut self, id: i64, skip: &[i64]) -> (DisplayList, Rect) {
+        answer!(self.tape, "draw_layer", Entry::LayerDrawn { id: i, skip: s, bounds, list } => {
+            self.check(i == id && s == skip, || format!("draw_layer({i}, {s:?}) in C++, ({id}, {skip:?}) in Rust"));
+            (list, bounds)
+        }, (DisplayList::new(), Rect::default()))
+    }
+    fn paint_key(&mut self) -> (u64, u32) {
+        answer!(self.tape, "paint_key", Entry::PaintKey(doc, generation, _) => (doc, generation), (0, 0))
+    }
+    fn hit_within(&mut self, id: i64, x: f32, y: f32, placement: Option<&mut Rect>) -> i64 {
+        let asked = placement.is_some();
+        let (hit, rect) = answer!(self.tape, "hit_within", Entry::HitWithin { id: i, x: hx, y: hy, placement: p, hit, rect } => {
+            self.check(i == id && hx.to_bits() == x.to_bits() && hy.to_bits() == y.to_bits() && p == asked, || format!("hit_within({i}, {hx}, {hy}, {p}) in C++, ({id}, {x}, {y}, {asked}) in Rust"));
+            (hit, rect)
+        }, (0, Rect::default()));
+        if hit != 0
+            && let Some(out) = placement
+        {
+            *out = rect;
+        }
+        hit
+    }
 }
 
 fn show(patches: &[(i64, Vec<u8>)]) -> Vec<(i64, String)> {
@@ -790,146 +969,4 @@ fn show(patches: &[(i64, Vec<u8>)]) -> Vec<(i64, String)> {
 
 fn show_values(values: &StyleValues) -> Vec<(String, String)> {
     values.iter().map(|(k, v)| (String::from_utf8_lossy(k).into_owned(), String::from_utf8_lossy(v).into_owned())).collect()
-}
-
-fn is_layer_property(p: &[u8]) -> bool {
-    matches!(p, b"transform" | b"opacity" | b"translate" | b"rotate" | b"scale")
-}
-
-fn is_shimmer_property(p: &[u8]) -> bool {
-    p == b"background-position" || p == b"background-position-x"
-}
-
-/// Stage 4.5's code as the C++ ran it: its answers and what it left the renderer.
-#[derive(Debug)]
-pub struct TapeLayers {
-    pub tape: Tape,
-    compositing: bool,
-    key_forgotten: bool,
-    wake: f64,
-    layer_ids: HashSet<i64>,
-}
-
-impl TapeLayers {
-    pub fn new(tape: Tape) -> TapeLayers {
-        TapeLayers { tape, compositing: false, key_forgotten: true, wake: f64::INFINITY, layer_ids: HashSet::new() }
-    }
-
-    fn count(&mut self, recount: bool) -> PaintCount {
-        let name = if recount { "recount_boxes" } else { "count_paint" };
-        let mut t = self.tape.borrow_mut();
-        match t.next(name) {
-            Some(Entry::CountPaint { recount: r, messages, stopped }) if r == recount => {
-                if stopped {
-                    t.tally.add("paint stops");
-                }
-                PaintCount { messages: messages.iter().filter_map(Json::parse).collect(), stopped }
-            }
-            Some(other) => {
-                t.error(format!("the port asked {name} where the C++ asked {}", other.name()));
-                PaintCount::default()
-            }
-            None => PaintCount::default(),
-        }
-    }
-}
-
-impl Layers for TapeLayers {
-    fn compositing(&self) -> bool {
-        self.compositing
-    }
-    fn set_compositing(&mut self, enabled: bool) -> bool {
-        if enabled == self.compositing {
-            return false;
-        }
-        self.compositing = enabled;
-        self.key_forgotten = true;
-        true
-    }
-    fn scripted_only(&mut self, _doc: &Document, _ops: &[Json], _still: bool) -> Option<Vec<i64>> {
-        answer!(self.tape, "scripted_only", Entry::Scripted { fast, ids } => fast.then_some(ids), None)
-    }
-    fn apply_scripted(&mut self, _ids: &[i64], _now: f64, dirty: &mut bool) -> bool {
-        answer!(self.tape, "apply_scripted", Entry::Applied { ok, dirty: d } => { *dirty = d; ok }, false)
-    }
-    fn recount_boxes(&mut self, _ids: &[i64], _now: f64, _still: bool) -> PaintCount {
-        self.count(true)
-    }
-    fn note_scripted(&mut self, _ops: &[Json], _now: f64) {
-        answer!(self.tape, "note_scripted", Entry::NoteScripted => (), ())
-    }
-    fn note_svg(&mut self, _doc: &Document, _ops: &[Json]) {
-        answer!(self.tape, "note_svg", Entry::NoteSvg => (), ())
-    }
-    fn forget_key(&mut self) {
-        self.key_forgotten = true;
-    }
-    fn key_forgotten(&self) -> bool {
-        // The key is stage 4.5's: forgotten, the C++ composed again here, which the tape says next.
-        matches!(self.tape.borrow_mut().peek(), Some(Entry::Composition { .. }))
-    }
-    fn rebuild_begins(&mut self) {}
-    fn rescan(&mut self) {}
-    fn update_composition(&mut self, now: f64, _still: bool, dirty: &mut bool, touched_all: &mut bool) {
-        let mut t = self.tape.borrow_mut();
-        match t.next("update_composition") {
-            Some(Entry::Composition { now: n, dirty: d, touched_all: a, wake, layer_ids, .. }) => {
-                if n.to_bits() != now.to_bits() {
-                    t.error(format!("update_composition at {n} in C++, {now} in Rust"));
-                }
-                *dirty = d;
-                *touched_all = a;
-                self.wake = wake;
-                self.layer_ids = layer_ids.into_iter().collect();
-            }
-            Some(other) => t.error(format!("the port asked update_composition where the C++ asked {}", other.name())),
-            None => {}
-        }
-    }
-    fn strip_layers(&mut self, sampled: &mut StyleOverrides) {
-        let promoted = answer!(self.tape, "strip_layers", Entry::Strip(p) => p, Vec::new());
-        for (id, shimmer) in promoted {
-            let Some(values) = sampled.get_mut(&id) else { continue };
-            values.retain(|(k, _)| !(if shimmer { is_shimmer_property(k) } else { is_layer_property(k) }));
-            if values.is_empty() {
-                sampled.remove(&id);
-            }
-        }
-    }
-    fn count_paint(&mut self, _now: f64, _still: bool) -> PaintCount {
-        self.count(false)
-    }
-    fn paint_stopped(&mut self, _now: f64) {}
-    fn wake_at(&self) -> f64 {
-        self.wake
-    }
-    fn layer_ids(&self) -> HashSet<i64> {
-        self.layer_ids.clone()
-    }
-    fn layer_shown(&mut self, id: i64, now: f64) -> Option<(Affine, f32)> {
-        let mut t = self.tape.borrow_mut();
-        match t.next("layer_shown") {
-            Some(Entry::Layer { id: i, now: n, shown }) => {
-                if i != id || n.to_bits() != now.to_bits() {
-                    t.error(format!("layer_shown({i}, {n}) in C++, ({id}, {now}) in Rust"));
-                }
-                shown
-            }
-            Some(other) => {
-                t.error(format!("the port asked layer_shown where the C++ asked {}", other.name()));
-                None
-            }
-            None => None,
-        }
-    }
-    fn policy(&mut self, _on: bool, _reports: bool) {}
-    fn canvas_drew(&mut self, _canvas: i32, _clean: bool) {}
-    fn canvas_released(&mut self, _canvas: i32) {}
-    fn trim(&mut self) {}
-    fn paint(&mut self) -> Vec<Command> {
-        Vec::new()
-    }
-    fn damage(&self, _out: &mut Vec<Rect>) -> bool {
-        false
-    }
 }
