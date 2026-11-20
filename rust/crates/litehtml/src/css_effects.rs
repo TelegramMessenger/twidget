@@ -2,8 +2,9 @@
 //! before it is parsed (`calc()`, `min()`, `max()`, `clamp()`, `env()`, `color-mix()` and viewport units,
 //! `fold_math`), and the parsers of the values a style keeps as tokens until the computed style reads them
 //! (`box-shadow`, `filter`, `transform` and its fast path, `transform-origin`, `clip-path`, grid track lists
-//! and placements). What they compute for painting (`clip_path_shape::resolve`, the matrices) comes with
-//! the stages that paint.
+//! and placements), and the types painters get (`transform_matrix`, `paint_group`, `vector_path`,
+//! `svg_gradient`). What they compute for painting (`clip_path_shape::resolve`, the matrices of a CSS
+//! transform) comes with the stages that paint.
 
 use crate::Names;
 use crate::css_length::{CssLength, f_length, f_length_percentage, f_percentage, f_positive};
@@ -17,6 +18,7 @@ use crate::cxx;
 use crate::document_container::{DocumentContainer, resolver};
 use crate::gradient::parse_angle;
 use crate::html::lowcase;
+use crate::types::Position;
 use crate::web_color::{WebColor, parse_color};
 
 // ---- box-shadow, transform, filter -----------------------------------------------------------------
@@ -181,6 +183,147 @@ pub struct GridPlacement {
     pub start: i32,
     pub end: i32,
     pub span: i32,
+}
+
+// ---- What painters get: matrices, groups, vector paths ----------------------------------------------
+
+/// `transform_matrix`: a 2D affine map, `x' = a x + c y + tx`, `y' = b x + d y + ty`; identity by default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransformMatrix {
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub tx: f32,
+    pub ty: f32,
+}
+
+impl Default for TransformMatrix {
+    fn default() -> TransformMatrix {
+        TransformMatrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: 0.0 }
+    }
+}
+
+impl TransformMatrix {
+    /// `transform_matrix{a, b, c, d, tx, ty}`.
+    pub const fn new(a: f32, b: f32, c: f32, d: f32, tx: f32, ty: f32) -> TransformMatrix {
+        TransformMatrix { a, b, c, d, tx, ty }
+    }
+
+    /// `is_identity()`.
+    pub fn is_identity(&self) -> bool {
+        self.a == 1.0 && self.b == 0.0 && self.c == 0.0 && self.d == 1.0 && self.tx == 0.0 && self.ty == 0.0
+    }
+
+    /// `then(m)`: this map, then `m`.
+    pub fn then(&self, m: &TransformMatrix) -> TransformMatrix {
+        TransformMatrix {
+            a: self.a * m.a + self.b * m.c,
+            b: self.a * m.b + self.b * m.d,
+            c: self.c * m.a + self.d * m.c,
+            d: self.c * m.b + self.d * m.d,
+            tx: self.tx * m.a + self.ty * m.c + m.tx,
+            ty: self.tx * m.b + self.ty * m.d + m.ty,
+        }
+    }
+}
+
+/// `paint_group`: what a painter composes a group with.
+#[derive(Clone, Copy, Debug)]
+pub struct PaintGroup {
+    pub opacity: f32,
+    pub matrix: TransformMatrix,
+    pub backface_hidden: bool,
+    pub bounds: Position,
+    pub exact_bounds: bool,
+    /// The element whose group this is; none for an SVG painter's own groups.
+    pub owner: Option<crate::ElementId>,
+}
+
+impl Default for PaintGroup {
+    fn default() -> PaintGroup {
+        PaintGroup {
+            opacity: 1.0,
+            matrix: TransformMatrix::default(),
+            backface_hidden: false,
+            bounds: Position::default(),
+            exact_bounds: false,
+            owner: None,
+        }
+    }
+}
+
+/// `svg_gradient`: a linear (`ty` 1) or radial (2) gradient in a path's user space, and its stops.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SvgGradient {
+    pub ty: i32,
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+    pub r: f32,
+    pub fx: f32,
+    pub fy: f32,
+    pub stops: Vec<(f32, WebColor)>,
+}
+
+impl Default for SvgGradient {
+    fn default() -> SvgGradient {
+        SvgGradient { ty: 0, x1: 0.0, y1: 0.0, x2: 1.0, y2: 0.0, r: 0.5, fx: 0.5, fy: 0.5, stops: Vec::new() }
+    }
+}
+
+/// `vector_path::op_t`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathOp {
+    r#move,
+    line,
+    quad,
+    cubic,
+    close,
+}
+
+/// `vector_path`: an outline (`ops`, each with its points: two for a move or line, four for a quad, six for a
+/// cubic, none for a close) and how it is filled and stroked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VectorPath {
+    pub ops: Vec<PathOp>,
+    pub points: Vec<f32>,
+    pub fill: bool,
+    pub fill_color: WebColor,
+    pub evenodd: bool,
+    pub stroke: bool,
+    pub stroke_color: WebColor,
+    pub stroke_width: f32,
+    pub line_cap: i32,
+    pub line_join: i32,
+    pub miter_limit: f32,
+    pub dashes: Vec<f32>,
+    pub dash_offset: f32,
+    pub fill_gradient: SvgGradient,
+    pub stroke_gradient: SvgGradient,
+}
+
+impl Default for VectorPath {
+    fn default() -> VectorPath {
+        VectorPath {
+            ops: Vec::new(),
+            points: Vec::new(),
+            fill: false,
+            fill_color: WebColor::default(),
+            evenodd: false,
+            stroke: false,
+            stroke_color: WebColor::default(),
+            stroke_width: 1.0,
+            line_cap: 0,
+            line_join: 0,
+            miter_limit: 4.0,
+            dashes: Vec::new(),
+            dash_offset: 0.0,
+            fill_gradient: SvgGradient::default(),
+            stroke_gradient: SvgGradient::default(),
+        }
+    }
 }
 
 /// `parse_clip_path(tokens, shape)`: `polygon()`, `inset()`, `circle()` or `ellipse()` as one function; on

@@ -113,6 +113,7 @@ use twidget_litehtml::*;
 
 pub mod dom;
 pub mod gumbo;
+pub mod svg;
 
 #[derive(Default)]
 pub struct Out {

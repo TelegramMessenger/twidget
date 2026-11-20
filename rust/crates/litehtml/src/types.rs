@@ -72,3 +72,46 @@ pub const contain_inline_size: i32 = 0x02;
 pub const contain_layout: i32 = 0x04;
 pub const contain_style: i32 = 0x08;
 pub const contain_paint: i32 = 0x10;
+
+/// `position`: a box, its corner and its size in pixels.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Position {
+    pub x: Px,
+    pub y: Px,
+    pub width: Px,
+    pub height: Px,
+}
+
+impl Position {
+    /// `position(x, y, width, height)`.
+    pub const fn new(x: Px, y: Px, width: Px, height: Px) -> Position {
+        Position { x, y, width, height }
+    }
+
+    /// `right()`.
+    pub fn right(&self) -> Px {
+        self.x + self.width
+    }
+
+    /// `bottom()`.
+    pub fn bottom(&self) -> Px {
+        self.y + self.height
+    }
+
+    /// `left()`.
+    pub fn left(&self) -> Px {
+        self.x
+    }
+
+    /// `top()`.
+    pub fn top(&self) -> Px {
+        self.y
+    }
+}
+
+/// `size`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Size {
+    pub width: Px,
+    pub height: Px,
+}
