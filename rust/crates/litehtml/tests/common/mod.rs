@@ -108,6 +108,12 @@
 //!
 //! - `Q` as `Y`, with steps `p` and the paint's settings: the document painted, every paint call the container gets
 //!   logged with its arguments among its other calls; each dump step what painting keeps (see `paint`).
+//!
+//! The patching record (stage L19) builds a document as `createUpdatableFromString` does and patches it:
+//!
+//! - `b` f32 width, height, dpr, u8 flags, master, html, steps: `update_from_string`, `update_styles` and
+//!   `update_holes` with their answers, media changes, flips, layouts with their dirty regions, dumps of the
+//!   cascade, the render tree, the layout and what patching keeps, and layouts against a fresh document (see `patch`).
 
 #![allow(dead_code, unused_imports)]
 
@@ -194,6 +200,7 @@ pub mod dom;
 pub mod gumbo;
 pub mod layout;
 pub mod paint;
+pub mod patch;
 pub mod render;
 pub mod svg;
 pub mod values;

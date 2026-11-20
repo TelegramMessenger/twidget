@@ -1063,8 +1063,9 @@ impl Document {
                 } else if let Some(parent) = self.parent(el) {
                     self.remove_child(parent, el);
                     // The box goes with its last owner, and gives its generated content back.
-                    if let ElementState::Generated { boxes, bytes, .. } = self.el(el).state {
+                    if let ElementState::Generated { generations, boxes, bytes } = self.el(el).state {
                         self.release_generated(boxes, bytes);
+                        self.el_mut(el).state = ElementState::Generated { generations, boxes: 0, bytes: 0 };
                     }
                 }
             }

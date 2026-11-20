@@ -362,6 +362,11 @@ impl RenderTree {
         &self.item(id).children
     }
 
+    /// The elements of the items alive (what holds an element in the C++, besides the tree).
+    pub fn live_elements(&self) -> impl Iterator<Item = crate::element::ElementId> + '_ {
+        self.items.iter().filter(|item| item.live).map(|item| item.element)
+    }
+
     /// How many items are alive, and how many slots the arena has.
     pub fn counts(&self) -> (usize, usize) {
         (self.items.iter().filter(|item| item.live).count(), self.items.len())
@@ -851,7 +856,9 @@ impl Document {
         let made = self.create_render_item(cx, root, None);
         self.set_root_render(made);
         self.render.serial += 1;
+        self.patch.layout_marked.clear();
         self.layout.relayout_roots.clear();
+        self.patch.layout_before_valid = false;
         self.fix_tables_layout(cx);
         if let Some(root_render) = self.render.root {
             let made = self.render_init(cx, root_render);
@@ -867,7 +874,9 @@ impl Document {
         let made = self.create_render_item(cx, root, None);
         self.set_root_render(made);
         self.render.serial += 1;
+        self.patch.layout_marked.clear();
         self.layout.relayout_roots.clear();
+        self.patch.layout_before_valid = false;
         if let Some(root_render) = self.render.root {
             let made = self.render_init(cx, root_render);
             self.set_root_render(Some(made));

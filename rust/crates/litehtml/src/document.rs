@@ -149,6 +149,8 @@ pub struct Switches {
     /// `draw_group` culls a transformed group's content against the clip mapped into it: not
     /// `LH_NO_TRANSFORMED_CULLING`.
     pub transformed_culling: bool,
+    /// The patching switches (stage L19).
+    pub patch: crate::patch::PatchSwitches,
 }
 
 impl Default for Switches {
@@ -164,6 +166,7 @@ impl Default for Switches {
             layout_cache_check: false,
             column_reuse: true,
             transformed_culling: true,
+            patch: crate::patch::PatchSwitches::default(),
         }
     }
 }
@@ -311,6 +314,8 @@ pub struct Document {
     pub layout: crate::layout::DocLayout,
     /// What painting keeps of the document, and what the renderer sets for a paint (stage L13).
     pub paint: crate::paint::DocPaint,
+    /// What patching keeps of the document (stage L19).
+    pub patch: crate::patch::DocPatch,
 }
 
 /// `svg_geometry_attribute(name)`: the SVG attributes whose values are holes (unless a selector names them).
@@ -596,6 +601,8 @@ impl Document {
         self.holes.clear();
         self.node_holes.clear();
         self.template_ties = 0;
+        self.patch.style_holes.clear();
+        self.patch.owner_holes.clear();
         let Some(output) = &self.gumbo else { return };
         let base = &self.text[..];
         let size = base.len();
@@ -707,6 +714,7 @@ impl Document {
     /// finalized with its cascade, and its template.
     pub fn create_updatable(html: &[u8], master_styles: &[u8], cx: &StyleCx) -> Document {
         let (mut doc, root) = Document::build(html, &cx.env());
+        doc.patch.master_styles = master_styles.to_vec();
         doc.finalize_from_external_root(cx, root, master_styles, b"");
         doc.build_template();
         doc

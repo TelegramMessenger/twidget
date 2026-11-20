@@ -196,6 +196,7 @@ impl Document {
 
     /// `element::mark_layout_dirty()`: each of the element's render items that is alive marked, with what holds it.
     pub fn mark_element_layout_dirty(&mut self, cx: &StyleCx, id: ElementId) {
+        self.patch.layout_origins.insert(id);
         let renders: Vec<RenderId> = self.live_renders(id).collect();
         for ri in renders {
             self.mark_layout_dirty(cx, ri);
@@ -476,6 +477,9 @@ impl Document {
                     self.layout.relayout_roots.push(cur);
                 }
                 return;
+            }
+            if !self.render.item(cur).layout.layout_dirty {
+                self.patch.layout_marked.push(cur);
             }
             let it = self.render.item_mut(cur);
             it.layout.layout_dirty = true;
@@ -1652,6 +1656,7 @@ impl Document {
             self.layout.viewport = viewport;
             self.layout.epoch += 1;
         }
+        self.patch.layout_marked.clear();
         let mut cb_context = ContainingBlockContext::default();
         cb_context.width.set(max_width);
         cb_context.width.ty = CbcValueType::absolute;

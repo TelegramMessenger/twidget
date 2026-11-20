@@ -691,6 +691,8 @@ class CascadeContainer final : public lhdump_paint::Painting<OracleContainer> {
 public:
     float width = 375, height = 667, dpr = 2;
     bool trusted = false;
+    // Stage L19: a renderer-like sanitizer of elements (no object or embed, blink as span, no on* attributes or javascript: sources), each call logged.
+    bool sanitizing = false;
     struct Call {
         char kind;
         std::string a, b;
@@ -817,6 +819,19 @@ public:
         }
     }
     void trusted_styles(bool t) override { trusted = t; }
+    bool sanitize_element(std::string& tag, bool svg, string_map& attrs) override {
+        if (!sanitizing) return true;
+        calls.push_back({'E', tag, {}, int64_t((svg ? 1 : 0) | (attrs.size() << 1))});
+        if (tag == "object" || tag == "embed") return false;
+        if (tag == "blink") tag = "span";
+        for (auto it = attrs.begin(); it != attrs.end();) {
+            if (it->first.compare(0, 2, "on") == 0 || (it->first == "src" && it->second.compare(0, 11, "javascript:") == 0))
+                it = attrs.erase(it);
+            else
+                ++it;
+        }
+        return true;
+    }
     void sanitizer_limit(const char* what) override { calls.push_back({'L', what ? what : "", {}, 0}); }
     bool sanitize_declaration(const std::string& name, const css_token_vector& value) override {
         if (trusted || value.size() != 1 || (name != "position" && name != "display")) return true;
@@ -1782,6 +1797,301 @@ void cascade(In& in, Out& o, int mode) {
     o.s = std::move(all.s);
 }
 
+// ---- Stage L19: document patching ('b') ----
+
+} // namespace
+
+// The members the 'b' record dumps that the fork keeps private.
+namespace lhdump_dom {
+#define LHDUMP_ROB_P(Name, Member) \
+    struct Name {}; \
+    auto robbed(Name); \
+    template struct Rob<&Member, Name>;
+LHDUMP_ROB_P(DocSelectorScope, document::m_selector_scope)
+LHDUMP_ROB_P(DocStyleAttrsSelectable, document::m_style_attributes_selectable)
+LHDUMP_ROB_P(DocMatchEpoch, document::m_match_epoch)
+LHDUMP_ROB_P(DocLeftClasses, document::m_left_classes)
+LHDUMP_ROB_P(DocLeftIds, document::m_left_ids)
+LHDUMP_ROB_P(DocLeftAttrs, document::m_left_attrs)
+LHDUMP_ROB_P(TagMatchMemos, html_tag::m_match_memos)
+LHDUMP_ROB_P(TagFlips, html_tag::m_flips)
+#undef LHDUMP_ROB_P
+} // namespace lhdump_dom
+
+namespace {
+
+// The DOM's elements by their walk from the root, as write_cascade numbers them.
+struct ElementIndex {
+    std::vector<std::pair<element::ptr, int32_t>> nodes;
+    std::map<const element*, int32_t> index;
+
+    explicit ElementIndex(document& doc) {
+        if (doc.root()) cascade_walk(doc.root(), -1, nodes);
+        for (size_t k = 0; k < nodes.size(); k++) index[nodes[k].first.get()] = int32_t(k);
+    }
+    // -1 for none, -2 for an element out of the tree.
+    int32_t of(const element* el) const {
+        if (!el) return -1;
+        auto it = index.find(el);
+        return it == index.end() ? -2 : it->second;
+    }
+    element::ptr pick(uint32_t k) const {
+        if (k == UINT32_MAX || nodes.empty()) return nullptr;
+        return nodes[k % nodes.size()].first;
+    }
+};
+
+// A patch's answer: u8 ok, u8 changed, u8 paint-only, the regions (u8 confined, u32 count, each element), the template's html (u8 ok, str).
+void write_patch_answer(Out& o, document& doc, bool ok, bool changed) {
+    const ElementIndex w(doc);
+    o.u8(ok ? 1 : 0);
+    o.u8(changed ? 1 : 0);
+    o.u8(doc.last_patch_paint_only() ? 1 : 0);
+    std::vector<element::ptr> regions;
+    const bool confined = doc.last_patch_regions(regions);
+    o.u8(confined ? 1 : 0);
+    o.u32(uint32_t(regions.size()));
+    for (const auto& el : regions) o.i32(w.of(el.get()));
+    std::string html;
+    const bool templated = doc.template_html(html);
+    o.u8(templated ? 1 : 0);
+    o.str(templated ? html : std::string());
+}
+
+void write_names_sorted(Out& o, const std::unordered_set<string_id>& ids) {
+    std::vector<std::string> names;
+    for (string_id id : ids) names.push_back(_s(id));
+    std::sort(names.begin(), names.end());
+    o.u32(uint32_t(names.size()));
+    for (const auto& name : names) o.str(name);
+}
+
+// What patching keeps: the holes (flags, name, attribute, quote, value, owner, text elements), the selector scope and the names selectors read of others, the epochs, the layout cache's patch state, the generated content, each tag's match memos and class flips.
+void write_patch_state(Out& o, document& doc) {
+    using lhdump_dom::field;
+    const ElementIndex w(doc);
+    o.u8(field<lhdump_dom::DocTemplateOk>(doc) ? 1 : 0);
+    const auto& holes = field<lhdump_dom::DocHoles>(doc);
+    o.u32(uint32_t(holes.size()));
+    for (const auto& hole : holes) {
+        o.u8(uint8_t((hole.text ? 1 : 0) | (hole.src ? 2 : 0) | (hole.cls ? 4 : 0)));
+        o.str(hole.name);
+        o.str(hole.attr);
+        o.u8(uint8_t(hole.close));
+        o.str(hole.value);
+        o.i32(w.of(hole.owner.get()));
+        o.u32(uint32_t(hole.text_elements.size()));
+        for (const auto& el : hole.text_elements) o.i32(w.of(el.get()));
+    }
+    o.i32(field<lhdump_dom::DocSelectorScope>(doc));
+    o.i32(field<lhdump_dom::DocStyleAttrsSelectable>(doc));
+    o.u64(field<lhdump_dom::DocMatchEpoch>(doc));
+    write_names_sorted(o, field<lhdump_dom::DocLeftClasses>(doc));
+    write_names_sorted(o, field<lhdump_dom::DocLeftIds>(doc));
+    write_names_sorted(o, field<lhdump_dom::DocLeftAttrs>(doc));
+    o.u64(doc.m_style_epoch);
+    o.u64(doc.m_positioned_epoch);
+    o.u64(doc.m_positioned_tree);
+    o.u32(uint32_t(doc.m_layout_marked.size()));
+    o.u32(uint32_t(doc.m_restyle_regions.size()));
+    for (const auto& el : doc.m_restyle_regions) o.i32(w.of(el.get()));
+    o.u8(doc.m_restyle_confined ? 1 : 0);
+    o.u8(doc.m_layout_before_valid ? 1 : 0);
+    o.u32(uint32_t(doc.m_layout_before.size()));
+    o.i32(field<lhdump_dom::DocGeneratedBoxes>(doc));
+    o.u64(uint64_t(field<lhdump_dom::DocGeneratedBytes>(doc)));
+    for (const auto& [el, parent] : w.nodes) {
+        auto* tag = dynamic_cast<html_tag*>(el.get());
+        if (!tag) continue;
+        const auto& memos = field<lhdump_dom::TagMatchMemos>(*tag);
+        o.u32(uint32_t(memos.size()));
+        for (const auto& memo : memos) {
+            o.u64(memo.epoch);
+            o.u32(uint32_t(memo.attrs.size()));
+            for (const auto& rules : memo.rules) o.u32(uint32_t(rules.size()));
+        }
+        const auto& flips = field<lhdump_dom::TagFlips>(*tag);
+        o.u32(uint32_t(flips.size()));
+        for (const auto& flip : flips) {
+            o.str(flip.value);
+            o.u64(flip.epoch);
+            o.i32(flip.parent_id);
+            o.u32(uint32_t(flip.others.size()));
+            o.u32(uint32_t(flip.kids.size()));
+            o.u32(uint32_t(flip.classes.size()));
+            o.u8(flip.has_base ? 1 : 0);
+            o.u32(uint32_t(flip.regions.size()));
+            for (const auto& [from, region] : flip.regions) {
+                o.str(from);
+                o.i32(region);
+            }
+        }
+    }
+}
+
+// The laid-out tree from the root as a fresh document would show it: the document's size, then each item's class, element, parent, children count, place, margins, padding, borders and skip.
+std::vector<std::string> write_geometry(document& doc) {
+    TreeIndex t;
+    std::vector<std::pair<element::ptr, int32_t>> nodes;
+    if (doc.root()) cascade_walk(doc.root(), -1, nodes);
+    for (size_t k = 0; k < nodes.size(); k++) t.dom[nodes[k].first.get()] = int32_t(k);
+    if (doc.root_render()) t.visit(doc.root_render().get());
+    std::vector<std::string> out;
+    Out head;
+    const litehtml::size& size = lhdump_dom::field<lhdump_dom::DocSize>(doc);
+    head.f32(size.width.value());
+    head.f32(size.height.value());
+    out.push_back(head.s);
+    for (render_item* ri : t.items) {
+        Out o;
+        o.u8(uint8_t(render_kind(*ri)));
+        o.i32(t.of_el(ri->src_el().get()));
+        o.i32(t.of(ri->parent().get()));
+        o.u32(uint32_t(ri->children().size()));
+        write_pos(o, ri->pos());
+        for (const margins* m : {&ri->get_margins(), &ri->get_paddings(), &ri->get_borders()}) write_sides(o, *m);
+        o.u8(ri->skip() ? 1 : 0);
+        out.push_back(o.s);
+    }
+    return out;
+}
+
+// f32 width, height and dpr, u8 flags (bit 0: the container sanitizes elements), the master sheet, the html, then u32 steps: 'u' str html (update_from_string), 's' u32 count and each u32 element (k-th of the walk, UINT32_MAX none) and str style (update_styles), 'H' u32 count and each u32 element, u8 text, str name, str value (update_holes), each answered by write_patch_answer; 'm' f32 width and height (media_changed, u8); 'h', 'a', 'x' u32 k as for 'l'; 'w' f32 width and u8 how as for 'l', answered with the f32 and the dirty regions (u8 ok, u32 count, 4 f32 each); 'd' the cascade, the render tree, the layout and write_patch_state; 'f' the layout against a fresh document of the html the document stands for, laid out at the last width (u8 1 alike, 2 not; u32 items of each; u32 the first that differs, 0 the document's size): the document as createUpdatableFromString makes it, each step's answer and the names the case interned, then the container's calls by phase.
+void patching(In& in, Out& o) {
+    const size_t names_before = _id_usage().names;
+    CascadeContainer container;
+    container.width = in.f32();
+    container.height = in.f32();
+    container.dpr = in.f32();
+    const uint8_t flags = in.u8();
+    container.sanitizing = (flags & 1) != 0;
+    const std::string master = in.str();
+    std::string current = in.str();
+    auto doc = document::createUpdatableFromString(current, &container, master);
+    o.u8(uint8_t(doc->mode()));
+    std::vector<size_t> phases{container.calls.size()};
+    float last_width = container.width;
+    const uint32_t steps = in.u32();
+    uint8_t last_op = 0;
+    for (uint32_t s = 0; s < steps && in.at < in.s.size(); s++, phases.push_back(container.calls.size())) {
+        const uint8_t op = in.u8();
+        if (last_op != 'w') lhdump_grid::trace().clear();
+        last_op = op;
+        if (op == 'u') {
+            const std::string html = in.str();
+            bool changed = true;
+            const bool ok = doc->update_from_string(html, &changed);
+            if (ok) current = html;
+            write_patch_answer(o, *doc, ok, changed);
+            continue;
+        }
+        if (op == 's' || op == 'H') {
+            const ElementIndex w(*doc);
+            const uint32_t n = in.u32();
+            std::vector<std::pair<std::shared_ptr<element>, std::string>> styles;
+            std::vector<document::hole_change> changes;
+            for (uint32_t i = 0; i < n && in.at < in.s.size(); i++) {
+                const element::ptr el = w.pick(in.u32());
+                if (op == 's') {
+                    styles.emplace_back(el, in.str());
+                    continue;
+                }
+                document::hole_change change;
+                change.owner = el;
+                change.text = in.u8() != 0;
+                change.name = in.str();
+                change.value = in.str();
+                changes.push_back(std::move(change));
+            }
+            bool changed = true;
+            const bool ok = op == 's' ? doc->update_styles(styles, &changed) : doc->update_holes(changes, &changed);
+            std::string html;
+            if (ok && doc->template_html(html)) current = html;
+            write_patch_answer(o, *doc, ok, changed);
+            continue;
+        }
+        if (op == 'd') {
+            write_cascade(o, *doc);
+            write_render_tree(o, *doc);
+            write_layout(o, *doc);
+            write_patch_state(o, *doc);
+            continue;
+        }
+        if (op == 'w') {
+            const float width = in.f32();
+            const uint8_t how = in.u8();
+            doc->set_layout_budget((how & 1) ? in.u64() : renderer_layout_budget(*doc));
+            o.f32(doc->render(pixel_t(width), render_type(how >> 1)).value());
+            last_width = width;
+            std::vector<position> regions;
+            const bool dirty = doc->layout_dirty_regions(regions);
+            o.u8(dirty ? 1 : 0);
+            o.u32(uint32_t(regions.size()));
+            for (const auto& r : regions) write_pos(o, r);
+            continue;
+        }
+        if (op == 'm') {
+            container.width = in.f32();
+            container.height = in.f32();
+            o.u8(doc->root() && doc->media_changed() ? 1 : 0);
+            continue;
+        }
+        if (op == 'f') {
+            CascadeContainer other;
+            other.width = container.width;
+            other.height = container.height;
+            other.dpr = container.dpr;
+            other.sanitizing = container.sanitizing;
+            auto fresh = document::createUpdatableFromString(current, &other, master);
+            fresh->set_layout_budget(renderer_layout_budget(*fresh));
+            fresh->render(pixel_t(last_width));
+            const auto a = write_geometry(*doc);
+            const auto b = write_geometry(*fresh);
+            uint32_t first = 0;
+            while (first < a.size() && first < b.size() && a[first] == b[first]) first++;
+            o.u8(a == b ? 1 : 2);
+            o.u32(uint32_t(a.size()));
+            o.u32(uint32_t(b.size()));
+            o.u32(first);
+            continue;
+        }
+        const uint32_t k = in.u32();
+        std::vector<std::pair<element::ptr, int32_t>> nodes;
+        if (doc->root()) cascade_walk(doc->root(), -1, nodes);
+        std::vector<element::ptr> tags;
+        for (const auto& [el, parent] : nodes)
+            if (dynamic_cast<html_tag*>(el.get())) tags.push_back(el);
+        if (tags.empty()) {
+            o.u8(0);
+            continue;
+        }
+        const element::ptr& el = tags[k % tags.size()];
+        bool changed = op == 'h' ? el->on_mouse_over() : op == 'a' ? el->on_lbutton_down() : el->on_mouse_leave();
+        const bool styles = doc->root()->find_styles_changes([](const position&) {});
+        o.u8(uint8_t((changed ? 1 : 0) | (styles ? 2 : 0)));
+    }
+    const size_t names_after = _id_usage().names;
+    o.u32(uint32_t(names_after - names_before));
+    for (size_t k = names_before; k < names_after; k++) o.str(_s(string_id(k)));
+    Out log;
+    log.u32(uint32_t(phases.size()));
+    for (size_t p = 0; p < phases.size(); p++) {
+        const size_t from = p == 0 ? 0 : phases[p - 1];
+        log.u32(uint32_t(phases[p] - from));
+        for (size_t k = from; k < phases[p]; k++) {
+            const auto& call = container.calls[k];
+            log.u8(uint8_t(call.kind));
+            log.str(call.a);
+            log.str(call.b);
+            log.u64(uint64_t(call.n));
+        }
+    }
+    Out all;
+    all.str(o.s);
+    all.s += log.s;
+    o.s = std::move(all.s);
+}
+
 bool run(int op, std::string_view input) {
     In in{input};
     Out o;
@@ -2415,6 +2725,11 @@ bool run(int op, std::string_view input) {
     }
     case 'Q': { // painting: as 'Y', with paint steps ('p') whose container calls are logged with their arguments, and each dump step what painting keeps (write_paint)
         cascade(in, o, 3);
+        answer(1, o.s);
+        return true;
+    }
+    case 'b': { // document patching: a document as createUpdatableFromString makes it, then patches, media changes, flips, layouts, dumps and fresh comparisons: patching() above
+        patching(in, o);
         answer(1, o.s);
         return true;
     }

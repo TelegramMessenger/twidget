@@ -122,7 +122,9 @@ dependencies = [
  "twidget_css",
  "twidget_cstd",
  "twidget_json",
+ "twidget_shadow",
  "twidget_testkit",
+ "twidget_wire",
 ]
 
 [[package]]

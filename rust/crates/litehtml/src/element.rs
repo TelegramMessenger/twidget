@@ -214,6 +214,8 @@ pub struct Element {
     pub renders: Vec<crate::render_item::RenderId>,
     /// An anonymous element's owners: its render items, and the anonymous elements whose parent it is.
     pub box_holds: u32,
+    /// `html_tag`'s `m_match_memos` and `m_flips` (stage L19).
+    pub patch: crate::patch::ElementPatch,
 }
 
 impl Element {
@@ -248,6 +250,7 @@ impl Element {
             arrow: false,
             renders: Vec::new(),
             box_holds: 0,
+            patch: crate::patch::ElementPatch::default(),
         }
     }
 }

@@ -72,6 +72,9 @@ pub struct CascadeContainer {
     pub height: Cell<f32>,
     pub dpr: Cell<f32>,
     pub trusted: Cell<bool>,
+    /// Stage L19's sanitizer of elements (lhdump's `sanitizing`): no `object` or `embed`, `blink` as `span`, no `on*`
+    /// attributes or `javascript:` sources; each call logged (`E`).
+    pub sanitizing: Cell<bool>,
     pub calls: RefCell<Vec<Call>>,
     sizes: RefCell<BTreeMap<u64, f32>>,
     next: Cell<u64>,
@@ -103,6 +106,7 @@ impl CascadeContainer {
             height: Cell::new(height),
             dpr: Cell::new(dpr),
             trusted: Cell::new(false),
+            sanitizing: Cell::new(false),
             calls: RefCell::new(Vec::new()),
             sizes: RefCell::new(BTreeMap::new()),
             next: Cell::new(0),
@@ -150,6 +154,20 @@ impl DocumentContainer for CascadeContainer {
     }
     fn trusted_styles(&self, trusted: bool) {
         self.trusted.set(trusted);
+    }
+    fn sanitize_element(&self, tag: &mut Vec<u8>, svg: bool, attrs: &mut twidget_litehtml::element::StringMap) -> bool {
+        if !self.sanitizing.get() {
+            return true;
+        }
+        self.calls.borrow_mut().push((b'E', tag.clone(), Vec::new(), u64::from(svg) | (attrs.len() as u64) << 1));
+        if tag == b"object" || tag == b"embed" {
+            return false;
+        }
+        if tag == b"blink" {
+            *tag = b"span".to_vec();
+        }
+        attrs.retain(|k, v| !(k.starts_with(b"on") || (k == b"src" && v.starts_with(b"javascript:"))));
+        true
     }
     fn sanitizer_limit(&self, what: &[u8]) {
         self.calls.borrow_mut().push((b'L', what.to_vec(), Vec::new(), 0));

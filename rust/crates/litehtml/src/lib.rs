@@ -58,6 +58,7 @@ pub mod line_box;
 pub mod media_query;
 pub mod num_cvt;
 pub mod paint;
+pub mod patch;
 pub mod pixel_type;
 pub mod render_block;
 pub mod render_block_context;
