@@ -181,7 +181,8 @@ fn renders_out(o: &mut Out, t: &TreeIndex, doc: &Document, el: ElementId) {
     o.i32(t.of(doc, doc.get_render_item(el)));
 }
 
-fn grid_out(o: &mut Out, t: &TreeIndex, doc: &Document, item: RenderId) {
+/// lhdump's `write_grid`: a table's spacing and grid, its items numbered by `of`; layout's `Y` dump writes it too.
+pub fn grid_out(o: &mut Out, of: &dyn Fn(Option<RenderId>) -> i32, doc: &Document, item: RenderId) {
     let table = doc.render.item(item).table.as_ref().expect("a table's own");
     o.f32(table.border_spacing_x.value()).f32(table.border_spacing_y.value());
     let Some(grid) = &table.grid else {
@@ -190,7 +191,7 @@ fn grid_out(o: &mut Out, t: &TreeIndex, doc: &Document, item: RenderId) {
     };
     o.u8(1).i32(grid.rows_count).i32(grid.cols_count);
     for row in grid.rows.iter().take(grid.rows_count.max(0) as usize) {
-        o.i32(t.of(doc, row.el_row));
+        o.i32(of(row.el_row));
         for v in [row.height, row.border_top, row.border_bottom, row.top, row.bottom, row.min_height] {
             o.f32(v.value());
         }
@@ -202,7 +203,7 @@ fn grid_out(o: &mut Out, t: &TreeIndex, doc: &Document, item: RenderId) {
                 o.u8(0);
                 continue;
             };
-            o.u8(1).i32(t.of(doc, cell.el)).i32(cell.colspan).i32(cell.rowspan);
+            o.u8(1).i32(of(cell.el)).i32(cell.colspan).i32(cell.rowspan);
             for v in [cell.min_width, cell.min_height, cell.max_width, cell.max_height, cell.width, cell.height] {
                 o.f32(v.value());
             }
@@ -219,7 +220,7 @@ fn grid_out(o: &mut Out, t: &TreeIndex, doc: &Document, item: RenderId) {
     }
     o.u32(grid.captions.len() as u32);
     for &cap in &grid.captions {
-        o.i32(t.of(doc, Some(cap)));
+        o.i32(of(Some(cap)));
     }
     o.f32(grid.top_captions_height.value()).f32(grid.bottom_captions_height.value());
 }
@@ -266,7 +267,7 @@ pub fn tree_out(o: &mut Out, names: &Names, doc: &Document, tally: &mut RenderTa
         o.u8(u8::from(it.skip));
         if it.kind == RenderKind::render_item_table {
             mark(o, "table", -1);
-            grid_out(o, &t, doc, id);
+            grid_out(o, &|item| t.of(doc, item), doc, id);
         }
     }
     mark(o, "root, tabular, cells", -2);

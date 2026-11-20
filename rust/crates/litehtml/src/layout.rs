@@ -4,17 +4,16 @@
 //! `element.cpp`'s questions layout asks (`is_block_formatting_context`, `is_inline_box`, `in_normal_flow`,
 //! `get_content_size` of each class, `mark_layout_dirty`), and `document.cpp`'s `render` with the layout budget.
 //! Each class's `_render` is in its module: `render_block.rs` (and the block and inline contexts' contents in
-//! `render_block_context.rs` and `render_inline_context.rs`), `render_image.rs`.
+//! `render_block_context.rs` and `render_inline_context.rs`), `render_image.rs`, `render_table.rs` (L12).
 //!
 //! Positioned layout (stage L9) is here too: `render_positioned` places the absolute and fixed boxes after the flow
 //! (their in-flow pass, `render_out_of_flow`, leaves the static position), each item's positioned list sorted by
 //! `z-index` (painting and hit testing take the stacking passes from its z-indexes), the fixed boxes' redraw boxes the
 //! document keeps, sticky offsets, placements and the scroll views `calc_document_size` makes.
 //!
-//! Not yet ported, and where the seam is: a table's `_render` (L12), a grid's `_render_content` (L11). Reaching one
-//! records it in [`DocLayout::unported`] and does what the C++'s base class does (nothing, `{0, 0}`), so the boxes
-//! around it are laid out as the port can. Flex layout (L10) is in `render_flex.rs`, `flex_line.rs` and
-//! `flex_item.rs`.
+//! Not yet ported, and where the seam is: a grid's `_render_content` (L11). Reaching it records it in
+//! [`DocLayout::unported`] and does what the C++'s base class does (nothing, `{0, 0}`), so the boxes around it are
+//! laid out as the port can. Flex layout (L10) is in `render_flex.rs`, `flex_line.rs` and `flex_item.rs`.
 
 use crate::Px;
 use crate::css_properties::CssProperties;
@@ -51,7 +50,7 @@ pub struct DocLayout {
     pub hits: u64,
     pub misses: u64,
     pub mismatches: u64,
-    /// The first layout reached that is a later stage's (`"table"`, `"grid"`).
+    /// The first layout reached that is a later stage's (`"grid"`).
     pub unported: Option<&'static str>,
 }
 
@@ -652,10 +651,7 @@ impl Document {
             | RenderKind::render_item_flex
             | RenderKind::render_item_grid => self.render_block_render(cx, id, x, y, containing_block_size, fmt_ctx, second_pass),
             RenderKind::render_item_image => self.render_image_render(cx, id, x, y, containing_block_size),
-            RenderKind::render_item_table => {
-                self.unported("table");
-                RenderedWidth::default()
-            }
+            RenderKind::render_item_table => self.render_table_render(cx, id, x, y, containing_block_size, fmt_ctx),
             _ => RenderedWidth::default(),
         }
     }

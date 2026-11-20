@@ -1,15 +1,16 @@
-//! The Rust side of lhdump's `Y` record (stages L7–L10, layout): an `l` record whose steps may lay the document out
+//! The Rust side of lhdump's `Y` record (stages L7–L10 and L12, layout): an `l` record whose steps may lay the document out
 //! (`w` f32 width, u8 how: bit 0 the renderer's budget or a u64 that follows, the rest the `render_type`; answered with
 //! the f32 natural width) and whose dump steps dump the layout.
 //!
 //! A dump: u8 a root item, f32 the document's width and height, u64 boxes laid out of the budget, u8 exhausted, u8
 //! positioned boxes, u64 the layout epoch, u32 relayout roots left, u8 rendered once, u32 fixed boxes' redraw boxes (4
 //! f32 each); u32 items, numbered as the render tree's dump numbers them (`render`), each: u8 class, i32 element, i32
-//! parent, u32 children and each i32, its place (4 f32), margins, padding, borders (12 f32), u8 skip; its cache (u8
-//! dirty, u8 relayout pending, u8 out of flow, u64 epoch, the last layout (`entry_out`), its place, f32 x, y, its
-//! margins, padding, borders, the two measures, i32 the next measure, i32 resolved-layout safety); u32 positioned items
-//! in z-order and each i32; u8 a scroll view and its viewport, f32 size, left, top; a sticky box's f32 offset (stage
-//! L9); its placement (4 f32); an inline's or a text's boxes (u32, 4 f32 each); a block context's f32 vertical-align
+//! parent, u32 children and each i32, its place (4 f32), margins, padding, borders (12 f32), u8 skip, u8 the sides a
+//! collapsed table leaves it (stage L12: 1 left, 2 top, 4 right, 8 bottom); its cache (u8 dirty, u8 relayout pending,
+//! u8 out of flow, u64 epoch, the last layout (`entry_out`), its place, f32 x, y, its margins, padding, borders, the
+//! two measures, i32 the next measure, i32 resolved-layout safety); u32 positioned items in z-order and each i32; u8 a
+//! scroll view and its viewport, f32 size, left, top; a sticky box's f32 offset (stage L9); its placement (4 f32); an
+//! inline's or a text's boxes (u32, 4 f32 each); a block context's f32 vertical-align
 //! shift; a text's u8 piece, its text, i32 cut, u32 pieces (each place, margins, padding, borders, u8 skip, u8 piece,
 //! text, i32 cut, i32 parent, u32 pieces, boxes); an inline context's f32 trailing, f32 natural and min width, f32
 //! vertical-align shift, u8 cut, u32 ellipses (4 f32), u32 cut texts (an item ref), u32 lines, each f32 top, left,
@@ -20,7 +21,9 @@
 //! margins at the main start and end, the first and last baselines (f32, u8 type), u8 main and cross axes reversed, f32
 //! main gap, u32 items, each u8 row class, i32 the item, f32 base and min size, f32 max size and u8 its default, f32 main
 //! size, i32 grow and shrink, f32 scaled shrink factor, u8 frozen, u8 clamp state, i32 order and source order, the main
-//! start and end auto margins (f32, u8 default), u8 cross start and end auto margins, i32 alignment. An item ref is
+//! start and end auto margins (f32, u8 default), u8 cross start and end auto margins, i32 alignment. A table's
+//! (stage L12) spacing and grid as the render tree's dump writes them (`render::grid_out`), now laid out: the rows'
+//! heights, tops and bottoms, the cells' minimum and maximum widths, the columns' widths and places. An item ref is
 //! i32 the item and i32 -1, or for a text's piece i32 the text and i32 which piece. Then u32 DOM elements, each f32 line
 //! height, i32 first render item, a text's u8 breaker kept; u32 anonymous elements, each f32 line height and i32 first
 //! render item.
@@ -28,6 +31,7 @@
 use std::collections::BTreeMap;
 
 use super::cascade::*;
+use super::render::grid_out;
 use super::*;
 use twidget_litehtml::css_values::*;
 use twidget_litehtml::document::{Document, StyleCx, Switches};
@@ -45,6 +49,9 @@ pub struct LayoutTally {
     pub lines: usize,
     pub flex_lines: usize,
     pub flex_items: usize,
+    pub tables: usize,
+    pub table_rows: usize,
+    pub table_cells: usize,
     pub skipped: BTreeMap<&'static str, usize>,
     pub counts: BTreeMap<String, usize>,
 }
@@ -63,6 +70,9 @@ impl LayoutTally {
         self.lines += other.lines;
         self.flex_lines += other.flex_lines;
         self.flex_items += other.flex_items;
+        self.tables += other.tables;
+        self.table_rows += other.table_rows;
+        self.table_cells += other.table_cells;
         for (k, n) in other.counts {
             *self.counts.entry(k).or_default() += n;
         }
@@ -72,13 +82,16 @@ impl LayoutTally {
         let counts: Vec<String> = self.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
         let skipped: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{k} {n}")).collect();
         format!(
-            "{} documents, {} dumps, {} items, {} lines, {} flex lines of {} items; not compared (a later stage's layout): {}; {}",
+            "{} documents, {} dumps, {} items, {} lines, {} flex lines of {} items, {} tables of {} rows and {} cells; not compared (a later stage's layout): {}; {}",
             self.documents,
             self.dumps,
             self.items,
             self.lines,
             self.flex_lines,
             self.flex_items,
+            self.tables,
+            self.table_rows,
+            self.table_cells,
             if skipped.is_empty() { "none".to_string() } else { skipped.join(", ") },
             counts.join(", ")
         )
@@ -230,6 +243,60 @@ impl LayoutTally {
         }
     }
 
+    /// The branches a table's layout shows it took (stage L12).
+    fn table_note(&mut self, add: &mut dyn FnMut(&str, bool), doc: &Document, id: RenderId) {
+        use twidget_litehtml::css_values::{BorderCollapse, CaptionSide, TableLayout};
+        let it = doc.render.item(id);
+        let css = &doc.el(it.element).css;
+        let Some(grid) = it.table.as_ref().and_then(|t| t.grid.as_ref()) else { return };
+        self.tables += 1;
+        let collapsed = css.m_border_collapse == BorderCollapse::border_collapse_collapse.index();
+        add("tables laid out", it.layout.last_layout.valid || it.pos.width > Px(0.0));
+        add("tables with collapsed borders", collapsed);
+        add("tables with border spacing", !collapsed && it.table.as_ref().is_some_and(|t| t.border_spacing_x > Px(0.0)));
+        add("fixed tables", css.m_table_layout == TableLayout::table_layout_fixed.index() && !css.m_css_width.is_predefined());
+        add("tables of a CSS width", !css.m_css_width.is_predefined());
+        add("inline tables", doc.is_inline_box(it.element));
+        add("tables of one column", grid.cols_count == 1);
+        add("tables with no cell", grid.rows_count == 0);
+        add("tables whose columns the budget cut", grid.cells.iter().any(|row| row.len() as i32 != grid.cols_count));
+        for &cap in &grid.captions {
+            let side = doc.el(doc.render.item(cap).element).css.m_caption_side;
+            add("captions on top", side == CaptionSide::caption_side_top.index());
+            add("captions below", side == CaptionSide::caption_side_bottom.index());
+        }
+        add("tables moved down by their captions", grid.top_captions_height > Px(0.0));
+        for row in grid.rows.iter().take(grid.rows_count.max(0) as usize) {
+            self.table_rows += 1;
+            add("rows of a CSS height", !row.css_height.is_predefined());
+            add("rows of a % height", !row.css_height.is_predefined() && row.css_height.units() == CssUnits::css_units_percentage);
+            add("rows given extra height", row.height > row.min_height);
+        }
+        for col in grid.columns.iter().take(grid.cols_count.max(0) as usize) {
+            add("columns of a % width", !col.css_width.is_predefined() && col.css_width.units() == CssUnits::css_units_percentage);
+            add("columns of a length width", !col.css_width.is_predefined() && col.css_width.units() != CssUnits::css_units_percentage);
+            add("columns wider than their maximum", col.width > col.max_width);
+            add("columns narrower than their maximum", col.width < col.max_width);
+        }
+        for row in grid.cells.iter().take(grid.rows_count.max(0) as usize) {
+            for cell in row.iter().take(grid.cols_count.max(0) as usize) {
+                let Some(el) = cell.el else {
+                    add("places no cell takes", true);
+                    continue;
+                };
+                self.table_cells += 1;
+                let cell_item = doc.render.item(el);
+                add("cells spanning columns", cell.colspan > 1);
+                add("cells spanning rows", cell.rowspan > 1);
+                add("cells leaving a collapsed side", cell_item.collapse_skip != 0);
+                add("row groups taken as cells", cell_item.kind == RenderKind::render_item_table_part);
+                let va = doc.el(cell_item.element).css.m_vertical_align;
+                add(&format!("cells vertical-align {va}"), true);
+                add("cells of a CSS height", !doc.el(cell_item.element).css.m_css_height.is_predefined());
+            }
+        }
+    }
+
     /// The branches the layout shows it took.
     fn note(&mut self, doc: &Document, items: &[RenderId]) {
         self.dumps += 1;
@@ -304,6 +371,9 @@ impl LayoutTally {
             }
             if let Some(flex) = it.flex.as_ref() {
                 self.flex_note(&mut add, doc, it, css, &flex.lines);
+            }
+            if it.kind == RenderKind::render_item_table {
+                self.table_note(&mut add, doc, id);
             }
             if let Some(t) = it.text.as_ref() {
                 add("text pieces", !t.fragments.is_empty());
@@ -492,7 +562,7 @@ pub fn layout_out(o: &mut Out, cx: &StyleCx, doc: &Document, tally: &mut LayoutT
         for m in [&it.margins, &it.padding, &it.borders] {
             sides_out(o, m);
         }
-        o.u8(u8::from(it.skip));
+        o.u8(u8::from(it.skip)).u8(it.collapse_skip);
         mark(o, "item's cache", -1);
         let c = &it.layout;
         o.u8(u8::from(c.layout_dirty)).u8(u8::from(c.relayout_pending)).u8(u8::from(c.out_of_flow)).u64(c.layout_epoch);
@@ -597,6 +667,10 @@ pub fn layout_out(o: &mut Out, cx: &StyleCx, doc: &Document, tally: &mut LayoutT
         }
         if it.kind == RenderKind::render_item_flex {
             flex_out(o, doc, &t, id);
+        }
+        if it.kind == RenderKind::render_item_table {
+            mark(o, "table's grid", -1);
+            grid_out(o, &|item| t.of(doc, item), doc, id);
         }
     }
     mark(o, "DOM elements", -2);

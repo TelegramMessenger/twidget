@@ -1368,7 +1368,7 @@ void write_flex(Out& o, TreeIndex& t, render_item_flex& flex) {
     }
 }
 
-// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once, the fixed boxes' redraw boxes), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip; its cache and marks; its positioned items in z-order; its scroll view; a sticky box's offset; its placement; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps, a flex's baselines and lines with their items), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
+// The layout after a step: the document's (a root item, its size, the boxes laid out of the budget, exhausted, positioned boxes, the epoch, relayout roots left, rendered once, the fixed boxes' redraw boxes), then every item as the render tree numbers them (class, element, parent, children, its place, margins, padding, borders, skip, the sides a collapsed table leaves it; its cache and marks; its positioned items in z-order; its scroll view; a sticky box's offset; its placement; an inline's boxes, a block context's vertical-align shift, a text's pieces, an inline context's lines and what it keeps, a flex's baselines and lines with their items, a table's spacing and grid as laid out), then each DOM element's and anonymous element's line height (an image's is its height), first render item and, for a text, whether it keeps a breaker.
 void write_layout(Out& o, document& doc) {
     using lhdump_dom::field;
     TreeIndex t;
@@ -1422,6 +1422,7 @@ void write_layout(Out& o, document& doc) {
         write_pos(o, ri->pos());
         for (const margins* m : {&ri->get_margins(), &ri->get_paddings(), &ri->get_borders()}) write_sides(o, *m);
         o.u8(ri->skip() ? 1 : 0);
+        o.u8(ri->collapse_skip);
         o.u8(field<lhdump_dom::RiLayoutDirty>(*ri) ? 1 : 0);
         o.u8(field<lhdump_dom::RiRelayoutPending>(*ri) ? 1 : 0);
         o.u8(field<lhdump_dom::RiOutOfFlow>(*ri) ? 1 : 0);
@@ -1516,6 +1517,8 @@ void write_layout(Out& o, document& doc) {
             }
         }
         if (kind == 10) write_flex(o, t, static_cast<render_item_flex&>(*ri));
+        // Stage L12: a table's grid with its rows' heights and places, its cells' widths and its columns' widths and places.
+        if (kind == 7) write_grid(o, t, static_cast<render_item_table&>(*ri));
     }
     o.u32(uint32_t(nodes.size()));
     for (const auto& [el, parent] : nodes) {

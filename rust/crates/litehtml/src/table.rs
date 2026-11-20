@@ -1,10 +1,15 @@
-//! `table.h` and `table.cpp`'s structure: a table's grid of rows, cells and columns as `render_item_table::init()`
-//! builds it (`begin_row`, `add_cell` with spans and the document's cell budget, `is_rowspanned`, `finish` with
-//! `limit_columns`, the columns' border widths and widths, which `finish` writes into its cells' computed widths).
-//! The widths' distribution and the rows' and columns' placement are layout's, a later stage's.
+//! `table.h` and `table.cpp`: a table's grid of rows, cells and columns as `render_item_table::init()` builds it
+//! (`begin_row`, `add_cell` with spans and the document's cell budget, `is_rowspanned`, `finish` with
+//! `limit_columns`, the columns' border widths and widths, which `finish` writes into its cells' computed widths),
+//! and what layout (stage L12) asks of it: a spanning cell's width handed to its columns (`distribute_min_width`,
+//! `distribute_max_width`), the columns' widths in an auto and a fixed table (`calc_table_width`,
+//! `calc_fixed_table_width`), the rows' heights (`calc_rows_height`) and the columns' and rows' places. The
+//! three-step `distribute_width(width, start, end)` and `clear()` are not ported: nothing calls them.
 
 use crate::Px;
 use crate::css_length::CssLength;
+use crate::css_values::{BorderCollapse, CssUnits};
+use crate::cxx::{max_f32, max_list_f32, min_f32};
 use crate::document::{Document, StyleCx};
 use crate::render_item::RenderId;
 use crate::types::Margins;
@@ -150,6 +155,460 @@ impl TableGrid {
             out.extend(row.iter().filter_map(|c| c.el));
         }
         out.extend(self.captions.iter().copied());
+    }
+
+    /// `cell(t_col, t_row)` to change: the cell, none outside the grid.
+    pub fn cell_mut(&mut self, t_col: i32, t_row: i32) -> Option<&mut TableCell> {
+        if t_col >= 0 && t_col < self.cols_count && t_row >= 0 && t_row < self.rows_count {
+            return self.cells.get_mut(t_row as usize).and_then(|row| row.get_mut(t_col as usize));
+        }
+        None
+    }
+
+    /// `distribute_max_width(width, start, end)`.
+    pub fn distribute_max_width(&mut self, width: Px, start: i32, end: i32) {
+        self.distribute_width_of(width, start, end, |col| &mut col.max_width);
+    }
+
+    /// `distribute_min_width(width, start, end)`.
+    pub fn distribute_min_width(&mut self, width: Px, start: i32, end: i32) {
+        self.distribute_width_of(width, start, end, |col| &mut col.min_width);
+    }
+
+    /// `distribute_width(width, start, end, acc)`: `width` handed to the columns `start` to `end` (the field `acc`
+    /// names) in proportion to their maximum widths, evenly when those are all 0, what rounding leaves to the first.
+    fn distribute_width_of(&mut self, width: Px, start: i32, end: i32, acc: fn(&mut TableColumn) -> &mut Px) {
+        if start < 0 || start >= self.cols_count || end < 0 || end >= self.cols_count {
+            return;
+        }
+
+        let mut cols_width = Px(0.0);
+        for col in start..=end {
+            cols_width += self.columns[col as usize].max_width;
+        }
+
+        let mut add = width / Px::from_int(end - start + 1);
+        let mut added_width = Px(0.0);
+        for col in start..=end {
+            if cols_width != Px(0.0) {
+                add = width * (self.columns[col as usize].max_width / cols_width);
+            }
+            added_width += add;
+            *acc(&mut self.columns[col as usize]) += add;
+        }
+        if added_width < width {
+            *acc(&mut self.columns[start as usize]) += width - added_width;
+        }
+    }
+
+    /// `calc_table_width(block_width, is_auto, min_table_width, max_table_width)`: the columns' widths, in floats:
+    /// each column's minimum first, then the room left to the % columns (cut from the last when they pass 100%),
+    /// the fixed ones up to their width, the auto ones by their maximum widths (evenly when none has one), the
+    /// fixed ones again and the % ones by their shares, then evenly from the last; a lack of room taken back from
+    /// the auto, the fixed, then the % columns past their minimums, from the last. Each width rounded up to 1/64 px;
+    /// their sum. The minimum and maximum widths of the table come back too, the maximum from what the % columns
+    /// need.
+    pub fn calc_table_width(&mut self, block_width: Px, is_auto: bool, min_table_width: &mut Px, max_table_width: &mut Px) -> Px {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Kind {
+            Auto,
+            Fixed,
+            Percent,
+        }
+        let n = self.cols_count.max(0) as usize;
+        let mut kinds = vec![Kind::Auto; n];
+        let mut fixed = vec![0.0f32; n];
+        let mut percent = vec![0.0f32; n];
+        let mut mins = vec![0.0f32; n];
+        let mut maxs = vec![0.0f32; n];
+        let mut widths = vec![0.0f32; n];
+        let (mut min_sum, mut max_sum, mut max_percent, mut max_non_percent, mut remaining_percent) =
+            (0.0f32, 0.0f32, 0.0f32, 0.0f32, 100.0f32);
+        let epsilon = 1.0f32 / 128.0f32;
+        for col in 0..n {
+            let column = &self.columns[col];
+            mins[col] = column.min_width.value();
+            maxs[col] = max_f32(column.max_width.value(), mins[col]);
+            if !column.css_width.is_predefined() {
+                if column.css_width.units() == CssUnits::css_units_percentage {
+                    kinds[col] = Kind::Percent;
+                    percent[col] = max_f32(0.0, column.css_width.val());
+                } else {
+                    kinds[col] = Kind::Fixed;
+                    fixed[col] = maxs[col];
+                }
+            }
+            min_sum += mins[col];
+            max_sum += maxs[col];
+            if kinds[col] == Kind::Percent {
+                let p = min_f32(percent[col], remaining_percent);
+                max_percent = max_f32(max_percent, maxs[col] * 100.0 / max_f32(p, epsilon));
+                remaining_percent -= p;
+            } else {
+                max_non_percent += maxs[col];
+            }
+        }
+        max_non_percent = max_non_percent * 100.0 / max_f32(remaining_percent, epsilon);
+        let mut max_width = max_list_f32(&[max_sum, max_non_percent, max_percent]);
+        if remaining_percent >= 100.0 {
+            max_width = max_sum;
+        }
+        *min_table_width = Px(min_sum);
+        *max_table_width = Px(max_width);
+
+        let mut table = block_width.value();
+        if is_auto {
+            table = min_f32(table, max_width);
+        }
+        table = max_f32(table, min_sum);
+
+        let mut available = table;
+        let mut have_percent = false;
+        let (mut num_auto, mut num_fixed) = (0i32, 0i32);
+        let (mut total_auto, mut total_fixed, mut total_percent, mut alloc_auto) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for col in 0..n {
+            widths[col] = mins[col];
+            available -= mins[col];
+            match kinds[col] {
+                Kind::Percent => {
+                    have_percent = true;
+                    total_percent += percent[col];
+                }
+                Kind::Fixed => {
+                    num_fixed += 1;
+                    total_fixed += maxs[col];
+                }
+                Kind::Auto => {
+                    num_auto += 1;
+                    total_auto += maxs[col];
+                    alloc_auto += mins[col];
+                }
+            }
+        }
+        if available > 0.0 && have_percent {
+            for col in 0..n {
+                if kinds[col] == Kind::Percent {
+                    let w = max_f32(mins[col], table * percent[col] / 100.0);
+                    available += widths[col] - w;
+                    widths[col] = w;
+                }
+            }
+            if total_percent > 100.0 {
+                let mut excess = table * (total_percent - 100.0) / 100.0;
+                for col in (0..n).rev() {
+                    if kinds[col] == Kind::Percent {
+                        let w = widths[col];
+                        let reduction = min_f32(w, excess);
+                        excess -= reduction;
+                        let next = max_f32(mins[col], w - reduction);
+                        available += w - next;
+                        widths[col] = next;
+                    }
+                }
+            }
+        }
+        if available > 0.0 {
+            for col in 0..n {
+                if kinds[col] == Kind::Fixed && fixed[col] > widths[col] {
+                    available += widths[col] - fixed[col];
+                    widths[col] = fixed[col];
+                }
+            }
+        }
+        if available > 0.0 && num_auto != 0 {
+            available += alloc_auto;
+            let mut autos_left = num_auto;
+            for col in 0..n {
+                if kinds[col] == Kind::Auto {
+                    // Auto columns with no content to weigh them by share evenly.
+                    let share = if total_auto > 0.0 { available * maxs[col] / total_auto } else { available / autos_left as f32 };
+                    let w = max_f32(widths[col], share);
+                    available -= w;
+                    total_auto -= maxs[col];
+                    autos_left -= 1;
+                    widths[col] = w;
+                }
+            }
+        }
+        if available > 0.0 && num_fixed != 0 && total_fixed > 0.0 {
+            for col in 0..n {
+                if kinds[col] == Kind::Fixed {
+                    let w = available * maxs[col] / total_fixed;
+                    available -= w;
+                    total_fixed -= maxs[col];
+                    widths[col] += w;
+                    if available <= 0.0 || total_fixed <= 0.0 {
+                        break;
+                    }
+                }
+            }
+        }
+        if available > 0.0 && have_percent && total_percent > 0.0 && total_percent < 100.0 {
+            for col in 0..n {
+                if kinds[col] == Kind::Percent {
+                    let w = available * percent[col] / total_percent;
+                    available -= w;
+                    total_percent -= percent[col];
+                    widths[col] += w;
+                    if available <= 0.0 || total_percent <= 0.0 {
+                        break;
+                    }
+                }
+            }
+        }
+        if available > 0.0 && n > 0 {
+            let mut total = n as i32;
+            for col in (0..n).rev() {
+                let w = available / total as f32;
+                available -= w;
+                total -= 1;
+                widths[col] += w;
+            }
+        }
+        if available < 0.0 {
+            for k in [Kind::Auto, Kind::Fixed, Kind::Percent] {
+                let mut beyond = 0.0f32;
+                for col in (0..n).rev() {
+                    if kinds[col] == k {
+                        beyond += widths[col] - mins[col];
+                    }
+                }
+                let mut col = n;
+                while col > 0 && available < 0.0 && beyond > 0.0 {
+                    col -= 1;
+                    if kinds[col] == k {
+                        let diff = widths[col] - mins[col];
+                        let reduce = available * diff / beyond;
+                        widths[col] += reduce;
+                        available -= reduce;
+                        beyond -= diff;
+                    }
+                }
+                if available >= 0.0 {
+                    break;
+                }
+            }
+        }
+        let mut cur_width = Px(0.0);
+        for col in 0..n {
+            self.columns[col].width = Px((widths[col] * 64.0 - 0.01).ceil() / 64.0);
+            cur_width += self.columns[col].width;
+        }
+        cur_width
+    }
+
+    /// `calc_fixed_table_width(block_width)`: the columns' widths in a `table-layout: fixed` table, from their CSS
+    /// widths alone: % columns of the room, fixed ones at their width, the auto ones sharing what is left evenly
+    /// (the last auto one taking what rounding leaves); with no auto column, or past the room, the fixed columns
+    /// scaled up to the room and the % ones sharing what the fixed leave; room still left spread evenly from the
+    /// last. Each width at least 0, rounded up to 1/64 px; their sum.
+    pub fn calc_fixed_table_width(&mut self, block_width: Px) -> Px {
+        let n = self.cols_count.max(0) as usize;
+        let mut widths = vec![-1.0f32; n];
+        let mut percent = vec![0.0f32; n];
+        let (mut total_fixed, mut total_percent, mut total_percent_width) = (0.0f32, 0.0f32, 0.0f32);
+        let mut auto_span = 0i32;
+        for col in 0..n {
+            let w = &self.columns[col].css_width;
+            if !w.is_predefined() && w.units() == CssUnits::css_units_percentage {
+                percent[col] = max_f32(0.0, w.val());
+                widths[col] = block_width.value() * percent[col] / 100.0;
+                total_percent += percent[col];
+                total_percent_width += widths[col];
+            } else if !w.is_predefined() {
+                widths[col] = self.columns[col].max_width.value();
+                total_fixed += widths[col];
+            } else {
+                auto_span += 1;
+            }
+        }
+        let table = max_f32(block_width.value(), total_fixed);
+        let mut total = total_fixed + total_percent_width;
+        if auto_span == 0 || total > table {
+            if total != table {
+                if total_fixed > 0.0 && total < table {
+                    let scaled = total;
+                    total_fixed = 0.0;
+                    for col in 0..n {
+                        if widths[col] >= 0.0 && percent[col] == 0.0 {
+                            widths[col] = widths[col] * table / scaled;
+                            total_fixed += widths[col];
+                        }
+                    }
+                }
+                if total_percent > 0.0 {
+                    total_percent_width = 0.0;
+                    for col in 0..n {
+                        if percent[col] > 0.0 {
+                            widths[col] = percent[col] * (table - total_fixed) / total_percent;
+                            total_percent_width += widths[col];
+                        }
+                    }
+                }
+                total = total_fixed + total_percent_width;
+            }
+        } else {
+            let mut remaining = table - total_fixed - total_percent_width;
+            let mut last_auto = 0usize;
+            for col in 0..n {
+                if widths[col] < 0.0 {
+                    let w = remaining / auto_span as f32;
+                    widths[col] = w;
+                    remaining -= w;
+                    auto_span -= 1;
+                    last_auto = col;
+                }
+            }
+            if remaining != 0.0 {
+                widths[last_auto] += remaining;
+            }
+            total = table;
+        }
+        if total < table && n > 0 {
+            let mut remaining = table - total;
+            let mut count = n;
+            while count != 0 {
+                let w = remaining / count as f32;
+                remaining -= w;
+                count -= 1;
+                widths[count] += w;
+            }
+            widths[n - 1] += remaining;
+        }
+        let mut cur_width = Px(0.0);
+        for col in 0..n {
+            self.columns[col].width = Px((max_f32(0.0, widths[col]) * 64.0 - 0.01).ceil() / 64.0);
+            cur_width += self.columns[col].width;
+        }
+        cur_width
+    }
+
+    /// `calc_horizontal_positions(table_borders, bc, bdr_space_x)`: each column's left and right, after the spacing
+    /// when the borders are separate, else overlapping its neighbours and the table by the thinner border.
+    pub fn calc_horizontal_positions(&mut self, table_borders: &Margins, bc: i32, bdr_space_x: Px) {
+        let n = self.cols_count.max(0) as usize;
+        if bc == BorderCollapse::border_collapse_separate.index() {
+            let mut left = bdr_space_x;
+            for column in self.columns.iter_mut().take(n) {
+                column.left = left;
+                column.right = column.left + column.width;
+                left = column.right + bdr_space_x;
+            }
+        } else {
+            let mut left = Px(0.0);
+            if n != 0 {
+                left -= table_borders.left.min(self.columns[0].border_left);
+            }
+            for i in 0..n {
+                if i > 0 {
+                    left -= self.columns[i - 1].border_right.min(self.columns[i].border_left);
+                }
+
+                self.columns[i].left = left;
+                self.columns[i].right = self.columns[i].left + self.columns[i].width;
+                left = self.columns[i].right;
+            }
+        }
+    }
+
+    /// `calc_vertical_positions(table_borders, bc, bdr_space_y)`: each row's top and bottom, as the columns'.
+    pub fn calc_vertical_positions(&mut self, table_borders: &Margins, bc: i32, bdr_space_y: Px) {
+        let n = self.rows_count.max(0) as usize;
+        if bc == BorderCollapse::border_collapse_separate.index() {
+            let mut top = bdr_space_y;
+            for row in self.rows.iter_mut().take(n) {
+                row.top = top;
+                row.bottom = row.top + row.height;
+                top = row.bottom + bdr_space_y;
+            }
+        } else {
+            let mut top = Px(0.0);
+            if n != 0 {
+                top -= table_borders.top.min(self.rows[0].border_top);
+            }
+            for i in 0..n {
+                if i > 0 {
+                    top -= self.rows[i - 1].border_bottom.min(self.rows[i].border_top);
+                }
+
+                self.rows[i].top = top;
+                self.rows[i].bottom = self.rows[i].top + self.rows[i].height;
+                top = self.rows[i].bottom;
+            }
+        }
+    }
+
+    /// `calc_rows_height(blockHeight, borderSpacingY)`: each row at least its CSS height (a % one's against the
+    /// table's), every row's minimum the height it then has; a taller table's extra height given to the % rows,
+    /// then shared by the auto rows (or by all when there is none), or what the % rows took past it taken back from
+    /// the last rows down to their minimums.
+    pub fn calc_rows_height(&mut self, block_height: Px, _border_spacing_y: Px) {
+        let mut min_table_height = Px(0.0);
+
+        // compute vertical size inferred by cells
+        for row in &mut self.rows {
+            if !row.css_height.is_predefined()
+                && row.css_height.units() != CssUnits::css_units_percentage
+                && row.height < Px(row.css_height.val())
+            {
+                row.height = Px(row.css_height.val());
+            }
+            row.min_height = row.height;
+            min_table_height += row.height;
+        }
+
+        if block_height > min_table_height {
+            let mut extra_height = block_height - min_table_height;
+            let mut auto_count = 0i32; // number of rows with height=auto
+            for row in &mut self.rows {
+                if !row.css_height.is_predefined() && row.css_height.units() == CssUnits::css_units_percentage {
+                    row.height = row.css_height.calc_percent(block_height);
+                    if row.height < row.min_height {
+                        row.height = row.min_height;
+                    }
+
+                    extra_height -= row.height - row.min_height;
+
+                    if extra_height <= Px(0.0) {
+                        break;
+                    }
+                } else if row.css_height.is_predefined() {
+                    auto_count += 1;
+                }
+            }
+            if extra_height > Px(0.0) {
+                if auto_count != 0 {
+                    // distribute height to the rows with height=auto
+                    let extra_row_height = extra_height / Px::from_int(auto_count);
+                    for row in &mut self.rows {
+                        if row.css_height.is_predefined() {
+                            row.height += extra_row_height;
+                        }
+                    }
+                } else if !self.rows.is_empty() {
+                    // We don't have rows with height=auto, so distribute height to all rows
+                    let extra_row_height = extra_height / Px::from_int(self.rows.len() as i32);
+                    for row in &mut self.rows {
+                        row.height += extra_row_height;
+                    }
+                }
+            } else if extra_height < Px(0.0) {
+                extra_height = -extra_height;
+                let mut rows = self.rows.iter_mut().rev();
+                while extra_height > Px(0.0) {
+                    let Some(row) = rows.next() else { break };
+                    if row.height > row.min_height {
+                        if row.height - extra_height >= row.min_height {
+                            row.height -= extra_height;
+                            extra_height = Px(0.0);
+                        } else {
+                            extra_height -= row.height - row.min_height;
+                            row.height = row.min_height;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

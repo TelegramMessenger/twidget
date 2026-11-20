@@ -1,18 +1,20 @@
-//! Layout, ported (stages L7–L10): documents cascaded and built as the renderer builds them, laid out at widths
-//! (again at the first after another, so the layout cache is used), after media changes and `:hover` restyles, and
-//! with the fixed boxes placed alone, through `oracle/lhdump` (`Y`) and the port: every render item's place, margins,
-//! padding and borders, its cache and marks, positioned lists in z-order, scroll views, sticky offsets, placements,
-//! inline boxes, a text's pieces, an inline context's line boxes and their items, a flex's baselines and lines with
-//! their items, the document's size, budget and fixed boxes, each element's line height, with the container's calls
-//! in order (fonts, text widths, the viewport, image sizes, text breakers). The documents: widget-sandbox's corpus
-//! light and dark at five widths, every tag but tables, written shapes for each branch (margins collapsing, floats
-//! and clearance, line breaking, white space, `text-overflow`, bidi, vertical alignment, images, lists, `<textarea>`;
-//! flex directions, wrapping, every alignment value, factors and bases, min and max, `order`, gaps, `auto` margins,
-//! baselines, form controls; absolute and fixed boxes under each rule of CSS 2.2 10.3.7 and 10.6.4, containing
-//! blocks, static positions, `z-index`, sticky boxes, scroll views), generated block, float, margin and inline
-//! documents, generated nested flex documents and generated positioned documents, the `LH_NO_*` layout switches, the
-//! budget crossed, and deep documents on a small stack. A case whose layout reaches a later stage's (tables, grid) is
-//! laid out by the port as far as it goes but not compared, and counted. Each run reports what it reached.
+//! Layout, ported (stages L7–L10 and L12): documents cascaded and built as the renderer builds them, laid out at
+//! widths (again at the first after another, so the layout cache is used), after media changes and `:hover`
+//! restyles, and with the fixed boxes placed alone, through `oracle/lhdump` (`Y`) and the port: every render item's
+//! place, margins, padding and borders, its cache and marks, positioned lists in z-order, scroll views, sticky offsets,
+//! placements, inline boxes, a text's pieces, an inline context's line boxes and their items, a flex's baselines and
+//! lines with their items, a table's grid as laid out and the sides its collapsed borders leave each cell, the
+//! document's size, budget and fixed boxes, each element's line height, with the container's calls in order (fonts,
+//! text widths, the viewport, image sizes, text breakers). The documents: widget-sandbox's corpus light and dark at
+//! five widths, every tag, written shapes for each branch (margins collapsing, floats and clearance, line breaking,
+//! white space, `text-overflow`, bidi, vertical alignment, images, lists, `<textarea>`; flex directions, wrapping,
+//! every alignment value, factors and bases, min and max, `order`, gaps, `auto` margins, baselines, form controls;
+//! absolute and fixed boxes under each rule of CSS 2.2 10.3.7 and 10.6.4, containing blocks, static positions,
+//! `z-index`, sticky boxes, scroll views; tables with spans, captions, fixed layout, %, collapsed borders, heights,
+//! anonymous boxes, nesting), generated block, float, margin and inline documents, generated nested flex documents,
+//! generated positioned documents and generated table documents, the `LH_NO_*` layout switches, the budget crossed,
+//! and deep documents on a small stack. A case whose layout reaches a later stage's (grid) is laid out by the port as
+//! far as it goes but not compared, and counted. Each run reports what it reached.
 
 mod common;
 
@@ -1472,6 +1474,531 @@ fn layout_steps(width: f32, other: f32) -> Vec<Step> {
     vec![Step::Layout(width, None), Step::Dump, Step::Layout(other, None), Step::Dump, Step::Layout(width, None), Step::Dump]
 }
 
+// ---- Table inputs (stage L12) -------------------------------------------------------------------------------
+
+/// A table's declaration: collapsed or separate borders with spacing, fixed or auto layout, its width and height
+/// with min and max, borders and padding of every style, box-sizing, display.
+fn table_declaration(random: &mut Lcg) -> String {
+    match random.below(16) {
+        0 | 1 => format!("border-collapse:{}", pick(random, &["collapse", "separate", "collapse"])),
+        2 => format!("border-spacing:{}", pick(random, &["0", "2px", "5px 1px", "1em", "0 7px", "3.3px"])),
+        3 | 4 => format!("table-layout:{}", pick(random, &["fixed", "auto", "fixed"])),
+        5 | 6 => format!(
+            "width:{}",
+            pick(random, &["auto", "300px", "100%", "50%", "120px", "calc(50% + 20px)", "1px", "min-content", "max-content", "2000px"])
+        ),
+        7 => format!("height:{}", pick(random, &["auto", "200px", "50%", "40px", "0"])),
+        8 => format!(
+            "{}:{}",
+            pick(random, &["min-height", "max-height", "min-width", "max-width"]),
+            pick(random, &["100px", "30%", "none", "10px", "400px"])
+        ),
+        9 | 10 => format!(
+            "border:{} {} {}",
+            pick(random, &["1px", "3px", "0", "medium", "5px"]),
+            pick(random, &["solid", "double", "dashed", "dotted", "ridge", "outset", "groove", "inset", "hidden", "none"]),
+            pick(random, &["red", "#123", "blue"])
+        ),
+        11 => format!("padding:{}", pick(random, &["0", "4px", "2px 10px", "5%"])),
+        12 => format!("margin:{}", pick(random, &["0", "10px", "0 auto", "auto", "5%"])),
+        13 => format!("box-sizing:{}", pick(random, &["border-box", "content-box"])),
+        14 => format!("display:{}", pick(random, &["table", "inline-table", "table"])),
+        _ => pick(random, &["float:left", "float:right", "vertical-align:middle", "font-size:20px", "direction:rtl"]).to_string(),
+    }
+}
+
+/// A cell's declaration: its width (lengths, %, calc, keywords) and height, padding and borders of every style,
+/// box-sizing, vertical-align, text alignment and wrapping, overflow.
+fn cell_declaration(random: &mut Lcg) -> String {
+    match random.below(18) {
+        0..=3 => format!(
+            "width:{}",
+            pick(random, &["auto", "50px", "10%", "30%", "60%", "120px", "calc(20% + 5px)", "0", "1000px", "2em", "100%"])
+        ),
+        4 | 5 => format!("height:{}", pick(random, &["auto", "40px", "50%", "3em", "0", "calc(10px + 1em)", "1e7px", "-5px"])),
+        6 | 7 => format!("padding:{}", pick(random, &["0", "5px", "1px 8px", "10%", "3px 0 9px"])),
+        8 | 9 => format!(
+            "border{}:{} {}",
+            pick(random, &["", "-left", "-top", "-right", "-bottom"]),
+            pick(random, &["1px", "2px", "4px", "0", "thick"]),
+            pick(random, &["solid", "double", "dashed", "dotted", "ridge", "outset", "groove", "inset", "hidden", "none"])
+        ),
+        10 => format!("box-sizing:{}", pick(random, &["border-box", "content-box"])),
+        11 | 12 => format!("vertical-align:{}", pick(random, &["top", "middle", "bottom", "baseline", "text-top", "sub", "4px"])),
+        13 => format!("text-align:{}", pick(random, &["left", "center", "right", "justify"])),
+        14 => format!("white-space:{}", pick(random, &["nowrap", "pre", "normal"])),
+        15 => format!("{}:{}", pick(random, &["min-width", "max-width", "min-height"]), pick(random, &["20px", "50%", "none", "200px"])),
+        16 => format!("overflow:{}", pick(random, &["hidden", "auto", "visible"])),
+        _ => format!("margin:{}", pick(random, &["5px", "0", "auto"])),
+    }
+}
+
+/// A generated document of tables (nested, inline, floated, in blocks and flex boxes) with rows in row groups or
+/// loose, cells with spans (past the grid too), captions on either side, HTML attributes and declarations, and
+/// the content of every kind; some built from `display: table-*` blocks, which take anonymous boxes.
+fn table_document(random: &mut Lcg) -> Vec<u8> {
+    fn content(random: &mut Lcg, depth: u32, out: &mut String) {
+        match random.below(12) {
+            0..=4 => words(random, out),
+            5 => out.push_str(&format!("<img src=\"{}.png\">", pick(random, &["a", "bb", "photo", "x9"]))),
+            6 => out.push_str(pick(
+                random,
+                &[
+                    "<span>s <b>t</b></span>",
+                    "<br>",
+                    "<span style=\"display:inline-block;width:30px\">ib</span>",
+                    "<div>block</div>",
+                    "<div style=\"float:left;width:20px\">f</div>",
+                    "<p style=\"margin:10px\">p</p>",
+                    "<input type=\"text\" value=\"v\">",
+                ],
+            )),
+            7 | 8 if depth < 3 => table(random, depth + 1, out),
+            9 if depth < 3 => {
+                out.push_str(pick(random, &["<div style=\"display:flex\">", "<div style=\"display:inline-block\">", "<div>"]));
+                table(random, depth + 1, out);
+                out.push_str("</div>");
+            }
+            _ => words(random, out),
+        }
+    }
+    fn cell(random: &mut Lcg, depth: u32, out: &mut String) {
+        let tag = if random.chance(5) { "th" } else { "td" };
+        out.push_str(&format!("<{tag}"));
+        if random.chance(4) {
+            out.push_str(&format!(" colspan=\"{}\"", pick(random, &["2", "3", "0", "-1", "x", "5", "1000"])));
+        }
+        if random.chance(5) {
+            out.push_str(&format!(" rowspan=\"{}\"", pick(random, &["2", "3", "0", "9", "1"])));
+        }
+        if random.chance(6) {
+            out.push_str(pick(
+                random,
+                &[" width=\"50\"", " width=\"20%\"", " height=\"30\"", " valign=\"top\"", " align=\"right\"", " width=\"0\""],
+            ));
+        }
+        if random.chance(4) {
+            out.push_str(&format!(" class=\"{}\"", pick(random, &["c", "d", "c d"])));
+        }
+        if random.chance(2) {
+            let decls: Vec<String> = (0..1 + random.below(3)).map(|_| cell_declaration(random)).collect();
+            out.push_str(&format!(" style=\"{}\"", decls.join(";")));
+        }
+        out.push('>');
+        for _ in 0..random.below(3) {
+            content(random, depth, out);
+        }
+        out.push_str(&format!("</{tag}>"));
+    }
+    fn row(random: &mut Lcg, depth: u32, out: &mut String) {
+        out.push_str("<tr");
+        if random.chance(5) {
+            out.push_str(&format!(" style=\"height:{}\"", pick(random, &["40px", "20%", "0", "auto", "3em"])));
+        }
+        out.push('>');
+        for _ in 0..random.below(5) {
+            cell(random, depth, out);
+        }
+        out.push_str("</tr>");
+    }
+    fn table(random: &mut Lcg, depth: u32, out: &mut String) {
+        if random.chance(6) {
+            // A table of display: table-* blocks, parts left out for the anonymous boxes.
+            let mut decls: Vec<String> = (0..random.below(3)).map(|_| table_declaration(random)).collect();
+            decls.insert(0, format!("display:{}", pick(random, &["table", "inline-table", "block"])));
+            out.push_str(&format!("<div style=\"{}\">", decls.join(";")));
+            for _ in 0..1 + random.below(3) {
+                match random.below(4) {
+                    0 => out.push_str("<div style=\"display:table-cell\">loose cell</div>"),
+                    1 => {
+                        out.push_str("<div style=\"display:table-row\">");
+                        for _ in 0..random.below(3) {
+                            out.push_str("<div style=\"display:table-cell;padding:2px\">c ");
+                            words(random, out);
+                            out.push_str("</div>");
+                        }
+                        out.push_str("</div>");
+                    }
+                    2 => out.push_str("<div style=\"display:table-caption\">caption</div>"),
+                    _ => {
+                        out.push_str("<span>text</span>");
+                        words(random, out);
+                    }
+                }
+            }
+            out.push_str("</div>");
+            return;
+        }
+        out.push_str("<table");
+        if random.chance(4) {
+            out.push_str(pick(
+                random,
+                &[" border=\"1\"", " cellspacing=\"0\"", " cellspacing=\"6\"", " width=\"100%\"", " width=\"200\"", " height=\"150\""],
+            ));
+        }
+        if random.chance(3) {
+            out.push_str(&format!(" class=\"{}\"", pick(random, &["t", "u", "t u"])));
+        }
+        if !random.chance(3) {
+            let decls: Vec<String> = (0..1 + random.below(4)).map(|_| table_declaration(random)).collect();
+            out.push_str(&format!(" style=\"{}\"", decls.join(";")));
+        }
+        out.push('>');
+        if random.chance(4) {
+            let side = pick(random, &["top", "bottom", "top"]);
+            out.push_str(&format!("<caption style=\"caption-side:{side}\">"));
+            words(random, out);
+            out.push_str("</caption>");
+        }
+        let rows = if depth > 2 { random.below(3) } else { random.below(5) };
+        match random.below(4) {
+            0 => {
+                out.push_str("<thead>");
+                row(random, depth, out);
+                out.push_str("</thead><tbody>");
+                for _ in 0..rows {
+                    row(random, depth, out);
+                }
+                out.push_str("</tbody>");
+                if random.chance(2) {
+                    out.push_str("<tfoot>");
+                    row(random, depth, out);
+                    out.push_str("</tfoot>");
+                }
+            }
+            _ => {
+                for _ in 0..rows {
+                    row(random, depth, out);
+                }
+            }
+        }
+        if random.chance(8) {
+            out.push_str("<caption style=\"caption-side:bottom\">below</caption>");
+        }
+        out.push_str("</table>");
+    }
+    let mut out = String::new();
+    if !random.chance(8) {
+        out.push_str("<!DOCTYPE html>");
+    }
+    out.push_str("<html><head><style>");
+    for _ in 0..random.below(4) {
+        let selector =
+            pick(random, &["table", "td", "th", ".t", ".u", ".c", ".d", "tr", "caption", "td:first-child", "tr:nth-child(2) td"]);
+        let decls: Vec<String> = (0..1 + random.below(3))
+            .map(|_| {
+                if selector.starts_with("table") || (selector.starts_with('.') && random.chance(2)) {
+                    table_declaration(random)
+                } else {
+                    cell_declaration(random)
+                }
+            })
+            .collect();
+        let rule = format!("{selector}{{{}}}", decls.join(";"));
+        if random.chance(3) {
+            out.push_str(&format!("@media (min-width:{}px){{{rule}}}", pick(random, &["300", "450", "700"])));
+        } else {
+            out.push_str(&rule);
+        }
+    }
+    out.push_str("</style></head><body>");
+    for _ in 0..1 + random.below(3) {
+        if random.chance(4) {
+            content(random, 2, &mut out);
+        } else {
+            table(random, 0, &mut out);
+        }
+    }
+    out.push_str("</body></html>");
+    out.into_bytes()
+}
+
+/// Table shapes for each branch, written out.
+fn written_table_documents() -> Vec<(&'static str, String)> {
+    let page = |body: &str| format!("<!DOCTYPE html><html><head></head><body>{body}</body></html>");
+    let long = "supercalifragilisticexpialidocious";
+    let mut docs = vec![
+        ("two by two", page("<table><tr><td>a</td><td>b b b</td></tr><tr><td>c c</td><td>d</td></tr></table>")),
+        ("empty table", page("<table></table><table style=\"border:2px solid;padding:3px\"></table><table><tr></tr><tr></tr></table>")),
+        ("empty cells", page("<table border=\"1\"><tr><td></td><td>x</td><td></td></tr><tr><td></td></tr></table>")),
+        (
+            "colspans",
+            page(&format!(
+                "<table border=\"1\"><tr><td colspan=\"2\">{long} wide</td><td>c</td></tr><tr><td>a</td><td>b</td><td>c</td></tr><tr><td colspan=\"3\">all three columns of text</td></tr></table>"
+            )),
+        ),
+        (
+            "rowspans",
+            page(
+                "<table border=\"1\"><tr><td rowspan=\"2\">tall<br>tall<br>tall<br>tall</td><td>a</td></tr><tr><td>b</td></tr><tr><td>c</td><td rowspan=\"5\">past the end<br>x<br>y</td></tr></table>",
+            ),
+        ),
+        (
+            "spans crossing",
+            page(
+                "<table><tr><td rowspan=\"2\" colspan=\"2\">big</td><td>a</td></tr><tr><td>b</td></tr><tr><td>c</td><td colspan=\"2\">d e f g</td></tr></table>",
+            ),
+        ),
+        (
+            "spans of odd values",
+            page(
+                "<table><tr><td colspan=\"0\">z</td><td colspan=\"-3\">n</td><td colspan=\"x\">x</td><td rowspan=\"0\">r</td></tr><tr><td colspan=\"1000\" rowspan=\"1000\">huge</td></tr></table>",
+            ),
+        ),
+        (
+            "captions",
+            page(
+                "<table border=\"1\"><caption>top caption of some length</caption><caption style=\"caption-side:bottom\">bottom</caption><caption style=\"margin:5px;padding:4px\">second top</caption><tr><td>a</td><td>b</td></tr></table>",
+            ),
+        ),
+        (
+            "caption only",
+            page(
+                "<table style=\"border:4px solid\"><caption>only a caption</caption></table><table><caption style=\"caption-side:bottom\">bottom only</caption></table>",
+            ),
+        ),
+        (
+            "row groups",
+            page(
+                "<table><tfoot><tr><td>foot</td></tr></tfoot><thead><tr><th>head one</th><th>head two</th></tr></thead><tbody><tr><td>a</td><td>b</td></tr></tbody><tbody><tr><td>c</td></tr></tbody></table>",
+            ),
+        ),
+        (
+            "fixed layout",
+            page(
+                "<table style=\"table-layout:fixed;width:300px\"><tr><td style=\"width:50px\">a</td><td>b</td><td style=\"width:20%\">c</td><td>d</td></tr><tr><td style=\"width:200px\">wide in the second row</td><td>e</td></tr></table>",
+            ),
+        ),
+        (
+            "fixed layout without auto columns",
+            page(
+                "<table style=\"table-layout:fixed;width:400px\"><tr><td style=\"width:50px\">a</td><td style=\"width:100px\">b</td></tr></table><table style=\"table-layout:fixed;width:400px\"><tr><td style=\"width:30%\">a</td><td style=\"width:50px\">b</td><td style=\"width:20%\">c</td></tr></table><table style=\"table-layout:fixed;width:100px\"><tr><td style=\"width:80px\">a</td><td style=\"width:90px\">b</td><td>c</td></tr></table>",
+            ),
+        ),
+        (
+            "fixed layout past the room",
+            page(
+                "<table style=\"table-layout:fixed;width:200px\"><tr><td style=\"width:70%\">a</td><td style=\"width:60%\">b</td><td>c</td></tr></table><table style=\"table-layout:fixed;width:200px\"><tr><td style=\"width:150px\">a</td><td style=\"width:40%\">b</td></tr></table><table style=\"table-layout:fixed;width:200px\"><tr><td colspan=\"2\" style=\"width:100px\">span</td><td style=\"width:10px;box-sizing:border-box;padding:4px\">c</td></tr><tr><td>a</td><td>b</td><td>c</td></tr></table>",
+            ),
+        ),
+        (
+            "fixed layout of an auto width",
+            page("<table style=\"table-layout:fixed\"><tr><td style=\"width:50px\">a</td><td>b</td></tr></table>"),
+        ),
+        (
+            "percentage columns",
+            page(
+                "<table style=\"width:400px\"><tr><td style=\"width:25%\">a</td><td style=\"width:50%\">b</td><td>c</td></tr></table><table style=\"width:400px\"><tr><td style=\"width:70%\">a</td><td style=\"width:60%\">b</td><td style=\"width:10%\">c</td></tr></table><table><tr><td style=\"width:30%\">a</td><td style=\"width:20%\">b</td></tr></table><table style=\"width:300px\"><tr><td style=\"width:0%\">z</td><td style=\"width:-10%\">n</td><td style=\"width:100%\">all</td></tr></table>",
+            ),
+        ),
+        (
+            "fixed width columns",
+            page(&format!(
+                "<table style=\"width:500px\"><tr><td style=\"width:40px\">a</td><td style=\"width:60px\">b</td></tr></table><table style=\"width:100px\"><tr><td style=\"width:80px\">a</td><td style=\"width:90px\">{long}</td><td>c</td></tr></table><table><tr><td width=\"70\">attr</td><td style=\"width:calc(10% + 20px)\">calc</td><td style=\"width:3em;box-sizing:border-box;padding:5px\">em</td></tr></table>"
+            )),
+        ),
+        (
+            "mixed columns with spans",
+            page(
+                "<table style=\"width:600px\"><tr><td style=\"width:20%\">p</td><td style=\"width:100px\">f</td><td>auto</td><td colspan=\"2\">two auto</td></tr><tr><td colspan=\"3\">a cell over three columns with enough words to need room</td><td>x</td><td style=\"width:15%\">y</td></tr></table>",
+            ),
+        ),
+        (
+            "narrow container",
+            page(&format!(
+                "<div style=\"width:60px\"><table><tr><td>{long}</td><td>another {long}</td></tr></table><table style=\"width:100%\"><tr><td style=\"width:50%\">aaaaaaaaaa</td><td style=\"width:40px\">b</td><td>c</td></tr></table></div>"
+            )),
+        ),
+        (
+            "auto columns sharing the room",
+            page(
+                "<table style=\"width:500px\"><tr><td>a</td><td>bb bb</td><td>ccc ccc ccc</td></tr></table><table style=\"width:500px\"><tr><td></td><td></td><td></td></tr></table><table style=\"width:100%\"><tr><td style=\"width:30px\">x</td><td style=\"width:40px\">y</td></tr></table>",
+            ),
+        ),
+        (
+            "one column",
+            page(&format!(
+                "<table style=\"width:200px\"><tr><td>{long} {long}</td></tr><tr><td>b</td></tr></table><table style=\"width:50%\"><tr><td>c</td></tr></table><table><tr><td>auto one column</td></tr></table>"
+            )),
+        ),
+        (
+            "border spacing",
+            page(
+                "<table style=\"border-spacing:10px 4px;border:1px solid\"><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table><table cellspacing=\"0\" border=\"2\"><tr><td>e</td><td>f</td></tr></table><table style=\"border-spacing:1em\"><tr><td>g</td></tr></table>",
+            ),
+        ),
+        (
+            "collapsed borders",
+            page(
+                "<table style=\"border-collapse:collapse;border:3px solid\"><tr><td style=\"border:1px solid\">a</td><td style=\"border:5px double\">b</td></tr><tr><td style=\"border:2px dashed\">c</td><td style=\"border:2px dotted\">d</td></tr></table>",
+            ),
+        ),
+        (
+            "collapsed hidden and none",
+            page(
+                "<table style=\"border-collapse:collapse;border:2px hidden\"><tr><td style=\"border:4px solid\">a</td><td style=\"border:4px none\">b</td><td style=\"border:1px hidden\">c</td></tr><tr><td colspan=\"2\" style=\"border:3px groove\">d</td><td rowspan=\"2\" style=\"border:3px ridge\">e</td></tr><tr><td style=\"border:3px inset\">f</td><td style=\"border:3px outset\">g</td></tr></table>",
+            ),
+        ),
+        (
+            "collapsed ties",
+            page(
+                "<table style=\"border-collapse:collapse;border:2px solid\"><tr><td style=\"border:2px solid\">a</td><td style=\"border:2px solid\">b</td></tr><tr><td style=\"border:2px dashed\">c</td><td style=\"border:2.00001px solid\">d</td></tr></table><table style=\"border-collapse:collapse\"><tr><td style=\"border-right:3px solid\">a</td><td style=\"border-left:3px double\">b</td></tr></table>",
+            ),
+        ),
+        (
+            "table heights",
+            page(
+                "<table style=\"height:200px;border:1px solid\"><tr><td>a</td></tr><tr style=\"height:30px\"><td>b</td></tr></table><table style=\"height:150px\"><tr style=\"height:20%\"><td>a</td></tr><tr style=\"height:50%\"><td>b</td></tr><tr><td>c</td></tr></table><table style=\"height:100px\"><tr style=\"height:80%\"><td>a</td></tr><tr style=\"height:80%\"><td>b</td></tr></table>",
+            ),
+        ),
+        (
+            "rows given back their height",
+            page(
+                "<table style=\"height:60px\"><tr style=\"height:40%\"><td>a<br>a<br>a</td></tr><tr style=\"height:90%\"><td>b</td></tr><tr style=\"height:30%\"><td>c</td></tr></table><table style=\"height:90px\"><tr style=\"height:30px\"><td>a</td></tr><tr style=\"height:40px\"><td>b</td></tr></table>",
+            ),
+        ),
+        (
+            "min heights",
+            page(
+                "<div style=\"height:300px\"><table style=\"min-height:50%\"><tr><td>a</td></tr></table><table style=\"min-height:120px\"><tr><td>b</td></tr><tr><td>c</td></tr></table></div>",
+            ),
+        ),
+        (
+            "cell heights",
+            page(
+                "<table><tr><td style=\"height:50px\">a</td><td style=\"height:20px;padding:5px\">b</td><td style=\"height:30px;box-sizing:border-box;padding:6px;border:2px solid\">c</td><td style=\"height:50%\">d</td><td style=\"height:1e9px\">e</td><td style=\"height:-4px\">f</td></tr></table>",
+            ),
+        ),
+        (
+            "vertical alignment in cells",
+            page(
+                "<table style=\"height:120px\"><tr><td style=\"vertical-align:top\">t</td><td style=\"vertical-align:middle\">m</td><td style=\"vertical-align:bottom\">b</td><td>base<br>line</td><td valign=\"bottom\"><div>block</div><div>blocks</div></td></tr></table>",
+            ),
+        ),
+        (
+            "nested tables",
+            page(
+                "<table border=\"1\"><tr><td><table border=\"1\" style=\"width:100%\"><tr><td>inner a</td><td>inner b</td></tr></table></td><td>outer</td></tr><tr><td colspan=\"2\"><table style=\"border-collapse:collapse;table-layout:fixed;width:150px\"><tr><td style=\"border:1px solid\">x</td></tr></table></td></tr></table>",
+            ),
+        ),
+        (
+            "anonymous table boxes",
+            page(
+                "<div style=\"display:table\"><div style=\"display:table-cell\">loose cell</div><div style=\"display:table-cell\">and another</div></div><div style=\"display:table-row\"><div style=\"display:table-cell\">row without a table</div></div><div style=\"display:table-cell\">cell alone</div><span style=\"display:table-cell\">inline cell</span>",
+            ),
+        ),
+        (
+            "table display on blocks",
+            page(
+                "<div style=\"display:table;width:300px;border-spacing:4px\"><div style=\"display:table-caption\">cap</div><div style=\"display:table-header-group\"><div style=\"display:table-row\"><div style=\"display:table-cell\">h</div></div></div><div style=\"display:table-row-group\"><div style=\"display:table-row\"><div style=\"display:table-cell\">a</div><div style=\"display:table-cell\">b</div></div></div></div>",
+            ),
+        ),
+        (
+            // A media change builds the tree again without the anonymous boxes: the row group is then a cell.
+            "a row group inside a row",
+            page(
+                "<style>@media (min-width:600px){p{margin:1px}}</style><div style=\"display:table\"><div style=\"display:table-row\"><div style=\"display:table-cell\">a</div><div style=\"display:table-row-group\"><div style=\"display:table-cell\">inner</div><div style=\"display:table-row\"><div style=\"display:table-cell\">row</div></div></div></div><div style=\"display:table-row\"><div style=\"display:table-row-group\"><div style=\"display:table-cell\">first</div></div></div></div>",
+            ),
+        ),
+        (
+            "inline tables",
+            page(
+                "<p>before <span style=\"display:inline-table;border:1px solid\"><span style=\"display:table-cell\">x</span><span style=\"display:table-cell\">y</span></span> after <table style=\"display:inline-table\"><tr><td>z</td></tr></table> end</p>",
+            ),
+        ),
+        (
+            "tables in a flex box",
+            page(
+                "<div style=\"display:flex;width:300px\"><table style=\"flex:1\"><tr><td>a</td><td>b</td></tr></table><table><tr><td>c c c</td></tr></table></div><div style=\"display:flex;flex-direction:column\"><table style=\"align-self:center\"><tr><td>d</td></tr></table></div>",
+            ),
+        ),
+        (
+            "floated tables",
+            page(
+                "<table style=\"float:left;width:100px\"><tr><td>left</td></tr></table><table style=\"float:right\"><tr><td>right</td></tr></table><p>text beside the floated tables wraps around them</p>",
+            ),
+        ),
+        (
+            "centred and wide tables",
+            page(&format!(
+                "<table style=\"margin:0 auto;width:50%\"><tr><td>centred</td></tr></table><table style=\"margin-left:auto\"><tr><td>right</td></tr></table><table style=\"width:2000px\"><tr><td>wide</td><td>{long}</td></tr></table>"
+            )),
+        ),
+        (
+            "table width keywords",
+            page(
+                "<table style=\"width:min-content\"><tr><td>a b c d</td></tr></table><table style=\"width:max-content\"><tr><td>a b c d</td></tr></table><table style=\"width:fit-content\"><tr><td>a b c d</td></tr></table><table style=\"width:calc(100% - 50px)\"><tr><td>calc</td></tr></table>",
+            ),
+        ),
+        (
+            "padded and bordered cells and tables",
+            page(
+                "<table style=\"padding:10px;border:3px solid;box-sizing:border-box;width:250px\"><tr><td style=\"padding:8px 2px;border:2px solid\">a</td><td style=\"padding:5%\">b</td></tr></table><table style=\"border-collapse:collapse;padding:6px;border:4px solid\"><tr><td style=\"padding:3px;border:1px solid\">c</td></tr></table>",
+            ),
+        ),
+        (
+            "cells of long and unbreakable text",
+            page(&format!(
+                "<table style=\"width:150px\"><tr><td style=\"white-space:nowrap\">no wrap here at all please</td><td>{long}</td><td><img src=\"photo.png\"></td></tr></table>"
+            )),
+        ),
+        (
+            "html attributes",
+            page(
+                "<table width=\"80%\" height=\"100\" border=\"3\" cellspacing=\"5\" bgcolor=\"red\"><tr><td width=\"30\" height=\"40\" valign=\"middle\" align=\"center\">a</td><td width=\"0\">b</td></tr></table>",
+            ),
+        ),
+        (
+            "cells of block content",
+            page(
+                "<table><tr><td><div style=\"margin:10px\">block with margins</div><p>para</p></td><td><ul><li>one</li><li>two</li></ul></td><td><div style=\"float:right;width:20px\">f</div>text</td></tr></table>",
+            ),
+        ),
+        (
+            "right to left",
+            page("<table dir=\"rtl\" style=\"direction:rtl\"><tr><td>\u{5e9}\u{5dc}\u{5d5}\u{5dd}</td><td>b</td></tr></table>"),
+        ),
+        (
+            "a table in a narrow float and an inline block",
+            page(
+                "<div style=\"float:left;width:40px\"><table><tr><td>xxxxxxx</td><td>y</td></tr></table></div><span style=\"display:inline-block\"><table><tr><td>in an inline block</td></tr></table></span>",
+            ),
+        ),
+        ("col and colgroup", page("<table><colgroup><col style=\"width:100px\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>")),
+        (
+            "hover restyle of a cell",
+            page("<style>td:hover{width:200px;padding:9px}tr:hover td{height:60px}</style><table><tr><td>a</td><td>b</td></tr></table>"),
+        ),
+        (
+            "media change of a table",
+            page(
+                "<style>@media (min-width:600px){table{table-layout:fixed;width:500px;border-collapse:collapse}td{border:2px solid}}</style><table><tr><td>a</td><td>b</td></tr></table>",
+            ),
+        ),
+    ];
+    // Many columns, wide enough that the budget at init cuts some.
+    let mut wide = String::from("<table>");
+    for r in 0..3 {
+        wide += "<tr>";
+        for c in 0..40 {
+            wide += &format!("<td>{r}{c}</td>");
+        }
+        wide += "</tr>";
+    }
+    wide += "</table>";
+    docs.push(("forty columns", page(&wide)));
+    // Tables nested twelve deep: each level lays its cells out three times, so the budget runs out.
+    let mut deep = String::new();
+    for k in 0..12 {
+        deep += &format!("<table><tr><td>{k} </td><td>");
+    }
+    for _ in 0..12 {
+        deep += "</td></tr></table>";
+    }
+    docs.push(("tables nested twelve deep", page(&deep)));
+    docs
+}
+
 // ---- The comparison ----------------------------------------------------------------------------------------
 
 #[test]
@@ -1503,7 +2030,8 @@ fn the_corpus_lays_out_alike() {
         }
     }
     let tally = run.finish();
-    assert!(run_compared(&tally) > 600);
+    // Only grid (stage L11) is not compared.
+    assert!(run_compared(&tally) > 740);
 }
 
 /// The corpus again at narrower and wider viewports (flex lines wrap and stretch differently there): light at 150 and
@@ -1533,14 +2061,15 @@ fn the_corpus_lays_out_alike_at_more_widths() {
         }
     }
     let tally = run.finish();
-    assert!(run_compared(&tally) > 550);
+    // Only grid (stage L11) is not compared.
+    assert!(run_compared(&tally) > 740);
 }
 
 fn run_compared(tally: &LayoutTally) -> usize {
     tally.documents - tally.skipped.values().sum::<usize>()
 }
 
-/// Every tag but the table ones, under the master sheet and the UA layers.
+/// Every tag, the table ones too, under the master sheet and the UA layers.
 #[test]
 fn every_tag_lays_out_alike() {
     let mut run = Run::new("every tag");
@@ -1549,10 +2078,7 @@ fn every_tag_lays_out_alike() {
     let (dark, vars) = themed_master(true);
     let steps = layout_steps(375.0, 1200.0);
     for quirks in [false, true] {
-        let mut html = String::from_utf8(every_tag_document(quirks)).expect("UTF-8");
-        for tag in ["table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td"] {
-            html = html.replace(&format!("<{tag} "), "<div data-was-table ").replace(&format!("</{tag}>"), "</div>");
-        }
+        let html = String::from_utf8(every_tag_document(quirks)).expect("UTF-8");
         // A range input's thumb is absolutely positioned.
         assert!(html.contains("type=\"range\""));
         let html = html.into_bytes();
@@ -1828,7 +2354,93 @@ fn generated_positioned_documents_lay_out_alike() {
     assert!(run_compared(&tally) > 2000, "{} compared", run_compared(&tally));
 }
 
-/// The layout switches, each on both sides over generated documents and the written flex and positioned shapes.
+#[test]
+fn written_table_shapes_lay_out_alike() {
+    let mut run = Run::new("written table shapes");
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    for (what, html) in written_table_documents() {
+        for sheet in [&master, &light] {
+            for (width, other) in [(375.0, 200.0), (120.0, 800.0)] {
+                let mut steps = layout_steps(width, other);
+                steps.extend([
+                    Step::Hover(5),
+                    Step::Layout(width, None),
+                    Step::Dump,
+                    Step::Media(900.0, 700.0),
+                    Step::Layout(900.0, None),
+                    Step::Dump,
+                ]);
+                run.case(layout_record(375.0, 667.0, 2.0, sheet, b"", html.as_bytes(), &steps), what);
+            }
+        }
+    }
+    let tally = run.finish();
+    assert_eq!(run_compared(&tally), tally.documents);
+    for what in [
+        "tables with collapsed borders",
+        "tables with border spacing",
+        "cells leaving a collapsed side",
+        "fixed tables",
+        "inline tables",
+        "tables of one column",
+        "tables with no cell",
+        "captions on top",
+        "captions below",
+        "tables moved down by their captions",
+        "cells spanning columns",
+        "cells spanning rows",
+        "row groups taken as cells",
+        "columns of a % width",
+        "columns of a length width",
+        "columns wider than their maximum",
+        "columns narrower than their maximum",
+        "rows of a CSS height",
+        "rows of a % height",
+        "rows given extra height",
+        "cells of a CSS height",
+        "places no cell takes",
+        "layouts exhausted",
+    ] {
+        assert!(tally.counts.contains_key(what), "no {what}");
+    }
+}
+
+#[test]
+fn generated_table_documents_lay_out_alike() {
+    let mut run = Run::new("generated table documents");
+    let mut random = Lcg::new(0x1C_0001);
+    let master = master_css();
+    let (light, _) = themed_master(false);
+    let only: Option<usize> = std::env::var("LAYOUT_ONLY").ok().and_then(|v| v.parse().ok());
+    for k in 0..2000 {
+        let html = table_document(&mut random);
+        if only.is_some_and(|only| only != k) {
+            continue;
+        }
+        let width = [320.0, 375.0, 150.0, 600.0][k % 4];
+        let other = [700.0, 240.0, 500.0, 90.0][(k / 4) % 4];
+        let sheet = if k % 2 == 0 { &master } else { &light };
+        let mut steps = layout_steps(width, other);
+        steps.extend([
+            Step::Media(other, 640.0),
+            Step::Layout(other, None),
+            Step::Dump,
+            Step::Hover(k as u32),
+            Step::Layout(other, None),
+            Step::Dump,
+        ]);
+        run.case(
+            layout_record(width, 640.0, 2.0, sheet, b"", &html, &steps),
+            format!("generated table {k}: {}", String::from_utf8_lossy(&html)),
+        );
+    }
+    let tally = run.finish();
+    assert!(run_compared(&tally) > 1800, "{} compared", run_compared(&tally));
+}
+
+/// The layout switches, each on both sides over generated documents and the written flex, positioned and table
+/// shapes.
 #[test]
 fn the_layout_switches_lay_out_alike() {
     let master = master_css();
@@ -1860,6 +2472,21 @@ fn the_layout_switches_lay_out_alike() {
             let mut steps = layout_steps(375.0, 200.0);
             steps.extend([Step::Hover(2), Step::Layout(375.0, None), Step::Dump]);
             run.case(layout_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &steps), format!("{switch}: {what}"));
+        }
+        for (what, html) in written_table_documents() {
+            let mut steps = layout_steps(375.0, 200.0);
+            steps.extend([Step::Hover(5), Step::Layout(375.0, None), Step::Dump]);
+            run.case(layout_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &steps), format!("{switch}: {what}"));
+        }
+        let mut random = Lcg::new(0x1C_0002);
+        for k in 0..150 {
+            let html = table_document(&mut random);
+            let mut steps = layout_steps(320.0, 500.0);
+            steps.extend([Step::Hover(k as u32), Step::Layout(320.0, None), Step::Dump]);
+            run.case(
+                layout_record(320.0, 640.0, 2.0, &master, b"", &html, &steps),
+                format!("{switch} table {k}: {}", String::from_utf8_lossy(&html)),
+            );
         }
         run.finish();
     }
@@ -1993,4 +2620,36 @@ fn a_deep_flex_document_lays_out_on_a_small_stack() {
     let items = thread.expect("a thread").join().expect("the layout ran");
     eprintln!("a deep flex document: {items} items laid out");
     assert!(items > 200);
+}
+
+/// Tables nested 31 deep (126 levels of the DOM with their row groups, rows and cells, under the 128 the DOM keeps)
+/// lay out on the same stacks; the renderer's budget stops the layouts each level multiplies.
+#[test]
+fn a_deep_table_document_lays_out_on_a_small_stack() {
+    let stack = if cfg!(debug_assertions) { 1 << 20 } else { 512 << 10 };
+    let thread = std::thread::Builder::new().stack_size(stack).spawn(|| {
+        let mut html = String::from("<!DOCTYPE html><html><head></head><body>");
+        for k in 0..31 {
+            html += match k % 3 {
+                0 => "<table><tr><td>a ",
+                1 => "<table style=\"border-collapse:collapse;width:100%\"><caption>c</caption><tr><td colspan=\"2\">b ",
+                _ => "<table style=\"table-layout:fixed;width:300px\"><tr><td rowspan=\"2\">c ",
+            };
+        }
+        html += "deep";
+        for _ in 0..31 {
+            html += "</td><td>x</td></tr></table>";
+        }
+        html += "</body></html>";
+        let lh = Lh::new();
+        let mut tally = LayoutTally::default();
+        let input = layout_record(375.0, 667.0, 2.0, &master_css(), b"", html.as_bytes(), &[Step::Layout(375.0, None), Step::Dump]);
+        let (answer, unported) = layout_answer(&lh, Switches::default(), &input, &mut tally);
+        assert_eq!(answer.0, 1);
+        assert_eq!(unported, None);
+        (tally.items, tally.tables)
+    });
+    let (items, tables) = thread.expect("a thread").join().expect("the layout ran");
+    eprintln!("a deep table document: {items} items laid out, {tables} tables");
+    assert!(tables >= 31);
 }
