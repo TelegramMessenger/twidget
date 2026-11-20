@@ -1,0 +1,14 @@
+[package]
+name = "twidget_png"
+description = "TwidgetCore's PNG damage finder and image header sizes: what a browser shows of a broken PNG, and what a decoder would allocate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

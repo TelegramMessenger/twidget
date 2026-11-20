@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/animations", "crates/base64", "crates/canvas", "crates/compositor", "crates/css", "crates/cstd", "crates/filters", "crates/litehtml", "crates/paint", "crates/remote", "crates/shadow", "crates/wire"]
+members = ["crates/animations", "crates/base64", "crates/canvas", "crates/compositor", "crates/css", "crates/cstd", "crates/filters", "crates/litehtml", "crates/paint", "crates/png", "crates/remote", "crates/shadow", "crates/wire"]
 
 [workspace.package]
 version = "0.1.0"
