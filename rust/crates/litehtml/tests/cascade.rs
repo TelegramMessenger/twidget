@@ -29,8 +29,6 @@ struct Run {
     cases: usize,
     tally: CascadeTally,
     oracle: Option<Oracle>,
-    /// Calls the C++'s render tree made (stage L6's), allowed.
-    render_tree_calls: usize,
 }
 
 impl Run {
@@ -45,7 +43,6 @@ impl Run {
             cases: 0,
             tally: CascadeTally::default(),
             oracle: Oracle::find("lhdump"),
-            render_tree_calls: 0,
         }
     }
 
@@ -64,6 +61,7 @@ impl Run {
     }
 
     fn case(&mut self, input: Vec<u8>, what: impl Into<String>) {
+        self.tally.documents += 1;
         let rust = cascade_answer(&self.lh, self.switches, &input, &mut self.tally);
         self.bytes += input.len() + rust.1.len();
         self.cases += 1;
@@ -101,7 +99,7 @@ impl Run {
             let (rust_body, _) = split_answer(&rust.1);
             if cpp.0 != rust.0 || cpp_body != rust_body {
                 differences.push(explain(&lh, self.switches, case, &(cpp.0, cpp_body), &(rust.0, rust_body), what));
-            } else if let Some(calls) = compare_calls(case, &cpp.1, &rust.1, &mut self.render_tree_calls) {
+            } else if let Some(calls) = compare_calls(&cpp.1, &rust.1) {
                 differences.push(format!("{calls}\n  in {}", what.chars().take(4000).collect::<String>()));
             }
             if differences.len() >= 3 {
@@ -114,13 +112,7 @@ impl Run {
     fn finish(mut self) -> CascadeTally {
         self.flush();
         let compared = if self.oracle.is_some() { "alike with lhdump" } else { "cascaded (no oracle)" };
-        eprintln!(
-            "{}: {} cases {compared} ({} calls of the C++'s render tree aside); {}",
-            self.name,
-            self.cases,
-            self.render_tree_calls,
-            self.tally.report()
-        );
+        eprintln!("{}: {} cases {compared}; {}", self.name, self.cases, self.tally.report());
         self.tally
     }
 }
@@ -155,185 +147,6 @@ fn explain(lh: &Lh, switches: Switches, case: &[u8], cpp: &(u8, Vec<u8>), rust: 
 }
 
 // ---- Inputs ------------------------------------------------------------------------------------------------
-
-/// The renderer's master sheet for a theme: litehtml's, the renderer's UA rules, the profile's layer with the
-/// theme's values in place of its `var()`s and without `:where()`; and the theme's variables.
-fn themed_master(dark: bool) -> (Vec<u8>, twidget_css::Variables) {
-    let mut theme = twidget_json::Json::object();
-    theme.set("colorScheme", if dark { "dark" } else { "light" });
-    let vars = twidget_css::theme_variables(&theme);
-    let layer = twidget_css::unwrap_where(&twidget_css::substitute_variables(&ua_stylesheet(), &vars));
-    ([master_css(), ua_extra(), layer].concat(), vars)
-}
-
-/// A serialised document as the renderer gives it to litehtml in a theme: its sheets' colour schemes and
-/// `light-dark()` resolved, the theme's variables on the root.
-fn themed_html(html: &[u8], dark: bool, vars: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(html.len() + 2048);
-    let mut i = 0;
-    let mut root_done = false;
-    while i < html.len() {
-        if !root_done && html[i..].starts_with(b"<html") {
-            out.extend_from_slice(b"<html style=\"");
-            for (name, value) in vars {
-                out.extend_from_slice(name);
-                out.push(b':');
-                out.extend(value.iter().map(|&c| if c == b'"' { b'\'' } else { c }));
-                out.push(b';');
-            }
-            out.push(b'"');
-            i += 5;
-            root_done = true;
-            continue;
-        }
-        if html[i..].starts_with(b"<style")
-            && let Some(open) = html[i..].iter().position(|c| *c == b'>')
-            && let Some(close) = html[i + open..].windows(8).position(|w| w == b"</style>")
-        {
-            let start = i + open + 1;
-            let end = i + open + close;
-            out.extend_from_slice(&html[i..start]);
-            let css = twidget_css::resolve_light_dark(&twidget_css::rewrite_color_scheme(&html[start..end], dark), dark, 0);
-            out.extend_from_slice(&css);
-            i = end;
-            continue;
-        }
-        out.push(html[i]);
-        i += 1;
-    }
-    out
-}
-
-/// Every tag the fork makes a class of, and the common others, with the attributes they read.
-fn every_tag_document(quirks: bool) -> Vec<u8> {
-    let mut out = String::new();
-    if !quirks {
-        out += "<!DOCTYPE html>";
-    }
-    out += "<html><head><title>t</title><base href=\"http://x/\"><style>p{margin:1em}</style></head><body>";
-    let tags = [
-        "div",
-        "p",
-        "span",
-        "a href=\"#\"",
-        "b",
-        "strong",
-        "i",
-        "em",
-        "u",
-        "s",
-        "small",
-        "big",
-        "sub",
-        "sup",
-        "mark",
-        "code",
-        "kbd",
-        "samp",
-        "pre",
-        "blockquote",
-        "q",
-        "cite",
-        "dfn",
-        "var",
-        "abbr title=\"x\"",
-        "address",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "ul",
-        "ol",
-        "li",
-        "dl",
-        "dt",
-        "dd",
-        "menu",
-        "table border=\"1\" cellpadding=\"3\" cellspacing=\"2\" bgcolor=\"#eee\" width=\"50%\"",
-        "caption",
-        "thead",
-        "tbody",
-        "tfoot",
-        "tr",
-        "th",
-        "td bgcolor=\"red\" width=\"10\" height=\"3\" valign=\"top\" align=\"center\" nowrap",
-        "form",
-        "fieldset",
-        "legend",
-        "label",
-        "button",
-        "select",
-        "option",
-        "optgroup label=\"g\"",
-        "textarea placeholder=\"hint\"",
-        "meter value=\"0.3\"",
-        "progress value=\"5\" max=\"10\"",
-        "details open",
-        "summary",
-        "dialog",
-        "figure",
-        "figcaption",
-        "article",
-        "aside",
-        "footer",
-        "header",
-        "main",
-        "nav",
-        "section",
-        "center",
-        "font color=\"red\" size=\"5\" face=\"serif\"",
-        "hr",
-        "br",
-        "img src=\"a.png\" width=\"20\" height=\"10\"",
-        "canvas width=\"30\" height=\"40\"",
-        "svg width=\"20\" height=\"10\" fill=\"red\"",
-        "x-custom",
-        "ruby",
-        "rt",
-        "bdi",
-        "bdo dir=\"rtl\"",
-        "wbr",
-        "noscript",
-        "time",
-        "output",
-        "data value=\"1\"",
-        "del",
-        "ins",
-        "s",
-        "strike",
-        "tt",
-        "nobr",
-        "marquee",
-        "iframe",
-        "object",
-        "embed",
-        "video",
-        "audio",
-        "picture",
-        "map",
-        "area",
-        "template",
-        "slot",
-    ];
-    for (k, tag) in tags.iter().enumerate() {
-        let name = tag.split(' ').next().unwrap_or(tag);
-        out += &format!("<{tag} class=\"c{k}\">t{k} <i>x</i></{name}>");
-    }
-    for ty in [
-        "text", "password", "number", "date", "checkbox", "radio", "range", "color", "button", "submit", "reset", "hidden", "email",
-        "search",
-    ] {
-        out += &format!("<input type=\"{ty}\" value=\"v\" placeholder=\"p\" checked disabled>");
-        out += &format!("<input type=\"{ty}\">");
-    }
-    out += "<select disabled><option>one</option><option selected>two</option></select>";
-    out += "<input type=\"range\" style=\"appearance:none\"><button style=\"appearance:none;background:red\">b</button>";
-    out += "<div dir=\"auto\">\u{5d0}\u{5d1}</div><div dir=\"auto\">abc</div><p dir=\"rtl\">r</p><div hidden>h</div>";
-    out += "</body></html>";
-    out.into_bytes()
-}
 
 fn pick<'a>(random: &mut Lcg, from: &[&'a str]) -> &'a str {
     from[random.below(from.len())]

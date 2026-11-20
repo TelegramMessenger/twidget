@@ -115,3 +115,24 @@ pub struct Size {
     pub width: Px,
     pub height: Px,
 }
+
+/// `margins`: four sides in pixels (a box's margins, padding or border widths).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Margins {
+    pub left: Px,
+    pub right: Px,
+    pub top: Px,
+    pub bottom: Px,
+}
+
+impl Margins {
+    /// `width()`.
+    pub fn width(&self) -> Px {
+        self.left + self.right
+    }
+
+    /// `height()`.
+    pub fn height(&self) -> Px {
+        self.top + self.bottom
+    }
+}

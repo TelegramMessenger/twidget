@@ -204,10 +204,14 @@ pub struct Element {
     /// A form control's `m_look`, and `el_select`'s `m_arrow`.
     pub look: FormLook,
     pub arrow: bool,
+    /// `m_renders`: the element's render items, weak references in the order `add_render` added them.
+    pub renders: Vec<crate::render_item::RenderId>,
+    /// An anonymous element's owners: its render items, and the anonymous elements whose parent it is.
+    pub box_holds: u32,
 }
 
 impl Element {
-    fn new(kind: ElementKind) -> Element {
+    pub(crate) fn new(kind: ElementKind) -> Element {
         Element {
             kind,
             parent: None,
@@ -236,6 +240,8 @@ impl Element {
             text_state: TextState::default(),
             look: FormLook::default(),
             arrow: false,
+            renders: Vec::new(),
+            box_holds: 0,
         }
     }
 }

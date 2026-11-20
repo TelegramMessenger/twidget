@@ -6,13 +6,10 @@
 //!   bit 0 the pseudo-classes changed, bit 1 `find_styles_changes` restyled; `r`: 1), and the names the case added to
 //!   the process's table (u32 count, each), all as one string; then the
 //!   container's calls by phase (the finalization, then each step): u32 phases, each u32 count and its calls (u8
-//!   kind `F` font, `W` width, `I` image, `T` transform, its texts and a u64). The render tree, stage L6's, adds
-//!   calls at the end of the finalization and of a media change that restyles: the anonymous table boxes it makes
-//!   compute their style (an inherited `list-style-image` loaded again); [`compare_calls`] allows those. It also
-//!   writes `list_index` into the attributes of the list items it numbers and a table column's width into its cells'
-//!   computed width, which lhdump takes out again after the finalization and a media change, so that the cascade is
-//!   compared without what stage L6 adds; and it interns `table_cell`, which both sides intern before the first
-//!   case looks.
+//!   kind `F` font, `W` width, `I` image, `T` transform, `L` a limit met, its texts and a u64). The finalization and
+//!   a media change that restyles build the render tree (stage L6) too, whose anonymous boxes compute their style,
+//!   whose list items get `list_index` and whose table cells their column's width.
+//! - `o` `r`, then as `l`: the same, but each dump step dumps the render tree (see `render`).
 //!
 //! A dump: u32 elements in tree order from the root, each u8 class, i32 parent, tag, the computed style (`css_out`,
 //! the share id as the first element in the walk that has it, since the C++'s render tree takes share ids too), for
@@ -51,7 +48,7 @@ pub fn take_marks() -> Vec<Mark> {
     MARKS.with(|m| m.borrow_mut().take().unwrap_or_default())
 }
 
-fn mark(o: &Out, what: &'static str, element: i32) {
+pub fn mark(o: &Out, what: &'static str, element: i32) {
     MARKS.with(|m| {
         if let Some(marks) = m.borrow_mut().as_mut() {
             marks.push((o.s.len(), what, element));
@@ -119,6 +116,9 @@ impl DocumentContainer for CascadeContainer {
     }
     fn trusted_styles(&self, trusted: bool) {
         self.trusted.set(trusted);
+    }
+    fn sanitizer_limit(&self, what: &[u8]) {
+        self.calls.borrow_mut().push((b'L', what.to_vec(), Vec::new(), 0));
     }
     fn create_font(&self, d: &FontDescription) -> (u64, FontMetrics) {
         self.calls.borrow_mut().push((b'F', d.hash(), Vec::new(), 0));
@@ -642,11 +642,17 @@ impl CascadeTally {
 
 /// What lhdump answers to an `l` record, with the process's name table and declaration cache.
 pub fn cascade_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut CascadeTally) -> (u8, Vec<u8>) {
+    record_answer(lh, switches, input, &mut |o: &mut Out, names: &Names, doc: &Document| {
+        cascade_out(o, names, doc);
+        tally.note(names, doc);
+    })
+}
+
+/// What lhdump answers to an `l` record's input, each dump step written by `dump`.
+pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn FnMut(&mut Out, &Names, &Document)) -> (u8, Vec<u8>) {
     let names = &lh.names;
     let mut i = In::new(input);
     let (width, height, dpr) = (i.f32(), i.f32(), i.f32());
-    // lhdump's: the tag of the C++'s anonymous table cells (stage L6's) is in the table before any case looks.
-    names.id(b"table_cell");
     let names_before = names.usage().names;
     let container = CascadeContainer::new(width, height, dpr);
     let (master, user, html) = (i.str(), i.str(), i.str());
@@ -654,7 +660,6 @@ pub fn cascade_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut Cas
     let (mut doc, root) = Document::build(&html, &cx.env());
     doc.finalize_from_external_root(&cx, root, &master, &user);
     doc.build_template();
-    tally.documents += 1;
     let mut o = Out::default();
     o.u8(doc.mode as u8);
     let mut phases = vec![container.calls.borrow().len()];
@@ -667,10 +672,7 @@ pub fn cascade_answer(lh: &Lh, switches: Switches, input: &[u8], tally: &mut Cas
         s += 1;
         let op = i.u8();
         match op {
-            b'd' => {
-                cascade_out(&mut o, names, &doc);
-                tally.note(names, &doc);
-            }
+            b'd' => dump(&mut o, names, &doc),
             b'm' => {
                 container.width.set(i.f32());
                 container.height.set(i.f32());
@@ -745,37 +747,13 @@ pub fn split_answer(answer: &[u8]) -> (Vec<u8>, Vec<Vec<Call>>) {
     (body, phases)
 }
 
-/// The step operations of an `l` record.
-pub fn record_ops(case: &[u8]) -> Vec<u8> {
-    let mut i = In::new(case);
-    let _ = (i.f32(), i.f32(), i.f32(), i.str(), i.str(), i.str());
-    let mut ops = Vec::new();
-    for _ in 0..i.u32() {
-        let op = i.u8();
-        match op {
-            b'm' => {
-                let _ = (i.f32(), i.f32());
-            }
-            b'h' | b'a' | b'x' => {
-                let _ = i.u32();
-            }
-            _ => {}
-        }
-        ops.push(op);
-    }
-    ops
-}
-
-/// The container's calls of the two sides alike, but for what the C++'s render tree adds at the end of the
-/// finalization and of a media change (fonts and images its anonymous boxes ask for): `None` when alike, else
-/// where they part. `extra` counts what was allowed.
-pub fn compare_calls(case: &[u8], cpp: &[u8], rust: &[u8], extra: &mut usize) -> Option<String> {
+/// The container's calls of the two sides alike: `None` when they are, else where they part.
+pub fn compare_calls(cpp: &[u8], rust: &[u8]) -> Option<String> {
     let (_, c) = split_answer(cpp);
     let (_, r) = split_answer(rust);
     if c.len() != r.len() {
         return Some(format!("{} phases of calls in the C++, {} in the port", c.len(), r.len()));
     }
-    let ops = record_ops(case);
     let shown = |calls: &[Call]| -> Vec<String> {
         calls
             .iter()
@@ -784,10 +762,7 @@ pub fn compare_calls(case: &[u8], cpp: &[u8], rust: &[u8], extra: &mut usize) ->
             .collect()
     };
     for (p, (cp, rp)) in c.iter().zip(&r).enumerate() {
-        let tree = p == 0 || ops.get(p - 1) == Some(&b'm');
-        let same = cp.len() >= rp.len() && cp[..rp.len()] == rp[..];
-        let allowed = same && (cp.len() == rp.len() || (tree && cp[rp.len()..].iter().all(|c| c.0 == b'I' || c.0 == b'F')));
-        if !allowed {
+        if cp != rp {
             let at = cp.iter().zip(rp).position(|(a, b)| a != b).unwrap_or(cp.len().min(rp.len()));
             return Some(format!(
                 "calls of phase {p} part at {at} ({} in the C++, {} in the port): C++ {:?} / Rust {:?}",
@@ -797,7 +772,187 @@ pub fn compare_calls(case: &[u8], cpp: &[u8], rust: &[u8], extra: &mut usize) ->
                 shown(&rp[at.min(rp.len())..])
             ));
         }
-        *extra += cp.len() - rp.len();
     }
     None
+}
+
+// ---- Inputs the cascade's and the render tree's comparisons share ------------------------------------------
+
+/// The renderer's master sheet for a theme: litehtml's, the renderer's UA rules, the profile's layer with the
+/// theme's values in place of its `var()`s and without `:where()`; and the theme's variables.
+pub fn themed_master(dark: bool) -> (Vec<u8>, twidget_css::Variables) {
+    let mut theme = twidget_json::Json::object();
+    theme.set("colorScheme", if dark { "dark" } else { "light" });
+    let vars = twidget_css::theme_variables(&theme);
+    let layer = twidget_css::unwrap_where(&twidget_css::substitute_variables(&ua_stylesheet(), &vars));
+    ([master_css(), ua_extra(), layer].concat(), vars)
+}
+
+/// A serialised document as the renderer gives it to litehtml in a theme: its sheets' colour schemes and
+/// `light-dark()` resolved, the theme's variables on the root.
+pub fn themed_html(html: &[u8], dark: bool, vars: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(html.len() + 2048);
+    let mut i = 0;
+    let mut root_done = false;
+    while i < html.len() {
+        if !root_done && html[i..].starts_with(b"<html") {
+            out.extend_from_slice(b"<html style=\"");
+            for (name, value) in vars {
+                out.extend_from_slice(name);
+                out.push(b':');
+                out.extend(value.iter().map(|&c| if c == b'"' { b'\'' } else { c }));
+                out.push(b';');
+            }
+            out.push(b'"');
+            i += 5;
+            root_done = true;
+            continue;
+        }
+        if html[i..].starts_with(b"<style")
+            && let Some(open) = html[i..].iter().position(|c| *c == b'>')
+            && let Some(close) = html[i + open..].windows(8).position(|w| w == b"</style>")
+        {
+            let start = i + open + 1;
+            let end = i + open + close;
+            out.extend_from_slice(&html[i..start]);
+            let css = twidget_css::resolve_light_dark(&twidget_css::rewrite_color_scheme(&html[start..end], dark), dark, 0);
+            out.extend_from_slice(&css);
+            i = end;
+            continue;
+        }
+        out.push(html[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Every tag the fork makes a class of, and the common others, with the attributes they read.
+pub fn every_tag_document(quirks: bool) -> Vec<u8> {
+    let mut out = String::new();
+    if !quirks {
+        out += "<!DOCTYPE html>";
+    }
+    out += "<html><head><title>t</title><base href=\"http://x/\"><style>p{margin:1em}</style></head><body>";
+    let tags = [
+        "div",
+        "p",
+        "span",
+        "a href=\"#\"",
+        "b",
+        "strong",
+        "i",
+        "em",
+        "u",
+        "s",
+        "small",
+        "big",
+        "sub",
+        "sup",
+        "mark",
+        "code",
+        "kbd",
+        "samp",
+        "pre",
+        "blockquote",
+        "q",
+        "cite",
+        "dfn",
+        "var",
+        "abbr title=\"x\"",
+        "address",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "li",
+        "dl",
+        "dt",
+        "dd",
+        "menu",
+        "table border=\"1\" cellpadding=\"3\" cellspacing=\"2\" bgcolor=\"#eee\" width=\"50%\"",
+        "caption",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "th",
+        "td bgcolor=\"red\" width=\"10\" height=\"3\" valign=\"top\" align=\"center\" nowrap",
+        "form",
+        "fieldset",
+        "legend",
+        "label",
+        "button",
+        "select",
+        "option",
+        "optgroup label=\"g\"",
+        "textarea placeholder=\"hint\"",
+        "meter value=\"0.3\"",
+        "progress value=\"5\" max=\"10\"",
+        "details open",
+        "summary",
+        "dialog",
+        "figure",
+        "figcaption",
+        "article",
+        "aside",
+        "footer",
+        "header",
+        "main",
+        "nav",
+        "section",
+        "center",
+        "font color=\"red\" size=\"5\" face=\"serif\"",
+        "hr",
+        "br",
+        "img src=\"a.png\" width=\"20\" height=\"10\"",
+        "canvas width=\"30\" height=\"40\"",
+        "svg width=\"20\" height=\"10\" fill=\"red\"",
+        "x-custom",
+        "ruby",
+        "rt",
+        "bdi",
+        "bdo dir=\"rtl\"",
+        "wbr",
+        "noscript",
+        "time",
+        "output",
+        "data value=\"1\"",
+        "del",
+        "ins",
+        "s",
+        "strike",
+        "tt",
+        "nobr",
+        "marquee",
+        "iframe",
+        "object",
+        "embed",
+        "video",
+        "audio",
+        "picture",
+        "map",
+        "area",
+        "template",
+        "slot",
+    ];
+    for (k, tag) in tags.iter().enumerate() {
+        let name = tag.split(' ').next().unwrap_or(tag);
+        out += &format!("<{tag} class=\"c{k}\">t{k} <i>x</i></{name}>");
+    }
+    for ty in [
+        "text", "password", "number", "date", "checkbox", "radio", "range", "color", "button", "submit", "reset", "hidden", "email",
+        "search",
+    ] {
+        out += &format!("<input type=\"{ty}\" value=\"v\" placeholder=\"p\" checked disabled>");
+        out += &format!("<input type=\"{ty}\">");
+    }
+    out += "<select disabled><option>one</option><option selected>two</option></select>";
+    out += "<input type=\"range\" style=\"appearance:none\"><button style=\"appearance:none;background:red\">b</button>";
+    out += "<div dir=\"auto\">\u{5d0}\u{5d1}</div><div dir=\"auto\">abc</div><p dir=\"rtl\">r</p><div hidden>h</div>";
+    out += "</body></html>";
+    out.into_bytes()
 }

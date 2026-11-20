@@ -621,16 +621,12 @@ fn cascade(names: &Names, cache: &DeclarationCache, master: &[u8], html: &[u8]) 
     (doc, nodes)
 }
 
-/// What layout gave the C++'s element, taken into the cascade's: the boxes and placement, a table cell's width
-/// (its column's, set by the table's grid) and an image's line height (its height); how many fields were taken.
+/// What layout gave the C++'s element, taken into the cascade's: the boxes and placement and an image's line height
+/// (its height); how many fields were taken. (A table cell's width, its column's, the port's render tree gives.)
 fn with_layout(ours: &mut Element, theirs: &Element, replaced: bool) -> usize {
     ours.layout = theirs.layout;
     ours.placement = theirs.placement;
     let mut taken = 0;
-    if ours.display == StyleDisplay::display_table_cell.index() && ours.width != theirs.width {
-        ours.width = theirs.width;
-        taken += 1;
-    }
     if replaced && ours.line_height != theirs.line_height {
         ours.line_height = theirs.line_height;
         taken += 1;

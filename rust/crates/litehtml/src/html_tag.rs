@@ -1101,6 +1101,27 @@ impl Document {
         None
     }
 
+    /// `html_tag(parent, style)`, the constructor of the render tree's anonymous boxes: an `html_tag` with no tag and
+    /// no attributes, the style text added (no container, no base url), anonymous, its parent `parent` (which does
+    /// not list it among its children), and its style computed. It takes a slot an earlier one left when there is one.
+    #[inline(never)]
+    pub fn new_anonymous_tag(&mut self, cx: &StyleCx, parent: ElementId, style: &[u8]) -> ElementId {
+        let id = match self.free_elements.pop() {
+            Some(id) => id,
+            None => self.new_element(ElementKind::html_tag),
+        };
+        let mut st = Style::default();
+        st.add_text(cx.names, cx.cache, style, b"", None);
+        self.html_tag_add_style(cx, id, &st);
+        self.el_mut(id).anonymous_style = true;
+        self.el_mut(id).parent = Some(parent);
+        if self.el(parent).anonymous_style {
+            self.el_mut(parent).box_holds += 1;
+        }
+        self.compute_styles(cx, id, true);
+        id
+    }
+
     /// `add_style(style)`, as the element's class has it: a `::before` or `::after` makes its content too.
     pub fn add_style(&mut self, cx: &StyleCx, id: ElementId, style: &Style) {
         match self.kind(id) {

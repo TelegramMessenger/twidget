@@ -14,6 +14,15 @@
 #include "lhdump_gumbo.h"
 #include "master_css.h"
 #include "num_cvt.h"
+#include "render_block.h"
+#include "render_block_context.h"
+#include "render_flex.h"
+#include "render_grid.h"
+#include "render_image.h"
+#include "render_inline.h"
+#include "render_inline_context.h"
+#include "render_item.h"
+#include "render_table.h"
 #include "string_id.h"
 #include "style.h"
 #include "stylesheet.h"
@@ -107,6 +116,14 @@ LHDUMP_ROB_L(DocMediaLists, document::m_media_lists)
 LHDUMP_ROB_L(DocIdsSelectable, document::m_ids_selectable)
 LHDUMP_ROB_L(DocGeneratedBoxes, document::m_generated_boxes)
 LHDUMP_ROB_L(DocGeneratedBytes, document::m_generated_bytes)
+LHDUMP_ROB_L(DocTabular, document::m_tabular_elements)
+LHDUMP_ROB_L(DocTableCells, document::m_table_cells)
+LHDUMP_ROB_L(DocTableLimited, document::m_table_limited)
+LHDUMP_ROB_L(DocRenderSerial, document::m_render_tree_serial)
+LHDUMP_ROB_L(ElRenders, element::m_renders)
+LHDUMP_ROB_L(TableGridOf, render_item_table::m_grid)
+LHDUMP_ROB_L(TableSpacingX, render_item_table::m_border_spacing_x)
+LHDUMP_ROB_L(TableSpacingY, render_item_table::m_border_spacing_y)
 #undef LHDUMP_ROB_L
 } // namespace lhdump_dom
 
@@ -702,6 +719,7 @@ public:
         }
     }
     void trusted_styles(bool t) override { trusted = t; }
+    void sanitizer_limit(const char* what) override { calls.push_back({'L', what ? what : "", {}, 0}); }
     bool sanitize_declaration(const std::string& name, const css_token_vector& value) override {
         if (trusted || value.size() != 1 || (name != "position" && name != "display")) return true;
         const std::string keyword = value[0].ident();
@@ -935,16 +953,6 @@ void cascade_walk(const element::ptr& el, int32_t parent, std::vector<std::pair<
     for (const auto& child : el->children()) cascade_walk(child, index, out);
 }
 
-// What the render tree (stage L6) writes into the elements, taken out again so that the cascade is compared without it: list_index in the attributes of the list items it numbers (an attribute but class and data-* keeps an element from sharing a style), and a table column's width in its cells' computed width (compute leaves the width the cell width too).
-void undo_render_tree(document& doc, const std::set<const element*>& had) {
-    std::vector<std::pair<element::ptr, int32_t>> nodes;
-    if (doc.root()) cascade_walk(doc.root(), -1, nodes);
-    for (const auto& [el, parent] : nodes) {
-        if (auto* tag = dynamic_cast<html_tag*>(el.get()); tag && !had.count(tag)) lhdump_dom::field<lhdump_dom::TagAttrs>(*tag).erase("list_index");
-        el->css_w().set_width(el->css().get_cell_width());
-    }
-}
-
 // The document after a step: every element of the tree from the root (its class, parent, tag, computed style, a tag's matched selectors and styles and counters, and its class's computed state), then the document's fonts, sharing, media lists and generated content.
 void write_cascade(Out& o, document& doc) {
     using lhdump_dom::field;
@@ -1028,10 +1036,172 @@ void write_cascade(Out& o, document& doc) {
     o.u8(doc.generated_limited() ? 1 : 0);
 }
 
-// f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump, 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
-void cascade(In& in, Out& o) {
-    // The render tree's anonymous table cells take the tag table_cell (stage L6's): it is in the table before any case looks.
-    _id("table_cell");
+
+// ---- Stage L6: the render tree ('o' with 'r') ----
+
+// The render item classes, as the port numbers them.
+int render_kind(const render_item& ri) {
+    const std::type_info& t = typeid(ri);
+    if (t == typeid(render_item_block)) return 1;
+    if (t == typeid(render_item_block_context)) return 2;
+    if (t == typeid(render_item_inline_context)) return 3;
+    if (t == typeid(render_item_inline)) return 4;
+    if (t == typeid(render_text)) return 5;
+    if (t == typeid(render_item_image)) return 6;
+    if (t == typeid(render_item_table)) return 7;
+    if (t == typeid(render_item_table_part)) return 8;
+    if (t == typeid(render_item_table_row)) return 9;
+    if (t == typeid(render_item_flex)) return 10;
+    if (t == typeid(render_item_grid)) return 11;
+    if (t == typeid(render_item)) return 0;
+    return 255;
+}
+
+// The items the document keeps, numbered: the tree from the root in preorder, then each tabular item the tree does not reach with the items under it; the DOM's elements by their walk, the anonymous ones the tree made by first use.
+struct TreeIndex {
+    std::vector<render_item*> items;
+    std::map<const render_item*, int32_t> item_index;
+    std::map<const element*, int32_t> dom;
+    std::vector<element*> anon;
+    std::map<const element*, int32_t> anon_index;
+
+    void visit(render_item* ri) {
+        std::vector<render_item*> pending{ri};
+        while (!pending.empty()) {
+            render_item* cur = pending.back();
+            pending.pop_back();
+            if (item_index.count(cur)) continue;
+            item_index[cur] = int32_t(items.size());
+            items.push_back(cur);
+            const auto& kids = cur->children();
+            for (auto it = kids.rbegin(); it != kids.rend(); ++it) pending.push_back(it->get());
+        }
+    }
+    int32_t of(const render_item* ri) const {
+        if (!ri) return -1;
+        auto it = item_index.find(ri);
+        return it == item_index.end() ? -3 : it->second;
+    }
+    int32_t of_el(element* el) {
+        if (!el) return -1;
+        if (auto it = dom.find(el); it != dom.end()) return it->second;
+        if (auto it = anon_index.find(el); it != anon_index.end()) return it->second;
+        const int32_t k = -2 - int32_t(anon.size());
+        anon_index[el] = k;
+        anon.push_back(el);
+        return k;
+    }
+};
+
+void write_renders(Out& o, TreeIndex& t, element& el) {
+    const auto& renders = lhdump_dom::field<lhdump_dom::ElRenders>(el);
+    o.u32(uint32_t(renders.size()));
+    for (const auto& weak : renders) o.i32(t.of(weak.lock().get()));
+    o.i32(t.of(el.get_render_item().get()));
+}
+
+void write_grid(Out& o, TreeIndex& t, render_item_table& table) {
+    const auto& grid = lhdump_dom::field<lhdump_dom::TableGridOf>(table);
+    o.f32(lhdump_dom::field<lhdump_dom::TableSpacingX>(table).value());
+    o.f32(lhdump_dom::field<lhdump_dom::TableSpacingY>(table).value());
+    o.u8(grid ? 1 : 0);
+    if (!grid) return;
+    o.i32(grid->rows_count());
+    o.i32(grid->cols_count());
+    for (int r = 0; r < grid->rows_count(); r++) {
+        const table_row& row = grid->row(r);
+        o.i32(t.of(row.el_row.get()));
+        for (pixel_t v : {row.height, row.border_top, row.border_bottom, row.top, row.bottom, row.min_height}) o.f32(v.value());
+        write_len(o, row.css_height);
+    }
+    for (int r = 0; r < grid->rows_count(); r++) {
+        for (int c = 0; c < grid->cols_count(); c++) {
+            const table_cell* cell = grid->cell(c, r);
+            o.u8(cell ? 1 : 0);
+            if (!cell) continue;
+            o.i32(t.of(cell->el.get()));
+            o.i32(cell->colspan);
+            o.i32(cell->rowspan);
+            for (pixel_t v : {cell->min_width, cell->min_height, cell->max_width, cell->max_height, cell->width, cell->height}) o.f32(v.value());
+            for (pixel_t v : {cell->borders.left, cell->borders.right, cell->borders.top, cell->borders.bottom}) o.f32(v.value());
+        }
+    }
+    for (int c = 0; c < grid->cols_count(); c++) {
+        const table_column& col = grid->column(c);
+        for (pixel_t v : {col.min_width, col.max_width, col.width, col.border_left, col.border_right, col.left, col.right}) o.f32(v.value());
+        write_len(o, col.css_width);
+    }
+    o.u32(uint32_t(grid->captions().size()));
+    for (const auto& cap : grid->captions()) o.i32(t.of(cap.get()));
+    o.f32(grid->top_captions_height().value());
+    o.f32(grid->bottom_captions_height().value());
+}
+
+// The render tree after a step: every item the document keeps (class, element, parent as its weak pointer has it, children, the constructor's margins, padding and borders, skip, a table's spacing and grid), the root and the tabular list, the table cells taken, then each element of the DOM (its list_index, computed width and render items) and each anonymous element the tree made (its class, parent, tag, computed style, styles, counters and render items).
+void write_render_tree(Out& o, document& doc) {
+    using lhdump_dom::field;
+    TreeIndex t;
+    std::vector<std::pair<element::ptr, int32_t>> nodes;
+    if (doc.root()) cascade_walk(doc.root(), -1, nodes);
+    for (size_t k = 0; k < nodes.size(); k++) t.dom[nodes[k].first.get()] = int32_t(k);
+    if (doc.root_render()) t.visit(doc.root_render().get());
+    const auto& tabular = field<lhdump_dom::DocTabular>(doc);
+    for (const auto& item : tabular) t.visit(item.get());
+    o.u32(uint32_t(t.items.size()));
+    for (render_item* ri : t.items) {
+        o.u8(uint8_t(render_kind(*ri)));
+        o.i32(t.of_el(ri->src_el().get()));
+        o.i32(t.of(ri->parent().get()));
+        o.u32(uint32_t(ri->children().size()));
+        for (const auto& child : ri->children()) o.i32(t.of(child.get()));
+        for (const margins* m : {&ri->get_margins(), &ri->get_paddings(), &ri->get_borders()})
+            for (pixel_t v : {m->left, m->right, m->top, m->bottom}) o.f32(v.value());
+        o.u8(ri->skip() ? 1 : 0);
+        if (auto* table = dynamic_cast<render_item_table*>(ri)) write_grid(o, t, *table);
+    }
+    o.i32(t.of(doc.root_render().get()));
+    o.u32(uint32_t(tabular.size()));
+    for (const auto& item : tabular) o.i32(t.of(item.get()));
+    o.i32(field<lhdump_dom::DocTableCells>(doc));
+    o.u8(field<lhdump_dom::DocTableLimited>(doc) ? 1 : 0);
+    o.u64(field<lhdump_dom::DocRenderSerial>(doc));
+    o.u32(uint32_t(nodes.size()));
+    for (const auto& [el, parent] : nodes) {
+        const char* index = el->get_attr("list_index");
+        o.u8(index ? 1 : 0);
+        if (index) o.str(index);
+        write_len(o, el->css().get_width());
+        write_renders(o, t, *el);
+    }
+    for (size_t k = 0; k < t.anon.size(); k++) {
+        element* el = t.anon[k];
+        o.u8(1);
+        o.u8(uint8_t(lhdump_dom::kind_of(*el)));
+        o.i32(t.of_el(el->parent().get()));
+        o.str(_s(el->tag()));
+        write_css(o, el->css(), el->css().get_shared_id());
+        if (auto* tag = dynamic_cast<html_tag*>(el)) {
+            o.u32(uint32_t(field<lhdump_dom::ElUsedStyles>(static_cast<element&>(*tag)).size()));
+            write_style_map(o, field<lhdump_dom::TagStyle>(*tag));
+            o.u8(field<lhdump_dom::TagHasStyleBase>(*tag) ? 1 : 0);
+            write_style_map(o, field<lhdump_dom::TagStyleBase>(*tag));
+            o.i32(field<lhdump_dom::TagCounterChanges>(*tag));
+            o.u8(field<lhdump_dom::TagAnonymous>(*tag) ? 1 : 0);
+            o.u32(uint32_t(field<lhdump_dom::TagAttrs>(*tag).size()));
+        }
+        const auto& counters = field<lhdump_dom::ElCounterValues>(*el);
+        o.u32(uint32_t(counters.size()));
+        for (const auto& [name, value] : counters) {
+            o.str(_s(name));
+            o.i32(value);
+        }
+        write_renders(o, t, *el);
+    }
+    o.u8(0);
+}
+
+// f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump (the cascade, or with tree the render tree), 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
+void cascade(In& in, Out& o, bool tree) {
     const size_t names_before = _id_usage().names;
     CascadeContainer container;
     container.width = in.f32();
@@ -1059,15 +1229,7 @@ void cascade(In& in, Out& o) {
     lhdump_dom::field<lhdump_dom::DocTrackNodes>(*doc) = false;
     element::ptr root = root_elements.empty() ? nullptr : root_elements.back();
     lhdump_dom::field<lhdump_dom::DocGumbo>(*doc) = output;
-    std::set<const element*> had;
-    if (root) {
-        std::vector<std::pair<element::ptr, int32_t>> built;
-        cascade_walk(root, -1, built);
-        for (const auto& [el, parent] : built)
-            if (el->get_attr("list_index")) had.insert(el.get());
-    }
     doc->finalize_from_external_root(root, master, user);
-    undo_render_tree(*doc, had);
     ((*doc).*robbed(lhdump_dom::DocBuildTemplate{}))();
     o.u8(uint8_t(doc->mode()));
     std::vector<size_t> phases{container.calls.size()};
@@ -1075,14 +1237,16 @@ void cascade(In& in, Out& o) {
     for (uint32_t s = 0; s < steps && in.at < in.s.size(); s++, phases.push_back(container.calls.size())) {
         const uint8_t op = in.u8();
         if (op == 'd') {
-            write_cascade(o, *doc);
+            if (tree)
+                write_render_tree(o, *doc);
+            else
+                write_cascade(o, *doc);
             continue;
         }
         if (op == 'm') {
             container.width = in.f32();
             container.height = in.f32();
             o.u8(doc->root() && doc->media_changed() ? 1 : 0);
-            undo_render_tree(*doc, had);
             continue;
         }
         if (op == 'r') {
@@ -1543,7 +1707,13 @@ bool run(int op, std::string_view input) {
         answer(1, o.s);
         return true;
     }
-    case 'o': { // the renderer's rewrite_color_scheme: u8 dark, the text
+    case 'o': { // the renderer's rewrite_color_scheme: u8 dark (0 or 1), the text; or, after an 'r', the render tree: as 'l', each dump step the tree (write_render_tree)
+        if (!input.empty() && input[0] == 'r') {
+            in.u8();
+            cascade(in, o, true);
+            answer(1, o.s);
+            return true;
+        }
         const bool dark = in.u8() != 0;
         answer(1, rewrite_color_scheme(in.rest(), dark));
         return true;
@@ -1746,7 +1916,7 @@ bool run(int op, std::string_view input) {
         return true;
     }
     case 'l': { // the cascade: a document finalized under a viewport with master and user sheets, then steps (media changes, :hover and :active flips, refreshes) and every element's computed style after each dump step: cascade() above
-        cascade(in, o);
+        cascade(in, o, false);
         answer(1, o.s);
         return true;
     }

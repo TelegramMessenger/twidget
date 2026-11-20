@@ -59,7 +59,7 @@
 //! - `w` u8 scheme (0 as is, 1 light, 2 dark: the renderer's rewrite first), text: `css::parse_css_stylesheet`,
 //!   u32 count and each selector's i32 order, u8 layered, i32 rule and i32 media list (-1 none, else in order
 //!   of first use), then u32 lists and each over the grid (u8 used).
-//! - `o` u8 dark, text: the renderer's `rewrite_color_scheme`.
+//! - `o` u8 dark (0 or 1), text: the renderer's `rewrite_color_scheme`.
 //! - `U` a token: `parse_url`. `X` bytes: `decode` as UTF-8. `V` a token: `from_token` with
 //!   f_length_percentage, then the document's `to_pixels` (f32) and `cvt_units` (the length after it).
 //! - `h` u8 flips, the html, u32 sheets and their texts: a document of the html (litehtml's master CSS), then
@@ -92,6 +92,11 @@
 //!
 //! - `l` f32 width, height, dpr, master, user, html, steps: the document finalized, every element's computed style
 //!   after each dump step, the container's calls by phase (see `cascade`).
+//!
+//! The render tree's record (stage L6) is the cascade's with a dump of the tree:
+//!
+//! - `o` `r`, then as `l`: the document finalized, its render tree after each dump step (see `render`). (`o` with a
+//!   first byte 0 or 1 is the colour-scheme rewrite.)
 
 #![allow(dead_code, unused_imports)]
 
@@ -120,6 +125,7 @@ use twidget_litehtml::*;
 pub mod cascade;
 pub mod dom;
 pub mod gumbo;
+pub mod render;
 pub mod svg;
 pub mod values;
 

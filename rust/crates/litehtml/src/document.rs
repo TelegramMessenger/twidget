@@ -210,6 +210,8 @@ pub const max_build_elements: i32 = 20000;
 pub const max_generated_boxes: i32 = 20000;
 pub const max_generated_box: usize = 32 * 1024;
 pub const max_generated_bytes: usize = 1024 * 1024;
+/// `max_table_cells`: the cells a document's tables may make, spans and filled-out rows included.
+pub const max_table_cells: i32 = 200000;
 
 /// `document`: its elements (an arena; an element no parent keeps stays in it), the root, the mode, the parsed
 /// text and Gumbo's tree, the map from Gumbo's nodes to the elements they became, the source template, and what
@@ -275,6 +277,10 @@ pub struct Document {
     pub selector_steps: Cell<i64>,
     pub apply_depth: Cell<i32>,
     pub budget_depth: Cell<i32>,
+    /// The render tree (`m_root_render`, `m_tabular_elements`, the table cell budget).
+    pub render: crate::render_item::RenderTree,
+    /// Slots of `elements` the render tree's anonymous elements left, to be used again by the next ones.
+    pub free_elements: Vec<ElementId>,
 }
 
 /// `svg_geometry_attribute(name)`: the SVG attributes whose values are holes (unless a selector names them).
@@ -679,8 +685,8 @@ impl Document {
     /// `finalize_from_external_root(root, master_styles, user_styles)`, once: the master sheet (in quirks mode with
     /// tables' fonts reset) and the user sheet parsed as trusted, then for a root: the media features, `:root`, the
     /// master sheet applied, the attributes parsed, the document's sheets parsed under their media, the media
-    /// applied, the document's and the user's sheets applied, and every element's computed style. The render tree
-    /// is stage L6's.
+    /// applied, the document's and the user's sheets applied, every element's computed style, and the render tree
+    /// ([`Document::create_render_tree`]).
     pub fn finalize_from_external_root(&mut self, cx: &StyleCx, root: Option<ElementId>, base_master_styles: &[u8], user_styles: &[u8]) {
         if self.finalized {
             return;
@@ -749,6 +755,9 @@ impl Document {
 
         // Initialize element::m_css
         self.compute_styles(cx, root, true);
+
+        // Create rendering tree
+        self.create_render_tree(cx);
     }
 
     /// The declarations `parse_attributes` recorded, added to each element's style in their order, and the master
@@ -790,8 +799,9 @@ impl Document {
         update_styles
     }
 
-    /// `media_changed()`: the container's media features now; when a list's answer changed, every style again.
-    /// (The render tree it builds again is stage L6's.)
+    /// `media_changed()`: the container's media features now; when a list's answer changed, every style again and
+    /// the render tree made again (without `fix_tables_layout`, its tabular list kept: see
+    /// [`Document::recreate_render_tree_on_media_change`]).
     pub fn media_changed(&mut self, cx: &StyleCx) -> bool {
         self.media = cx.container.get_media_features();
         let media = self.media;
@@ -800,6 +810,7 @@ impl Document {
         {
             self.refresh_styles(cx, root);
             self.compute_styles(cx, root, true);
+            self.recreate_render_tree_on_media_change(cx);
             return true;
         }
         false
@@ -861,6 +872,186 @@ impl Document {
         }
         self.ids_selectable.set(Some(seen));
         seen
+    }
+}
+
+// ---- The render tree's table fix-up ------------------------------------------------------------------------
+
+impl Document {
+    /// `fix_tables_layout()`: each tabular item in the list (those it adds too, up to eight times the list's length
+    /// and 64 more) given the parent and the children its display needs, in anonymous boxes (CSS 2.1 17.2.1 as the
+    /// fork does it: a table's children in row groups, a row group's in rows and its parent a table, a row's in cells
+    /// and its parent a row group, a cell's parent a row; captions and columns left alone).
+    pub fn fix_tables_layout(&mut self, cx: &StyleCx) {
+        use crate::render_item::*;
+        let limit = self.render.tabular.len() * 8 + 64;
+        let mut processed = 0;
+        let mut k = 0;
+        while k < self.render.tabular.len() {
+            processed += 1;
+            if processed > limit {
+                break;
+            }
+            let el_ptr = self.render.tabular[k];
+            k += 1;
+            let d = self.render_display(el_ptr);
+            if d == display_inline_table || d == display_table {
+                self.fix_table_children(cx, el_ptr, display_table_row_group, b"table-row-group");
+            } else if d == display_table_footer_group || d == display_table_row_group || d == display_table_header_group {
+                if let Some(parent) = self.render.parent(el_ptr)
+                    && self.render_display(parent) != display_inline_table
+                {
+                    self.fix_table_parent(cx, el_ptr, display_table, b"table");
+                }
+                self.fix_table_children(cx, el_ptr, display_table_row, b"table-row");
+            } else if d == display_table_row {
+                self.fix_table_parent(cx, el_ptr, display_table_row_group, b"table-row-group");
+                self.fix_table_children(cx, el_ptr, display_table_cell, b"table-cell");
+            } else if d == display_table_cell {
+                self.fix_table_parent(cx, el_ptr, display_table_row, b"table-row");
+            }
+        }
+    }
+
+    /// The anonymous box of `display:<disp_str>` the fix-up makes for an item of `element`: a cell (its tag
+    /// `table_cell`) a `render_item_block` unless `table` (the parent's fix-up) is asked, a table a
+    /// `render_item_table` when it is, a row a `render_item_table_row`, anything else a `render_item_table_part`.
+    #[inline(never)]
+    fn anonymous_table_box(&mut self, cx: &StyleCx, element: ElementId, disp_str: &[u8], table: bool) -> crate::render_item::RenderId {
+        use crate::render_item::*;
+        let annon_tag = self.new_anonymous_tag(cx, element, &[b"display:", disp_str].concat());
+        let d = self.el(annon_tag).css.m_display;
+        let kind = if !table && d == display_table_cell {
+            self.set_tag_name(cx.names, annon_tag, b"table_cell");
+            RenderKind::render_item_block
+        } else if table && (d == display_table || d == display_inline_table) {
+            RenderKind::render_item_table
+        } else if d == display_table_row {
+            RenderKind::render_item_table_row
+        } else {
+            RenderKind::render_item_table_part
+        };
+        self.new_render_item(cx, kind, annon_tag)
+    }
+
+    /// `fix_table_children(el_ptr, disp, disp_str)`: each run of children that are not of `disp` (not starting with
+    /// a space, a comment or a box not displayed; a caption neither starting nor joining one in a table) wrapped in
+    /// an anonymous box of `disp`, which goes in the run's place; the run's children after the box leave the list up
+    /// to the first one whose parent is still this item.
+    pub fn fix_table_children(&mut self, cx: &StyleCx, el_ptr: crate::render_item::RenderId, disp: i32, disp_str: &[u8]) {
+        use crate::render_item::*;
+        let mut tmp: Vec<RenderId> = Vec::new();
+        let mut first = 0;
+        let mut cur = 0;
+
+        loop {
+            let at_end = cur >= self.render.children(el_ptr).len();
+            if at_end && tmp.is_empty() {
+                break;
+            }
+            if !at_end {
+                let child = self.render.children(el_ptr)[cur];
+                let child_display = self.render_display(child);
+                if child_display != disp {
+                    let skip = self.is_table_skip(self.render.item(child).element);
+                    if (!skip || !tmp.is_empty()) && (disp != display_table_row_group || child_display != display_table_caption) {
+                        if tmp.is_empty() {
+                            first = cur;
+                        }
+                        tmp.push(child);
+                    }
+                    cur += 1;
+                    continue;
+                }
+                if tmp.is_empty() {
+                    cur += 1;
+                    continue;
+                }
+            }
+            // flush_elements
+            let element = self.render.item(el_ptr).element;
+            let annon_ri = self.anonymous_table_box(cx, element, disp_str, false);
+            for &el in &tmp {
+                self.add_render_child(annon_ri, el);
+            }
+            // add annon item as tabular for future processing
+            self.add_tabular(annon_ri);
+            self.render.set_parent(annon_ri, Some(el_ptr));
+            self.render.hold(annon_ri);
+            self.render_children_insert(el_ptr, first, annon_ri);
+            cur = first + 1;
+            let mut end = cur;
+            while end < self.render.children(el_ptr).len() && self.render.parent(self.render.children(el_ptr)[end]) != Some(el_ptr) {
+                end += 1;
+            }
+            for gone in self.render_children_drain(el_ptr, cur, end) {
+                self.release_render(gone);
+            }
+            first = cur;
+            tmp.clear();
+            if at_end {
+                break;
+            }
+        }
+    }
+
+    /// `fix_table_parent(el_ptr, disp, disp_str)`: unless the parent is of `disp`, the item and its neighbours of
+    /// the same display (spaces, comments and boxes not displayed among them) wrapped in an anonymous box of `disp`
+    /// in their place.
+    pub fn fix_table_parent(&mut self, cx: &StyleCx, el_ptr: crate::render_item::RenderId, disp: i32, disp_str: &[u8]) {
+        // The C++ reads the parent without a check; every tabular item it meets has one.
+        let Some(parent) = self.render.parent(el_ptr) else { return };
+
+        if self.render_display(parent) != disp {
+            let Some(this_element) = self.render.children(parent).iter().position(|&el| el == el_ptr) else { return };
+            let el_disp = self.render_display(el_ptr);
+            let mut first = this_element;
+            let mut last = this_element;
+            let same = |doc: &Document, item: crate::render_item::RenderId| {
+                doc.is_table_skip(doc.render.item(item).element) || doc.render_display(item) == el_disp
+            };
+
+            // find first element with same display
+            let mut cur = this_element;
+            while cur > 0 {
+                cur -= 1;
+                if same(self, self.render.children(parent)[cur]) {
+                    first = cur;
+                } else {
+                    break;
+                }
+            }
+
+            // find last element with same display
+            cur = this_element;
+            loop {
+                cur += 1;
+                if cur >= self.render.children(parent).len() {
+                    break;
+                }
+                if same(self, self.render.children(parent)[cur]) {
+                    last = cur;
+                } else {
+                    break;
+                }
+            }
+
+            // extract elements with the same display and wrap them with anonymous object
+            let element = self.render.item(parent).element;
+            let annon_ri = self.anonymous_table_box(cx, element, disp_str, true);
+            for k in first..=last {
+                let el = self.render.children(parent)[k];
+                self.add_render_child(annon_ri, el);
+            }
+            let gone = self.render_children_drain(parent, first, last + 1);
+            self.render.hold(annon_ri);
+            self.render_children_insert(parent, first, annon_ri);
+            for el in gone {
+                self.release_render(el);
+            }
+            self.add_tabular(annon_ri);
+            self.render.set_parent(annon_ri, Some(parent));
+        }
     }
 }
 
