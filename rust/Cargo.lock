@@ -53,6 +53,15 @@ name = "twidget_cstd"
 version = "0.1.0"
 
 [[package]]
+name = "twidget_filters"
+version = "0.1.0"
+dependencies = [
+ "twidget_css",
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_json"
 version = "0.1.0"
 

@@ -48,6 +48,9 @@ target_include_directories(canvas_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCL
 add_executable(animations_oracle animations_oracle.cpp "${TW_CORE}/animations.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/paint_policy.cpp")
 target_include_directories(animations_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}" "${TW_ROOT}/litehtml/include")
 
+add_executable(filters_oracle filters_oracle.cpp "${TW_CORE}/filters.cpp")
+target_include_directories(filters_oracle PRIVATE "${TW_CORE}")
+
 # lhdump: the litehtml fork compiled as twidget's CMakeLists.txt compiles it, every source with no definitions and its warnings off; the linker takes the objects the dump reaches.
 enable_language(C)
 set(TW_LITEHTML "${TW_ROOT}/litehtml")
