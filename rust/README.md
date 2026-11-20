@@ -6,6 +6,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 | Path | What |
 |---|---|
 | `crates/wire` | `twidget_wire`: the paint values and their binary forms (`core/src/wire.cpp`) |
+| `crates/remote` | `twidget_remote`: the messages between the renderer end and the platform end (`core/src/remote.cpp`) |
 | `crates/json` | `twidget_json`: widget-sandbox's `twidget::Json` (`packages/desktop/sandbox/include/twidget/json.h`) |
 | `crates/testkit` | `twidget_testkit`, tests only: the C++ suites' seeded generator and mutator, the oracles' client |
 | `oracle/` | the C++ the port is compared with: small programs built from twidget's sources, cases on stdin |

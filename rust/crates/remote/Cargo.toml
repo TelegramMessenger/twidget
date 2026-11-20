@@ -1,0 +1,17 @@
+[package]
+name = "twidget_remote"
+description = "The messages between TwidgetCore's renderer end and its platform end"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_testkit = { path = "../testkit" }

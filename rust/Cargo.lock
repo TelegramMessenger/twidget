@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_remote"
+version = "0.1.0"
+dependencies = [
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_testkit"
 version = "0.1.0"
 
