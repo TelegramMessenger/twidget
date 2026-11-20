@@ -57,6 +57,14 @@ target_include_directories(png_oracle PRIVATE "${TW_CORE}")
 add_executable(encode_oracle encode_oracle.cpp "${TW_CORE}/encode.cpp" "${TW_CORE}/wire.cpp")
 target_include_directories(encode_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
 
+# ends_oracle: renderer_end.cpp copied next to the scripted renderer.h of ends_seam, so that its quoted include of renderer.h finds that one; the rest from core/src.
+set(ENDS_SEAM "${CMAKE_CURRENT_BINARY_DIR}/ends_seam")
+configure_file("${TW_CORE}/renderer_end.h" "${ENDS_SEAM}/renderer_end.h" COPYONLY)
+configure_file("${TW_CORE}/renderer_end.cpp" "${ENDS_SEAM}/renderer_end.cpp" COPYONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/ends_seam/renderer.h" "${ENDS_SEAM}/renderer.h" COPYONLY)
+add_executable(ends_oracle ends_oracle.cpp "${ENDS_SEAM}/renderer_end.cpp" "${TW_CORE}/platform_end.cpp" "${TW_CORE}/remote.cpp" "${TW_CORE}/wire.cpp")
+target_include_directories(ends_oracle PRIVATE "${ENDS_SEAM}" "${TW_CORE}" "${TW_ROOT}/tests" "${TW_SANDBOX_INCLUDE}")
+
 # lhdump: the litehtml fork compiled as twidget's CMakeLists.txt compiles it, every source with no definitions and its warnings off; the linker takes the objects the dump reaches.
 enable_language(C)
 set(TW_LITEHTML "${TW_ROOT}/litehtml")

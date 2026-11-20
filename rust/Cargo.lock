@@ -65,6 +65,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_ends"
+version = "0.1.0"
+dependencies = [
+ "twidget_base64",
+ "twidget_json",
+ "twidget_remote",
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_filters"
 version = "0.1.0"
 dependencies = [
