@@ -1,11 +1,12 @@
-//! tests/core_tests.cpp's check of the fork's strtod, ported by name, then what the foundations promise:
-//! the name table's spelling, the keyword tables against their enums, `pixel_t`'s fuzzy operators, and
-//! the colour, length and marker forms the C++ gives.
+//! tests/core_tests.cpp's check of the fork's strtod, ported by name, then what the port promises: the name
+//! table's spelling, the keyword tables against their enums, `pixel_t`'s fuzzy operators, the colour, length
+//! and marker forms the C++ gives, and the tokens and component values of CSS text.
 
 mod common;
 
 use common::*;
 use twidget_litehtml::css_length::*;
+use twidget_litehtml::css_parser::{f_componentize, f_remove_whitespace, filter_code_points, normalize};
 use twidget_litehtml::css_tokenizer::*;
 use twidget_litehtml::css_values::*;
 use twidget_litehtml::string_id::*;
@@ -195,4 +196,113 @@ fn utf8_reads_lead_bytes_only() {
     append_char(&mut out, 0x110000);
     assert!(out.is_empty());
     assert!(!is_valid_utf8(b"\xed\xa0\x80") && is_valid_utf8("€".as_bytes()));
+}
+
+fn kinds(tokens: &[CssToken]) -> Vec<(i32, Vec<u8>)> {
+    tokens.iter().map(|t| (t.ty, t.repr.clone())).collect()
+}
+
+#[test]
+fn tokens_keep_the_text_they_were_read_from() {
+    let tokens = tokenize(b"a:b{c}#id 12.5e1px -->/*c*/'s'<!--@x");
+    let expected: Vec<(i32, &[u8])> = vec![
+        (IDENT, b"a"),
+        (COLON, b":"),
+        (IDENT, b"b"),
+        (LEFT_BRACE, b"{"),
+        (IDENT, b"c"),
+        (RIGHT_BRACE, b"}"),
+        (HASH, b"#id"),
+        (WHITESPACE, b" "),
+        (DIMENSION, b"12.5e1px"),
+        (WHITESPACE, b" "),
+        (CDC, b"-->"),
+        (STRING, b"'s'"),
+        (CDO, b"<!--"),
+        (AT_KEYWORD, b"@x"),
+    ];
+    assert_eq!(kinds(&tokens), expected.iter().map(|(t, r)| (*t, r.to_vec())).collect::<Vec<_>>());
+    assert_eq!(tokens[6].hash_type, CssHashType::css_hash_id);
+    assert_eq!((tokens[8].n.number, tokens[8].n.number_type, &tokens[8].str[..]), (125.0, CssNumberType::css_number_number, &b"px"[..]));
+    // A percentage's type flag stays "integer" whatever its number.
+    assert_eq!(tokenize(b"1.5%")[0].n.number_type, CssNumberType::css_number_integer);
+    assert_eq!(tokenize(b"#1a")[0].hash_type, CssHashType::css_hash_unrestricted);
+}
+
+#[test]
+fn urls_unquoted_are_one_token_and_quoted_a_function() {
+    let unquoted = tokenize(b"url(  a\\)b  )x");
+    assert_eq!((unquoted[0].ty, &unquoted[0].str[..]), (URL, &b"a)b"[..]));
+    assert_eq!(unquoted[1].repr, b"x");
+    // The last whitespace before a quote stays a token of its own; the function takes the rest.
+    let quoted = tokenize(b"URL(  'q')");
+    assert_eq!(kinds(&quoted)[..3], [(FUNCTION, b"URL( ".to_vec()), (WHITESPACE, b" ".to_vec()), (STRING, b"'q'".to_vec())]);
+    assert_eq!(tokenize(b"url(a b)")[0].ty, BAD_URL);
+    assert_eq!(tokenize(b"url(a\"b)")[0].ty, BAD_URL);
+}
+
+#[test]
+fn escapes_take_six_hex_digits_and_a_space() {
+    assert_eq!(tokenize(b"\\41 B")[0].str, b"AB");
+    assert_eq!(tokenize(b"\\0000411")[0].str, b"A1");
+    assert_eq!(tokenize(b"\\d800")[0].str, "\u{fffd}".as_bytes());
+    assert_eq!(tokenize(b"\\110000")[0].str, "\u{fffd}".as_bytes());
+    assert_eq!(tokenize(b"'a\\\nb'")[0].str, b"ab");
+    assert_eq!(tokenize(b"'a\nb'")[0].ty, BAD_STRING);
+}
+
+#[test]
+fn text_ends_at_a_nul_and_a_zero_code_point() {
+    assert_eq!(kinds(&tokenize(b"a\0b")), [(IDENT, b"a".to_vec())]);
+    assert_eq!(kinds(&tokenize(b"a \xc0\x80 b")), [(IDENT, b"a".to_vec()), (WHITESPACE, b" ".to_vec())]);
+    // An unterminated comment runs to the end; filter_code_points makes \r\n, \r and \f newlines and NUL U+FFFD.
+    assert!(tokenize(b"a/*b").len() == 1);
+    assert_eq!(filter_code_points(b"a\r\nb\rc\x0cd\0"), b"a\nb\nc\nd\xef\xbf\xbd");
+}
+
+#[test]
+fn normalizing_makes_component_values_to_a_depth() {
+    let tokens = normalize(b"calc( 1px + f(2) ) [a] {b}", f_componentize | f_remove_whitespace, None);
+    assert_eq!(tokens.iter().map(|t| t.ty).collect::<Vec<_>>(), [CV_FUNCTION, SQUARE_BLOCK, CURLY_BLOCK]);
+    assert_eq!(tokens[0].value.iter().map(|t| t.ty).collect::<Vec<_>>(), [DIMENSION, i32::from(b'+'), CV_FUNCTION]);
+    assert_eq!(get_repr(&tokens, 0, -1, true), b"calc(1px + f(2)) [a] {b}");
+    // Past 128 levels a block is kept empty and its contents skipped.
+    let deep = [b"(".repeat(130), b"x".to_vec(), b")".repeat(130), b"y".to_vec()].concat();
+    let tokens = normalize(&deep, f_componentize, None);
+    assert_eq!(tokens.len(), 2);
+    let mut level = &tokens[0];
+    let mut depth = 1;
+    while let Some(inner) = level.value.first() {
+        level = inner;
+        depth += 1;
+    }
+    assert_eq!((depth, level.ty), (129, ROUND_BLOCK));
+    // Media queries keep the whitespace between < or > and =.
+    let keep = |l: &CssToken, r: &CssToken| (l.ch() == i32::from(b'<') || l.ch() == i32::from(b'>')) && r.ch() == i32::from(b'=');
+    let kept = normalize(b"(a < = b)", f_componentize | f_remove_whitespace, Some(&keep));
+    assert_eq!(get_repr(&kept, 0, -1, false), b"(a< =b)");
+}
+
+#[test]
+fn colours_are_read_from_their_text() {
+    let names = Names::new();
+    let colour = |text: &[u8]| {
+        let tokens = normalize(text, f_componentize | f_remove_whitespace, None);
+        if tokens.len() == 1 { parse_color(&names, &tokens[0], None) } else { None }
+    };
+    assert_eq!(colour(b"Transparent"), Some(WebColor::TRANSPARENT));
+    assert_eq!(colour(b"rgb(10 20 30 / 50%)"), Some(WebColor::rgba(10, 20, 30, 128)));
+    assert_eq!(colour(b"hsla(120deg, 100%, 25%, 0.5)"), Some(WebColor::rgba(0, 128, 0, 128)));
+    assert!(colour(b"currentColor").is_some_and(|c| c.is_current_color));
+    assert_eq!(colour(b"--currentcolor"), None);
+    assert_eq!(colour(b"red blue"), None);
+    struct Theme;
+    impl ResolveColor for Theme {
+        fn resolve_color(&self, name: &[u8]) -> Vec<u8> {
+            if name == b"accent" { b"#123".to_vec() } else { Vec::new() }
+        }
+    }
+    let accent = CssToken::with_str(IDENT, b"accent");
+    assert_eq!(parse_color(&names, &accent, Some(&Theme)), Some(WebColor::rgba(0x11, 0x22, 0x33, 255)));
+    assert_eq!(parse_color(&names, &accent, None), None);
 }

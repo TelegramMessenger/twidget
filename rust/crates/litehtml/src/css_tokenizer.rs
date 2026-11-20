@@ -5,7 +5,8 @@
 //! A token's type is an `i32` as in the C++, where it shares its storage with `ch`: a delim token's type is
 //! its code point, `:;,()[]{}` are their characters, and the other kinds are the negative values below.
 
-use crate::html::{digit_value, is_digit, lowcase};
+use crate::html::{digit_value, is_digit, is_hex_digit, is_letter, is_surrogate, lowcase, lowcase_int, match_at};
+use crate::utf8_strings::{append_char, read_utf8_char};
 
 /// `css_token_type`, and the code point of a delim token.
 pub type CssTokenType = i32;
@@ -273,4 +274,548 @@ pub fn convert_string_to_number(str: &[u8]) -> f64 {
 
     // Return the number s·(i + f·10ᐨᵈ)·10ᵗᵉ.
     s * (i + f * 10f64.powf(-d)) * 10f64.powf(t * e)
+}
+
+/// `css_parse_error(msg)`: litehtml reports nothing.
+fn css_parse_error(_msg: &str) {}
+
+/// `css_tokenizer`: one CSS text into tokens (https://www.w3.org/TR/css-syntax-3/#tokenization), as the fork
+/// reads it. It expects what `filter_code_points` and UTF-8 decoding leave (no NUL, no `\r`, no `\f`,
+/// well-formed UTF-8) and does not check: a NUL, or a sequence that decodes to 0, ends the text there;
+/// `\r` and `\f` are no whitespace to it. It decides with decoded code points but reads a number's bytes,
+/// so a token that starts with an overlong form of a digit (`C0 B0`, `E0 80 B0`), or with `+`, `-` or `.`
+/// before one, is a number that takes nothing, and `tokenize` makes such empty tokens without end, as the
+/// C++ does. Only text that skipped UTF-8 decoding can hold one.
+#[derive(Debug)]
+pub struct CssTokenizer {
+    /// The input stream: https://www.w3.org/TR/css-syntax-3/#input-stream
+    str: Vec<u8>,
+    /// The next input char: https://www.w3.org/TR/css-syntax-3/#next-input-code-point
+    index: usize,
+    prev_index: usize,
+    /// The current input code point, kept to tell "just read the last char" from "already at the end and
+    /// read NUL" when unconsuming; without it the tokenizer loops forever on "a".
+    current_char: i32,
+}
+
+/// `three_chars`.
+#[derive(Clone, Copy, Debug)]
+struct ThreeChars {
+    _1: i32,
+    _2: i32,
+    _3: i32,
+}
+
+impl CssTokenizer {
+    pub fn new(input: &[u8]) -> CssTokenizer {
+        CssTokenizer { str: input.to_vec(), index: 0, prev_index: 0, current_char: 0 }
+    }
+
+    /// `str[i]` as the C++ reads it: the byte, a NUL at the end (std::string keeps one there).
+    fn at(&self, i: usize) -> i32 {
+        i32::from(self.str.get(i).copied().unwrap_or(0))
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#whitespace (`\r` and `\f` were made `\n` by filter_code_points)
+    fn is_whitespace(ch: i32) -> bool {
+        ch == i32::from(b'\n') || ch == i32::from(b'\t') || ch == i32::from(b' ')
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#non-printable-code-point
+    fn is_non_printable_code_point(ch: i32) -> bool {
+        (0..=8).contains(&ch) || ch == 0xB || (0xE..=0x1F).contains(&ch) || ch == 0x7F
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#ident-start-code-point
+    fn is_ident_start_code_point(ch: i32) -> bool {
+        is_letter(ch) || ch >= 0x80 || ch == i32::from(b'_')
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#ident-code-point
+    fn is_ident_code_point(ch: i32) -> bool {
+        Self::is_ident_start_code_point(ch) || is_digit(ch) || ch == i32::from(b'-')
+    }
+
+    /// Consumes the next input code point and returns it; at a NUL or the end `index` stays.
+    fn consume_char(&mut self) -> i32 {
+        self.prev_index = self.index;
+        self.current_char = read_utf8_char(&self.str, &mut self.index) as i32;
+        self.current_char
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#reconsume-the-current-input-code-point
+    fn unconsume_char(&mut self) {
+        // see current_char
+        if self.current_char == 0 {
+            return;
+        }
+        self.index = self.prev_index;
+    }
+
+    fn peek_char(&self) -> i32 {
+        let mut i = self.index;
+        read_utf8_char(&self.str, &mut i) as i32
+    }
+
+    fn peek_chars(&self) -> ThreeChars {
+        let mut i = self.index;
+        let first = read_utf8_char(&self.str, &mut i) as i32;
+        let second = read_utf8_char(&self.str, &mut i) as i32;
+        let third = read_utf8_char(&self.str, &mut i) as i32;
+        ThreeChars { _1: first, _2: second, _3: third }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-comments
+    fn consume_comments(&mut self) {
+        loop {
+            if self.at(self.index) == i32::from(b'/') && self.at(self.index + 1) == i32::from(b'*') {
+                let from = self.index + 2;
+                let found = self.str.get(from..).and_then(|rest| rest.windows(2).position(|w| w == b"*/"));
+                match found {
+                    Some(i) => self.index = from + i + 2,
+                    None => {
+                        self.index = self.str.len();
+                        css_parse_error("eof in comment");
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point, after the `\` and before no newline.
+    fn consume_escaped_code_point(&mut self) -> i32 {
+        // Consume the next input code point.
+        let mut ch = self.consume_char();
+
+        if is_hex_digit(ch) {
+            let mut number = digit_value(ch);
+            // Consume as many hex digits as possible, but no more than 5.
+            let mut max = 5;
+            while max > 0 && {
+                max -= 1;
+                is_hex_digit(self.at(self.index))
+            } {
+                ch = self.consume_char();
+                number = number * 16 + digit_value(ch);
+            }
+            // If the next input code point is whitespace, consume it as well.
+            if Self::is_whitespace(self.at(self.index)) {
+                self.consume_char();
+            }
+            // Zero, a surrogate or past the maximum allowed code point is U+FFFD.
+            if number == 0 || is_surrogate(number) || number > 0x10FFFF {
+                return 0xFFFD;
+            }
+            return number;
+        }
+        if ch == 0 {
+            // EOF: a parse error, U+FFFD.
+            css_parse_error("eof in escaped codepoint");
+            return 0xFFFD;
+        }
+        // anything else: the current input code point
+        ch
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-string-token
+    fn consume_string_token(&mut self, ending_code_point: i32) -> CssToken {
+        let mut token = CssToken::new(STRING);
+
+        loop {
+            let ch = self.consume_char();
+            match ch {
+                0 => {
+                    // EOF: a parse error; the string as it is.
+                    css_parse_error("eof in string");
+                    return token;
+                }
+                0x0A => {
+                    // A newline: a parse error; reconsume it and give a <bad-string-token>.
+                    css_parse_error("newline in string");
+                    self.unconsume_char();
+                    return CssToken::new(BAD_STRING);
+                }
+                0x5C => {
+                    // `\` before EOF: nothing; before a newline: consume it; else an escaped code point.
+                    if self.at(self.index) == 0 {
+                    } else if self.at(self.index) == i32::from(b'\n') {
+                        self.index += 1;
+                    } else {
+                        let code = self.consume_escaped_code_point();
+                        append_char(&mut token.str, code as u32);
+                    }
+                }
+                _ => {
+                    if ch == ending_code_point {
+                        return token;
+                    }
+                    append_char(&mut token.str, ch as u32);
+                }
+            }
+        }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#would-start-an-identifier
+    fn would_start_ident_sequence(chars: ThreeChars) -> bool {
+        let (c1, c2, c3) = (chars._1, chars._2, chars._3);
+
+        if c1 == i32::from(b'-') {
+            // An ident-start code point or `-` second, or a valid escape second and third.
+            return Self::is_ident_start_code_point(c2) || c2 == i32::from(b'-') || (c2 == i32::from(b'\\') && c3 != i32::from(b'\n'));
+        }
+        if Self::is_ident_start_code_point(c1) {
+            return true;
+        }
+        if c1 == i32::from(b'\\') {
+            // A valid escape first and second.
+            return c2 != i32::from(b'\n');
+        }
+        false
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-name
+    fn consume_ident_sequence(&mut self) -> Vec<u8> {
+        let mut result = Vec::new();
+
+        loop {
+            let ch = self.consume_char();
+
+            if Self::is_ident_code_point(ch) {
+                append_char(&mut result, ch as u32);
+            }
+            // a valid escape: ch has been consumed already, the code point after it is the next input one
+            else if ch == i32::from(b'\\') && self.at(self.index) != i32::from(b'\n') {
+                let code = self.consume_escaped_code_point();
+                append_char(&mut result, code as u32);
+            } else {
+                self.unconsume_char();
+                return result;
+            }
+        }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#starts-with-a-number
+    fn would_start_a_number(x: i32, y: i32, z: i32) -> bool {
+        if x == i32::from(b'+') || x == i32::from(b'-') {
+            // A digit second, or `.` second and a digit third.
+            if is_digit(y) {
+                return true;
+            }
+            if y == i32::from(b'.') && is_digit(z) {
+                return true;
+            }
+            return false;
+        }
+        if x == i32::from(b'.') {
+            return is_digit(y);
+        }
+        is_digit(x)
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-number: the value and its type, from the bytes as they
+    /// come (no UTF-8 decoding: a number is ASCII).
+    fn consume_number(&mut self) -> (f64, CssNumberType) {
+        let mut number_type = CssNumberType::css_number_integer;
+        let mut repr = Vec::new();
+        let ascii = |c: u8| i32::from(c);
+
+        // 2. A sign.
+        if self.at(self.index) == ascii(b'+') || self.at(self.index) == ascii(b'-') {
+            repr.push(self.str[self.index]);
+            self.index += 1;
+        }
+
+        // 3. Digits.
+        while is_digit(self.at(self.index)) {
+            repr.push(self.str[self.index]);
+            self.index += 1;
+        }
+
+        // 4. `.` and a digit, then digits.
+        if self.at(self.index) == ascii(b'.') && is_digit(self.at(self.index + 1)) {
+            repr.extend_from_slice(&self.str[self.index..self.index + 2]);
+            self.index += 2;
+            number_type = CssNumberType::css_number_number;
+            while is_digit(self.at(self.index)) {
+                repr.push(self.str[self.index]);
+                self.index += 1;
+            }
+        }
+
+        // 5. `e` or `E`, a sign perhaps, and a digit, then digits.
+        let e = lowcase_int(self.at(self.index)) == ascii(b'e');
+        let a =
+            e && (self.at(self.index + 1) == ascii(b'+') || self.at(self.index + 1) == ascii(b'-')) && is_digit(self.at(self.index + 2));
+        let b = e && is_digit(self.at(self.index + 1));
+
+        if a || b {
+            let n = if a { 3 } else { 2 };
+            repr.extend_from_slice(&self.str[self.index..self.index + n]);
+            self.index += n;
+            number_type = CssNumberType::css_number_number;
+            while is_digit(self.at(self.index)) {
+                repr.push(self.str[self.index]);
+                self.index += 1;
+            }
+        }
+
+        // 6. Convert repr to a number.
+        (convert_string_to_number(&repr), number_type)
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-numeric-token: the number narrowed to float.
+    fn consume_numeric_token(&mut self) -> CssToken {
+        let (number, number_type) = self.consume_number();
+        let number = number as f32;
+
+        // An ident sequence next: a <dimension-token> with it as the unit.
+        if Self::would_start_ident_sequence(self.peek_chars()) {
+            let mut token = CssToken::with_number(DIMENSION, number, number_type);
+            token.str = self.consume_ident_sequence();
+            return token;
+        }
+
+        // `%` next: a <percentage-token>, whose type flag stays "integer".
+        if self.at(self.index) == i32::from(b'%') {
+            self.index += 1;
+            return CssToken::with_number(PERCENTAGE, number, CssNumberType::css_number_integer);
+        }
+
+        CssToken::with_number(NUMBER, number, number_type)
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-remnants-of-bad-url
+    fn consume_remnants_of_bad_url(&mut self) {
+        loop {
+            let ch = self.consume_char();
+            if ch == i32::from(b')') || ch == 0 {
+                return;
+            }
+            // a valid escape (ch consumed already)
+            if ch == i32::from(b'\\') && self.at(self.index) != i32::from(b'\n') {
+                self.consume_escaped_code_point();
+            }
+        }
+    }
+
+    fn bad_url(&mut self) -> CssToken {
+        css_parse_error("invalid char in unquoted url");
+        self.consume_remnants_of_bad_url();
+        CssToken::new(BAD_URL)
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-url-token
+    fn consume_url_token(&mut self) -> CssToken {
+        let mut token = CssToken::new(URL);
+
+        // Consume as much whitespace as possible.
+        while Self::is_whitespace(self.at(self.index)) {
+            self.index += 1;
+        }
+
+        loop {
+            let ch = self.consume_char();
+            match ch {
+                0x29 => return token,
+                0 => {
+                    // EOF: a parse error; the url as it is.
+                    css_parse_error("eof in unquoted url");
+                    return token;
+                }
+                0x0A | 0x09 | 0x20 => {
+                    while Self::is_whitespace(self.at(self.index)) {
+                        self.index += 1;
+                    }
+                    // `)` or EOF next: consume it and give the url (EOF is a parse error).
+                    if self.at(self.index) == i32::from(b')') || self.at(self.index) == 0 {
+                        if self.at(self.index) == 0 {
+                            css_parse_error("eof in unquoted url");
+                        } else {
+                            self.index += 1;
+                        }
+                        return token;
+                    }
+                    // else the remnants of a bad url
+                    self.consume_remnants_of_bad_url();
+                    return CssToken::new(BAD_URL);
+                }
+                0x22 | 0x27 | 0x28 => return self.bad_url(),
+                0x5C => {
+                    // A valid escape: its code point; else a parse error and a bad url.
+                    if self.at(self.index) != i32::from(b'\n') {
+                        let code = self.consume_escaped_code_point();
+                        append_char(&mut token.str, code as u32);
+                    } else {
+                        css_parse_error("escaped newline in unquoted url");
+                        self.consume_remnants_of_bad_url();
+                        return CssToken::new(BAD_URL);
+                    }
+                }
+                _ => {
+                    if Self::is_non_printable_code_point(ch) {
+                        return self.bad_url();
+                    }
+                    append_char(&mut token.str, ch as u32);
+                }
+            }
+        }
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-ident-like-token
+    fn consume_ident_like_token(&mut self) -> CssToken {
+        let string = self.consume_ident_sequence();
+
+        // `url` in any ASCII case and `(` next: consume it.
+        if lowcase(&string) == b"url" && self.at(self.index) == i32::from(b'(') {
+            self.index += 1;
+
+            while Self::is_whitespace(self.at(self.index)) {
+                self.index += 1;
+            }
+
+            if self.at(self.index) == i32::from(b'"') || self.at(self.index) == i32::from(b'\'') {
+                // Not the standard's words but the same tokens: the whitespace before the quote stays one.
+                if Self::is_whitespace(self.at(self.index - 1)) {
+                    self.index -= 1;
+                }
+                return CssToken::with_str(FUNCTION, &string);
+            }
+            return self.consume_url_token();
+        }
+
+        // `(` next: a <function-token>.
+        if self.at(self.index) == i32::from(b'(') {
+            self.index += 1;
+            return CssToken::with_str(FUNCTION, &string);
+        }
+
+        CssToken::with_str(IDENT, &string)
+    }
+
+    /// https://www.w3.org/TR/css-syntax-3/#consume-token
+    fn consume_token(&mut self) -> CssToken {
+        self.consume_comments();
+
+        let mut token = CssToken::default();
+        let start = self.index;
+
+        let ch = self.consume_char();
+
+        match ch {
+            0x0A | 0x09 | 0x20 => {
+                while Self::is_whitespace(self.at(self.index)) {
+                    self.index += 1;
+                }
+                token.ty = WHITESPACE;
+            }
+            0x22 | 0x27 => token = self.consume_string_token(ch),
+            0x23 => {
+                // `#`: an ident code point or a valid escape next makes a <hash-token>.
+                if Self::is_ident_code_point(self.peek_char())
+                    || (self.at(self.index) == i32::from(b'\\') && self.at(self.index + 1) != i32::from(b'\n'))
+                {
+                    token.ty = HASH;
+                    token.hash_type = if Self::would_start_ident_sequence(self.peek_chars()) {
+                        CssHashType::css_hash_id
+                    } else {
+                        CssHashType::css_hash_unrestricted
+                    };
+                    token.str = self.consume_ident_sequence();
+                } else {
+                    token.ty = ch;
+                }
+            }
+            0x2B | 0x2E => {
+                // `+` and `.`: a number when one starts here.
+                let next = self.peek_chars();
+                if Self::would_start_a_number(ch, next._1, next._2) {
+                    self.unconsume_char();
+                    token = self.consume_numeric_token();
+                } else {
+                    token.ty = ch;
+                }
+            }
+            0x2D => {
+                // `-`: a number, `-->`, an ident-like token, or a delim.
+                let next = self.peek_chars();
+                if Self::would_start_a_number(ch, next._1, next._2) {
+                    self.unconsume_char();
+                    token = self.consume_numeric_token();
+                } else if next._1 == i32::from(b'-') && next._2 == i32::from(b'>') {
+                    self.index += 2;
+                    token.ty = CDC;
+                } else if Self::would_start_ident_sequence(ThreeChars { _1: ch, _2: next._1, _3: next._2 }) {
+                    self.unconsume_char();
+                    token = self.consume_ident_like_token();
+                } else {
+                    token.ty = ch;
+                }
+            }
+            0x3C => {
+                // `<`: `<!--` is a <CDO-token>.
+                if match_at(&self.str, self.index as i32, b"!--") {
+                    self.index += 3;
+                    token.ty = CDO;
+                } else {
+                    token.ty = ch;
+                }
+            }
+            0x40 => {
+                // `@`: an ident sequence next makes an <at-keyword-token>.
+                if Self::would_start_ident_sequence(self.peek_chars()) {
+                    token.ty = AT_KEYWORD;
+                    token.str = self.consume_ident_sequence();
+                } else {
+                    token.ty = ch;
+                }
+            }
+            0x5C => {
+                // `\`: a valid escape starts an ident-like token; else a parse error and a delim.
+                if self.at(self.index) != i32::from(b'\n') {
+                    self.unconsume_char();
+                    token = self.consume_ident_like_token();
+                } else {
+                    css_parse_error("escaped newline outside a string");
+                    token.ty = ch;
+                }
+            }
+            0 => token.ty = EOF,
+            _ => {
+                if is_digit(ch) {
+                    self.unconsume_char();
+                    token = self.consume_numeric_token();
+                } else if Self::is_ident_start_code_point(ch) {
+                    self.unconsume_char();
+                    token = self.consume_ident_like_token();
+                } else {
+                    // a <delim-token>; `:;,()[]{}` are delims here too
+                    token.ty = ch;
+                }
+            }
+        }
+
+        token.repr = self.str[start..self.index].to_vec();
+        token
+    }
+
+    /// `tokenize()`: every token to the end.
+    pub fn tokenize(&mut self) -> CssTokenVector {
+        let mut tokens = Vec::new();
+        loop {
+            let token = self.consume_token();
+            if token.ty == EOF {
+                break;
+            }
+            tokens.push(token.clone());
+        }
+        tokens
+    }
+}
+
+/// `tokenize(str)`.
+pub fn tokenize(str: &[u8]) -> CssTokenVector {
+    CssTokenizer::new(str).tokenize()
 }

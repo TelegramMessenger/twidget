@@ -4,6 +4,7 @@
 #include "css_parser.h"
 #include "css_tokenizer.h"
 #include "html.h"
+#include "master_css.h"
 #include "num_cvt.h"
 #include "string_id.h"
 #include "utf8_strings.h"
@@ -39,6 +40,7 @@ void hsl_to_rgb(float hue, float sat, float light, float& r, float& g, float& b)
 float clamp(float x, float min, float max);
 byte calc_percent_and_clamp(const css_length& val, float max);
 std::string resolve_name(const std::string& name, document_container* container);
+void filter_code_points(std::string& input);
 } // namespace litehtml
 
 using namespace litehtml;
@@ -189,6 +191,17 @@ void write_length(Out& o, const css_length& len) {
     o.f32(px);
     o.u8(!resolved ? 0 : resolved == len.calc() ? 1 : 2);
     o.f32(calc_evaluate(resolved.get(), 300).value());
+}
+
+void write_tokens(Out& o, const css_token_vector& tokens) {
+    o.u32(uint32_t(tokens.size()));
+    for (const auto& t : tokens) write_token(o, t);
+}
+
+// The keep_whitespace of the cases: none, or media queries' (whitespace stays between < or > and =).
+keep_whitespace_fn keeper(uint8_t mode) {
+    if (mode == 0) return nullptr;
+    return [](const css_token& left, const css_token& right) { return is_one_of(left.ch, '<', '>') && right.ch == '='; };
 }
 
 // The LH_NO_* switches are off unless a case sets one: none comes in from the environment.
@@ -468,6 +481,65 @@ bool run(int op, std::string_view input) {
         join_string(joined, {a, b, a}, b);
         o.str(joined);
         answer(1, o.s);
+        return true;
+    }
+    case 'T': { // tokenize of the text as it is: the tokens
+        write_tokens(o, tokenize(std::string(input)));
+        answer(1, o.s);
+        return true;
+    }
+    case 'Z': { // normalize: u8 options, u8 keep (0 none, 1 media queries'), the text: the tokens, get_repr of them without and with spaces
+        const int options = in.u8();
+        const keep_whitespace_fn keep = keeper(in.u8());
+        const css_token_vector tokens = normalize(in.rest(), options, keep);
+        write_tokens(o, tokens);
+        o.str(get_repr(tokens, 0, -1, false));
+        o.str(get_repr(tokens, 0, -1, true));
+        answer(1, o.s);
+        return true;
+    }
+    case 'F': { // filter_code_points of the text
+        std::string text(input);
+        filter_code_points(text);
+        answer(1, text);
+        return true;
+    }
+    case 'K': { // a colour from text: normalize componentized without whitespace, u32 tokens, then parse_color of a single one and the colour
+        const css_token_vector tokens = normalize(std::string(input), f_componentize | f_remove_whitespace);
+        o.u32(uint32_t(tokens.size()));
+        web_color color(1, 2, 3, 4);
+        const bool ok = tokens.size() == 1 && parse_color(tokens[0], color, nullptr);
+        write_color(o, color);
+        answer(ok ? 1 : 0, o.s);
+        return true;
+    }
+    case 'G': { // a length from text: i32 options, u8 keywords table, the text normalized as for 'K', from_token of a single token
+        const int options = in.i32();
+        const css_values words = keywords(in.u8());
+        const css_token_vector tokens = normalize(in.rest(), f_componentize | f_remove_whitespace);
+        o.u32(uint32_t(tokens.size()));
+        css_length len;
+        const bool ok = tokens.size() == 1 && len.from_token(tokens[0], options, words);
+        write_length(o, len);
+        answer(ok ? 1 : 0, o.s);
+        return true;
+    }
+    case 'P': { // the text componentized: its comma-separated lists, is_any_value, is_declaration_value, skip_whitespace from 0
+        const css_token_vector tokens = normalize(std::string(input), f_componentize);
+        const auto lists = parse_comma_separated_list(tokens);
+        o.u32(uint32_t(lists.size()));
+        for (const auto& list : lists) write_tokens(o, list);
+        o.u8(is_any_value(tokens) ? 1 : 0);
+        o.u8(is_declaration_value(tokens, 0) ? 1 : 0);
+        int index = 0;
+        o.u8(skip_whitespace(tokens, index) ? 1 : 0);
+        o.i32(index);
+        for (const auto& t : tokens) o.str(t.ident());
+        answer(1, o.s);
+        return true;
+    }
+    case 'M': { // litehtml's master_css
+        answer(1, master_css);
         return true;
     }
     case 'x': { // every byte's URL classes: bit 0 reserved, bit 1 scheme, bit 2 ASCII

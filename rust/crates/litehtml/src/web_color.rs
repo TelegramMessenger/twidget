@@ -5,8 +5,8 @@
 use crate::Names;
 use crate::Px;
 use crate::css_length::{CssLength, f_number, f_percentage};
-use crate::css_parser::parse_comma_separated_list;
-use crate::css_tokenizer::{CV_FUNCTION, CssToken, HASH, NUMBER, PERCENTAGE};
+use crate::css_parser::{f_componentize, f_remove_whitespace, normalize, parse_comma_separated_list};
+use crate::css_tokenizer::{CV_FUNCTION, CssToken, HASH, IDENT, NUMBER, PERCENTAGE};
 use crate::css_values::{CssUnits, CssValues, split_css_values};
 use crate::cxx;
 use crate::gradient::parse_angle;
@@ -487,4 +487,28 @@ pub fn resolve_name(name: &[u8], container: Option<&dyn ResolveColor>) -> Vec<u8
     }
 
     Vec::new()
+}
+
+/// `parse_name_color(tok, color, container)`: `currentcolor`, or a name whose text (the table's, else the
+/// container's) is one colour. A container that answers a name with itself recurses without end, as in
+/// the C++; the helper's container answers nothing.
+pub fn parse_name_color(names: &Names, tok: &CssToken, container: Option<&dyn ResolveColor>) -> Option<WebColor> {
+    if tok.ty != IDENT {
+        return None;
+    }
+    if tok.ident() == b"currentcolor" {
+        return Some(WebColor::CURRENT_COLOR);
+    }
+    let str = resolve_name(tok.name(), container);
+    let tokens = normalize(&str, f_componentize | f_remove_whitespace, None);
+    if tokens.len() != 1 {
+        return None;
+    }
+    parse_color(names, &tokens[0], container)
+}
+
+/// `parse_color(tok, color, container)` (https://drafts.csswg.org/css-color-5/#typedef-color): a hex colour,
+/// a colour function or a name.
+pub fn parse_color(names: &Names, tok: &CssToken, container: Option<&dyn ResolveColor>) -> Option<WebColor> {
+    parse_hash_color(tok).or_else(|| parse_func_color(names, tok)).or_else(|| parse_name_color(names, tok, container))
 }

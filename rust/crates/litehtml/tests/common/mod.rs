@@ -31,6 +31,17 @@
 //! - `k` u8 style, i32 value: a list marker. `u` text: UTF-8 read both ways (see `utf8`). `a` u32 code points:
 //!   `append_char`. `s` delims, preserve, quote, text: `split_string`. `m` a, b: html.cpp's helpers (see
 //!   `helpers`). `x`: the URL classes of every byte.
+//! - `T` text: `tokenize` of it as it is, u32 count and the tokens.
+//! - `Z` u8 options, u8 keep (0 none, 1 media queries'), text: `normalize`, the tokens, then `get_repr` of
+//!   them without and with spaces.
+//! - `F` text: `filter_code_points`.
+//! - `K` text: normalized (componentized, no whitespace), u32 count, then `parse_color` of a single token
+//!   (status and colour as for `C`).
+//! - `G` i32 options, u8 table, text: normalized as for `K`, u32 count, `from_token` of a single token and the
+//!   length after it.
+//! - `P` text: componentized, its comma-separated lists, `is_any_value`, `is_declaration_value`,
+//!   `skip_whitespace` from 0 (u8, i32), each token's `ident()`.
+//! - `M`: litehtml's `master_css`.
 
 #![allow(dead_code, unused_imports)]
 
@@ -40,6 +51,7 @@ use std::sync::Arc;
 pub use twidget_testkit::{Comparison, Lcg, Oracle, framed, hex, mutate};
 
 use twidget_litehtml::css_length::*;
+use twidget_litehtml::css_parser::{self, f_componentize, f_remove_whitespace, normalize};
 use twidget_litehtml::css_tokenizer::*;
 use twidget_litehtml::css_values::*;
 use twidget_litehtml::*;
@@ -368,6 +380,22 @@ pub fn helpers(o: &mut Out, a: &[u8], b: &[u8]) {
     o.str(&join_string(&[a.to_vec(), b.to_vec(), a.to_vec()], b));
 }
 
+pub fn tokens(o: &mut Out, list: &[CssToken]) {
+    o.u32(list.len() as u32);
+    for t in list {
+        o.token(t);
+    }
+}
+
+fn media_keep(left: &CssToken, right: &CssToken) -> bool {
+    (left.ch() == i32::from(b'<') || left.ch() == i32::from(b'>')) && right.ch() == i32::from(b'=')
+}
+
+/// lhdump's `keeper`: no keep_whitespace, or media queries'.
+pub fn keeper(mode: u8) -> Option<css_parser::KeepWhitespace<'static>> {
+    if mode == 0 { None } else { Some(&media_keep) }
+}
+
 /// The Rust side of one lhdump process: the name table its cases share.
 #[derive(Default)]
 pub struct Lh {
@@ -559,6 +587,52 @@ impl Lh {
                 helpers(&mut o, &a, &b);
                 (1, o.take())
             }
+            b'T' => {
+                tokens(&mut o, &tokenize(input));
+                (1, o.take())
+            }
+            b'Z' => {
+                let options = i32::from(i.u8());
+                let keep = i.u8();
+                let list = normalize(&i.rest(), options, keeper(keep));
+                tokens(&mut o, &list);
+                o.str(&get_repr(&list, 0, -1, false)).str(&get_repr(&list, 0, -1, true));
+                (1, o.take())
+            }
+            b'F' => (1, css_parser::filter_code_points(input)),
+            b'K' => {
+                let list = normalize(input, f_componentize | f_remove_whitespace, None);
+                o.u32(list.len() as u32);
+                let color = if list.len() == 1 { parse_color(names, &list[0], None) } else { None };
+                o.color(&color.unwrap_or(WebColor::rgba(1, 2, 3, 4)));
+                (u8::from(color.is_some()), o.take())
+            }
+            b'G' => {
+                let options = i.i32();
+                let words = keywords(i.u8());
+                let list = normalize(&i.rest(), f_componentize | f_remove_whitespace, None);
+                o.u32(list.len() as u32);
+                let mut len = CssLength::default();
+                let ok = list.len() == 1 && len.from_token(&list[0], options, words);
+                length(&mut o, &len);
+                (u8::from(ok), o.take())
+            }
+            b'P' => {
+                let list = normalize(input, f_componentize, None);
+                let lists = css_parser::parse_comma_separated_list(&list);
+                o.u32(lists.len() as u32);
+                for l in &lists {
+                    tokens(&mut o, l);
+                }
+                o.u8(u8::from(css_parser::is_any_value(&list))).u8(u8::from(css_parser::is_declaration_value(&list, 0)));
+                let mut index = 0;
+                o.u8(u8::from(css_parser::skip_whitespace(&list, &mut index))).i32(index as i32);
+                for t in &list {
+                    o.str(&t.ident());
+                }
+                (1, o.take())
+            }
+            b'M' => (1, master_css()),
             b'x' => {
                 for c in 0..=255u8 {
                     o.u8(u8::from(codepoint::is_url_reserved_codepoint(c))
@@ -1161,6 +1235,170 @@ pub fn any_utf8(random: &mut Lcg) -> Vec<u8> {
     out
 }
 
+/// CSS text for the tokenizer: every token kind, their edges and their broken forms (comments and
+/// strings left open, escapes of every length, bad urls, NULs, `\r`, `\f`, bytes that are no UTF-8), and
+/// nesting past the parser's limit now and then.
+pub fn any_css(random: &mut Lcg) -> Vec<u8> {
+    let pieces: &[&str] = &[
+        " ",
+        "  ",
+        "\t",
+        "\n",
+        "\r\n",
+        "\r",
+        "\x0c",
+        "/* c */",
+        "/*",
+        "*/",
+        "/**/",
+        "a",
+        "div",
+        "-x",
+        "--v",
+        "-",
+        "--",
+        "->",
+        "-->",
+        "<!--",
+        "<",
+        "<!-",
+        "#",
+        "#a1",
+        "#1a",
+        "#-",
+        "#\\41",
+        "#\\\n",
+        "@",
+        "@media",
+        "@-x",
+        "@1",
+        "\"s\"",
+        "'s'",
+        "\"a\\\"b\"",
+        "\"a\\\nb\"",
+        "\"open",
+        "'x\ny'",
+        "\"\\",
+        "url(",
+        "url(a)",
+        "url( a b )",
+        "url(a\"b)",
+        "URL(  'q')",
+        "url( \"q\")",
+        "url(a\\)b)",
+        "url(a\x01)",
+        "url(\\\n)",
+        "url(a )",
+        "url(a",
+        "u",
+        "rl(",
+        "(",
+        ")",
+        "[",
+        "]",
+        "{",
+        "}",
+        ":",
+        ";",
+        ",",
+        "!",
+        ".",
+        "&",
+        "+",
+        "*",
+        "/",
+        "%",
+        "=",
+        ">",
+        "~",
+        "|",
+        "^",
+        "$",
+        "?",
+        "\\",
+        "\\41",
+        "\\41 ",
+        "\\0",
+        "\\d800",
+        "\\110000",
+        "\\FFFFFF",
+        "\\1F600x",
+        "\\\n",
+        "\\g",
+        "1",
+        "12",
+        "1.5",
+        ".5",
+        "1.",
+        "+1",
+        "-1",
+        "+.5",
+        "-.5",
+        "1e3",
+        "1E+3",
+        "1e-3",
+        "1e",
+        "1e+",
+        "2px",
+        "2PX",
+        "3%",
+        "4em",
+        "1e3px",
+        "5\\",
+        "6-x",
+        "7--",
+        "8_",
+        "0e999",
+        "1e999",
+        "123456789012345678901234567890",
+        "\0",
+        "\u{e9}",
+        "\u{fffd}",
+        "\u{1f600}",
+        "\u{a0}",
+        "\u{7f}",
+        "\x01",
+        "\x0b",
+        "calc(",
+        "rgb(",
+        "hsl(",
+        "var(--x)",
+        "-webkit-",
+        "!important",
+        "u+0-7f",
+    ];
+    let mut out = Vec::new();
+    for _ in 0..random.below(24) {
+        match random.below(30) {
+            0 => out.push(random.next() as u8),
+            1 => out.extend_from_slice(pick(
+                random,
+                &[&b"\xc0\x80"[..], b"\xe2\x82", b"\xf0\x9f", b"\xff", b"\x80", b"\xed\xa0\x80", b"\xf8\x88\x80\x80\x80"],
+            )),
+            2 => {
+                let depth = if random.chance(4) { 120 + random.below(20) } else { random.below(8) };
+                let open: &str = pick(random, &["(", "[", "{", "f("]);
+                for _ in 0..depth {
+                    out.extend_from_slice(open.as_bytes());
+                }
+                out.push(b'x');
+                if random.chance(2) {
+                    let close: &[u8] = match open {
+                        "[" => b"]",
+                        "{" => b"}",
+                        _ => b")",
+                    };
+                    for _ in 0..depth {
+                        out.extend_from_slice(close);
+                    }
+                }
+            }
+            _ => out.extend_from_slice(pick(random, pieces).as_bytes()),
+        }
+    }
+    out
+}
+
 // ---- The corpus ---------------------------------------------------------------------------------
 
 pub fn twidget() -> PathBuf {
@@ -1171,4 +1409,145 @@ pub fn widget_sandbox() -> PathBuf {
     std::env::var_os("TWIDGET_WIDGET_SANDBOX")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../widget-sandbox"))
+}
+
+fn html_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            html_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "html") {
+            out.push(path);
+        }
+    }
+}
+
+fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    (from..=hay.len().checked_sub(needle.len())?).find(|&i| &hay[i..i + needle.len()] == needle)
+}
+
+fn between<'a>(text: &'a [u8], open: &[u8], close: &[u8], out: &mut Vec<&'a [u8]>) {
+    let mut i = 0;
+    while let Some(a) = find(text, open, i) {
+        let start = a + open.len();
+        let Some(b) = find(text, close, start) else { break };
+        out.push(&text[start..b]);
+        i = b + close.len();
+    }
+}
+
+/// The style text of every widget in widget-sandbox's corpus (`corpus/**/*.html`): its `<style>` blocks
+/// and its `style="…"` and `style='…'` attributes.
+pub fn corpus_styles() -> Vec<Vec<u8>> {
+    let mut files = Vec::new();
+    html_files(&widget_sandbox().join("corpus"), &mut files);
+    let mut out = Vec::new();
+    for path in files {
+        let Ok(text) = std::fs::read(&path) else { continue };
+        let mut found = Vec::new();
+        let mut blocks = Vec::new();
+        between(&text, b"<style", b"</style>", &mut blocks);
+        for block in blocks {
+            if let Some(end) = block.iter().position(|c| *c == b'>') {
+                found.push(&block[end + 1..]);
+            }
+        }
+        between(&text, b"style=\"", b"\"", &mut found);
+        between(&text, b"style='", b"'", &mut found);
+        out.extend(found.into_iter().map(<[u8]>::to_vec));
+    }
+    out
+}
+
+/// The text of a C++ raw string literal `R"delim(…)delim"` that follows `marker` in a file of twidget's.
+fn raw_string(path: &Path, marker: &str) -> Vec<u8> {
+    let text = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let at = find(&text, marker.as_bytes(), 0).unwrap_or_else(|| panic!("{marker} in {}", path.display()));
+    let open = find(&text, b"R\"", at).expect("a raw string") + 2;
+    let paren = find(&text, b"(", open).expect("its delimiter");
+    let close = [b")", &text[open..paren], b"\""].concat();
+    let end = find(&text, &close, paren).expect("its end");
+    // The compiler reads the file's line ends as one newline each (a checkout may have CRLF).
+    let mut out = Vec::with_capacity(end - paren);
+    for (i, &c) in text[paren + 1..end].iter().enumerate() {
+        if !(c == b'\r' && text.get(paren + 2 + i) == Some(&b'\n')) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// litehtml's `master_css` (litehtml/include/litehtml/master_css.h).
+pub fn master_css() -> Vec<u8> {
+    raw_string(&twidget().join("litehtml/include/litehtml/master_css.h"), "master_css")
+}
+
+/// The renderer's UA rules before the profile's (core/src/renderer.cpp, `UA_EXTRA`).
+pub fn ua_extra() -> Vec<u8> {
+    raw_string(&twidget().join("core/src/renderer.cpp"), "UA_EXTRA = ")
+}
+
+/// The profile's UA layer (`tables.uaStylesheet` of widget-sandbox's packages/core/profile.json), its `var()`s
+/// as they are.
+pub fn ua_stylesheet() -> Vec<u8> {
+    let text = std::fs::read(widget_sandbox().join("packages/core/profile.json")).expect("profile.json");
+    let json = twidget_json::Json::parse(&text).expect("profile.json parses");
+    let sheet = json["tables"]["uaStylesheet"].as_str().to_vec();
+    assert!(!sheet.is_empty(), "tables.uaStylesheet");
+    sheet
+}
+
+/// The declarations of a style text, split as plainly as a test may: at `;`, `{` and `}` and the first `:`
+/// outside parentheses and quotes, trimmed.
+pub fn declarations(style: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut depth = 0i32;
+    let mut quote = 0u8;
+    let mut start = 0;
+    let mut pieces = Vec::new();
+    for (i, &c) in style.iter().enumerate() {
+        if quote != 0 {
+            if c == quote {
+                quote = 0;
+            }
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => quote = c,
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b';' | b'{' | b'}' if depth <= 0 => {
+                pieces.push(&style[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    pieces.push(&style[start..]);
+    let trim = |b: &[u8]| twidget_litehtml::html::trim(b, twidget_litehtml::html::WHITESPACE);
+    pieces
+        .into_iter()
+        .filter_map(|piece| piece.iter().position(|c| *c == b':').map(|colon| (trim(&piece[..colon]), trim(&piece[colon + 1..]))))
+        .collect()
+}
+
+/// The text with every lead byte that reads as an ASCII character (an overlong form such as `C0 B0` for `0`)
+/// made 0xFF, and whether there was one. A token that starts with such a digit, or with `+`, `-` or `.`
+/// before one, is a number the tokenizer reads byte by byte: it takes nothing, and the fork's tokenizer, as
+/// its port, makes empty tokens forever (`.` E0 80 B0 never returns). The comparison keeps them out.
+pub fn without_overlong_ascii(text: &[u8]) -> (Vec<u8>, bool) {
+    let mut out = text.to_vec();
+    let mut changed = false;
+    for p in 0..out.len() {
+        if (0xC0..0xF8).contains(&out[p]) {
+            let mut index = p;
+            let ch = twidget_litehtml::utf8_strings::read_utf8_char(&out, &mut index);
+            if (1..0x80).contains(&ch) {
+                out[p] = 0xFF;
+                changed = true;
+            }
+        }
+    }
+    (out, changed)
 }
