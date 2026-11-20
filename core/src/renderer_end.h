@@ -38,6 +38,7 @@ public:
 
 private:
     class Proxy;
+    struct Painted;
 
     template <class Encode> bool post(Encode encode_message);
     template <class M> bool send(const M& message);
@@ -48,6 +49,9 @@ private:
     void run_frame(const FrameRequest& request, Output& out);
     void pointed(const std::vector<twidget::Json>& messages);
     void finish(const std::vector<twidget::Json>& messages, const Pointer* pointer = nullptr, Frame* frame = nullptr, const ClaimAnswer* claim = nullptr);
+    bool send_frame(const Frame& frame);
+    /// Copies of what `list`, whose units hash to `hashes`, shares byte for byte with `base`, no more than the base holds in all, and literals for the rest, in as few bytes as such runs take; none when nothing is worth copying.
+    static std::vector<DeltaRun> runs_for(const Painted& base, const Painted& list, const std::vector<size_t>& hashes);
     State current_state() const;
 
     RendererChannel& channel_;
@@ -56,6 +60,8 @@ private:
     std::optional<State> sent_state_;
     std::string sent_selection_;
     bool frame_asked_ = false;
+    /// The list of the last painted Frame sent while it is within `delta_base`, for the next one to copy from; made before the renderer, whose construction may stop the end.
+    std::unique_ptr<Painted> base_;
     std::unique_ptr<Proxy> proxy_;
     std::unique_ptr<Renderer> renderer_;
 };

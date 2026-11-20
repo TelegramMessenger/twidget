@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -43,6 +44,8 @@ public:
 
     bool receive(std::string_view message);
     bool answer(std::string_view request, std::string& reply);
+    /// Stops the end for good without a word to the host, as when the embedder ends the route itself: no reply is due any more and no painted list is kept. It allocates nothing.
+    void close() noexcept;
 
     const State& state() const { return state_; }
     bool refusing() const { return refused_; }
@@ -57,6 +60,9 @@ private:
     template <class M> bool take(std::string_view message, Kind kind, M& out);
     template <class M> bool respond(const M& message, std::string& reply);
     bool solicited(Kind kind, uint64_t seq);
+    bool due(Kind kind, Kind answers, uint64_t seq);
+    bool take_delta(std::string_view message);
+    void framed(Frame&& frame, std::optional<std::string> list);
     bool refuse(const std::string& reason);
     bool take_messages(std::string_view message);
     bool answer_pixels(std::string_view request, std::string& reply);
@@ -66,10 +72,14 @@ private:
     Channel& channel_;
     Caps caps_;
     State state_;
-    std::deque<Expected> expected_;
+    /// Dropped whole on close: an empty deque may allocate (libstdc++ does), and close() must not.
+    std::optional<std::deque<Expected>> expected_{std::in_place};
     uint64_t frames_ = 0;
     uint64_t claims_ = 0;
     bool refused_ = false;
+    /// The list of the last painted Frame while it is within `delta_base`, for a FrameDelta to copy from.
+    std::optional<std::string> base_;
+    uint64_t base_seq_ = 0;
 };
 
 } // namespace twlite::remote

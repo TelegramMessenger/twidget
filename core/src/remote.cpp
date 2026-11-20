@@ -17,7 +17,14 @@ static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<doubl
 
 /// The fewest bytes a str takes: its length.
 constexpr size_t STR_BYTES = 4;
-constexpr size_t WIDTHS_ITEM_BYTES = 4 + STR_BYTES;
+/// A WidthsRequest's header and count, and the fewest bytes one of its texts takes: its font and its length.
+constexpr size_t WIDTHS_HEAD = 2 + 4, WIDTHS_ITEM_BYTES = 4 + STR_BYTES;
+
+/// A painted Frame's bytes before its list: header, seq, state and the flag.
+constexpr size_t STATE_BYTES = 8 + 4 + 1 + 1 + 8 + 1, FRAME_HEAD = 2 + 8 + STATE_BYTES + 1;
+/// A FrameDelta run's tag, and the fewest bytes a run takes: a literal of one byte.
+constexpr uint8_t COPY_RUN = 0, LITERAL_RUN = 1;
+constexpr size_t RUN_BYTES = 1 + 4 + 1;
 
 constexpr std::string_view PLATFORM_TYPES[] = {"size", "gesture", "limit", "violation", "bubble"};
 
@@ -33,7 +40,7 @@ int32_t to_int(uint32_t u) {
 }
 
 bool known(uint8_t kind) {
-    return (kind >= 1 && kind <= 8) || (kind >= 32 && kind <= 36) || (kind >= 64 && kind <= 72) || (kind >= 96 && kind <= 100);
+    return (kind >= 1 && kind <= 8) || (kind >= 32 && kind <= 36) || (kind >= 64 && kind <= 73) || (kind >= 96 && kind <= 100);
 }
 
 std::optional<uint32_t> pixel_bytes(int32_t w, int32_t h) {
@@ -41,14 +48,22 @@ std::optional<uint32_t> pixel_bytes(int32_t w, int32_t h) {
     return uint32_t(uint64_t(w) * uint64_t(h) * 4);
 }
 
-bool widths_fit(const WidthsRequest& request, const Caps& caps) {
-    if (request.texts.size() > std::min<size_t>(caps.widths, UINT32_MAX)) return false;
-    size_t left = caps.widths_text;
-    for (const TextInFont& t : request.texts) {
-        if (t.text.size() > caps.text || t.text.size() > left) return false;
-        left -= t.text.size();
+/// How many of `texts`, from `from` on, keep within the widths caps in order: their count, each text and all of them, and, when `sized`, the message cap as a WidthsRequest's, which bounds its WidthsAnswer too.
+size_t widths_within(const std::vector<TextInFont>& texts, size_t from, const Caps& caps, bool sized) {
+    const size_t most = std::min<size_t>(caps.widths, UINT32_MAX), longest = std::min<size_t>(caps.text, UINT32_MAX);
+    size_t bytes = WIDTHS_HEAD, text = 0, n = 0;
+    for (size_t i = from; i < texts.size() && n < most; i++, n++) {
+        const size_t size = texts[i].text.size();
+        if (size > longest || size > caps.widths_text - text) break;
+        if (sized && (caps.message < bytes || caps.message - bytes < WIDTHS_ITEM_BYTES || size > caps.message - bytes - WIDTHS_ITEM_BYTES)) break;
+        bytes += WIDTHS_ITEM_BYTES + size;
+        text += size;
     }
-    return true;
+    return n;
+}
+
+bool widths_fit(const WidthsRequest& request, const Caps& caps) {
+    return widths_within(request.texts, 0, caps, false) == request.texts.size();
 }
 
 class Writer {
@@ -172,6 +187,12 @@ public:
         }
         return true;
     }
+    bool view(std::string_view& v, size_t n) {
+        if (n > rest_.size()) return false;
+        v = rest_.substr(0, n);
+        rest_.remove_prefix(n);
+        return true;
+    }
     template <class Read> bool value(Read read) {
         uint32_t n = 0;
         if (!u32(n) || n > rest_.size() || !read(rest_.substr(0, n))) return false;
@@ -219,6 +240,14 @@ void commit(Frame& out, Frame& value) {
     out.damage = std::move(value.damage);
 }
 
+void commit(FrameDelta& out, FrameDelta& value) {
+    out.seq = value.seq;
+    commit(out.state, value.state);
+    out.base = value.base;
+    out.runs = std::move(value.runs);
+    out.damage = std::move(value.damage);
+}
+
 /// Replaces `out` with what `read` takes from all of `message` after its header, once the last byte has passed.
 template <class T, class Read> bool taken(std::string_view message, const Caps& caps, Kind kind, T& out, Read read) {
     if (message.size() > caps.message) return false;
@@ -261,6 +290,84 @@ bool put_id(std::string& out, const Caps& caps, Kind kind, int32_t id) {
 
 template <class T> bool take_id(std::string_view message, const Caps& caps, Kind kind, T& out, int32_t T::*id) {
     return taken(message, caps, kind, out, [&](Reader& r, T& m) { return r.i32(m.*id); });
+}
+
+/// Whether the painted Frame of a list and a damage of these lengths keeps within the frame and the message caps.
+bool fits_frame(const Caps& caps, uint64_t list, uint64_t damage) {
+    const uint64_t bytes = FRAME_HEAD + 4 + list + 4 + damage;
+    return bytes <= caps.frame && bytes <= caps.message;
+}
+
+/// A Frame after its header; for a painted one, `list` where its list went, starts noted within `most` bytes, when given.
+bool put_frame(Writer& w, const Frame& message, const Caps& caps, size_t most, WrittenList* list) {
+    w.u64(message.seq);
+    put_state(w, message.state);
+    w.flag(message.painted);
+    if (!message.painted) return message.list.empty() && !message.damage && w.written() <= caps.frame;
+    WrittenList written;
+    size_t damage = 0;
+    const bool put = w.value([&](std::string& s) {
+        written.at = s.size();
+        if (!(list ? wire::encode(message.list, caps.values, s, written.starts, most) : wire::encode(message.list, caps.values, s))) return false;
+        written.size = s.size() - written.at;
+        return true;
+    }) && w.value([&](std::string& s) {
+        const size_t at = s.size();
+        if (!wire::encode(message.damage, caps.values, s)) return false;
+        damage = s.size() - at;
+        return true;
+    }) && fits_frame(caps, written.size, damage);
+    if (put && list) *list = std::move(written);
+    return put;
+}
+
+/// One run for the list's head and one for each command: what an encoder that copies whole commands may need.
+size_t most_runs(const Caps& caps) {
+    return std::min<size_t>(caps.values.commands, UINT32_MAX - 1) + 1;
+}
+
+/// A FrameDelta's fields before its runs.
+struct DeltaHead {
+    uint64_t seq = 0;
+    State state;
+    uint64_t base = 0;
+    uint32_t length = 0;
+    size_t runs = 0;
+};
+
+bool read_delta_head(Reader& r, const Caps& caps, DeltaHead& h) {
+    return r.u64(h.seq) && read_state(r, h.state) && r.u64(h.base) && r.u32(h.length) && h.length > 0 && h.length <= caps.delta_base
+        && r.count(h.runs, std::min<size_t>(most_runs(caps), h.length), RUN_BYTES);
+}
+
+/// Takes runs that rebuild exactly `length` bytes, each copy within a base of `base` bytes and all of them copying no more than it holds, and gives each to `run(offset, length, literal)`, the literal empty for a copy.
+template <class Run> bool read_runs(Reader& r, size_t count, uint32_t length, size_t base, Run run) {
+    size_t built = 0, copied = 0;
+    for (size_t i = 0; i < count; i++) {
+        uint8_t tag = 0;
+        uint32_t offset = 0, n = 0;
+        std::string_view literal;
+        if (!r.u8(tag)) return false;
+        if (tag == COPY_RUN) {
+            if (!r.u32(offset) || !r.u32(n) || offset > base || n > base - offset || n > base - copied) return false;
+            copied += n;
+        } else if (tag != LITERAL_RUN || !r.u32(n) || !r.view(literal, n)) {
+            return false;
+        }
+        if (n == 0 || n > length - built) return false;
+        built += n;
+        run(offset, n, literal);
+    }
+    return built == length;
+}
+
+/// A FrameDelta's runs on a base of `base` bytes and its damage, read as views up to its last byte, and the Frame it stands for within the caps; nothing made yet, `damage` viewing the damage's bytes.
+bool scan_delta(Reader& r, const Caps& caps, const DeltaHead& h, size_t base, std::string_view& damage) {
+    const auto seen = [&](std::string_view bytes) {
+        damage = bytes;
+        return true;
+    };
+    return read_runs(r, h.runs, h.length, base, [](uint32_t, uint32_t, std::string_view) {}) && r.value(seen) && r.done() && fits_frame(caps, h.length, damage.size());
 }
 
 } // namespace
@@ -457,23 +564,124 @@ bool decode(std::string_view message, const Caps& caps, const WidthsRequest& ask
 }
 
 bool encode(const Frame& message, const Caps& caps, std::string& out) {
-    return appended(out, caps, Kind::Frame, [&](Writer& w) {
-        w.u64(message.seq);
-        put_state(w, message.state);
-        w.flag(message.painted);
-        if (!message.painted) return message.list.empty() && !message.damage;
-        return w.value([&](std::string& s) { return wire::encode(message.list, caps.values, s); })
-            && w.value([&](std::string& s) { return wire::encode(message.damage, caps.values, s); });
-    });
+    return appended(out, caps, Kind::Frame, [&](Writer& w) { return put_frame(w, message, caps, 0, nullptr); });
+}
+
+bool encode(const Frame& message, const Caps& caps, std::string& out, size_t most, WrittenList& list) {
+    WrittenList written;
+    if (!appended(out, caps, Kind::Frame, [&](Writer& w) { return put_frame(w, message, caps, most, &written); })) return false;
+    list = std::move(written);
+    return true;
 }
 
 bool decode(std::string_view message, const Caps& caps, Frame& out) {
-    return taken(message, caps, Kind::Frame, out, [&](Reader& r, Frame& m) {
+    std::string_view list;
+    return decode(message, caps, out, list);
+}
+
+bool decode(std::string_view message, const Caps& caps, Frame& out, std::string_view& list) {
+    std::string_view painted;
+    const bool taken_whole = message.size() <= caps.frame && taken(message, caps, Kind::Frame, out, [&](Reader& r, Frame& m) {
         if (!r.u64(m.seq) || !read_state(r, m.state) || !r.flag(m.painted)) return false;
         if (!m.painted) return true;
-        return r.value([&](std::string_view bytes) { return wire::decode(bytes, caps.values, m.list); })
-            && r.value([&](std::string_view bytes) { return wire::decode(bytes, caps.values, m.damage); });
+        return r.value([&](std::string_view bytes) {
+            painted = bytes;
+            return wire::decode(bytes, caps.values, m.list);
+        }) && r.value([&](std::string_view bytes) { return wire::decode(bytes, caps.values, m.damage); });
     });
+    if (taken_whole) list = painted;
+    return taken_whole;
+}
+
+bool encode(const FrameDelta& message, const Caps& caps, std::string& out) {
+    return appended(out, caps, Kind::FrameDelta, [&](Writer& w) {
+        uint64_t length = 0, copied = 0;
+        for (const DeltaRun& run : message.runs) {
+            if (!run.literal.empty()) {
+                if (run.offset || run.length) return false;
+                length += run.literal.size();
+            } else {
+                if (run.length == 0 || run.offset > caps.delta_base || run.length > caps.delta_base - run.offset) return false;
+                copied += run.length;
+                length += run.length;
+            }
+        }
+        if (message.runs.empty() || message.runs.size() > most_runs(caps) || length > caps.delta_base || length > UINT32_MAX || copied > caps.delta_base) return false;
+        w.u64(message.seq);
+        put_state(w, message.state);
+        w.u64(message.base);
+        w.u32(uint32_t(length));
+        w.u32(uint32_t(message.runs.size()));
+        for (const DeltaRun& run : message.runs) {
+            if (!run.literal.empty()) {
+                w.u8(LITERAL_RUN);
+                if (!w.str(run.literal, caps.delta_base)) return false;
+                continue;
+            }
+            w.u8(COPY_RUN);
+            w.u32(run.offset);
+            w.u32(run.length);
+        }
+        const size_t before = w.written();
+        return w.value([&](std::string& s) { return wire::encode(message.damage, caps.values, s); }) && w.written() <= caps.frame
+            && fits_frame(caps, length, w.written() - before - 4);
+    });
+}
+
+bool decode(std::string_view message, const Caps& caps, FrameDelta& out) {
+    return message.size() <= caps.frame && taken(message, caps, Kind::FrameDelta, out, [&](Reader& r, FrameDelta& m) {
+        DeltaHead h;
+        std::string_view damage;
+        if (!read_delta_head(r, caps, h)) return false;
+        Reader runs = r;
+        if (!scan_delta(r, caps, h, caps.delta_base, damage)) return false;
+        m.seq = h.seq;
+        commit(m.state, h.state);
+        m.base = h.base;
+        m.runs.reserve(h.runs);
+        read_runs(runs, h.runs, h.length, caps.delta_base, [&](uint32_t offset, uint32_t n, std::string_view literal) {
+            if (literal.empty()) {
+                m.runs.push_back({offset, n, {}});
+            } else {
+                m.runs.push_back({0, 0, std::string(literal)});
+            }
+        });
+        return wire::decode(damage, caps.values, m.damage);
+    });
+}
+
+bool delta_ids(std::string_view message, uint64_t& seq, uint64_t& base) {
+    Reader r(message);
+    uint64_t s = 0, b = 0;
+    State state;
+    if (!r.head(Kind::FrameDelta) || !r.u64(s) || !read_state(r, state) || !r.u64(b)) return false;
+    seq = s;
+    base = b;
+    return true;
+}
+
+bool rebuild(std::string_view message, const Caps& caps, uint64_t base_seq, std::string_view base, Frame& out, std::string& list) {
+    if (message.size() > caps.message || message.size() > caps.frame || base.size() > caps.delta_base) return false;
+    Reader r(message);
+    DeltaHead h;
+    std::string_view damage;
+    if (!r.head(Kind::FrameDelta) || !read_delta_head(r, caps, h) || h.base != base_seq) return false;
+    Reader runs = r;
+    if (!scan_delta(r, caps, h, base.size(), damage)) return false;
+    Frame frame;
+    if (!wire::decode(damage, caps.values, frame.damage)) return false;
+    std::string bytes;
+    bytes.reserve(h.length);
+    read_runs(runs, h.runs, h.length, base.size(), [&](uint32_t offset, uint32_t n, std::string_view literal) {
+        bytes.append(literal.empty() ? base.substr(offset, n) : literal);
+    });
+    if (!wire::decode(bytes, caps.values, frame.list)) return false;
+    frame.seq = h.seq;
+    commit(frame.state, h.state);
+    frame.painted = true;
+    commit(out, frame);
+    list = std::move(bytes);
+    return true;
 }
 
 bool encode(const State& message, const Caps& caps, std::string& out) {
@@ -637,9 +845,13 @@ bool decode(std::string_view message, const Caps& caps, PixelsRequest& out) {
     });
 }
 
+size_t widths_in_request(const std::vector<TextInFont>& texts, size_t from, const Caps& caps) {
+    return widths_within(texts, from, caps, true);
+}
+
 bool encode(const WidthsRequest& message, const Caps& caps, std::string& out) {
     return appended(out, caps, Kind::WidthsRequest, [&](Writer& w) {
-        if (!widths_fit(message, caps) || !w.count(message.texts.size(), caps.widths)) return false;
+        if (widths_in_request(message.texts, 0, caps) != message.texts.size() || !w.count(message.texts.size(), caps.widths)) return false;
         for (const TextInFont& t : message.texts) {
             w.i32(t.font);
             if (!w.str(t.text, caps.text)) return false;

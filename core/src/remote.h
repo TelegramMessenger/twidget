@@ -20,7 +20,7 @@ constexpr uint8_t VERSION = 1;
 enum class Kind : uint8_t {
     FrameRequest = 1, SetWidth = 2, SetMaxHeight = 3, SetTheme = 4, Touch = 5, Hover = 6, ClearSelection = 7, ClaimQuery = 8,
     FontAnswer = 32, WidthAnswer = 33, ImageAnswer = 34, PixelsAnswer = 35, WidthsAnswer = 36,
-    Frame = 64, State = 65, Messages = 66, Pointer = 67, Selection = 68, ClaimAnswer = 69, FontRelease = 70, CanvasRun = 71, CanvasRelease = 72,
+    Frame = 64, State = 65, Messages = 66, Pointer = 67, Selection = 68, ClaimAnswer = 69, FontRelease = 70, CanvasRun = 71, CanvasRelease = 72, FrameDelta = 73,
     FontRequest = 96, WidthRequest = 97, ImageRequest = 98, PixelsRequest = 99, WidthsRequest = 100,
 };
 
@@ -33,6 +33,10 @@ struct Caps {
     size_t messages = 1024;
     size_t widths = 256;
     size_t widths_text = size_t(16) << 10;
+    /// Bytes of one Frame, and of the Frame a FrameDelta stands for once rebuilt; SIZE_MAX leaves Frames to `message` alone.
+    size_t frame = SIZE_MAX;
+    /// Bytes of the painted list each end keeps for a FrameDelta to copy from, and of a list a FrameDelta rebuilds; both ends take the same, and 0 sends every painted Frame whole.
+    size_t delta_base = size_t(256) << 10;
 };
 
 enum class Paint : uint8_t { Skip = 0, IfDirty = 1, Force = 2 };
@@ -112,6 +116,27 @@ struct Frame {
     State state;
     bool painted = false;
     DisplayList list;
+    wire::Damage damage;
+};
+
+/// Where encode(Frame) wrote a painted Frame's list: `size` bytes from byte `at` of its output, and, while the list kept within the bytes it was given, where each command starts and, last, where the list ends, counted from the list's first byte; no starts for a longer list or an unpainted Frame.
+struct WrittenList {
+    size_t at = 0, size = 0;
+    std::vector<size_t> starts;
+};
+
+/// `length` bytes of a FrameDelta's base from `offset`, or, when `literal` is not empty, those bytes, `offset` and `length` then 0.
+struct DeltaRun {
+    uint32_t offset = 0, length = 0;
+    std::string literal;
+};
+
+/// A painted Frame whose list is rebuilt from the list of the last painted Frame, its base, by copies and bytes of its own.
+struct FrameDelta {
+    uint64_t seq = 0;
+    State state;
+    uint64_t base = 0;
+    std::vector<DeltaRun> runs;
     wire::Damage damage;
 };
 
@@ -204,6 +229,11 @@ bool encode(const ImageRequest& message, const Caps& caps, std::string& out);
 bool encode(const PixelsRequest& message, const Caps& caps, std::string& out);
 bool encode(const WidthsRequest& message, const Caps& caps, std::string& out);
 bool encode_canvas_run(int32_t id, int32_t w, int32_t h, const std::vector<CanvasOp>& ops, const Caps& caps, std::string& out);
+bool encode(const FrameDelta& message, const Caps& caps, std::string& out);
+/// As encode(message, caps, out), and `list` where it wrote the list, its starts noted while the list keeps within `most` bytes; `list` untouched on false.
+bool encode(const Frame& message, const Caps& caps, std::string& out, size_t most, WrittenList& list);
+/// How many of `texts`, from `from` on, one WidthsRequest holds within `caps`, together with its WidthsAnswer: as many as encode() takes in order, 0 when even the first is past them.
+size_t widths_in_request(const std::vector<TextInFont>& texts, size_t from, const Caps& caps);
 
 bool decode(std::string_view message, const Caps& caps, FrameRequest& out);
 bool decode(std::string_view message, const Caps& caps, SetWidth& out);
@@ -232,6 +262,13 @@ bool decode(std::string_view message, const Caps& caps, WidthRequest& out);
 bool decode(std::string_view message, const Caps& caps, ImageRequest& out);
 bool decode(std::string_view message, const Caps& caps, PixelsRequest& out);
 bool decode(std::string_view message, const Caps& caps, WidthsRequest& out);
+bool decode(std::string_view message, const Caps& caps, FrameDelta& out);
+/// As decode(message, caps, out), and `list` views the bytes of a painted Frame's list in `message`, empty for an unpainted one; both untouched on false.
+bool decode(std::string_view message, const Caps& caps, Frame& out, std::string_view& list);
+/// A FrameDelta's seq and base, read from the fields after its header alone; it never stands in for decoding.
+bool delta_ids(std::string_view message, uint64_t& seq, uint64_t& base);
+/// The painted Frame a FrameDelta stands for, rebuilt on `base`, the list of painted Frame `base_seq`, with the rebuilt list's bytes in `list`; both untouched on false.
+bool rebuild(std::string_view message, const Caps& caps, uint64_t base_seq, std::string_view base, Frame& out, std::string& list);
 
 class Channel {
 public:

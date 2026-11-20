@@ -2270,6 +2270,58 @@ void encoder_enums() {
     }
 }
 
+/// The starts an encoder notes are where each command begins in what it wrote, counted from the list's first byte after a prefix too: the first commands alone encode to the same bytes up to the next start, shared payloads and references back to them included; a refusal leaves the bytes and the starts as they were.
+void command_starts(const Samples<DisplayList>& lists) {
+    context = "command starts";
+    DisplayList repeated(6);
+    const auto path = full_path(3);
+    for (size_t i = 0; i < repeated.size(); i++) {
+        repeated[i].kind = i % 3 ? Cmd::Path : Cmd::FillRect;
+        repeated[i].rect = {1, 2, 3, 4};
+        if (i % 3) repeated[i].path = path;
+    }
+    std::vector<std::pair<std::string, DisplayList>> all{{"the same commands again, sharing a path", repeated}};
+    for (const auto& s : lists) all.push_back({s.name, s.value});
+    for (const auto& [name, list] : all) {
+        const std::string what = "list " + name;
+        std::string plain;
+        if (!wire::encode(list, {}, plain)) {
+            check(false, what + ": encodes");
+            continue;
+        }
+        for (const std::string& before : {std::string(), EARLIER}) {
+            const std::string where = before.empty() ? "" : " after a prefix";
+            std::string out = before;
+            std::vector<size_t> starts{99};
+            const bool ok = wire::encode(list, {}, out, starts);
+            check(ok && out == before + plain, what + ": writes the same bytes" + where);
+            const bool counted = starts.size() == list.size() + 1 && starts.front() == 6 && starts.back() == plain.size();
+            check(counted, what + ": a start for each command, the first after the list's head, and the list's end" + where);
+            for (size_t i = 0; ok && counted && i < list.size(); i++) {
+                std::string first;
+                wire::encode(DisplayList(list.begin(), list.begin() + long(i + 1)), {}, first);
+                verify(starts[i + 1] == first.size() && plain.compare(starts[i], starts[i + 1] - starts[i], first, starts[i], first.size() - starts[i]) == 0,
+                    [&] { return what + ": command " + std::to_string(i) + " lies between its starts as the first commands alone encode it" + where; });
+            }
+            std::vector<size_t> within{99}, past{99}, head{99};
+            std::string at_most = before, short_by_one = before, headless = before;
+            check(wire::encode(list, {}, at_most, within, plain.size()) && at_most == before + plain && within == starts, what + ": a list as long as the bytes given keeps its starts" + where);
+            check(wire::encode(list, {}, short_by_one, past, plain.size() - 1) && short_by_one == before + plain && past.empty(),
+                what + ": a list a byte longer is written the same with no starts" + where);
+            check(wire::encode(list, {}, headless, head, 5) && headless == before + plain && head.empty(), what + ": so is any list given fewer bytes than its head" + where);
+        }
+    }
+    wire::Caps one;
+    one.commands = 1;
+    DisplayList bad(2);
+    bad[1].kind = Cmd(int(Cmd::Backdrop) + 1);
+    const std::vector<size_t> sentinel{7, 8};
+    std::string out = EARLIER;
+    std::vector<size_t> starts = sentinel;
+    check(!wire::encode(DisplayList(2), one, out, starts) && out == EARLIER && starts == sentinel, "a list past its command cap is refused, the bytes and the starts kept");
+    check(!wire::encode(bad, {}, out, starts) && out == EARLIER && starts == sentinel, "a command of a kind version 1 does not know is refused, the bytes and the starts kept");
+}
+
 } // namespace
 
 int main() {
@@ -2295,6 +2347,7 @@ int main() {
     for (const auto& s : batches) round_trip("batch " + s.name, s.value);
     for (const auto& s : damages) round_trip("damage " + s.name, s.value);
     for (const auto& s : metrics) round_trip("metrics " + s.name, s.value);
+    command_starts(lists);
 
     tables_per_value(named(lists, PAYLOADS), named(batches, PAYLOADS));
     alternate("lists", named(lists, EVERY_MEMBER), named(lists, PAYLOADS));

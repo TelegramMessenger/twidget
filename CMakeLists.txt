@@ -89,6 +89,7 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/filters.cpp"
     "${TW_CORE}/src/paint_policy.cpp"
     "${TW_CORE}/src/png.cpp"
+    "${TW_CORE}/src/text_widths.cpp"
     "${TW_GESTURE_POLICY}")
 add_library(twidget::core ALIAS twidget_core)
 target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" "${TW_SANDBOX_INCLUDE}" PRIVATE "${TW_GENERATED}")
@@ -256,6 +257,12 @@ if(TWIDGET_BUILD_TESTS)
     # The renderer end and a platform end over an in-memory channel, against a renderer called directly.
     add_executable(twidget_ends_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ends_tests.cpp")
     target_link_libraries(twidget_ends_tests PRIVATE twidget::renderer_end)
+    # The native thread library for its worker; an Emscripten build without -pthread leaves the worker out.
+    if(NOT EMSCRIPTEN)
+        set(THREADS_PREFER_PTHREAD_FLAG ON)
+        find_package(Threads REQUIRED)
+        target_link_libraries(twidget_ends_tests PRIVATE Threads::Threads)
+    endif()
     if(MSVC)
         target_compile_options(twidget_ends_tests PRIVATE /utf-8)
     endif()

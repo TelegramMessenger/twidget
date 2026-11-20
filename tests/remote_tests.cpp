@@ -47,8 +47,8 @@ static_assert(std::size(SPECIAL_DOUBLES) == SPECIALS);
 
 const Kind KINDS[] = {Kind::FrameRequest, Kind::SetWidth, Kind::SetMaxHeight, Kind::SetTheme, Kind::Touch, Kind::Hover, Kind::ClearSelection, Kind::ClaimQuery,
     Kind::FontAnswer, Kind::WidthAnswer, Kind::ImageAnswer, Kind::PixelsAnswer, Kind::WidthsAnswer, Kind::Frame, Kind::State, Kind::Messages, Kind::Pointer,
-    Kind::Selection, Kind::ClaimAnswer, Kind::FontRelease, Kind::CanvasRun, Kind::CanvasRelease, Kind::FontRequest, Kind::WidthRequest, Kind::ImageRequest,
-    Kind::PixelsRequest, Kind::WidthsRequest};
+    Kind::Selection, Kind::ClaimAnswer, Kind::FontRelease, Kind::CanvasRun, Kind::CanvasRelease, Kind::FrameDelta, Kind::FontRequest, Kind::WidthRequest,
+    Kind::ImageRequest, Kind::PixelsRequest, Kind::WidthsRequest};
 
 bool listed(uint32_t kind) {
     for (Kind k : KINDS)
@@ -236,6 +236,20 @@ template <class V> void walk(V& v, const At& at, const remote::WidthsRequest& a,
     walk(v, At{&at, "texts"}, a.texts, b.texts);
 }
 
+template <class V> void walk(V& v, const At& at, const remote::DeltaRun& a, const remote::DeltaRun& b) {
+    v.integer(At{&at, "offset"}, a.offset, b.offset);
+    v.integer(At{&at, "length"}, a.length, b.length);
+    v.raw(At{&at, "literal"}, a.literal, b.literal);
+}
+
+template <class V> void walk(V& v, const At& at, const remote::FrameDelta& a, const remote::FrameDelta& b) {
+    v.integer(At{&at, "seq"}, a.seq, b.seq);
+    walk_state(v, At{&at, "state"}, a.state, b.state);
+    v.integer(At{&at, "base"}, a.base, b.base);
+    walk(v, At{&at, "runs"}, a.runs, b.runs);
+    walk(v, At{&at, "damage"}, a.damage, b.damage);
+}
+
 /// The sharing patterns of the values a message carries, each within its own value.
 template <class T> Sharing shares(const T&) {
     return {};
@@ -343,6 +357,12 @@ std::vector<const void*> held(const remote::WidthsAnswer& m) {
 std::vector<const void*> held(const remote::WidthsRequest& m) {
     std::vector<const void*> out{m.texts.data()};
     for (const TextInFont& t : m.texts) out.push_back(t.text.data());
+    return out;
+}
+
+std::vector<const void*> held(const remote::FrameDelta& m) {
+    std::vector<const void*> out{m.runs.data(), m.damage ? m.damage->data() : nullptr};
+    for (const remote::DeltaRun& run : m.runs) out.push_back(run.literal.data());
     return out;
 }
 
@@ -490,6 +510,14 @@ void make_sentinel(remote::WidthsRequest& m) {
     m.texts = {{13, "a sentinel text longer than a small string's own room"}, {-14, "and a second"}};
 }
 
+void make_sentinel(remote::FrameDelta& m) {
+    m.seq = 66;
+    m.state = {7, 8, true, false, 9, true};
+    m.base = 65;
+    m.runs = {{1, 2, {}}, {0, 0, "a sentinel literal longer than a small string's own room"}};
+    m.damage = std::vector<Rect>{{1, 2, 3, 4}};
+}
+
 template <class T> T sentinel() {
     T value;
     make_sentinel(value);
@@ -554,6 +582,8 @@ remote::Caps tight() {
     c.values.text = 64;
     c.values.pixels = 64;
     c.values.rects = 4;
+    c.frame = 4096;
+    c.delta_base = 64;
     return c;
 }
 
@@ -880,6 +910,16 @@ Samples<remote::PixelsRequest> pixels_requests() {
         {"the most of both sides", {2, -1, -1, 4096, 4096}}, {"the widest, empty", {3, 0, 0, 8192, 0}}};
 }
 
+/// Within tight() caps, and each no shorter than the Frame it stands for, so that a message cap of its size takes it.
+Samples<remote::FrameDelta> frame_deltas() {
+    remote::FrameDelta literal{10, ordinary_state(), 9, {{0, 0, std::string("\x01\x01\x00\x00\x00\x00", 6)}}, std::nullopt};
+    remote::FrameDelta mixed{UINT64_MAX, special_state(), UINT64_MAX - 1, {{0, 6, {}}, {0, 0, "abc"}, {55, 9, {}}, {0, 0, std::string("\0\xff", 2)}},
+        std::vector<Rect>{{1, 2, 3, 4}, {0, 0, 0, 0}}};
+    put_bits((*mixed.damage)[1].w, SPECIAL_FLOATS[0]);
+    remote::FrameDelta still{1, {}, 0, {{3, 1, {}}}, std::vector<Rect>()};
+    return {{"one literal", literal}, {"copies and literals", mixed}, {"one byte copied, nothing moved", still}};
+}
+
 // ───────────────────────── Every kind ─────────────────────────
 
 /// What the checks did with one decoder.
@@ -1095,9 +1135,50 @@ void golden_bytes() {
     remote::Caps small;
     small.values.canvas_ops = 4;
     check(!remote::encode_canvas_run(1, 2, 3, ops, small, kept) && kept == EARLIER, "encode_canvas_run refuses a batch past its cap, the earlier value kept");
+
+    golden("a frame delta", remote::FrameDelta{2, {}, 1, {{6, 4, {}}, {0, 0, "ab"}}, std::nullopt},
+        unhex("49 01  02 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  00 00 00 00  00  00  00 00 00 00 00 00 f0 7f  00  01 00 00 00 00 00 00 00  06 00 00 00  02 00 00 00"
+              "  00  06 00 00 00  04 00 00 00  01  02 00 00 00 61 62  03 00 00 00 02 01 00"));
+    std::string list;
+    std::vector<size_t> starts;
+    check(wire::encode(compact_list(), {}, list, starts), "the compact list encodes with its starts");
+    const remote::Frame frame{5, ordinary_state(), true, compact_list(), std::vector<Rect>{{1, 2, 3, 4}}};
+    const remote::WrittenList untouched{1, 2, {3}};
+    remote::WrittenList where = untouched;
+    std::string written = EARLIER;
+    check(remote::encode(frame, {}, written, list.size(), where) && written == EARLIER + encoded(frame), "a painted Frame written with its list's place is the Frame's own bytes");
+    check(where.at == EARLIER.size() + 2 + 8 + 23 + 1 + 4 && where.size == list.size() && written.compare(where.at, where.size, list) == 0 && where.starts == starts,
+        "its list lies where the place says, after the header, seq, state, flag and length, with the list's own starts");
+    written.clear();
+    check(remote::encode(frame, {}, written, list.size() - 1, where) && written == encoded(frame) && where.size == list.size() && where.starts.empty(),
+        "a list a byte past the bytes given is written the same, with no starts");
+    remote::Caps one_short;
+    one_short.frame = encoded(frame).size() - 1;
+    written = EARLIER;
+    where = untouched;
+    check(!remote::encode(frame, one_short, written, SIZE_MAX, where) && written == EARLIER && where.at == 1 && where.size == 2 && where.starts == untouched.starts,
+        "a Frame past the frame cap is refused, the earlier value and the place kept");
+    const remote::Frame unpainted{6, {}, false, {}, std::nullopt};
+    written.clear();
+    check(remote::encode(unpainted, {}, written, SIZE_MAX, where) && written == encoded(unpainted) && where.size == 0 && where.starts.empty(), "an unpainted Frame has no list to place");
+    remote::Frame out;
+    std::string_view viewed = "kept";
+    const std::string bytes = encoded(frame);
+    check(remote::decode(bytes, {}, out, viewed) && viewed == list && viewed.data() >= bytes.data() && viewed.data() < bytes.data() + bytes.size(),
+        "a painted Frame's list is viewed where it lies in the message");
+    viewed = "kept";
+    check(remote::decode(encoded(remote::Frame{6, {}, false, {}, std::nullopt}), {}, out, viewed) && viewed.empty(), "an unpainted Frame views no list");
+    viewed = "kept";
+    check(!remote::decode(bytes, one_short, out, viewed) && viewed == "kept", "a Frame past the frame cap is refused, the view kept");
+    uint64_t seq = 0, base = 0;
+    const std::string delta = encoded(remote::FrameDelta{UINT64_MAX, special_state(), 0x0102030405060708, {{0, 0, "x"}}, std::nullopt});
+    check(remote::delta_ids(delta, seq, base) && seq == UINT64_MAX && base == 0x0102030405060708, "delta_ids reads a FrameDelta's seq and base");
+    seq = base = 7;
+    check(!remote::delta_ids(delta.substr(0, 40), seq, base) && seq == 7 && base == 7, "delta_ids needs both fields whole");
+    check(!remote::delta_ids(bytes, seq, base) && seq == 7 && base == 7, "delta_ids reads no other kind");
 }
 
-/// The kinds: 27 of them in four ranges by direction and role, kind_of naming exactly those of version 1 and looking at the header alone.
+/// The kinds: 28 of them in four ranges by direction and role, kind_of naming exactly those of version 1 and looking at the header alone.
 void kinds() {
     context = "kinds";
     std::set<uint32_t> values;
@@ -1107,10 +1188,10 @@ void kinds() {
         values.insert(v);
         platform += v >= 1 && v <= 8;
         answers += v >= 32 && v <= 36;
-        renderer += v >= 64 && v <= 72;
+        renderer += v >= 64 && v <= 73;
         requests += v >= 96 && v <= 100;
     }
-    check(values.size() == 27 && platform == 8 && answers == 5 && renderer == 9 && requests == 5, "27 kinds: 8 from the platform, 5 answers, 9 from the renderer, 5 requests");
+    check(values.size() == 28 && platform == 8 && answers == 5 && renderer == 10 && requests == 5, "28 kinds: 8 from the platform, 5 answers, 10 from the renderer, 5 requests");
     check(uint32_t(Kind::WidthsAnswer) - uint32_t(Kind::FontAnswer) == uint32_t(Kind::WidthsRequest) - uint32_t(Kind::FontRequest), "each answer is its request's kind less 64");
     check(remote::VERSION == 1, "version 1");
     for (uint32_t k = 0; k < 256; k++) {
@@ -1578,6 +1659,47 @@ void widths() {
     remote::WidthsRequest heavy = texts_of(1024, 64);
     heavy.texts.back().text += 'x';
     refused<remote::WidthsRequest>("1,024 texts of 64 KiB and a byte under a texts cap of 64 KiB", encoded(heavy, wider), caps);
+}
+
+/// The texts one request takes are exactly those encode() takes from there, in order, under every cap, and the answer to them encodes as well.
+void widths_in_requests() {
+    context = "widths in a request";
+    remote::WidthsRequest texts;
+    for (const char* t : {"a", "bb", "", "dddd", "eeeeeeee", "f", "gg", "hhhhhhhhhhhhhhhh", "i"}) texts.texts.push_back({int(texts.texts.size() % 3) + 1, t});
+    std::vector<std::pair<std::string, remote::Caps>> cases{{"the default caps", {}}, {"tight caps", tight()}};
+    const auto with = [&](const std::string& name, auto set) {
+        remote::Caps caps;
+        set(caps);
+        cases.push_back({name, caps});
+    };
+    with("a widths cap of 0", [](remote::Caps& c) { c.widths = 0; });
+    with("a widths cap of 4", [](remote::Caps& c) { c.widths = 4; });
+    with("a text cap of 4", [](remote::Caps& c) { c.text = 4; });
+    with("texts of 7 bytes together", [](remote::Caps& c) { c.widths_text = 7; });
+    with("texts of 15 bytes together", [](remote::Caps& c) { c.widths_text = 15; });
+    for (size_t message = 0; message <= 80; message++)
+        with("a message cap of " + std::to_string(message), [&](remote::Caps& c) { c.message = message; });
+    with("caps at SIZE_MAX", [](remote::Caps& c) { c.widths = c.text = c.widths_text = c.message = SIZE_MAX; });
+    size_t prefixes = 0;
+    for (const auto& [name, caps] : cases) {
+        for (size_t from = 0; from <= texts.texts.size(); from++) {
+            const size_t n = remote::widths_in_request(texts.texts, from, caps);
+            for (size_t k = 0; from + k <= texts.texts.size(); k++) {
+                const remote::WidthsRequest request{std::vector<TextInFont>(texts.texts.begin() + long(from), texts.texts.begin() + long(from + k))};
+                std::string bytes;
+                const bool taken = remote::encode(request, caps, bytes);
+                std::string answer;
+                const bool answered = remote::encode(remote::WidthsAnswer{std::vector<float>(k, 1.5f)}, caps, answer);
+                prefixes++;
+                verify(k == 0 || taken == (k <= n), [&] {
+                    return name + ": from text " + std::to_string(from) + ", " + std::to_string(n) + " in a request, but encode " + (taken ? "takes " : "refuses ") + std::to_string(k);
+                });
+                verify(!taken || answered, [&] { return name + ": the answer to " + std::to_string(k) + " texts from " + std::to_string(from) + " encodes too"; });
+            }
+        }
+    }
+    check(prefixes > 1000, "every prefix of nine texts is checked under " + std::to_string(cases.size()) + " caps (" + std::to_string(prefixes) + ")");
+    check(remote::widths_in_request(texts.texts, texts.texts.size() + 1, {}) == 0, "nothing past the last text");
 }
 
 /// An encoder checks a counted field's room before it appends: past the message cap, it asks the allocator for nothing.
@@ -2073,8 +2195,8 @@ std::string report_bytes(std::vector<std::string> texts) {
 
 size_t refusal_cases = 0;
 
-/// Every entry point of a refusing end does nothing: no message, no Backend call, no callback, false or 0 from each, its state kept.
-void inert(Session& s, const std::string& what) {
+/// Every entry point of a refusing end does nothing: no message, no Backend call, no callback, false or 0 from each, its state kept; the host heard of the stop `heard` times.
+void inert(Session& s, const std::string& what, size_t heard = 1) {
     const size_t sent = s.channel.sent.size(), calls = s.backend.calls.size(), events = s.host.events.size();
     const remote::State state = s.end.state();
     bool none = s.end.request_frame(true, remote::Paint::Force) == 0 && s.end.ask_claim(1, 2) == 0;
@@ -2090,11 +2212,11 @@ void inert(Session& s, const std::string& what) {
     std::string why;
     check(none && s.channel.sent.size() == sent && s.backend.calls.size() == calls && s.host.events.size() == events && equal(state, s.end.state(), why),
         what + ": every later call does nothing " + why);
-    check(s.end.refusing() && s.host.refusals.size() == 1, what + ": the host hears of it once");
+    check(s.end.refusing() && s.host.refusals.size() == heard, what + ": the host hears of it " + (heard ? "once" : "never"));
 }
 
-/// After `setup` on a fresh end, `bad` is refused with a reason, reaching neither the Backend nor the host, and leaves the end inert; after the same setup on another, `good` is taken.
-void refusal_case(const std::string& what, Setup setup, const std::string& bad, const std::string& good = {}, bool request = false) {
+/// After `setup` on a fresh end, `bad` is refused with a reason, `reason` when one is given, reaching neither the Backend nor the host, and leaves the end inert; after the same setup on another, `good` is taken.
+void refusal_case(const std::string& what, Setup setup, const std::string& bad, const std::string& good = {}, bool request = false, const std::string& reason = {}) {
     refusal_cases++;
     if (!good.empty()) {
         Session control;
@@ -2109,7 +2231,9 @@ void refusal_case(const std::string& what, Setup setup, const std::string& bad, 
     const size_t calls = s.backend.calls.size(), events = s.host.events.size();
     std::string reply = "kept";
     const bool taken = request ? s.end.answer(bad, reply) : s.end.receive(bad);
-    check(!taken && s.end.refusing() && s.host.refusals.size() == 1 && !s.host.refusals[0].empty(), what + ": refused with a reason");
+    const std::string heard = s.host.refusals.empty() ? std::string() : s.host.refusals[0];
+    check(!taken && s.end.refusing() && s.host.refusals.size() == 1 && !heard.empty() && (reason.empty() || heard == reason),
+        what + ": refused with " + (reason.empty() ? std::string("a reason") : "\"" + reason + "\", not \"" + heard + "\""));
     check(reply == "kept" && s.backend.calls.size() == calls && s.host.events.size() == events, what + ": nothing reaches the Backend or the host, the reply untouched");
     inert(s, what);
 }
@@ -2122,6 +2246,7 @@ std::vector<std::pair<Kind, std::string>> every_kind() {
         {Kind::Frame, encoded(remote::Frame{})}, {Kind::State, encoded(remote::State{})}, {Kind::Messages, encoded(remote::Messages{})},
         {Kind::Pointer, encoded(remote::Pointer{})}, {Kind::Selection, encoded(remote::Selection{})}, {Kind::ClaimAnswer, encoded(remote::ClaimAnswer{})},
         {Kind::FontRelease, encoded(remote::FontRelease{})}, {Kind::CanvasRun, encoded(remote::CanvasRun{})}, {Kind::CanvasRelease, encoded(remote::CanvasRelease{})},
+        {Kind::FrameDelta, encoded(remote::FrameDelta{0, {}, 0, {{0, 0, "x"}}, std::nullopt})},
         {Kind::FontRequest, encoded(remote::FontRequest{})}, {Kind::WidthRequest, encoded(remote::WidthRequest{})}, {Kind::ImageRequest, encoded(remote::ImageRequest{})},
         {Kind::PixelsRequest, encoded(remote::PixelsRequest{})}, {Kind::WidthsAnswer, encoded(remote::WidthsAnswer{})},
         {Kind::WidthsRequest, encoded(remote::WidthsRequest{})}};
@@ -2173,7 +2298,7 @@ void session_refusals() {
 
     for (const auto& [kind, bytes] : every_kind()) {
         const uint32_t k = uint32_t(kind);
-        const bool one_way = k >= 64 && k <= 72, request = k >= 96;
+        const bool one_way = k >= 64 && k <= 73, request = k >= 96;
         if (!one_way) refusal_case("kind " + std::to_string(k) + " as a one-way message", no_setup, bytes);
         if (!request) refusal_case("kind " + std::to_string(k) + " as a request", no_setup, bytes, {}, true);
     }
@@ -2186,7 +2311,7 @@ void session_refusals() {
     refusal_case("no bytes", no_setup, "", state);
     refusal_case("a kind alone", no_setup, state.substr(0, 1), state);
     refusal_case("kind 0", no_setup, Bytes().u8(0).u8(1).raw(state.substr(2)).s, state);
-    refusal_case("kind 73", no_setup, Bytes().u8(73).u8(1).raw(state.substr(2)).s, state);
+    refusal_case("kind 74", no_setup, Bytes().u8(74).u8(1).raw(state.substr(2)).s, state);
     refusal_case("kind 255", no_setup, Bytes().u8(255).u8(1).raw(state.substr(2)).s, state);
     refusal_case("a state of version 0", no_setup, versioned(state, 0), state);
     refusal_case("a state of version 2", no_setup, versioned(state, 2), state);
@@ -2275,6 +2400,447 @@ void session_queue() {
     inert(u, "a stop from a callback");
 }
 
+// ───────────────────────── Frame deltas rebuilt ─────────────────────────
+
+std::string list_bytes(const DisplayList& list) {
+    std::string out;
+    if (!wire::encode(list, {}, out)) check(false, "a list the checks build encodes");
+    return out;
+}
+
+/// Runs that rebuild `list` from `base` without looking at commands: a copy of the bytes they begin with alike, the rest of `list` as it is, then a copy of the bytes they end with alike.
+std::vector<remote::DeltaRun> ends_alike(std::string_view base, std::string_view list) {
+    size_t head = 0, tail = 0;
+    while (head < base.size() && head < list.size() && base[head] == list[head]) head++;
+    while (tail < base.size() - head && tail < list.size() - head && base[base.size() - 1 - tail] == list[list.size() - 1 - tail]) tail++;
+    std::vector<remote::DeltaRun> runs;
+    if (head) runs.push_back({0, uint32_t(head), {}});
+    if (list.size() > head + tail) runs.push_back({0, 0, std::string(list.substr(head, list.size() - head - tail))});
+    if (tail) runs.push_back({uint32_t(base.size() - tail), uint32_t(tail), {}});
+    return runs;
+}
+
+/// A rebuild in the allocation scope, held to what its message and its base allow together.
+bool rebuilt(std::string_view message, const remote::Caps& caps, uint64_t base_seq, std::string_view base, remote::Frame& out, std::string& list, Measured* measured = nullptr) {
+    const Measured m = measure(message.size() + base.size(), [&] { return remote::rebuild(message, caps, base_seq, base, out, list); });
+    last_decode = m;
+    measured_decodes++;
+    if (measured) *measured = m;
+    verify(!m.threw && !m.scope.over, [&] {
+        return context + ": a rebuild of " + std::to_string(message.size()) + " bytes on " + std::to_string(base.size()) + " " + (m.threw ? "threw" : "returned") + " after asking for "
+            + std::to_string(m.scope.asked) + " bytes against a budget of " + std::to_string(budget(message.size() + base.size()));
+    });
+    return m.ok && !m.threw;
+}
+
+/// `message` is not rebuilt on `base`, the Frame and the list given keep what they held, and the refusal asks for no room the delta declares; `nothing` when it must ask for nothing at all.
+void not_rebuilt(const std::string& what, std::string_view message, const remote::Caps& caps, uint64_t base_seq, std::string_view base, bool nothing = false) {
+    const remote::Frame expected = sentinel<remote::Frame>();
+    remote::Frame out = expected;
+    const std::vector<const void*> before = held(out);
+    const std::string kept = "a rebuilt list the refusal leaves alone, longer than a small string's room";
+    std::string list = kept;
+    const char* const data = list.data();
+    Measured m;
+    const bool taken = rebuilt(message, caps, base_seq, base, out, list, &m);
+    std::string why;
+    const bool alone = equal(expected, out, why) && held(out) == before && list == kept && list.data() == data;
+    verify(!taken && alone, [&] { return what + (taken ? ": rebuilt" : ": the outputs changed " + why); });
+    verify(!nothing || m.scope.asked == 0, [&] { return what + ": the refusal asked for " + std::to_string(m.scope.asked) + " bytes"; });
+    verify(m.scope.asked <= message.size() * PER_BYTE + FIXED, [&] { return what + ": the refusal asked for " + std::to_string(m.scope.asked) + " bytes, past what its message allows"; });
+}
+
+/// Two lists a FrameDelta goes between, the later with its damage.
+struct DeltaCase {
+    std::string name;
+    DisplayList base, list;
+    wire::Damage damage;
+};
+
+DisplayList moved_list() {
+    DisplayList list = compact_list();
+    list[1].x = 9.5f;
+    return list;
+}
+
+std::vector<DeltaCase> delta_cases() {
+    DisplayList longer = compact_list();
+    longer.push_back(longer[3]);
+    DisplayList shorter = compact_list();
+    shorter.erase(shorter.begin() + 2);
+    return {
+        {"one member changed", compact_list(), moved_list(), std::vector<Rect>{{1, 2, 3, 4}}},
+        {"the same list", compact_list(), compact_list(), std::vector<Rect>()},
+        {"a command added that refers back to a shared path", compact_list(), longer, std::nullopt},
+        {"a shared path's first user removed", compact_list(), shorter, std::nullopt},
+        {"from an empty list", DisplayList(), compact_list(), std::nullopt},
+        {"to an empty list", compact_list(), DisplayList(), std::vector<Rect>()},
+    };
+}
+
+/// Each case's delta rebuilds its Frame member by member and its list's own bytes, wherever the base lies; every cut, a byte after it and another base are refused.
+void deltas_rebuilt() {
+    context = "frame deltas rebuilt";
+    for (const DeltaCase& c : delta_cases()) {
+        const std::string what = "a delta with " + c.name;
+        const std::string base = list_bytes(c.base), list = list_bytes(c.list);
+        const remote::FrameDelta delta{77, ordinary_state(), 76, ends_alike(base, list), c.damage};
+        const std::string bytes = encoded(delta);
+        const remote::Frame expected{77, ordinary_state(), true, c.list, c.damage};
+        remote::Frame out = sentinel<remote::Frame>();
+        std::string again = "a list the rebuild replaces";
+        std::string why;
+        check(rebuilt(bytes, {}, 76, base, out, again) && equal(expected, out, why), what + ": rebuilds the Frame member by member, its payloads shared alike " + why);
+        check(again == list, what + ": the rebuilt bytes are the list's own");
+        std::string whole;
+        remote::WrittenList where;
+        check(remote::encode(expected, {}, whole, SIZE_MAX, where) && where.size == again.size() && whole.compare(where.at, where.size, again) == 0,
+            what + ": the rebuilt list is the one the Frame it stands for holds");
+        const std::string padded = EARLIER + base + EARLIER;
+        remote::Frame inside;
+        check(rebuilt(bytes, {}, 76, std::string_view(padded).substr(EARLIER.size(), base.size()), inside, again) && equal(expected, inside, why),
+            what + ": rebuilds on a base inside a larger buffer " + why);
+        remote::FrameDelta decoded_delta;
+        check(decoded(bytes, {}, decoded_delta) && equal(delta, decoded_delta, why), what + ": decodes as a FrameDelta member by member " + why);
+        for (size_t n = 0; n < bytes.size(); n++) not_rebuilt(what + " cut to " + std::to_string(n) + " bytes", std::string_view(bytes).substr(0, n), {}, 76, base);
+        not_rebuilt(what + " with a byte after it", bytes + '\0', {}, 76, base);
+        not_rebuilt(what + " twice over", bytes + bytes, {}, 76, base);
+        not_rebuilt(what + " on frame 75", bytes, {}, 75, base, true);
+        not_rebuilt(what + " on frame 77", bytes, {}, 77, base, true);
+        if (!base.empty() && delta.runs.back().literal.empty()) not_rebuilt(what + " on a base a byte short", bytes, {}, 76, std::string_view(base).substr(0, base.size() - 1), true);
+    }
+}
+
+/// A FrameDelta's bytes up to its runs, laid out by hand: seq 2, a default state, base 1, the declared length and run count.
+Bytes delta_head(uint32_t length, uint32_t runs, uint64_t base = 1) {
+    Bytes b;
+    b.head(Kind::FrameDelta).u64(2).state({}).u64(base).u32(length).u32(runs);
+    return b;
+}
+
+std::string no_damage() {
+    std::string out;
+    wire::encode(wire::Damage(), {}, out);
+    return out;
+}
+
+std::string with_damage(Bytes b, const std::string& damage) {
+    return b.value(damage).s;
+}
+
+/// Delta bytes taken and refused against compact_list()'s, every refusal of a run before the delta's list is made.
+void delta_bytes() {
+    context = "frame delta bytes";
+    const std::string base = list_bytes(compact_list()), list = list_bytes(moved_list()), damage = no_damage();
+    const auto with = [&](Bytes b) { return with_damage(std::move(b), damage); };
+    remote::Frame out;
+    std::string again;
+    check(rebuilt(with(delta_head(uint32_t(list.size()), 1).u8(1).str(list)), {}, 1, base, out, again) && again == list, "one literal of the whole list is taken");
+    const size_t keep = list.size() - 4;
+    check(rebuilt(with(delta_head(uint32_t(list.size()), 2).u8(1).str(list.substr(0, keep)).u8(1).str(list.substr(keep))), {}, 1, base, out, again) && again == list,
+        "two literals that follow each other are taken");
+    for (uint32_t tag : {2u, 3u, 0x80u, 0xffu})
+        not_rebuilt("a run of tag " + std::to_string(tag), with(delta_head(uint32_t(list.size()), 1).u8(tag).str(list)), {}, 1, base, true);
+    not_rebuilt("a copy of no bytes", with(delta_head(uint32_t(list.size()), 2).u8(0).u32(0).u32(0).u8(1).str(list)), {}, 1, base, true);
+    not_rebuilt("a literal of no bytes", with(delta_head(uint32_t(list.size()), 2).u8(1).str("").u8(1).str(list)), {}, 1, base, true);
+    not_rebuilt("runs a byte short of the declared length", with(delta_head(uint32_t(list.size() + 1), 1).u8(1).str(list)), {}, 1, base, true);
+    not_rebuilt("runs a byte past the declared length", with(delta_head(uint32_t(list.size() - 1), 1).u8(1).str(list)), {}, 1, base, true);
+    not_rebuilt("a second run past the declared length", with(delta_head(uint32_t(list.size()), 2).u8(1).str(list).u8(0).u32(0).u32(1)), {}, 1, base, true);
+    not_rebuilt("a run count past the runs given", with(delta_head(uint32_t(list.size()), 2).u8(1).str(list)), {}, 1, base, true);
+    not_rebuilt("a run count past what the bytes hold", with(delta_head(uint32_t(list.size()), 0xffffffff).u8(1).str(list)), {}, 1, base, true);
+    not_rebuilt("no runs", with(delta_head(uint32_t(list.size()), 0)), {}, 1, base, true);
+    not_rebuilt("a declared length of 0", with(delta_head(0, 0)), {}, 1, base, true);
+    not_rebuilt("a literal longer than the bytes left", delta_head(uint32_t(list.size()), 1).u8(1).u32(uint32_t(list.size() + 100)).raw(list).value(damage).s, {}, 1, base, true);
+    const uint32_t size = uint32_t(base.size());
+    const struct {
+        const char* what;
+        uint32_t offset, length;
+    } copies[] = {
+        {"a copy one byte past the base", size - 3, 4},
+        {"a copy from the base's end", size, 1},
+        {"a copy whose end wraps 32 bits", 0xffffffff, 2},
+        {"a copy of 2^32 - 1 bytes", 0, 0xffffffff},
+        {"a copy from 2^31", 0x80000000, 1},
+    };
+    for (const auto& c : copies) {
+        const uint32_t length = c.length > 0x10000 ? uint32_t(list.size()) : uint32_t(list.size()) + c.length;
+        not_rebuilt(c.what, with(delta_head(length, 2).u8(0).u32(c.offset).u32(c.length).u8(1).str(list)), {}, 1, base, true);
+    }
+    not_rebuilt("the base's last 4 bytes after the list, which make no list", with(delta_head(uint32_t(list.size() + 4), 2).u8(1).str(list).u8(0).u32(size - 4).u32(4)), {}, 1, base);
+    not_rebuilt("a list that does not decode", with(delta_head(3, 1).u8(1).str("xyz")), {}, 1, base);
+    std::vector<size_t> starts;
+    std::string scratch;
+    check(wire::encode(compact_list(), {}, scratch, starts), "the compact list encodes with its starts");
+    const std::string one = list_bytes(DisplayList(1)).substr(0, 6);
+    not_rebuilt("a copied reference to a payload the list has not made",
+        with(delta_head(uint32_t(6 + starts[4] - starts[3]), 2).u8(1).str(one).u8(0).u32(uint32_t(starts[3])).u32(uint32_t(starts[4] - starts[3]))), {}, 1, base);
+    not_rebuilt("a damage that does not decode", delta_head(uint32_t(list.size()), 1).u8(1).str(list).value("xx").s, {}, 1, base);
+    not_rebuilt("a damage longer than the bytes left", delta_head(uint32_t(list.size()), 1).u8(1).str(list).u32(uint32_t(damage.size() + 1)).raw(damage).s, {}, 1, base);
+    not_rebuilt("a byte after the damage", with(delta_head(uint32_t(list.size()), 1).u8(1).str(list)) + '\0', {}, 1, base);
+    not_rebuilt("another kind", Bytes().head(Kind::Frame).raw(with(delta_head(uint32_t(list.size()), 1).u8(1).str(list)).substr(2)).s, {}, 1, base, true);
+    std::string version = with(delta_head(uint32_t(list.size()), 1).u8(1).str(list));
+    version[1] = 2;
+    not_rebuilt("version 2", version, {}, 1, base, true);
+}
+
+/// The declared length, the run count, the copy bound, the frame and message caps and the base cap, each taken at its bound and refused one past it before the list is made.
+void delta_bounds() {
+    context = "frame delta bounds";
+    const std::string base = list_bytes(compact_list()), list = list_bytes(moved_list()), damage = no_damage();
+    const remote::FrameDelta delta{2, {}, 1, ends_alike(base, list), std::nullopt};
+    const std::string bytes = encoded(delta);
+    const std::string whole = encoded(remote::Frame{2, {}, true, moved_list(), std::nullopt});
+    remote::Frame out;
+    std::string again;
+    remote::Caps at, below;
+    at.delta_base = std::max(base.size(), list.size());
+    below.delta_base = at.delta_base - 1;
+    check(rebuilt(bytes, at, 1, base, out, again), "a list and a base as long as delta_base are taken");
+    not_rebuilt("a list or a base a byte past delta_base", bytes, below, 1, base, true);
+    remote::Caps none;
+    none.delta_base = 0;
+    not_rebuilt("a delta under a delta_base of 0", bytes, none, 1, base, true);
+    const std::string tiny = list_bytes(DisplayList(1));
+    const std::string to_tiny = encoded(remote::FrameDelta{2, {}, 1, {{0, 0, tiny}}, std::nullopt});
+    check(rebuilt(to_tiny, remote::Caps{.delta_base = base.size()}, 1, base, out, again) && again == tiny, "a short list on a base as long as delta_base is taken");
+    not_rebuilt("a short list on a base a byte past delta_base", to_tiny, remote::Caps{.delta_base = base.size() - 1}, 1, base, true);
+    remote::FrameDelta struct_out;
+    check(decoded(bytes, at, struct_out), "the FrameDelta decodes under the same delta_base");
+    refused<remote::FrameDelta>("the FrameDelta under a delta_base a byte shorter", bytes, below);
+    std::string kept = EARLIER;
+    check(!remote::encode(delta, remote::Caps{.delta_base = list.size() - 1}, kept) && kept == EARLIER, "encoding a delta whose list passes delta_base is refused, the earlier value kept");
+    not_rebuilt("a declared length past delta_base", with_damage(delta_head(uint32_t(remote::Caps().delta_base + 1), 1).u8(1).str(std::string(remote::Caps().delta_base + 1, 'x')), damage),
+        {}, 1, base, true);
+    not_rebuilt("a declared length of 2^32 - 1", with_damage(delta_head(0xffffffff, 1).u8(1).str(list), damage), {}, 1, base, true);
+
+    remote::Caps frame_at, frame_below, message_at, message_below;
+    frame_at.frame = whole.size();
+    frame_below.frame = whole.size() - 1;
+    message_at.message = std::max(whole.size(), bytes.size());
+    message_below.message = message_at.message - 1;
+    check(whole.size() > bytes.size(), "the delta is shorter than the Frame it stands for");
+    check(rebuilt(bytes, frame_at, 1, base, out, again), "a delta whose Frame is as long as the frame cap is taken");
+    not_rebuilt("a delta whose Frame is a byte past the frame cap", bytes, frame_below, 1, base, true);
+    check(rebuilt(bytes, message_at, 1, base, out, again), "a delta whose Frame is as long as the message cap is taken");
+    not_rebuilt("a delta whose Frame is a byte past the message cap", bytes, message_below, 1, base, true);
+    check(decoded(bytes, frame_at, struct_out) && decoded(bytes, message_at, struct_out), "the FrameDelta decodes under the same caps");
+    refused<remote::FrameDelta>("the FrameDelta whose Frame is a byte past the frame cap", bytes, frame_below);
+    refused<remote::FrameDelta>("the FrameDelta whose Frame is a byte past the message cap", bytes, message_below);
+    kept = EARLIER;
+    check(!remote::encode(delta, frame_below, kept) && kept == EARLIER, "encoding a delta whose Frame passes the frame cap is refused, the earlier value kept");
+    remote::Caps own;
+    own.frame = bytes.size() - 1;
+    not_rebuilt("a delta itself a byte past the frame cap", bytes, own, 1, base, true);
+    const wire::Damage rects = std::vector<Rect>(64, Rect{1, 2, 3, 4});
+    const remote::FrameDelta damaged{2, {}, 1, ends_alike(base, list), rects};
+    const std::string damaged_bytes = encoded(damaged), damaged_whole = encoded(remote::Frame{2, {}, true, moved_list(), rects});
+    remote::Caps damaged_at, damaged_below;
+    damaged_at.frame = damaged_whole.size();
+    damaged_below.frame = damaged_whole.size() - 1;
+    check(damaged_bytes.size() <= damaged_below.frame && std::any_of(damaged.runs.begin(), damaged.runs.end(), [](const remote::DeltaRun& r) { return !r.literal.empty(); }), "a delta with a literal and 64 damage rects is shorter than its Frame");
+    check(rebuilt(damaged_bytes, damaged_at, 1, base, out, again) && again == list && out.damage && out.damage->size() == 64, "a delta with damage whose Frame is as long as the frame cap is taken");
+    not_rebuilt("a delta with damage whose Frame is a byte past the frame cap", damaged_bytes, damaged_below, 1, base, true);
+    check(decoded(damaged_bytes, damaged_at, struct_out) && struct_out.damage && struct_out.damage->size() == 64, "the FrameDelta with damage decodes under the same cap");
+    refused<remote::FrameDelta>("the FrameDelta with damage whose Frame is a byte past the frame cap", damaged_bytes, damaged_below);
+    check(last_decode.scope.asked == 0, "its refusal asks for nothing: neither the runs, the literal nor the damage are made first");
+
+    const DisplayList all = compact_list();
+    const DisplayList three(all.begin(), all.begin() + 3);
+    const std::string short_list = list_bytes(three);
+    remote::Caps commands;
+    commands.values.commands = 3;
+    const auto pieces = [&](size_t n) {
+        remote::FrameDelta d{2, {}, 1, {}, std::nullopt};
+        for (size_t i = 0; i < n; i++) {
+            const size_t from = short_list.size() * i / n, to = short_list.size() * (i + 1) / n;
+            d.runs.push_back({0, 0, short_list.substr(from, to - from)});
+        }
+        return d;
+    };
+    check(rebuilt(encoded(pieces(4)), commands, 1, base, out, again) && again == short_list, "a command cap of 3 takes 4 runs");
+    not_rebuilt("5 runs under a command cap of 3", encoded(pieces(5)), commands, 1, base, true);
+    refused<remote::FrameDelta>("the FrameDelta of 5 runs under a command cap of 3", encoded(pieces(5)), commands);
+    kept = EARLIER;
+    check(!remote::encode(pieces(5), commands, kept) && kept == EARLIER, "encoding 5 runs under a command cap of 3 is refused, the earlier value kept");
+
+    DisplayList four(4), more(5);
+    for (DisplayList* l : {&four, &more})
+        for (Command& c : *l) {
+            c.rect = {1, 2, 3, 4};
+            c.color = {9, 8, 7, 255};
+        }
+    const std::string repeated_base = list_bytes(four), longer = list_bytes(more);
+    const uint32_t command = uint32_t((repeated_base.size() - 6) / 4);
+    const auto copied = [&](size_t n) {
+        Bytes b = delta_head(uint32_t(6 + n * command), uint32_t(1 + n));
+        b.u8(1).str(list_bytes(n == 4 ? four : more).substr(0, 6));
+        for (size_t i = 0; i < n; i++) b.u8(0).u32(6).u32(command);
+        return b.value(damage).s;
+    };
+    check(rebuilt(copied(4), {}, 1, repeated_base, out, again) && again == repeated_base, "one command copied 4 times, no more than the base holds, is taken");
+    not_rebuilt("one command copied 5 times, past what the base holds", copied(5), {}, 1, repeated_base, true);
+    check(rebuilt(with_damage(delta_head(uint32_t(longer.size()), 1).u8(1).str(longer), damage), {}, 1, repeated_base, out, again) && again == longer,
+        "the same list as one literal is taken");
+}
+
+// ───────────────────────── A platform end's frame deltas ─────────────────────────
+
+std::string whole_frame(uint64_t seq, const DisplayList& list) {
+    return encoded(remote::Frame{seq, {}, true, list, std::nullopt});
+}
+
+/// A FrameDelta from `from` to `to` that copies from painted frame `base`.
+std::string delta_frame(uint64_t seq, uint64_t base, const DisplayList& from, const DisplayList& to) {
+    return encoded(remote::FrameDelta{seq, ordinary_state(), base, ends_alike(list_bytes(from), list_bytes(to)), std::vector<Rect>{{1, 1, 2, 2}}});
+}
+
+DisplayList third_list() {
+    DisplayList list = moved_list();
+    list.push_back(list[3]);
+    return list;
+}
+
+/// Frame 1 painted whole with compact_list(), then frame 2 asked for.
+void painted_once(remote::PlatformEnd& e) {
+    e.request_frame(true, remote::Paint::IfDirty);
+    e.receive(whole_frame(1, compact_list()));
+    e.request_frame(true, remote::Paint::IfDirty);
+}
+
+/// Painted frames whole and as deltas reach the host alike, each delta copying from the last painted list, which an unpainted frame keeps, a list past delta_base drops and a refusal clears.
+void session_deltas() {
+    context = "a platform end's frame deltas";
+    std::string why;
+    const DisplayList a = compact_list(), b = moved_list(), c = third_list();
+    {
+        Session s;
+        const uint64_t first = s.end.request_frame(true, remote::Paint::IfDirty);
+        check(s.end.receive(whole_frame(first, a)), "a whole painted frame is taken");
+        const uint64_t second = s.end.request_frame(true, remote::Paint::IfDirty);
+        check(s.end.receive(delta_frame(second, first, a, b)), "a delta that copies from it is taken");
+        const remote::Frame expected{second, ordinary_state(), true, b, std::vector<Rect>{{1, 1, 2, 2}}};
+        check(s.host.frames.size() == 2 && equal(expected, s.host.frames[1], why), "the host gets the Frame the delta stands for, member by member " + why);
+        check(heard_in(s, expected.state, why) && equal(expected.state, s.end.state(), why), "the end's state is the delta's when the host hears of it " + why);
+        const uint64_t third = s.end.request_frame(false, remote::Paint::IfDirty);
+        check(give(s, remote::Frame{third, {}, false, {}, std::nullopt}), "an unpainted frame is taken");
+        const uint64_t fourth = s.end.request_frame(true, remote::Paint::Force);
+        check(s.end.receive(delta_frame(fourth, second, b, c)), "the next delta copies from the last painted frame, across the unpainted one");
+        check(s.host.frames.size() == 4 && s.host.frames[3].seq == fourth && same(c, s.host.frames[3].list, why), "its list is the delta's " + why);
+        const uint64_t fifth = s.end.request_frame(true, remote::Paint::Force);
+        check(give(s, remote::Frame{fifth, {}, true, a, std::nullopt}), "a whole frame after deltas is taken");
+        const uint64_t sixth = s.end.request_frame(true, remote::Paint::Force);
+        check(s.end.receive(delta_frame(sixth, fifth, a, a)) && same(a, s.host.frames.back().list, why), "a delta that copies all of the whole frame is taken " + why);
+        check(callbacks(s) == "frame frame frame frame frame frame" && s.backend.calls.size() == 6 && s.backend.count(Call::Frame) == 6 && !s.end.refusing(),
+            "the host hears each frame once and the Backend nothing else: " + callbacks(s));
+    }
+    {
+        Session s;
+        const uint64_t first = s.end.request_frame(true, remote::Paint::IfDirty);
+        check(s.end.receive(whole_frame(first, a)), "a whole painted frame is taken");
+        const uint64_t second = s.end.request_frame(true, remote::Paint::IfDirty);
+        check(give(s, remote::CanvasRun{1, 10, 10, compact_batch()}) && s.end.receive(delta_frame(second, first, a, b)) && give(s, remote::FontRelease{4}) && give(s, remote::CanvasRelease{1}),
+            "a batch, a delta, a font release and a canvas release are taken");
+        std::string ops;
+        for (const Call& call : s.backend.calls) ops += std::to_string(int(call.op)) + " ";
+        check(s.backend.calls.size() == 5 && s.backend.calls[1].op == Call::CanvasRun && s.backend.calls[2].op == Call::Frame && s.backend.calls[3].op == Call::DeleteFont
+                && s.backend.calls[4].op == Call::CanvasRelease,
+            "the Backend sees the batch, the delta's frame and the releases in the order they came: " + ops);
+    }
+    remote::Caps small;
+    small.delta_base = list_bytes(a).size() - 1;
+    {
+        Session s(small);
+        const uint64_t first = s.end.request_frame(true, remote::Paint::IfDirty);
+        check(s.end.receive(whole_frame(first, DisplayList(1))), "a short whole frame is taken");
+        const uint64_t second = s.end.request_frame(true, remote::Paint::IfDirty);
+        check(s.end.receive(whole_frame(second, a)), "a whole frame past delta_base is taken");
+        const uint64_t third = s.end.request_frame(true, remote::Paint::IfDirty);
+        check(!s.end.receive(delta_frame(third, first, DisplayList(1), DisplayList(2))) && s.host.refusals.size() == 1
+                && s.host.refusals[0] == "a message of kind 73 with no painted list kept to copy from" && s.host.frames.size() == 2,
+            "a frame past delta_base drops the list kept before it, and a delta on either is refused");
+    }
+    const std::string good = delta_frame(2, 1, compact_list(), moved_list());
+    const std::string base = list_bytes(compact_list());
+    const std::string no_list = "a message of kind 73 with no painted list kept to copy from", undecoded = "a message of kind 73 did not decode",
+                      unbuilt = "a message of kind 73 did not rebuild a frame";
+    refusal_case("a delta with no frame painted before", [](remote::PlatformEnd& e) { e.request_frame(true, remote::Paint::IfDirty); },
+        delta_frame(1, 0, DisplayList(), compact_list()), whole_frame(1, compact_list()), false, no_list);
+    refusal_case("a delta after only an unpainted frame", [](remote::PlatformEnd& e) {
+        e.request_frame(true, remote::Paint::IfDirty);
+        e.receive(frame_bytes(1));
+        e.request_frame(true, remote::Paint::IfDirty);
+    }, delta_frame(2, 1, compact_list(), moved_list()), whole_frame(2, moved_list()), false, no_list);
+    refusal_case("a delta copying from an older painted frame", [](remote::PlatformEnd& e) {
+        painted_once(e);
+        e.receive(whole_frame(2, moved_list()));
+        e.request_frame(true, remote::Paint::IfDirty);
+    }, delta_frame(3, 1, compact_list(), third_list()), delta_frame(3, 2, moved_list(), third_list()), false, "a message of kind 73 copying from frame 1 where 2 was painted last");
+    refusal_case("a delta for another request", painted_once, delta_frame(3, 1, compact_list(), moved_list()), good, false, "a message of kind 73 for request 3 where 2 was due");
+    refusal_case("a delta copying from frame 0", painted_once, delta_frame(2, 0, compact_list(), moved_list()), good, false,
+        "a message of kind 73 copying from frame 0 where 1 was painted last");
+    refusal_case("a delta where a pointer report was due", [](remote::PlatformEnd& e) {
+        e.request_frame(true, remote::Paint::IfDirty);
+        e.receive(whole_frame(1, compact_list()));
+        e.touch(1, 1, 1, 1, true);
+        e.request_frame(true, remote::Paint::IfDirty);
+    }, delta_frame(2, 1, compact_list(), moved_list()), pointer_bytes(), false, "a message of kind 73 where kind 67 was due");
+    refusal_case("an unsolicited delta", [](remote::PlatformEnd& e) {
+        e.request_frame(true, remote::Paint::IfDirty);
+        e.receive(whole_frame(1, compact_list()));
+    }, delta_frame(2, 1, compact_list(), moved_list()), {}, false, "an unsolicited message of kind 73");
+    refusal_case("a delta copying past its base", painted_once,
+        with_damage(delta_head(uint32_t(5 + base.size()), 2).u8(0).u32(0).u32(uint32_t(base.size() + 1)).u8(1).str("abcd"), no_damage()), good, false, unbuilt);
+    refusal_case("a delta whose list does not decode", painted_once, with_damage(delta_head(3, 1).u8(1).str("xyz"), no_damage()), good, false, unbuilt);
+    refusal_case("a delta of an unknown run", painted_once, with_damage(delta_head(3, 1).u8(2).str("xyz"), no_damage()), good, false, unbuilt);
+    refusal_case("a delta whose runs fall short of its length", painted_once, with_damage(delta_head(4, 1).u8(1).str("xyz"), no_damage()), good, false, unbuilt);
+    for (size_t n : {size_t(2), size_t(40), size_t(41), size_t(60), good.size() - 1})
+        refusal_case("a delta cut to " + std::to_string(n) + " bytes", painted_once, good.substr(0, n), good, false, n < 41 ? undecoded : unbuilt);
+    refusal_case("a delta with a byte after it", painted_once, good + '\0', good, false, unbuilt);
+}
+
+/// An end its embedder closes stops for good without a word to the host: the frame it asked for and a delta on the list it kept are refused quietly, every later call does nothing, and closing again changes nothing.
+void session_close() {
+    context = "a closed platform end";
+    Session s;
+    const uint64_t first = s.end.request_frame(true, remote::Paint::IfDirty);
+    check(s.end.receive(whole_frame(first, compact_list())), "a whole painted frame is taken");
+    const uint64_t second = s.end.request_frame(true, remote::Paint::IfDirty);
+    const size_t sent = s.channel.sent.size(), events = s.host.events.size();
+    s.end.close();
+    check(s.end.refusing() && s.host.refusals.empty() && s.host.events.size() == events && s.channel.sent.size() == sent, "closing stops the end without a word to the host, sending nothing");
+    check(!s.end.receive(delta_frame(second, first, compact_list(), moved_list())) && !s.end.receive(whole_frame(second, moved_list())) && s.host.frames.size() == 1
+            && s.host.refusals.empty(),
+        "neither a delta on the kept list nor the frame it asked for is taken, and the host hears of neither");
+    s.end.close();
+    inert(s, "a closed end", 0);
+}
+
+/// A whole frame whose kept copy cannot be made is not taken: its request stays due, and the same frame given again reaches the host once and becomes the list a delta copies from.
+void session_base_copy() {
+    context = "a whole frame's kept copy";
+    const std::string whole = whole_frame(1, compact_list());
+    remote::Frame alone;
+    std::string_view list;
+    const Measured decode = measure(whole.size(), [&] { return remote::decode(whole, {}, alone, list); });
+    Session s;
+    s.end.request_frame(true, remote::Paint::IfDirty);
+    bool threw = false;
+    {
+        Armed armed(whole.size());
+        scope.budget = decode.scope.granted;
+        try {
+            s.end.receive(whole);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+    }
+    check(decode.ok && threw && scope.over, "the copy of the list the end keeps fails, the one allocation past what the frame's decode makes");
+    check(s.host.frames.empty() && s.host.refusals.empty() && !s.end.refusing(), "the host hears nothing and the end still takes traffic");
+    check(s.end.receive(whole) && s.host.frames.size() == 1 && s.host.frames[0].seq == 1 && s.host.refusals.empty(), "the same frame given again is taken and reaches the host once");
+    const uint64_t second = s.end.request_frame(true, remote::Paint::IfDirty);
+    check(s.end.receive(delta_frame(second, 1, compact_list(), moved_list())) && s.host.frames.size() == 2 && s.host.refusals.empty(), "a delta copies from it");
+}
+
 void print_reports() {
     size_t samples = 0, decodes = 0, cut = 0, head = 0, taken = 0, refusals = 0;
     for (const Report& r : reports) {
@@ -2330,6 +2896,7 @@ int main() {
     suite("FontRelease", Kind::FontRelease, font_releases(), 0x46000000);
     suite("CanvasRun", Kind::CanvasRun, canvas_runs(), 0x47000000);
     suite("CanvasRelease", Kind::CanvasRelease, canvas_releases(), 0x48000000);
+    suite("FrameDelta", Kind::FrameDelta, frame_deltas(), 0x49000000);
     suite("FontRequest", Kind::FontRequest, font_requests(), 0x60000000);
     suite("WidthRequest", Kind::WidthRequest, width_requests(), 0x61000000);
     suite("ImageRequest", Kind::ImageRequest, image_requests(), 0x62000000);
@@ -2345,6 +2912,13 @@ int main() {
     session_order();
     session_refusals();
     session_queue();
+    deltas_rebuilt();
+    delta_bytes();
+    delta_bounds();
+    session_deltas();
+    session_close();
+    session_base_copy();
+    widths_in_requests();
 
     print_reports();
     std::printf("platform end: a session of every input, request, widths batch, one-way Backend call and report, and %zu refusal cases\n", refusal_cases);

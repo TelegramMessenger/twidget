@@ -24,6 +24,7 @@ Its sources are in `core/`: `src/` and `include/` below are its folders, and eve
 | `light-dark()`, name checks on everything written into the generated HTML | `src/css.*` |
 | Binary forms of display lists, damage, canvas batches and font metrics for a painter in another process, with strict decoders | `src/wire.*` |
 | The renderer and its platform at the two ends of a byte channel, in versioned messages with strict decoders | `src/remote.*`, `src/renderer_end.*`, `src/platform_end.*` |
+| A face's cache of measured widths, and a layout's unknown widths in a few bulk calls | `src/text_widths.*` |
 
 A batch of ops is serialised to HTML, which the fork patches into the live document where it can
 (`update_from_string`), and animation frames patch style attributes in place (`update_styles`).
@@ -172,6 +173,14 @@ binary form.
   or past `UINT32_MAX`, or an enum value version 1 does not know (`Cmd`, `CanvasOp::Kind`,
   `Composite`, `CanvasPaint::Kind`, `Filter::Kind`, `Path::Op`), in a member its kind paints or not.
   Font metrics have nothing to refuse.
+- `encode(list, caps, out, starts, most)` writes the same bytes and replaces `starts` with where each
+  command starts and, last, where the list ends, counted from the list's first byte whatever `out`
+  held before, as long as the list keeps within `most` bytes (no bound by default): for a longer list
+  `starts` is left empty, and what it held while the list grew is given back. It leaves `starts`
+  untouched when it returns false. The first command starts after the list's 6 bytes of form,
+  version and count. A command's bytes are those the first commands alone
+  encode to past the same start: a `ref` numbers the list's payloads from its first command, so what
+  a command is written as depends on the commands before it.
 - `decode(bytes, caps, out)` takes the one value all of `bytes` hold. It returns false and leaves
   `out` untouched for anything else: bytes cut short or left over, another form or version, a count,
   length, reference, enum value, flag or mask bit out of bounds. It replaces `out` only once the last
@@ -345,10 +354,13 @@ its caps. The defaults are generous bounds, not measured maxima; a caller picks 
 | `rects` | the rectangles of one damage | 2^12; the compositor merges damage past 32 |
 
 `twidget_wire_tests` (ctest `twidget_wire`) links `twidget::wire` alone. Samples that set every kind
-and member come back bit for bit and shared as they were, and encode to the bytes above. The decoders
-refuse every cut of every sample, seeded random changes they cannot take, and counts, lengths,
-references, enum values, flags and mask bits past their bounds, leaving the output as it was; no
-decode asks the allocator for more than a bound linear in its bytes.
+and member come back bit for bit and shared as they were, and encode to the bytes above; the starts
+an encoder notes put each command of every list sample, shared and repeated payloads included,
+where the first commands alone encode it, after a prefix too, and a list a byte longer than the
+bytes it is given gets none. The decoders refuse every cut of
+every sample, seeded random changes they cannot take, and counts, lengths, references, enum values,
+flags and mask bits past their bounds, leaving the output as it was; no decode asks the allocator
+for more than a bound linear in its bytes.
 
 ## Two ends over a byte channel
 
@@ -415,7 +427,7 @@ rules:
 
 **Messages.** Every message is a `u8` kind, a `u8` version (1, `remote::VERSION`), its fields and
 nothing after them. Kinds 1-8 are the platform's input and 32-36 its answers to the renderer's
-requests 96-100, in the same order; 64-72 go from the renderer one way. `kind_of(message)` reads the
+requests 96-100, in the same order; 64-73 go from the renderer one way. `kind_of(message)` reads the
 header alone: the kind when it is one of these at version 1, nothing otherwise; it never stands in for
 decoding. A changed layout takes a new version or a new kind, and version 1's bytes keep their meaning.
 
@@ -455,6 +467,7 @@ same name in `src/remote.h`.
 | 70 | `FontRelease` | renderer → platform | `i32` font |
 | 71 | `CanvasRun` | renderer → platform | `i32` id, `i32` w, `i32` h, `value` (canvas batch) |
 | 72 | `CanvasRelease` | renderer → platform | `i32` id |
+| 73 | `FrameDelta` | renderer → platform, answers 1 | `u64` seq, `state`, `u64` base, `u32` length, `count` (6 bytes) × run, `value` (damage); a run is a `u8` tag, then at 0 (a copy) `u32` offset and `u32` length, at 1 (a literal) a `u32` length and that many bytes |
 | 96 | `FontRequest` | renderer → platform, waits | `flag` canvas, `str` families, `f32` size, `i32` weight, `flag` italic; at canvas 0 `str` features |
 | 97 | `WidthRequest` | renderer → platform, waits | `i32` font, `str` text |
 | 98 | `ImageRequest` | renderer → platform, waits | `i32` id, `str` url (cap `url`) |
@@ -468,7 +481,13 @@ same name in `src/remote.h`.
   `out` held before does not count). A field its flag leaves out must hold
   its default: an unpainted Frame with a list or damage, a canvas's FontRequest with features and a
   failed PixelsAnswer with pixels are refused rather than sent without them.
-  `encode_canvas_run(id, w, h, ops, caps, out)` writes a CanvasRun without copying the batch.
+  `encode_canvas_run(id, w, h, ops, caps, out)` writes a CanvasRun without copying the batch, and
+  `encode(frame, caps, out, most, list)` writes a Frame as `encode` does and tells, in a
+  `WrittenList`, where its list lies in `out` and, while the list keeps within `most` bytes, where
+  its commands start, as `wire::encode` notes them. `widths_in_request(texts, from, caps)` says how
+  many texts from `from` on one WidthsRequest holds, by the rules `encode` applies: the counts,
+  each text and their total, the message cap and the `u32` fields; the WidthsAnswer to a request
+  that fits fits too.
 - `decode(message, caps, out)` takes the one message all of `message` holds. It returns false and
   leaves `out` untouched for anything else: a message past `Caps::message`, another kind or version, a
   field cut short, a count or a length past its cap or past the bytes left, a `value` longer than the
@@ -479,6 +498,8 @@ same name in `src/remote.h`.
   holds exactly one width for each of its texts. A WidthsRequest's count is checked against its cap and
   the bytes left before any room is made, and each text against `text` and against what is left of
   `widths_text` before it is copied.
+  `decode(message, caps, frame, list)` also gives a Frame's list as a view of its bytes in
+  `message`, empty for an unpainted Frame.
   `out` is replaced once the last byte has passed, and what a decoder allocates follows its bytes, as
   in the binary forms, `std::bad_alloc` included.
 
@@ -493,6 +514,8 @@ same name in `src/remote.h`.
 | `messages` | the texts of one Messages report | 1024 |
 | `widths` | the texts of one WidthsRequest, and so the widths of its answer | 256 |
 | `widths_text` | the bytes of a WidthsRequest's texts together | 16 KiB |
+| `frame` | the bytes of one Frame, and of the Frame a FrameDelta stands for | `SIZE_MAX`: `message` alone |
+| `delta_base` | the bytes of the painted list each end keeps for a FrameDelta to copy from, and of a list a FrameDelta rebuilds | 256 KiB; 0 sends every painted Frame whole |
 
 At two caps the renderer gets what an in-process backend that refuses would give it; past any other,
 the end that would send stops:
@@ -506,7 +529,8 @@ the end that would send stops:
 The widths caps bound how much one request makes the platform measure: `widths` the strings, which
 cost a call each however short, and `widths_text` their bytes. They change how many requests carry a
 layout's words, never what is measured: a text that no WidthsRequest can hold alone goes as a
-WidthRequest, under the `text` cap as ever, and with `widths` at 0 every word does.
+WidthRequest, under the `text` cap as ever, and with `widths` at 0 every word does. The renderer end
+cuts its requests where `widths_in_request` says, so no request it sends is one the codec refuses.
 
 **Frames: the host drives the clock.** The renderer end never ticks or paints by itself.
 `PlatformEnd::request_frame(tick, paint)` sends a FrameRequest and returns its seq, counted from 1.
@@ -523,6 +547,44 @@ a `frame` message) goes to `RendererEnd::want_frame()`. It sets State's `frame_a
 once, so that the platform learns to ask. The next FrameRequest that ticks takes it, and that call's
 `Output::frame` tells the helper that the engine's frame message is due after the call's messages. A
 FrameRequest that does not tick leaves it set.
+
+**Frames as deltas.** A painted frame may cross as a FrameDelta instead of a Frame: the same seq,
+state and damage, and its list as runs that copy byte ranges of the list of the last painted frame,
+its base, or carry bytes of their own. Both ends keep that list, as encoded, while it is no longer
+than `delta_base`: a painted frame, whole or as a delta, replaces it, or drops it when its list is
+longer, an unpainted one keeps it, and a stop, a refusal or the platform end's `close()` clears it.
+Both ends take the same caps, `delta_base` among them, so they keep the same list. The renderer end
+writes each painted Frame once, straight into the message it sends, noting where its list's commands
+start while the list keeps within `delta_base`, and keeps a copy of a list that does. Without a kept
+list, or with a list longer than `delta_base`, the frame goes whole as written. Otherwise each
+command is looked for in the kept list: the one after the last copied, then up to four of those with
+the same hash; only bytes found equal are copied, and the head of form, version and count is one more
+such range. Of the matches, it copies
+those that make the runs shortest, no more bytes in all than the kept list holds, and sends the
+FrameDelta only when its message is shorter than the whole Frame's; a frame whose runs would copy
+nothing goes whole. Copies are byte ranges of the encoding, not commands: a `ref` to a shared
+payload is copied as the number it is, which means the same payload only because the bytes before
+it are the same too.
+
+`rebuild(message, caps, base_seq, base, frame, list)` gives the Frame a FrameDelta stands for and the
+bytes of its list. Before it makes room for the list it checks the whole message: its base is
+`base_seq` and `base` no longer than `delta_base`; the length is from 1 to `delta_base`; there are
+at most one run more than `values.commands` (a head and a run for each command), no more than the
+length nor than the bytes left hold at 6 bytes each; every run has a known tag and at least one
+byte, each copy lies within the base and all copies together take no more bytes than the base
+holds, so that a small range copied again and again cannot multiply what the bytes allow; each
+literal is within the bytes left; the runs add up to the length exactly, by sums that cannot wrap;
+the damage's length is within the bytes left and nothing follows it; and the Frame it stands for,
+with its list of that length and that damage, fits `frame` and `message`, as the message itself
+does. All of that reads the runs and the damage where they lie, making nothing. Only then does it
+decode the damage, copy the runs into a list of exactly that length and decode the list, as a
+Frame's, under `values`. `decode(message, caps, out)` takes a FrameDelta's fields as they are, its
+copies checked against a base of `delta_base` bytes, with the same checks before it makes the runs,
+their literals or the damage, and `delta_ids(message, seq, base)` reads its seq and its base alone,
+which never stands in for decoding. Beside what decoding the Frame takes, the platform end
+then holds the message, the kept list and the rebuilt one, which becomes the next kept list: at most
+two `delta_base` beyond the message, as when a whole Frame replaces the kept list with a copy of its
+own.
 
 **What is reported unasked.** Each call into the renderer end ends with its reports, in this order,
 each only when there is one:
@@ -549,7 +611,7 @@ to, kept within the minimum and the maximum height), `dirty()`, `wants_tick()`, 
 **The platform end.** `PlatformEnd(backend, host, channel, caps)` sends its host's input with
 `request_frame`, `set_width`, `set_max_height`, `set_theme`, `touch`, `hover`, `clear_selection`
 and `ask_claim`, which returns its seq too, and takes the renderer end's messages in `receive` (kinds
-64-72) and its requests in `answer` (96-100):
+64-73) and its requests in `answer` (96-100):
 
 - FontRelease, CanvasRun and CanvasRelease call `delete_font`, `canvas_run` and `canvas_release` at
   once, in the order they arrive, so they keep their place among the frames. The host paints a frame,
@@ -563,26 +625,40 @@ and `ask_claim`, which returns its seq too, and takes the renderer end's message
   that gives another number of widths than texts stops the end. The answer replaces `reply` only once
   it is made.
 - Frame, State, Messages, Pointer, Selection and ClaimAnswer go to the host's `frame`, `state`,
-  `messages`, `pointer`, `selection` and `claim`. `state()` is the last State, a Frame's included,
-  updated before the callback. Each Messages text is parsed with `Json::parse(text, 4)` and must be an
-  object whose `type` is one of the five.
+  `messages`, `pointer`, `selection` and `claim`, and a FrameDelta, once rebuilt on the kept list,
+  to `frame` as the Frame it stands for. `state()` is the last State, a Frame's included, updated
+  before the callback. Each Messages text is parsed with `Json::parse(text, 4)` and must be an object
+  whose `type` is one of the five.
 
 It expects one answer for each `touch`, `hover`, `request_frame` and `ask_claim`, in the order it sent
-them: a Pointer, a Frame with the request's seq, a ClaimAnswer with the query's. State, Messages,
-Selection and the one-way Backend calls may come at any time. It decodes and checks a whole message,
-every JSON text of a report included, before the Backend or the host sees any of it, and refuses:
+them: a Pointer, a Frame or a FrameDelta with the request's seq, a ClaimAnswer with the query's.
+State, Messages, Selection and the one-way Backend calls may come at any time. It decodes and checks
+a whole message, every JSON text of a report included, before the Backend or the host sees any of
+it, and refuses:
 
-- a Frame, Pointer or ClaimAnswer that is not the next answer it expects: unsolicited, repeated, out
-  of order or for another seq;
+- a Frame, FrameDelta, Pointer or ClaimAnswer that is not the next answer it expects: unsolicited,
+  repeated, out of order or for another seq, a FrameDelta's checked before it is rebuilt;
+- a FrameDelta with no kept list or another base than the last painted frame, or that `rebuild`
+  refuses, the list it makes included;
 - a request in `receive`, a one-way message in `answer`, and a kind of its own direction in either;
 - a message of no kind it knows or of another version, one that does not decode, and a report that
   is not one of the five;
 - an input or an answer that does not encode within its caps.
 
+A whole Frame's request is taken only once the copy of its list the end keeps is made, so a frame
+whose copy fails to allocate leaves the end as it was, and the same frame given again is taken.
+
 A refusal is final: `refusing()` turns true, `Host::refused` gets the reason once, and from then on
 `receive` and `answer` return false, `request_frame` and `ask_claim` 0, and nothing touches the
 Backend, the host or the channel. The host stops the widget; the request being answered gets no
-answer.
+answer. `close()` stops the end the same way without a word to the host, for an embedder that ends
+the route itself: it lets go of the answers it expected and of the kept list, and closing a stopped
+end again changes nothing. Closing allocates nothing and never throws, so an embedder may close from
+a destructor. A refusal closes the end this way once it has its reason, before it calls
+`Host::refused`. Out of memory, a call may throw `std::bad_alloc` before any refusal starts, while
+it decodes, encodes or makes the reason: the end is then still open, holds the answers it expected
+and its kept list, and has told the host nothing. An embedder that catches that failure may call
+`close()` to let go of them.
 
 **The renderer end.** `RendererEnd(width, dpr, dark, channel, caps, clock)` makes its `Renderer`, with
 the clock when one is given, on a Backend that sends:
@@ -611,15 +687,23 @@ face, letter and word spacing added, before the layout starts; what the call lef
 one by one. The same call takes the units a paint draws one at a time, for each text the walk finds
 outside a `display:none` box whose font has letter spacing (its characters) or word spacing and a
 space (its words and spaces), so the paint that follows measures none of them. The walk also keeps,
-for the layout alone, the texts it may break (an `overflow-wrap` or `word-break` other than normal,
-`white-space` neither `nowrap` nor `pre`, outside a `display:none` box): the first break a
-`TextBreaker` measures that its face has not cached asks, in one more `text_widths` call by the same
-rules, for every break point of all of them, the characters a word is broken into when its box is
-measured at its narrowest. A break's longer pieces, where a line ends inside a word, are still
-measured one by one, and a layout makes that call once at most. No text pointer or font handle
+for the layout alone, the texts outside a `display:none` box it may break, by the two rules
+litehtml's own layout applies: those its inline layout may cut where a line ends
+(`el_text::breaks_in_line()`: an `overflow-wrap` or `word-break` other than normal, `white-space`
+neither `nowrap` nor `pre`, no space) and those whose characters set the narrowest a box sized to its
+content can be (`breaks_at_narrowest()`: `overflow-wrap: anywhere`, preserved spaces included). The
+first character a `TextBreaker`
+measures that its face has not cached, and that the face would keep, asks, in one more
+`text_widths` call by the same rules, for every break point of all of them, the characters a word
+is broken into when its box is measured at its narrowest. A break's longer pieces, where a line ends
+inside a word, are measured one by one and ask for nothing more, and a layout makes that call once at
+most. `LayoutWidths` (`src/text_widths.*`) does this for the container. No text pointer or font handle
 outlives the layout. A renderer used directly makes these calls on its own Backend, and a renderer
 end sends them as WidthsRequests, so both make the same Backend calls in the same order: a build's
 fonts in the style pass, then its words and spaced units, then the breaks its layout measures.
+
+It answers each FrameRequest with a Frame or, painted, a FrameDelta, as "Frames as deltas" above
+says.
 
 Its embedder, the process that runs the engine, calls:
 
@@ -642,25 +726,43 @@ neutral Backend answers (font 0 with the metrics untouched, width 0, false) with
 From then on nothing is sent: `deliver` returns false with `out` empty, no partial messages and no
 engine frame, `receive` returns nothing, and the destructor sends nothing.
 
-`twidget_remote_tests` (ctest `twidget_remote`) links `twidget::remote` alone. Samples of all 27
+`twidget_remote_tests` (ctest `twidget_remote`) links `twidget::remote` alone. Samples of all 28
 kinds come back member by member, and some encode to bytes written out by hand; the decoders refuse
 every cut, every other kind and version, seeded changes they cannot take, counts and lengths past
 their bounds, and optional fields, pixel sizes and widths counts against their flags and requests,
 leaving the output as it was and asking the allocator for no more than a bound linear in their bytes.
-A platform-end session against a recording Backend makes every input, request, widths batch, one-way
-call and report, and each refusal above, a widths request past its caps and a Backend's wrong number
-of widths among them. `twidget_ends_tests` (ctest `twidget_ends`) runs a renderer called directly
-and the two ends over an in-memory channel (`tests/loopback.h`) with the same Backend behaviour and
-equal clocks, and compares, call by call, their messages, decoded lists, damage and batches, the
-Backend calls in order from construction to destruction, cursors, claims, hold answers, selections
-and states; it stops the renderer end at each kind of failure, a widths request's among them. It
-also checks a layout's words: one widths request per build after its fonts, requests and answers
-within every cap with the words in order, sizes read before a layout, transforms, spacing, words broken
-in the layout, more words than a face's cache keeps, and a plain litehtml container that measures in
-the style pass as before; the units of spaced runs in the build's request, none of a hidden run and
-none measured by the paint; the breaks of a layout in one more request, those of hidden texts left
-out, a relayout and a later layout asking for nothing or for their new characters alone, two boxes
-sharing the request, the breaks under small caps, and that request failing every way.
+FrameDeltas between lists that share payloads, gain and lose their users, start or end empty, rebuild their
+Frames member by member and their lists' bytes; every cut, another base and each check of `rebuild`
+at its bound and one past refuse, the outputs left alone and, for each check of the runs and for a
+delta with a literal and damage whose Frame passes the frame cap, nothing asked of the allocator. A
+painted Frame written with its list's place is the Frame's own bytes, and every prefix
+`widths_in_request` gives is what `encode` takes, under counts, text and message caps at every
+size. A platform-end session against a recording Backend makes every input, request, widths batch,
+one-way call and report, deltas whole → delta → unpainted → delta among them, and each refusal
+above with its reason, a widths request past its caps and a Backend's wrong number of widths among
+them; a closed end refuses quietly, and a whole frame whose kept copy fails to allocate stays due
+and is taken when given again. `twidget_ends_tests` (ctest `twidget_ends`) runs a renderer called directly and the two ends
+over an in-memory channel (`tests/loopback.h`) with the same Backend behaviour and equal clocks, and
+compares, call by call, their messages, decoded lists, damage and batches, the Backend calls in order
+from construction to destruction, cursors, claims, hold answers, selections and states; it stops the
+renderer end at each kind of failure, a widths request's among them. It also checks a layout's words:
+one widths request per build after its fonts, requests and answers within every cap with the words in
+order, sizes read before a layout, transforms, spacing, words broken in the layout, more words than a
+face's cache keeps, and a plain litehtml container that measures in the style pass as before; the
+units of spaced runs in the build's request, none of a hidden run and none measured by the paint; the
+breaks of a layout in one more request, those of hidden texts left out, a relayout and a later layout
+asking for nothing or for their new characters alone, two boxes sharing the request, the breaks under
+small caps, and that request failing every way; a warm relayout's fit probes longer than the cache
+keeps asking for no breaks, a preserved tab's space in the breaks' request of a box at its
+narrowest, and a warm relayout's breaks making no block for each of a hundred more preserved
+tabs. Animations there cross as deltas, whole when nothing is worth copying, a delta would be
+no shorter or a list passes `delta_base`; a delta changed on its way, or sent to another route,
+stops that platform end with its reason before the host or the Backend hears of it. Watching the
+heap, it checks that a paint with deltas off or past `delta_base` sends the ordinary Frame's bytes,
+written once, that after a paint the end keeps the list, its bounds and its index and nothing more,
+and that a platform end gives its kept list back when closed, asking for no memory, or when a
+message does not decode, telling its host once; where a thread can start, another thread's blocks
+pass the watch by.
 
 The parity checks compare the two ends with renderers used directly over real workloads, recorded in
 one process and replayed in another. `RecordingRenderer` (`tests/recording_renderer.h`) is a

@@ -46,7 +46,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::measure(pixel_t x
                     supported = false;
                     break;
                 }
-                if(text->is_white_space())
+                if(!text->breaks_at_narrowest())
                     continue;
                 auto breaker = text->breaker();
                 if(!breaker)
@@ -526,8 +526,7 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                 auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
                 const auto wrapping = text_item->css().get_wrapping();
                 const auto whitespace = text_item->css().get_white_space();
-                if(text && !text->is_space() && !text->is_break() && wrapping != overflow_wrap_normal &&
-                   whitespace != white_space_nowrap && whitespace != white_space_pre)
+                if(text && text->breaks_in_line())
                 {
                     pixel_t line_left = 0_px;
                     pixel_t line_right = self_size.render_width;

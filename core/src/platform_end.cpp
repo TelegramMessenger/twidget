@@ -28,7 +28,7 @@ template <class M> bool PlatformEnd::send(const M& message, const Expected* expe
     if (refused_) return false;
     std::string bytes;
     if (!encode(message, caps_, bytes)) return refuse("an input did not encode within the caps");
-    if (expected) expected_.push_back(*expected);
+    if (expected) expected_->push_back(*expected);
     channel_.send(std::move(bytes));
     return true;
 }
@@ -46,20 +46,30 @@ template <class M> bool PlatformEnd::respond(const M& message, std::string& repl
 }
 
 bool PlatformEnd::solicited(Kind kind, uint64_t seq) {
-    if (expected_.empty()) return refuse("an unsolicited message of " + named(kind));
-    const Expected& front = expected_.front();
-    if (front.kind != kind) return refuse("a message of " + named(kind) + " where " + named(front.kind) + " was due");
+    if (!due(kind, kind, seq)) return false;
+    expected_->pop_front();
+    return true;
+}
+
+bool PlatformEnd::due(Kind kind, Kind answers, uint64_t seq) {
+    if (expected_->empty()) return refuse("an unsolicited message of " + named(kind));
+    const Expected& front = expected_->front();
+    if (front.kind != answers) return refuse("a message of " + named(kind) + " where " + named(front.kind) + " was due");
     if (front.seq != seq) return refuse("a message of " + named(kind) + " for request " + std::to_string(seq) + " where " + std::to_string(front.seq) + " was due");
-    expected_.pop_front();
     return true;
 }
 
 bool PlatformEnd::refuse(const std::string& reason) {
     if (refused_) return false;
-    refused_ = true;
-    expected_.clear();
+    close();
     host_.refused(reason);
     return false;
+}
+
+void PlatformEnd::close() noexcept {
+    refused_ = true;
+    expected_.reset();
+    base_.reset();
 }
 
 uint64_t PlatformEnd::request_frame(bool tick, Paint paint) {
@@ -109,11 +119,18 @@ bool PlatformEnd::receive(std::string_view message) {
     switch (*kind) {
     case Kind::Frame: {
         Frame frame;
-        if (!take(message, *kind, frame) || !solicited(*kind, frame.seq)) return false;
-        state_ = frame.state;
-        host_.frame(std::move(frame));
+        std::string_view list;
+        if (!decode(message, caps_, frame, list)) return refuse("a message of " + named(*kind) + " did not decode");
+        if (!due(*kind, *kind, frame.seq)) return false;
+        std::optional<std::string> kept;
+        if (frame.painted && list.size() <= caps_.delta_base) kept.emplace(list);
+        expected_->pop_front();
+        framed(std::move(frame), std::move(kept));
         break;
     }
+    case Kind::FrameDelta:
+        if (!take_delta(message)) return false;
+        break;
     case Kind::State: {
         State state;
         if (!take(message, *kind, state)) return false;
@@ -170,6 +187,30 @@ bool PlatformEnd::receive(std::string_view message) {
         return refuse("a message of " + named(*kind) + ", which only the platform end sends");
     }
     return !refused_;
+}
+
+bool PlatformEnd::take_delta(std::string_view message) {
+    uint64_t seq = 0, base = 0;
+    if (!delta_ids(message, seq, base)) return refuse("a message of " + named(Kind::FrameDelta) + " did not decode");
+    if (!due(Kind::FrameDelta, Kind::Frame, seq)) return false;
+    if (!base_) return refuse("a message of " + named(Kind::FrameDelta) + " with no painted list kept to copy from");
+    if (base != base_seq_)
+        return refuse("a message of " + named(Kind::FrameDelta) + " copying from frame " + std::to_string(base) + " where " + std::to_string(base_seq_) + " was painted last");
+    Frame frame;
+    std::string list;
+    if (!rebuild(message, caps_, base_seq_, *base_, frame, list)) return refuse("a message of " + named(Kind::FrameDelta) + " did not rebuild a frame");
+    expected_->pop_front();
+    framed(std::move(frame), std::move(list));
+    return true;
+}
+
+void PlatformEnd::framed(Frame&& frame, std::optional<std::string> list) {
+    if (frame.painted) {
+        base_ = std::move(list);
+        base_seq_ = frame.seq;
+    }
+    state_ = frame.state;
+    host_.frame(std::move(frame));
 }
 
 bool PlatformEnd::take_messages(std::string_view message) {
@@ -229,6 +270,7 @@ bool PlatformEnd::answer(std::string_view request, std::string& reply) {
     case Kind::FontRelease:
     case Kind::CanvasRun:
     case Kind::CanvasRelease:
+    case Kind::FrameDelta:
         return refuse("a one-way message of " + named(*kind) + " where a request belongs");
     default:
         return refuse("a message of " + named(*kind) + ", which only the platform end sends");

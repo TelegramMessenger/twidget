@@ -32,6 +32,10 @@ namespace litehtml
         uint_ptr measured_font() const { return m_measured_font; }
         void measure_width();
         std::shared_ptr<text_breaker> breaker();
+        /// Whether inline layout may cut the text between its characters where a line ends.
+        bool breaks_in_line() const;
+        /// Whether the narrowest a box sized to its content can be takes the text's widest character.
+        bool breaks_at_narrowest() const;
         /// The direction of the text's first strong character: 1 right to left, -1 left to right, 0 none
         /// (digits, punctuation, spaces, symbols).
         int strong_direction() const;

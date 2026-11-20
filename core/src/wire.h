@@ -46,6 +46,8 @@ using Damage = std::optional<std::vector<Rect>>;
 
 /// Appends `list` to `out` without the members equal to their version-1 defaults. False, `out` cut back to its size on entry, for what the decoder would refuse under `caps`: a count or a length past its cap or UINT32_MAX, or an enum value version 1 does not know, in a member its kind paints or not.
 bool encode(const DisplayList& list, const Caps& caps, std::string& out);
+/// As encode(list, caps, out), and replaces `starts` with where each command starts and, last, where the list ends, counted from the list's first byte whatever `out` held before, while the list keeps within `most` bytes: for a longer one `starts` is left empty. `starts` untouched on false.
+bool encode(const DisplayList& list, const Caps& caps, std::string& out, std::vector<size_t>& starts, size_t most = SIZE_MAX);
 /// Appends `damage` to `out`; false, `out` as on entry, for more rectangles than `caps.rects` or UINT32_MAX.
 bool encode(const Damage& damage, const Caps& caps, std::string& out);
 /// Appends `ops` to `out`; false, `out` as on entry, for what the decoder would refuse, as for a list.

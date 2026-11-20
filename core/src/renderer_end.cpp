@@ -4,12 +4,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <utility>
 
 namespace twlite::remote {
 namespace {
-
-constexpr size_t WIDTHS_HEAD = 2 + 4, WIDTHS_ITEM = 4 + 4, WIDTH_BYTES = 4;
 
 std::optional<twidget::WidgetGestureClaim> claim_of(const std::vector<twidget::Json>& messages) {
     for (const twidget::Json& m : messages)
@@ -28,7 +27,33 @@ bool same(const State& a, const State& b) {
         && bits_of(a.next_tick_in) == bits_of(b.next_tick_in) && a.frame_asked == b.frame_asked;
 }
 
+/// What a FrameDelta run costs before its bytes: a copy's tag, offset and length, a literal's tag and length.
+constexpr size_t COPY_RUN_BYTES = 1 + 4 + 4, LITERAL_RUN_BYTES = 1 + 4;
+/// How many commands of the base with a command's hash are compared with it when it does not continue the last copy.
+constexpr size_t PROBES = 4;
+constexpr uint32_t NONE = UINT32_MAX;
+
+struct Entry {
+    size_t hash = 0;
+    uint32_t unit = 0;
+};
+
+bool before(const Entry& a, const Entry& b) {
+    return a.hash < b.hash || (a.hash == b.hash && a.unit < b.unit);
+}
+
 } // namespace
+
+/// A painted list as encoded once: unit 0 is its head, unit k from 1 its command k - 1, each bytes [bounds[k], bounds[k + 1]); its commands by hash for the next list to find.
+struct RendererEnd::Painted {
+    uint64_t seq = 0;
+    std::string bytes;
+    std::vector<uint32_t> bounds;
+    std::vector<Entry> index;
+
+    size_t units() const { return bounds.size() - 1; }
+    std::string_view unit(size_t u) const { return std::string_view(bytes).substr(bounds[u], bounds[u + 1] - bounds[u]); }
+};
 
 template <class Encode> bool RendererEnd::post(Encode encode_message) {
     if (stopped()) return false;
@@ -79,12 +104,13 @@ public:
     std::vector<float> text_widths(const std::vector<TextInFont>& texts) override {
         std::vector<float> widths(texts.size(), 0.f);
         for (size_t i = 0; i < texts.size() && !end_.stopped();) {
-            WidthsRequest request = batch(texts, i);
-            if (request.texts.empty()) {
+            const size_t n = widths_in_request(texts, i, end_.caps_);
+            if (n == 0) {
                 widths[i] = text_width(texts[i].font, texts[i].text);
                 i++;
                 continue;
             }
+            const WidthsRequest request{std::vector<TextInFont>(texts.begin() + std::ptrdiff_t(i), texts.begin() + std::ptrdiff_t(i + n))};
             WidthsAnswer answer;
             if (!end_.ask(request, [&](std::string_view bytes) { return decode(bytes, end_.caps_, request, answer); })) break;
             std::copy(answer.widths.begin(), answer.widths.end(), widths.begin() + std::ptrdiff_t(i));
@@ -119,22 +145,6 @@ public:
     }
 
 private:
-    WidthsRequest batch(const std::vector<TextInFont>& texts, size_t from) const {
-        const Caps& caps = end_.caps_;
-        WidthsRequest request;
-        size_t bytes = WIDTHS_HEAD, text = 0;
-        for (size_t i = from; i < texts.size(); i++) {
-            const size_t n = texts[i].text.size(), count = request.texts.size() + 1;
-            if (count > caps.widths || n > caps.text || n > caps.widths_text - text || caps.message < bytes || caps.message - bytes < WIDTHS_ITEM
-                || n > caps.message - bytes - WIDTHS_ITEM || count > (caps.message - WIDTHS_HEAD) / WIDTH_BYTES)
-                break;
-            request.texts.push_back(texts[i]);
-            bytes += WIDTHS_ITEM + n;
-            text += n;
-        }
-        return request;
-    }
-
     template <class Request, class Answer> bool answered(const Request& request, Answer& answer) {
         return end_.ask(request, [&](std::string_view bytes) { return decode(bytes, end_.caps_, answer); });
     }
@@ -158,6 +168,7 @@ RendererEnd::~RendererEnd() = default;
 
 bool RendererEnd::stop(const std::string& reason) {
     if (reason_.empty()) reason_ = reason;
+    base_.reset();
     return false;
 }
 
@@ -291,12 +302,110 @@ void RendererEnd::finish(const std::vector<twidget::Json>& messages, const Point
     const State state = current_state();
     if (frame) {
         frame->state = state;
-        if (send(*frame)) sent_state_ = state;
+        if (send_frame(*frame)) sent_state_ = state;
         return;
     }
     if (claim && !send(*claim)) return;
     if (sent_state_ && same(*sent_state_, state)) return;
     if (send(state)) sent_state_ = state;
+}
+
+bool RendererEnd::send_frame(const Frame& frame) {
+    if (stopped()) return false;
+    if (!frame.painted) return send(frame);
+    std::string bytes;
+    WrittenList written;
+    if (!encode(frame, caps_, bytes, std::min<size_t>(caps_.delta_base, UINT32_MAX), written)) return stop("a message past the caps");
+    std::unique_ptr<Painted> next;
+    if (!written.starts.empty()) {
+        next = std::make_unique<Painted>();
+        next->seq = frame.seq;
+        next->bytes.assign(bytes, written.at, written.size);
+        next->bounds.reserve(written.starts.size() + 1);
+        next->bounds.push_back(0);
+        for (size_t at : written.starts) next->bounds.push_back(uint32_t(at));
+        std::vector<size_t> hashes(next->units());
+        for (size_t u = 0; u < hashes.size(); u++) hashes[u] = std::hash<std::string_view>()(next->unit(u));
+        if (base_) {
+            FrameDelta delta{frame.seq, frame.state, base_->seq, runs_for(*base_, *next, hashes), frame.damage};
+            std::string smaller;
+            if (!delta.runs.empty() && encode(delta, caps_, smaller) && smaller.size() < bytes.size()) bytes = std::move(smaller);
+        }
+        next->index.reserve(next->units() - 1);
+        for (size_t u = 1; u < next->units(); u++) next->index.push_back({hashes[u], uint32_t(u)});
+        std::sort(next->index.begin(), next->index.end(), before);
+    }
+    channel_.send(std::move(bytes));
+    base_ = std::move(next);
+    return true;
+}
+
+std::vector<DeltaRun> RendererEnd::runs_for(const Painted& base, const Painted& list, const std::vector<size_t>& hashes) {
+    const size_t units = list.units();
+    const auto same_as = [&](size_t u, uint32_t b) { return b < base.units() && base.unit(b) == list.unit(u); };
+    std::vector<uint32_t> from(units, NONE);
+    size_t budget = base.bytes.size();
+    for (size_t u = 0; u < units; u++) {
+        const size_t length = list.unit(u).size();
+        if (length > budget) continue;
+        uint32_t found = NONE;
+        if (u == 0) {
+            if (same_as(0, 0)) found = 0;
+        } else if (from[u - 1] != NONE && same_as(u, from[u - 1] + 1)) {
+            found = from[u - 1] + 1;
+        } else {
+            auto it = std::lower_bound(base.index.begin(), base.index.end(), Entry{hashes[u], 0}, before);
+            for (size_t probe = 0; probe < PROBES && it != base.index.end() && it->hash == hashes[u]; probe++, ++it) {
+                if (same_as(u, it->unit)) {
+                    found = it->unit;
+                    break;
+                }
+            }
+        }
+        if (found == NONE) continue;
+        from[u] = found;
+        budget -= length;
+    }
+    enum Back : uint8_t { JOINS, AFTER_LITERAL, AFTER_COPY };
+    constexpr size_t FAR = SIZE_MAX / 4;
+    std::vector<Back> literal_back(units, AFTER_LITERAL), copy_back(units, AFTER_LITERAL);
+    size_t literal = LITERAL_RUN_BYTES + list.unit(0).size(), copy = from[0] != NONE ? COPY_RUN_BYTES : FAR;
+    for (size_t u = 1; u < units; u++) {
+        const size_t length = list.unit(u).size();
+        const size_t joined = literal + length, opened = copy + LITERAL_RUN_BYTES + length;
+        literal_back[u] = joined <= opened ? JOINS : AFTER_COPY;
+        const size_t next_literal = std::min(joined, opened);
+        size_t next_copy = FAR;
+        if (from[u] != NONE) {
+            const size_t after_literal = literal + COPY_RUN_BYTES, after_copy = copy + COPY_RUN_BYTES;
+            const size_t continued = from[u - 1] != NONE && from[u] == from[u - 1] + 1 ? copy : FAR;
+            next_copy = std::min({continued, after_literal, after_copy});
+            copy_back[u] = next_copy == continued ? JOINS : next_copy == after_literal ? AFTER_LITERAL : AFTER_COPY;
+        }
+        literal = next_literal;
+        copy = next_copy;
+    }
+    std::vector<bool> copies(units), opens(units);
+    bool copying = copy < literal, any = false;
+    for (size_t u = units; u-- > 0;) {
+        const Back back = copying ? copy_back[u] : literal_back[u];
+        copies[u] = copying;
+        any = any || copying;
+        opens[u] = u == 0 || back != JOINS;
+        if (back != JOINS) copying = back == AFTER_COPY;
+    }
+    std::vector<DeltaRun> runs;
+    if (!any) return runs;
+    for (size_t u = 0; u < units; u++) {
+        const std::string_view bytes = list.unit(u);
+        if (opens[u]) runs.push_back(copies[u] ? DeltaRun{base.bounds[from[u]], 0, {}} : DeltaRun{});
+        if (copies[u]) {
+            runs.back().length += uint32_t(bytes.size());
+        } else {
+            runs.back().literal.append(bytes);
+        }
+    }
+    return runs;
 }
 
 State RendererEnd::current_state() const {

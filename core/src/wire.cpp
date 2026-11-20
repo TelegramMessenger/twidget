@@ -40,6 +40,8 @@ static_assert(CANVAS_OP_BITS == 38 && PAINT_BITS == 3);
 /// The fewest bytes one item of a counted list takes.
 constexpr size_t STOP_BYTES = 8, FLOAT_BYTES = 4, OP_BYTES = 1, FILTER_BYTES = 17, COMMAND_BYTES = 5, CANVAS_OP_BYTES = 9, CLIP_BYTES = 9,
     RECT_BYTES = 16;
+/// A list's form, version and command count.
+constexpr size_t LIST_HEAD_BYTES = 2 + 4;
 
 using Clips = std::vector<CanvasClip>;
 using Pixels = std::vector<uint8_t>;
@@ -736,18 +738,44 @@ bool read_op(Reader& r, const Caps& caps, ReadPayloads<Clips>& clips, ReadPayloa
     return true;
 }
 
+/// Writes a list, noting in `starts`, when given, where each command starts and where the list ends, from the list's first byte, until one of them passes `most`: then `starts` is left empty, its room given back.
+bool write_list(Writer& w, const Caps& caps, const DisplayList& list, std::vector<size_t>* starts, size_t most) {
+    const size_t origin = w.size();
+    const auto note = [&] {
+        if (!starts) return;
+        const size_t at = w.size() - origin;
+        if (at <= most) {
+            starts->push_back(at);
+            return;
+        }
+        std::vector<size_t>().swap(*starts);
+        starts = nullptr;
+    };
+    w.head(Form::List);
+    if (!w.count(list.size(), caps.commands)) return false;
+    WrittenPayloads<Path> paths;
+    WrittenPayloads<Filters> filters;
+    for (const Command& c : list) {
+        note();
+        if (!write_command(w, caps, paths, filters, c)) return false;
+    }
+    note();
+    return true;
+}
+
 } // namespace
 
 bool encode(const DisplayList& list, const Caps& caps, std::string& out) {
-    return appended(out, [&](Writer& w) {
-        w.head(Form::List);
-        if (!w.count(list.size(), caps.commands)) return false;
-        WrittenPayloads<Path> paths;
-        WrittenPayloads<Filters> filters;
-        for (const Command& c : list)
-            if (!write_command(w, caps, paths, filters, c)) return false;
-        return true;
-    });
+    return appended(out, [&](Writer& w) { return write_list(w, caps, list, nullptr, SIZE_MAX); });
+}
+
+bool encode(const DisplayList& list, const Caps& caps, std::string& out, std::vector<size_t>& starts, size_t most) {
+    std::vector<size_t> at;
+    const bool may_fit = most >= LIST_HEAD_BYTES && list.size() <= (most - LIST_HEAD_BYTES) / COMMAND_BYTES;
+    if (may_fit && list.size() <= caps.commands) at.reserve(list.size() + 1);
+    if (!appended(out, [&](Writer& w) { return write_list(w, caps, list, may_fit ? &at : nullptr, most); })) return false;
+    starts = std::move(at);
+    return true;
 }
 
 bool decode(std::string_view bytes, const Caps& caps, DisplayList& out) {

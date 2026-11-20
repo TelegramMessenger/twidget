@@ -1,4 +1,4 @@
-// The renderer end against a platform end over an in-memory channel: focused sequences match a renderer called directly step by step, a layout's unknown words, the units its paint spaces and the breaks it takes go in bounded batches, the time and canvas-font seams hold, and a missing or bad answer, bad platform input or a value past the caps stops it for good with nothing sent after.
+// The renderer end against a platform end over an in-memory channel: focused sequences match a renderer called directly step by step, a layout's unknown words, the units its paint spaces and the breaks it takes go in bounded batches, the time and canvas-font seams hold, a missing or bad answer, bad platform input or a value past the caps stops it for good with nothing sent after, and, watching the heap, a paint writes its Frame once and keeps no more than its list, and a closed platform end gives its list back.
 #include "platform_end.h"
 #include "remote.h"
 #include "renderer.h"
@@ -13,6 +13,7 @@
 #include <litehtml/el_text.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -20,14 +21,137 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
+#include <new>
 #include <optional>
 #include <set>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace {
+
+struct Watch;
+
+/// The watch of the thread that started it: every other thread's blocks pass it by.
+constinit thread_local Watch* watching = nullptr;
+
+/// The heap blocks its thread made while a watch is on and not yet freed, by address, which lets a check read what a call kept; what the watched call asked for; and, while `deny` is set, how often the thread asked and was refused.
+struct Watch {
+    struct Block {
+        void* at = nullptr;
+        size_t bytes = 0;
+    };
+    static constexpr size_t SLOTS = size_t(1) << 18;
+
+    Block blocks[SLOTS];
+    char gone = 0;
+    bool on = false, full = false, deny = false;
+    size_t used = 0, live = 0, alive = 0, asked = 0, made = 0, big = SIZE_MAX, bigs = 0, denied = 0;
+
+    static size_t slot(const void* p) { return size_t((uint64_t(reinterpret_cast<uintptr_t>(p)) >> 4) * 0x9E3779B97F4A7C15ull >> 46); }
+
+    void start(size_t at_least = SIZE_MAX) {
+        for (Block& b : blocks) b = Block();
+        watching = this;
+        on = true;
+        full = deny = false;
+        used = live = alive = asked = made = bigs = denied = 0;
+        big = at_least;
+    }
+    void stop() { on = false; }
+    void noted(void* p, size_t n) {
+        if (!on || !p) return;
+        asked += n;
+        made++;
+        bigs += n >= big;
+        if (used >= SLOTS / 2) {
+            full = true;
+            return;
+        }
+        size_t i = slot(p);
+        while (blocks[i].at && blocks[i].at != &gone) i = (i + 1) % SLOTS;
+        blocks[i] = {p, n};
+        used++;
+        live += n;
+        alive++;
+    }
+    void freed(void* p) {
+        if (!alive || !p) return;
+        for (size_t i = slot(p); blocks[i].at; i = (i + 1) % SLOTS) {
+            if (blocks[i].at != p) continue;
+            live -= blocks[i].bytes;
+            alive--;
+            blocks[i] = {&gone, 0};
+            return;
+        }
+    }
+};
+
+Watch watch;
+
+void* made(size_t n) noexcept {
+    Watch* w = watching;
+    if (w && w->deny) {
+        w->denied++;
+        return nullptr;
+    }
+    void* p = std::malloc(n ? n : 1);
+    if (w) w->noted(p, n);
+    return p;
+}
+
+void unmade(void* p) noexcept {
+    if (Watch* w = watching) w->freed(p);
+    std::free(p);
+}
+
+} // namespace
+
+void* operator new(size_t n) {
+    if (void* p = made(n)) return p;
+    throw std::bad_alloc();
+}
+
+void* operator new[](size_t n) {
+    if (void* p = made(n)) return p;
+    throw std::bad_alloc();
+}
+
+void* operator new(size_t n, const std::nothrow_t&) noexcept {
+    return made(n);
+}
+
+void* operator new[](size_t n, const std::nothrow_t&) noexcept {
+    return made(n);
+}
+
+void operator delete(void* p) noexcept {
+    unmade(p);
+}
+
+void operator delete[](void* p) noexcept {
+    unmade(p);
+}
+
+void operator delete(void* p, size_t) noexcept {
+    unmade(p);
+}
+
+void operator delete[](void* p, size_t) noexcept {
+    unmade(p);
+}
+
+void operator delete(void* p, const std::nothrow_t&) noexcept {
+    unmade(p);
+}
+
+void operator delete[](void* p, const std::nothrow_t&) noexcept {
+    unmade(p);
+}
 
 using twidget::Json;
 
@@ -1820,6 +1944,12 @@ void bounded_batches() {
         {"16 bytes of texts, less than the long word's", defaults.widths, 16, defaults.message, 8, 1},
         {"a message of 96 bytes", defaults.widths, defaults.widths_text, 96, 4, 0},
         {"40 bytes of texts", defaults.widths, 40, defaults.message, 4, 0},
+        {"21 texts, all of them", 21, defaults.widths_text, defaults.message, 1, 0},
+        {"20 texts, one fewer", 20, defaults.widths_text, defaults.message, 2, 0},
+        {"122 bytes of texts, theirs exactly", defaults.widths, 122, defaults.message, 1, 0},
+        {"121 bytes of texts, a byte short", defaults.widths, 121, defaults.message, 2, 0},
+        {"a message of 296 bytes, the request of all 21 exactly", defaults.widths, defaults.widths_text, 296, 1, 0},
+        {"a message of 295 bytes, a byte short", defaults.widths, defaults.widths_text, 295, 2, 0},
     };
     for (const Case& c : cases) {
         const std::string what = "under a cap of " + c.what;
@@ -1929,6 +2059,669 @@ void break_failures() {
     }
 }
 
+// ───────────────────────── painted frames as deltas ─────────────────────────
+
+/// The kind of the last frame the renderer end sent, whole or as a delta.
+remote::Kind last_frame(const Loopback& loop) {
+    for (auto it = loop.wire.kinds.rbegin(); it != loop.wire.kinds.rend(); ++it)
+        if (*it == remote::Kind::Frame || *it == remote::Kind::FrameDelta) return *it;
+    return remote::Kind(0);
+}
+
+std::string frame_name(remote::Kind kind) {
+    return kind == remote::Kind::FrameDelta ? "a delta" : kind == remote::Kind::Frame ? "whole" : "nothing";
+}
+
+/// A painted frame of `a` that crossed as `kind`.
+void crossed_as(Arms& a, const std::string& what, remote::Kind kind) {
+    const Arms::Step f = a.frame(what, true, remote::Paint::IfDirty);
+    a.ok(f.frame->painted, "it is painted");
+    a.ok(last_frame(a.loop) == kind, "it crossed " + frame_name(kind) + ", not " + frame_name(last_frame(a.loop)));
+}
+
+/// The bytes of the list the direct renderer painted last.
+size_t list_size(Renderer& r) {
+    std::string bytes;
+    wire::encode(r.paint(), {}, bytes);
+    return bytes.size();
+}
+
+/// `count` divs of a word each from element `first`, which stay still beside an animation, or their removal.
+std::string words(bool add, int count, int first = 100) {
+    std::string ops;
+    for (int i = 0; i < count; i++) {
+        const std::string id = std::to_string(first + 2 * i), text = std::to_string(first + 1 + 2 * i);
+        ops += std::string(ops.empty() ? "" : ",")
+            + (add ? R"({"op":"el","id":)" + id + R"(,"tag":"div","attrs":[]},{"op":"text","id":)" + text + R"(,"data":"word )" + id + R"("},{"op":"ins","parent":)" + id
+                       + R"(,"id":)" + text + R"(,"before":null},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})"
+                   : R"({"op":"rm","id":)" + id + "}");
+    }
+    return R"({"type":"ops","ops":[)" + ops + "]}";
+}
+
+/// `count` boxes from element `first`, all painted alike in one place, or their removal.
+std::string boxes(bool add, int count, int first) {
+    std::string ops;
+    for (int i = 0; i < count; i++) {
+        const std::string id = std::to_string(first + i);
+        ops += std::string(ops.empty() ? "" : ",")
+            + (add ? R"({"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","position:absolute;left:0;top:0;width:10px;height:10px;background:#c03"]]},{"op":"ins","parent":4,"id":)"
+                       + id + R"(,"before":null})"
+                   : R"({"op":"rm","id":)" + id + "}");
+    }
+    return R"({"type":"ops","ops":[)" + ops + "]}";
+}
+
+/// An animation's painted frames cross as deltas that rebuild the direct renderer's lists and damage, the first whole, an unpainted frame keeping the base; a list past delta_base goes whole and drops it, and 0 sends every frame whole.
+void deltas() {
+    {
+        Arms a("deltas");
+        a.receive(SPINNING, "a spinner");
+        a.receive(words(true, 10), "10 words beside it");
+        crossed_as(a, "the first frame", remote::Kind::Frame);
+        for (int i = 1; i <= 8; i++) {
+            a.advance(16);
+            crossed_as(a, "a spinner frame at +" + std::to_string(16 * i) + " ms", remote::Kind::FrameDelta);
+        }
+        a.advance(16);
+        a.ok(!a.frame("a ticking frame that skips the paint", true, remote::Paint::Skip).frame->painted, "it is unpainted");
+        crossed_as(a, "the frame after it", remote::Kind::FrameDelta);
+        a.ok(!a.frame("a clean frame", false, remote::Paint::IfDirty).frame->painted, "a clean frame is unpainted");
+        a.ok(a.frame("a forced frame of the same list", false, remote::Paint::Force).frame->painted && last_frame(a.loop) == remote::Kind::FrameDelta, "a forced repaint crosses as a delta");
+        a.receive(FRESH_TEXT, "a text added");
+        a.advance(16);
+        crossed_as(a, "the frame with the text", remote::Kind::FrameDelta);
+        a.receive(boxes(true, 2, 300), "two boxes painted alike");
+        a.advance(16);
+        crossed_as(a, "the frame with them", remote::Kind::FrameDelta);
+        a.receive(boxes(true, 60, 400), "60 more boxes painted alike, more than the last list holds");
+        a.advance(16);
+        a.frame("the frame with them, which copies no more than the last list holds", true, remote::Paint::IfDirty);
+        a.advance(16);
+        crossed_as(a, "the frame after it", remote::Kind::FrameDelta);
+        a.close();
+        a.need(count(a.loop.wire.kinds, remote::Kind::FrameDelta), "frames as deltas");
+    }
+    for (const bool nested : {false, true}) {
+        Arms a(nested ? "a spinner in a spinner" : "a spinner alone");
+        a.receive(SPINNING, "a spinner");
+        if (nested) a.receive(R"({"type":"ops","ops":[{"op":"el","id":11,"tag":"div","attrs":[["class","spin"]]},{"op":"ins","parent":10,"id":11,"before":null}]})", "a spinner in it");
+        crossed_as(a, "the first frame", remote::Kind::Frame);
+        for (int i = 1; i <= 3; i++) {
+            a.advance(16);
+            crossed_as(a, nested ? "a frame whose delta would copy its pops and still be longer" : "a frame with nothing worth copying", remote::Kind::Frame);
+        }
+        a.close();
+    }
+    size_t spinner = 0;
+    {
+        VirtualClock clock;
+        LogBackend backend;
+        Renderer r(300, 2, false, backend, &clock);
+        r.receive(parse(SPINNING));
+        r.receive(parse(words(true, 10)));
+        r.tick();
+        spinner = list_size(r);
+    }
+    {
+        remote::Caps caps;
+        caps.delta_base = spinner + 64;
+        Arms a("deltas past delta_base", caps);
+        a.receive(SPINNING, "a spinner");
+        a.receive(words(true, 10), "10 words beside it");
+        crossed_as(a, "the first frame", remote::Kind::Frame);
+        a.advance(16);
+        crossed_as(a, "a spinner frame", remote::Kind::FrameDelta);
+        a.receive(words(true, 40, 200), "40 words more, which take the list past delta_base");
+        a.advance(16);
+        crossed_as(a, "the first frame past delta_base", remote::Kind::Frame);
+        a.advance(16);
+        crossed_as(a, "the next frame past it", remote::Kind::Frame);
+        a.receive(words(false, 40, 200), "those words removed");
+        a.advance(16);
+        crossed_as(a, "the first frame back within delta_base, with no list kept", remote::Kind::Frame);
+        a.advance(16);
+        crossed_as(a, "the next", remote::Kind::FrameDelta);
+        a.close();
+    }
+    for (size_t base : {size_t(0), size_t(1)}) {
+        remote::Caps caps;
+        caps.delta_base = base;
+        Arms a("deltas under a delta_base of " + std::to_string(base), caps);
+        a.receive(SPINNING, "a spinner");
+        a.receive(words(true, 10), "10 words beside it");
+        for (int i = 0; i < 4; i++) {
+            a.advance(16);
+            crossed_as(a, "a spinner frame", remote::Kind::Frame);
+        }
+        a.close();
+        a.ok(count(a.loop.wire.kinds, remote::Kind::FrameDelta) == 0, "no frame crossed as a delta");
+    }
+}
+
+/// Delivers the queued platform input to the renderer end and keeps what it sends last in the outbox, for a test to change before it reaches the platform end.
+void deliver_held(Loopback& loop) {
+    loop.wire.flush();
+    while (!loop.queue.messages.empty()) {
+        const std::string message = std::move(loop.queue.messages.front());
+        loop.queue.messages.pop_front();
+        loop.delivered.push_back(loop.end->deliver(message, loop.out));
+        loop.outputs.push_back(loop.out);
+    }
+}
+
+/// A spinner whose renderer end has painted twice, so that its next painted frame is a delta, asked for and held in the outbox.
+void spinning_held(Loopback& loop, VirtualClock& clock, const char* page = SPINNING) {
+    loop.open(300, 2, false, &clock);
+    loop.receive(parse(page));
+    loop.receive(parse(words(true, 10)));
+    for (int i = 0; i < 2; i++) {
+        clock.ms += 16;
+        loop.platform.request_frame(true, remote::Paint::IfDirty);
+        loop.pump();
+    }
+    clock.ms += 16;
+    loop.platform.request_frame(true, remote::Paint::IfDirty);
+    deliver_held(loop);
+}
+
+std::string* held_delta(Loopback& loop) {
+    for (std::string& message : loop.wire.outbox)
+        if (Wire::kind(message) == remote::Kind::FrameDelta) return &message;
+    return nullptr;
+}
+
+void put_u64(std::string& bytes, size_t at, uint64_t v) {
+    for (size_t i = 0; i < 8; i++) bytes[at + i] = char((v >> (8 * i)) & 0xff);
+}
+
+/// Both ends and the clock their renderer reads, made first so that it outlives the renderer.
+struct Route {
+    VirtualClock clock;
+    Loopback loop;
+};
+
+/// A delta changed on its way stops the platform end with its reason before the host or the Backend hears of it, and a delta of one route is refused by another, whose base it is not.
+void tampered_deltas() {
+    const struct {
+        const char* what;
+        void (*change)(std::string&);
+        const char* reason;
+    } changes[] = {
+        {"a run of tag 2", [](std::string& m) { m[49] = 2; }, "a message of kind 73 did not rebuild a frame"},
+        {"a byte cut", [](std::string& m) { m.pop_back(); }, "a message of kind 73 did not rebuild a frame"},
+        {"a byte after it", [](std::string& m) { m.push_back('\0'); }, "a message of kind 73 did not rebuild a frame"},
+        {"a declared length one longer", [](std::string& m) { m[41] = char(uint8_t(m[41]) + 1); }, "a message of kind 73 did not rebuild a frame"},
+        {"the next request's seq", [](std::string& m) { put_u64(m, 2, 4); }, "a message of kind 73 for request 4 where 3 was due"},
+        {"the first frame as its base", [](std::string& m) { put_u64(m, 33, 1); }, "a message of kind 73 copying from frame 1 where 2 was painted last"},
+        {"cut before its base", [](std::string& m) { m.resize(40); }, "a message of kind 73 did not decode"},
+    };
+    for (const auto& c : changes) {
+        const std::string what = std::string("a delta with ") + c.what;
+        Route route;
+        Loopback& loop = route.loop;
+        spinning_held(loop, route.clock);
+        std::string* delta = held_delta(loop);
+        check(delta != nullptr && !loop.end->stopped(), what + ": the third painted frame is a delta");
+        if (!delta) continue;
+        c.change(*delta);
+        const size_t frames = loop.host.frames.size(), calls = loop.backend.calls.size();
+        loop.wire.flush();
+        check(loop.platform.refusing() && loop.host.refusals.size() == 1 && loop.host.refusals[0] == c.reason,
+            what + ": stops the platform end with \"" + c.reason + "\", not \"" + (loop.host.refusals.empty() ? std::string() : loop.host.refusals[0]) + "\"");
+        check(loop.host.frames.size() == frames && loop.backend.calls.size() == calls, what + ": no frame reaches the host and no Backend call is made");
+        check(loop.wire.refused == 1, what + ": the platform end refused that message alone");
+    }
+    Route spin_route, fade_route;
+    Loopback &spin = spin_route.loop, &fade = fade_route.loop;
+    spinning_held(spin, spin_route.clock);
+    spinning_held(fade, fade_route.clock, FADE);
+    std::string* from_spin = held_delta(spin);
+    std::string* from_fade = held_delta(fade);
+    check(from_spin && from_fade, "both routes' third painted frames are deltas");
+    if (!from_spin || !from_fade) return;
+    const std::string own_fade = *from_fade;
+    *from_fade = *from_spin;
+    const size_t frames = fade.host.frames.size(), calls = fade.backend.calls.size();
+    fade.wire.flush();
+    check(fade.platform.refusing() && fade.host.refusals.size() == 1 && fade.host.frames.size() == frames && fade.backend.calls.size() == calls,
+        "a delta of one route reaching another is refused there, nothing heard: " + (fade.host.refusals.empty() ? std::string("no reason") : fade.host.refusals[0]));
+    spin.wire.flush();
+    check(!spin.platform.refusing() && spin.host.refusals.empty() && spin.host.frames.size() == 3 && spin.host.frames.back().painted, "the route it came from takes it");
+    Route again_route;
+    Loopback& again = again_route.loop;
+    spinning_held(again, again_route.clock, FADE);
+    std::string* own = held_delta(again);
+    check(own && *own == own_fade, "the other route's own delta is the same each time");
+    again.wire.flush();
+    check(!again.platform.refusing() && again.host.frames.size() == 3, "and its own route takes it");
+}
+
+/// The bytes of a painted Frame's list, and its units: its head and each command.
+struct ListSize {
+    size_t bytes = 0, units = 0;
+};
+
+ListSize list_size_of(const DisplayList& list) {
+    std::string bytes;
+    std::vector<size_t> starts;
+    wire::encode(list, {}, bytes, starts);
+    return {bytes.size(), starts.size()};
+}
+
+static_assert(noexcept(std::declval<remote::PlatformEnd&>().close()), "a platform end closes without throwing");
+
+/// Runs `call` with every allocation of this thread refused, and gives how many it asked for.
+size_t denied_in(const std::function<void()>& call) {
+    watch.denied = 0;
+    watch.deny = true;
+    call();
+    watch.deny = false;
+    return watch.denied;
+}
+
+// Single-threaded WebAssembly cannot start a thread.
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
+#define TW_THREADS
+#endif
+
+#ifdef TW_THREADS
+/// What a watch has counted so far.
+struct Counted {
+    size_t used = 0, live = 0, alive = 0, asked = 0, made = 0;
+
+    bool operator==(const Counted&) const = default;
+};
+
+Counted counted() {
+    return {watch.used, watch.live, watch.alive, watch.asked, watch.made};
+}
+#endif
+
+/// A spinner's first painted frame, held whole in the outbox before it reaches the platform end; the bytes of its list.
+size_t first_frame_held(Loopback& loop, VirtualClock& clock) {
+    loop.open(300, 2, false, &clock);
+    loop.receive(parse(SPINNING));
+    loop.receive(parse(words(true, 40)));
+    loop.platform.request_frame(true, remote::Paint::IfDirty);
+    deliver_held(loop);
+    const std::string* held = loop.wire.outbox.empty() ? nullptr : &loop.wire.outbox.back();
+    remote::Frame frame;
+    std::string_view view;
+    check(held && remote::decode(*held, {}, frame, view) && frame.painted && !view.empty(), "the first painted frame waits whole in the outbox");
+    return view.size();
+}
+
+/// A platform end its embedder closes, with a painted list kept and a reply due, gives the list back without a word to its host and without asking for memory, and closing again changes nothing; meanwhile, where a thread can start, another thread's block passes the watch by.
+void closed_platform() {
+    Route route;
+    Loopback& loop = route.loop;
+    const size_t list = first_frame_held(loop, route.clock);
+#ifdef TW_THREADS
+    std::atomic<int> stage = 0;
+    std::atomic<void*> foreign = nullptr;
+    std::thread other([&] {
+        while (stage.load() != 1) std::this_thread::yield();
+        foreign.store(::operator new(4096));
+        ::operator delete(foreign.load());
+        stage.store(2);
+    });
+#endif
+    watch.start();
+    loop.wire.flush();
+#ifdef TW_THREADS
+    const Counted before = counted();
+    stage.store(1);
+    while (stage.load() != 2) std::this_thread::yield();
+    const Counted after = counted();
+    watch.stop();
+    other.join();
+    check(foreign.load() != nullptr && after == before, "another thread's block, made and freed while the watch is on, leaves its counts as they were");
+#else
+    watch.stop();
+#endif
+    const size_t kept = watch.live;
+    check(!watch.full && loop.host.frames.size() == 1 && !loop.platform.refusing() && kept >= list, "the platform end takes it and keeps its list");
+    check(loop.platform.request_frame(true, remote::Paint::IfDirty) == 2 && loop.queue.messages.size() == 1, "and asks for the next frame");
+    const size_t events = loop.host.events.size();
+    check(denied_in([&] { loop.platform.close(); }) == 0, "closing with a list kept and a reply due asks for no memory");
+    const size_t freed = kept - watch.live;
+    check(freed >= list && freed <= list + 64, "closing gives back the kept list's " + std::to_string(list) + " bytes (" + std::to_string(freed) + " freed)");
+    check(loop.platform.refusing() && loop.host.refusals.empty() && loop.host.events.size() == events, "the host hears nothing of it");
+    const size_t live = watch.live;
+    check(denied_in([&] { loop.platform.close(); }) == 0 && watch.live == live && loop.host.refusals.empty() && loop.host.events.size() == events, "closing again asks for nothing and changes nothing");
+    const size_t sent = loop.wire.kinds.size(), refused = loop.wire.refused;
+    check(loop.pump() && loop.wire.kinds.size() > sent && loop.wire.refused - refused == loop.wire.kinds.size() - sent, "the platform end refuses all the renderer end sends for the frame it asked for");
+    check(loop.host.refusals.empty() && loop.host.events.size() == events, "which reaches no host");
+    check(loop.platform.request_frame(true, remote::Paint::IfDirty) == 0 && loop.host.refusals.empty(), "a closed end asks for no frame");
+    loop.close();
+    check(loop.host.refusals.empty() && loop.host.events.size() == events, "and the renderer end's last messages reach no host");
+}
+
+/// A message that does not decode stops a platform end with a painted list kept and a reply due: it gives the list back and its host hears the reason once, whatever comes after.
+void malformed_platform() {
+    Route route;
+    Loopback& loop = route.loop;
+    const size_t list = first_frame_held(loop, route.clock);
+    watch.start();
+    loop.wire.flush();
+    watch.stop();
+    const size_t kept = watch.live;
+    check(!watch.full && loop.host.frames.size() == 1 && kept >= list && loop.platform.request_frame(true, remote::Paint::IfDirty) == 2, "the platform end keeps the list and asks for the next frame");
+    const size_t events = loop.host.events.size();
+    const std::string cut{char(remote::Kind::Frame), char(remote::VERSION)};
+    check(!loop.platform.receive(cut) && loop.platform.refusing(), "a frame cut after its version stops the platform end");
+    const size_t live = watch.live, freed = kept - live;
+    check(freed >= list && freed <= list + 64, "the stop gives back the kept list's " + std::to_string(list) + " bytes (" + std::to_string(freed) + " freed)");
+    check(loop.host.refusals == std::vector<std::string>{"a message of kind 64 did not decode"} && loop.host.events.size() == events, "the host hears the reason once and nothing else");
+    const size_t sent = loop.wire.kinds.size(), refused = loop.wire.refused;
+    check(!loop.platform.receive(cut) && loop.pump() && loop.wire.kinds.size() > sent && loop.wire.refused - refused == loop.wire.kinds.size() - sent,
+          "the same message again and all the renderer end sends for the frame asked for are refused");
+    check(loop.host.refusals.size() == 1 && loop.host.events.size() == events && watch.live == live, "quietly, with nothing more to give back");
+    loop.close();
+    check(loop.host.refusals.size() == 1 && loop.host.events.size() == events, "and the renderer end's last messages reach no host");
+}
+
+/// A renderer end's channel whose requests a platform end answers and whose messages it keeps, the last one only, so that a paint's allocations are its own.
+struct Kept : remote::RendererChannel {
+    explicit Kept(const remote::Caps& caps) : platform(backend, host, queue, caps) {}
+
+    void send(std::string message) override { last = std::move(message); }
+    bool request(std::string message, std::string& answer) override { return platform.answer(message, answer); }
+
+    LogBackend backend;
+    Heard host{backend};
+    Queue queue;
+    remote::PlatformEnd platform;
+    std::string last;
+};
+
+/// What one watched call asked for: every byte, and the blocks of at least the size the watch was given.
+struct Asked {
+    size_t bytes = 0, big = 0, live = 0;
+};
+
+Asked asked_by(size_t big, const std::function<void()>& call) {
+    watch.start(big);
+    call();
+    watch.stop();
+    check(!watch.full, "the watch keeps every block");
+    return {watch.asked, watch.bigs, watch.live};
+}
+
+/// A spinner beside a paragraph of 1,500 words at 4 px, all of them in view.
+std::vector<std::string> busy_page() {
+    std::string text;
+    for (int i = 0; i < 1500; i++) text += "w" + std::to_string(i) + " ";
+    return {SPINNING, R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"p","attrs":[["style","font:4px sans-serif"]]},{"op":"text","id":31,"data":")" + text
+                          + R"("},{"op":"ins","parent":4,"id":30,"before":null},{"op":"ins","parent":30,"id":31,"before":null}]})"};
+}
+
+/// With deltas off or past delta_base, every painted frame goes out as the ordinary Frame's bytes, written once: the end asks for no more than the direct renderer's paint and the Frame's own encoding, list-sized blocks included.
+void ordinary_frames() {
+    for (size_t base : {size_t(0), size_t(64)}) {
+        const std::string what = "frames under a delta_base of " + std::to_string(base);
+        remote::Caps caps;
+        caps.delta_base = base;
+        VirtualClock direct_clock, clock;
+        LogBackend direct_backend;
+        Renderer direct(300, 2, false, direct_backend, &direct_clock);
+        Kept channel(caps);
+        remote::RendererEnd end(300, 2, false, channel, caps, &clock);
+        for (const std::string& page : busy_page()) {
+            direct.receive(parse(page));
+            end.receive(parse(page));
+        }
+        size_t list = 0;
+        for (uint64_t seq = 1; seq <= 4; seq++) {
+            direct_clock.ms += 16;
+            clock.ms += 16;
+            remote::Frame frame;
+            frame.seq = seq;
+            std::string ordinary;
+            const Asked direct_asked = asked_by(list / 2, [&] {
+                direct.tick();
+                frame.list = direct.paint();
+                std::vector<Rect> damage;
+                if (direct.damage(damage)) frame.damage = std::move(damage);
+                frame.painted = true;
+                frame.state = state_of(direct, false);
+                remote::encode(frame, caps, ordinary);
+            });
+            remote::RendererEnd::Output out;
+            const std::string request = encoded(remote::FrameRequest{seq, true, remote::Paint::IfDirty});
+            const Asked end_asked = asked_by(list / 2, [&] { end.deliver(request, out); });
+            const std::string at = what + ", frame " + std::to_string(seq) + ": ";
+            check(!end.stopped() && !ordinary.empty() && channel.last == ordinary, at + "the end sends the ordinary Frame's bytes");
+            if (list) {
+                check(end_asked.big == direct_asked.big, at + "the end makes as many list-sized blocks as the direct paint and its Frame (" + std::to_string(end_asked.big) + " and " + std::to_string(direct_asked.big) + ")");
+                check(end_asked.bytes <= direct_asked.bytes + 512, at + "and asks for no more (" + std::to_string(end_asked.bytes) + " bytes against " + std::to_string(direct_asked.bytes) + ")");
+            }
+            list = list_size_of(frame.list).bytes;
+        }
+        check(list > 16384, what + ": the list is " + std::to_string(list) + " bytes");
+    }
+}
+
+/// After a paint the end keeps the painted list for the next delta: its bytes, the bounds of its units and its index, and nothing more than an end with deltas off keeps.
+void kept_storage() {
+    remote::Caps off;
+    off.delta_base = 0;
+    VirtualClock clock, off_clock;
+    Kept channel({}), off_channel(off);
+    remote::RendererEnd end(300, 2, false, channel, {}, &clock), off_end(300, 2, false, off_channel, off, &off_clock);
+    VirtualClock direct_clock;
+    LogBackend direct_backend;
+    Renderer direct(300, 2, false, direct_backend, &direct_clock);
+    for (const std::string& page : busy_page()) {
+        direct.receive(parse(page));
+        end.receive(parse(page));
+        off_end.receive(parse(page));
+    }
+    for (uint64_t seq = 1; seq <= 3; seq++) {
+        direct_clock.ms += 16;
+        clock.ms += 16;
+        off_clock.ms += 16;
+        direct.tick();
+        const ListSize list = list_size_of(direct.paint());
+        const std::string request = encoded(remote::FrameRequest{seq, true, remote::Paint::IfDirty});
+        remote::RendererEnd::Output out, off_out;
+        const auto kept_by = [&](remote::RendererEnd& e, Kept& c, remote::RendererEnd::Output& o) {
+            return asked_by(SIZE_MAX, [&] {
+                e.deliver(request, o);
+                o = {};
+                std::string().swap(c.last);
+            }).live;
+        };
+        const size_t kept = kept_by(end, channel, out), kept_off = kept_by(off_end, off_channel, off_out);
+        const size_t base = kept - kept_off, most = list.bytes + 4 * (list.units + 1) + 16 * (list.units - 1) + 128;
+        const std::string at = "frame " + std::to_string(seq) + " of a list of " + std::to_string(list.bytes) + " bytes in " + std::to_string(list.units) + " units: ";
+        check(!end.stopped() && !off_end.stopped() && kept >= kept_off, at + "both ends paint");
+        check(base >= list.bytes && base <= most, at + "the end keeps the list, its bounds and its index alone (" + std::to_string(base) + " bytes, at most " + std::to_string(most) + ")");
+    }
+}
+
+/// A word of 700 letters in a box 300 px wide, at 1 px a letter.
+const char* LONG_WORD = R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:2px sans-serif"]]},
+ {"op":"el","id":10,"tag":"div","attrs":[["style","width:300px"]]},
+ {"op":"text","id":11,"data":"LONGWORD"},
+ {"op":"ins","parent":4,"id":10,"before":null},
+ {"op":"ins","parent":10,"id":11,"before":null}
+]})";
+
+/// A warm relayout fits the long word again with probes of hundreds of letters, longer than the width cache keeps: each is measured alone, as before the batches, and none asks for the letters of the texts the layout may break, which a new short text's letters show.
+void warm_fit_probes() {
+    std::string page = LONG_WORD;
+    page.replace(page.find("LONGWORD"), 8, std::string(700, 'x'));
+    Arms a("warm fit probes");
+    size_t sent = a.loop.wire.kinds.size(), calls = a.loop.backend.calls.size();
+    a.receive(page, "a word of 700 letters in a box 300 px wide");
+    std::vector<remote::Kind> kinds = kinds_since(a.loop, sent);
+    std::set<std::string> asked = texts_of(widths_since(a.loop.backend, calls));
+    a.ok(count(kinds, remote::Kind::WidthsRequest) == 1 && asked.count("x"), "the first layout asks for the word's letter in a request for breaks (" + reports_name(kinds) + ")");
+    a.frame("the first frame", true, remote::Paint::IfDirty);
+    sent = a.loop.wire.kinds.size();
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"el","id":20,"tag":"p","attrs":[]},{"op":"text","id":21,"data":"qz"},{"op":"ins","parent":4,"id":20,"before":null},{"op":"ins","parent":20,"id":21,"before":null}]})",
+              "a short text after it, which fits its line");
+    kinds = kinds_since(a.loop, sent);
+    const std::vector<Call> widths = widths_since(a.loop.backend, calls);
+    asked = texts_of(widths);
+    bool long_probes = !widths.empty();
+    for (const Call& c : widths) long_probes = long_probes && (c.text == "qz" || c.text.size() > 256);
+    a.ok(count(kinds, remote::Kind::WidthsRequest) == 1 && asked.count("qz") && !asked.count("q") && !asked.count("z"),
+         "the relayout asks for the new word in one request and for no breaks (" + reports_name(kinds) + ")");
+    a.ok(long_probes && count(kinds, remote::Kind::WidthRequest) > 0, "its fit probes past the cache's longest key are measured alone (" + std::to_string(widths.size()) + " widths)");
+    a.frame("the frame after it", true, remote::Paint::IfDirty);
+    sent = a.loop.wire.kinds.size();
+    calls = a.loop.backend.calls.size();
+    a.receive(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"width","value":"100px"},{"op":"el","id":22,"tag":"p","attrs":[]},{"op":"text","id":23,"data":"jk"},{"op":"ins","parent":4,"id":22,"before":null},{"op":"ins","parent":22,"id":23,"before":null}]})",
+              "the box 100 px wide and another short text");
+    kinds = kinds_since(a.loop, sent);
+    asked = texts_of(widths_since(a.loop.backend, calls));
+    bool fresh_probes = false;
+    for (const std::string& t : asked) fresh_probes = fresh_probes || (t.size() > 1 && t.size() <= 256 && t.find_first_not_of('x') == std::string::npos);
+    a.ok(count(kinds, remote::Kind::WidthsRequest) == 1 && asked.count("jk") && !asked.count("j") && !asked.count("k") && fresh_probes,
+         "probes the cache could keep but has not measured yet ask for no breaks either, only for themselves (" + reports_name(kinds) + ")");
+    a.frame("the last frame", true, remote::Paint::IfDirty);
+    a.close();
+}
+
+/// A flex item sized at its narrowest whose preserved tab breaks anywhere, in a face of its own: the layout's request for breaks holds the tab's space.
+const char* PRESERVED_TAB = R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},
+ {"op":"el","id":10,"tag":"div","attrs":[["style","display:flex"]]},
+ {"op":"el","id":11,"tag":"div","attrs":[["style","white-space:pre-wrap;overflow-wrap:anywhere;font:17px serif"]]},
+ {"op":"text","id":12,"data":"ab\tcd"},
+ {"op":"ins","parent":4,"id":10,"before":null},
+ {"op":"ins","parent":10,"id":11,"before":null},
+ {"op":"ins","parent":11,"id":12,"before":null}
+]})";
+
+/// The narrowest a content-sized box can be measures the characters of its preserved spaces too: the layout's one request for breaks asks for them with the letters, and no width goes alone.
+void preserved_tab() {
+    Arms a("a preserved tab");
+    const size_t sent = a.loop.wire.kinds.size(), calls = a.loop.backend.calls.size();
+    a.receive(PRESERVED_TAB, "a flex item of two words and a tab, preserved and broken anywhere");
+    const std::vector<remote::Kind> kinds = kinds_since(a.loop, sent);
+    const std::vector<Call> widths = widths_since(a.loop.backend, calls);
+    int face = 0;
+    for (const Call& c : a.loop.backend.calls)
+        if (c.op == Call::Font && c.size == 17) face = c.font;
+    bool space = false, letters = true;
+    for (const Call& c : widths) space = space || (c.font == face && c.text == " ");
+    for (const char* letter : {"a", "b", "c", "d"}) letters = letters && texts_of(widths).count(letter);
+    a.ok(batches_of(kinds, 2) && count(kinds, remote::Kind::WidthRequest) == 0, "the build asks for its words and for its breaks in two requests, with no single width (" + reports_name(kinds) + ")");
+    a.ok(face != 0 && space && letters, "the breaks hold the letters and the tab's space in the item's face");
+    a.ok(measured_once(widths), "no font and text is measured twice");
+    a.frame("the first frame", true, remote::Paint::IfDirty);
+    a.close();
+}
+
+/// A narrow box whose word breaks anywhere in a 13 px face, a box of `tabs` preserved tabs between two letters that breaks anywhere in a 17 px face, and a box whose preserved line break shows nothing in a 19 px face.
+std::string tabs_page(int tabs) {
+    std::string text = "a";
+    for (int i = 0; i < tabs; i++) text += "\\t";
+    text += "b";
+    return R"({"type":"ops","ops":[
+ {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+ {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+ {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font:16px sans-serif"]]},
+ {"op":"el","id":10,"tag":"div","attrs":[["style","width:20px;overflow-wrap:anywhere;font:13px monospace"]]},
+ {"op":"text","id":11,"data":"abcdefgh"},
+ {"op":"el","id":12,"tag":"div","attrs":[["style","width:300px;white-space:pre-wrap;overflow-wrap:anywhere;font:17px serif"]]},
+ {"op":"text","id":13,"data":")" + text + R"("},
+ {"op":"el","id":14,"tag":"div","attrs":[["style","width:300px;white-space:pre-wrap;overflow-wrap:anywhere;font:19px serif"]]},
+ {"op":"text","id":15,"data":"ab\ncd"},
+ {"op":"ins","parent":4,"id":10,"before":null},
+ {"op":"ins","parent":10,"id":11,"before":null},
+ {"op":"ins","parent":4,"id":12,"before":null},
+ {"op":"ins","parent":12,"id":13,"before":null},
+ {"op":"ins","parent":4,"id":14,"before":null},
+ {"op":"ins","parent":14,"id":15,"before":null}
+]})";
+}
+
+/// Another narrow box in the 13 px face, before the tabs, whose word's letters no face has measured.
+const char* NEW_LETTERS = R"({"type":"ops","ops":[{"op":"el","id":20,"tag":"div","attrs":[["style","width:20px;overflow-wrap:anywhere;font:13px monospace"]]},{"op":"text","id":21,"data":"mnopqrst"},
+ {"op":"ins","parent":4,"id":20,"before":12},{"op":"ins","parent":20,"id":21,"before":null}]})";
+
+/// A Backend that notes, for each widths batch, how many blocks the watch had seen made when it began and when it ended, and where its calls lie in the log.
+struct Marking : LogBackend {
+    struct Batch {
+        size_t began = 0, ended = 0, from = 0, to = 0;
+    };
+
+    std::vector<float> text_widths(const std::vector<TextInFont>& texts) override {
+        Batch batch{watch.made, 0, calls.size(), 0};
+        std::vector<float> widths = LogBackend::text_widths(texts);
+        batch.ended = watch.made;
+        batch.to = calls.size();
+        batches.push_back(batch);
+        return widths;
+    }
+
+    std::vector<Batch> batches;
+};
+
+int font_of_size(const LogBackend& backend, float size) {
+    for (const Call& c : backend.calls)
+        if (c.op == Call::Font && c.size == size) return c.font;
+    return 0;
+}
+
+bool asked_in(const LogBackend& backend, const Marking::Batch& batch, int font, const std::string& text) {
+    for (size_t i = batch.from; i < batch.to; i++)
+        if (backend.calls[i].font == font && backend.calls[i].text == text) return true;
+    return false;
+}
+
+/// How many blocks a warm relayout makes between its words' request and its breaks' request: the layout up to the first character of the new word, then the scan of every text it may break, the tabs' spaces among them.
+size_t discovery_blocks(int tabs) {
+    const std::string what = std::to_string(tabs) + " preserved tabs: ";
+    VirtualClock clock;
+    Marking backend;
+    Renderer direct(300, 2, false, backend, &clock);
+    backend.batches.reserve(16);
+    direct.receive(parse(tabs_page(tabs)));
+    const int monospace = font_of_size(backend, 13), tab_face = font_of_size(backend, 17), line_face = font_of_size(backend, 19);
+    check(monospace && tab_face && line_face && backend.batches.size() == 2, what + "the cold build asks for its words and its breaks in two requests");
+    if (backend.batches.size() != 2) return 0;
+    const Marking::Batch cold = backend.batches[1];
+    bool letters = true;
+    for (const char* letter : {"a", "b", "c", "d"}) letters = letters && asked_in(backend, cold, line_face, letter);
+    check(asked_in(backend, cold, tab_face, " ") && asked_in(backend, cold, monospace, "a"), what + "the cold breaks hold the tabs' space and the narrow word's letters");
+    check(letters && !asked_in(backend, cold, line_face, " ") && !asked_in(backend, cold, line_face, ""), what + "and the letters around the preserved line break, which adds nothing");
+    backend.batches.clear();
+    watch.start();
+    direct.receive(parse(NEW_LETTERS));
+    watch.stop();
+    check(!watch.full && backend.batches.size() == 2, what + "the warm relayout asks for its new word and then for its breaks");
+    if (backend.batches.size() != 2) return 0;
+    const Marking::Batch warm = backend.batches[1];
+    bool fresh = warm.to > warm.from;
+    for (size_t i = warm.from; i < warm.to; i++) fresh = fresh && backend.calls[i].font == monospace && backend.calls[i].text.size() == 1 && backend.calls[i].text[0] >= 'm' && backend.calls[i].text[0] <= 't';
+    check(fresh && asked_in(backend, warm, monospace, "m"), what + "its breaks hold the new letters alone");
+    return warm.began - backend.batches[0].ended;
+}
+
+/// Break discovery in a warm face asks once for a run of spaces' one character: a relayout that misses a letter in another face makes as many blocks beside 200 preserved tabs as beside 100, and the ends make the direct renderer's calls.
+void warm_tabs() {
+    const size_t fewer = discovery_blocks(100), more = discovery_blocks(200);
+    check(fewer > 0 && more == fewer, "the discovery makes no block for a tab (" + std::to_string(fewer) + " blocks beside 100 tabs, " + std::to_string(more) + " beside 200)");
+    Arms a("many preserved tabs");
+    a.receive(tabs_page(100), "a narrow word, 100 preserved tabs and a preserved line break");
+    a.frame("the first frame", true, remote::Paint::IfDirty);
+    a.receive(NEW_LETTERS, "a narrow word of new letters before the tabs");
+    a.frame("the frame after it", true, remote::Paint::IfDirty);
+    a.close();
+}
+
 } // namespace
 
 int main() {
@@ -1953,6 +2746,15 @@ int main() {
     batch_failures();
     bounded_breaks();
     break_failures();
+    deltas();
+    tampered_deltas();
+    closed_platform();
+    malformed_platform();
+    ordinary_frames();
+    kept_storage();
+    warm_fit_probes();
+    preserved_tab();
+    warm_tabs();
     total.print("all sessions");
     for (int op = 0; op < Call::Frame; op++) check(total.calls[op] > 0, std::string("the sessions compare ") + CALL_NAMES[op]);
     check(total.construction && total.destruction && total.one_way_between() && total.painted && total.unchanged && total.helper_only, "the sessions compare construction, destruction, one-way calls between frames, painted and unchanged frames and the helper's own messages");

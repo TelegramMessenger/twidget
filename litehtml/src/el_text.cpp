@@ -190,6 +190,18 @@ std::shared_ptr<litehtml::text_breaker> litehtml::el_text::breaker()
     return m_breaker;
 }
 
+bool litehtml::el_text::breaks_in_line() const
+{
+    return !is_space() && !is_break() && css().get_wrapping() != overflow_wrap_normal &&
+           !is_one_of(css().get_white_space(), white_space_nowrap, white_space_pre);
+}
+
+bool litehtml::el_text::breaks_at_narrowest() const
+{
+    return css().get_wrapping() == overflow_wrap_anywhere && !is_one_of(css().get_white_space(), white_space_pre, white_space_nowrap) &&
+           !is_white_space();
+}
+
 void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                              const std::shared_ptr<render_item>& ri)
 {
