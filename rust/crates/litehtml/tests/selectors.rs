@@ -22,24 +22,21 @@ fn corpus_documents_alike() {
     let extra = ua_extra();
     let ua = ua_stylesheet();
     let mut cases = Vec::new();
-    let mut sheets = Vec::new();
     for (k, (path, html)) in corpus_documents().into_iter().enumerate() {
         let mut doc_sheets = style_blocks(&html);
         if k % 8 == 0 {
             doc_sheets.extend([master.clone(), extra.clone(), ua.clone()]);
         }
-        sheets.extend(doc_sheets.iter().cloned());
         cases.push((match_input(true, &html, &doc_sheets), format!("corpus document {path}")));
     }
     assert!(cases.len() > 300, "found {} corpus documents", cases.len());
-    check_matches("corpus documents", cases, &sheets);
+    check_matches("corpus documents", cases);
 }
 
 #[test]
 fn generated_documents_alike() {
     let mut random = Lcg::new(0x11_4001);
     let mut cases = Vec::new();
-    let mut sheets = Vec::new();
     for i in 0..3000 {
         let html = any_document(&mut random);
         let doc_sheets: Vec<Vec<u8>> = (0..1 + random.below(2))
@@ -51,10 +48,9 @@ fn generated_documents_alike() {
                 sheet
             })
             .collect();
-        sheets.extend(doc_sheets.iter().cloned());
         cases.push((match_input(true, html.as_bytes(), &doc_sheets), format!("generated document {i}: {html} with {doc_sheets:?}")));
     }
-    check_matches("generated documents", cases, &sheets);
+    check_matches("generated documents", cases);
 }
 
 #[test]
@@ -66,7 +62,7 @@ fn master_against_generated_documents_alike() {
         let html = any_document(&mut random);
         cases.push((match_input(true, html.as_bytes(), &master), format!("master against generated document {i}: {html}")));
     }
-    check_matches("master against generated documents", cases, &master);
+    check_matches("master against generated documents", cases);
 }
 
 /// A small tree for the checks below: html > body > (ul > li × 4 with text between them, p#a.x lang=en-US).

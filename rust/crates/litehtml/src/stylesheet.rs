@@ -2,22 +2,19 @@
 //! walks a sheet's rules into style rules under their `@media` lists, `@supports` conditions, `@layer`
 //! blocks and `@import`ed sheets.
 //!
-//! A style rule's prelude is a selector list; its block becomes a style with stage L5, until when the walk
-//! asks a [`StyleSheetHost`] whether a declaration is supported and keeps each rule's declarations as
-//! `style::add` takes them.
+//! A style rule's prelude is a selector list and its block a [`Style`] every selector of the rule shares; a
+//! `@supports` declaration holds when a style keeps a property of it.
 
 use std::sync::Arc;
 
-use crate::css_parser::{
-    CssParser, f_componentize, normalize_tokens, parse_stylesheet, parse_stylesheet_tokens, remove_whitespace, skip_whitespace,
-};
+use crate::css_parser::{f_componentize, normalize_tokens, parse_stylesheet, parse_stylesheet_tokens, skip_whitespace};
 use crate::css_selector::{CssSelector, DocumentMode, parse_selector_list, sort_selectors, strict_mode};
 use crate::css_tokenizer::{CURLY_BLOCK, CV_FUNCTION, CssToken, CssTokenVector, ROUND_BLOCK, SEMICOLON, STRING};
 use crate::document_container::DocumentContainer;
 use crate::html::lowcase;
 use crate::media_query::{MediaDocument, MediaQueryListList, parse_media_query_list};
 use crate::string_id::{_charset_, _import_, _layer_, _media_, _supports_};
-use crate::style::parse_url;
+use crate::style::{Style, parse_url};
 use crate::{Names, StringId};
 
 /// `raw_declaration` (https://www.w3.org/TR/cssom-1/#css-declarations): a name, its value as component
@@ -73,20 +70,16 @@ pub trait StyleSheetHost {
     /// `doc->mode()`.
     fn mode(&self) -> DocumentMode;
 
-    /// Whether `style::add(tokens, "", container)` keeps a property: stage L5's.
-    fn supports_declaration(&self, tokens: &[CssToken]) -> bool;
-
     /// `doc->add_media_list(list)`.
     fn add_media_list(&self, list: &Arc<MediaQueryListList>);
 }
 
-/// A style rule as the walk keeps it for later stages: its prelude, and the declarations of its block as
-/// `style::add` goes through them (each value without whitespace, a name lower-case unless it is a custom
-/// property), before the container sanitizes any. The C++'s `style`, which every selector of the rule shares.
-#[derive(Clone, Debug, PartialEq)]
+/// A style rule as the walk keeps it: its prelude, its base url, and the C++'s `style` of its block, which
+/// every selector of the rule shares.
+#[derive(Clone, Debug)]
 pub struct StyleRule {
     pub prelude: CssTokenVector,
-    pub declarations: Vec<RawDeclaration>,
+    pub style: Style,
     pub baseurl: Vec<u8>,
 }
 
@@ -258,11 +251,10 @@ impl Css {
             return false;
         }
 
-        let style = Arc::new(StyleRule {
-            prelude: rule.prelude.clone(),
-            declarations: style_declarations(&rule.block.value),
-            baseurl: baseurl.to_vec(),
-        });
+        // The content of the qualified rule's block is parsed as a style block's contents.
+        let mut block = Style::default();
+        block.add(doc.names(), &rule.block.value, baseurl, Some(doc.container()));
+        let style = Arc::new(StyleRule { prelude: rule.prelude.clone(), style: block, baseurl: baseurl.to_vec() });
 
         for sel in list {
             let mut sel = Arc::try_unwrap(sel).unwrap_or_else(|shared| (*shared).clone());
@@ -275,28 +267,16 @@ impl Css {
     }
 }
 
-/// The declarations `style::add(tokens, baseurl, container)` goes through: the block's contents (its rules
-/// dropped), each value without whitespace and each name lower-case unless it starts with `--`.
-pub fn style_declarations(tokens: &[CssToken]) -> Vec<RawDeclaration> {
-    let mut decls = Vec::new();
-    let mut rules = Vec::new();
-    CssParser::new(tokens.to_vec()).consume_style_block_contents(&mut decls, &mut rules);
-    for decl in &mut decls {
-        remove_whitespace(&mut decl.value, None);
-        if !decl.name.starts_with(b"--") {
-            decl.name = lowcase(&decl.name);
-        }
-    }
-    decls
-}
-
 /// `eval_supports_declaration(tokens, container)`: `( <declaration> )` holds when it is one declaration that
 /// gives a property.
 fn eval_supports_declaration(tokens: &[CssToken], doc: &dyn StyleSheetHost) -> bool {
     if tokens.iter().any(|t| t.ch() == SEMICOLON) {
         return false;
     }
-    doc.supports_declaration(tokens)
+    // the declaration is supported if litehtml was able to parse it
+    let mut st = Style::default();
+    st.add(doc.names(), tokens, b"", Some(doc.container()));
+    !st.empty()
 }
 
 fn at(tokens: &[CssToken], index: usize) -> CssToken {

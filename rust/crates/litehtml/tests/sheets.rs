@@ -3,8 +3,8 @@
 //! an at-rule's block), the declarations as `style::add` takes them, every media query list's structure with
 //! its values converted and its answer on a grid of media features, and the walk of whole sheets: each
 //! selector's order, `@layer` flag, rule and `@media` lists, each list over the grid, the sheet read as it is
-//! and with the renderer's light and dark colour-scheme rewrite. The walk's selector lists and `@supports`
-//! declarations are later stages' (L4, L5): the run asks lhdump for them first. The sheets: widget-sandbox's
+//! and with the renderer's light and dark colour-scheme rewrite, its `@supports` declarations read by the
+//! ported `style::add` (stage L5, compared on its own in `properties.rs`). The sheets: widget-sandbox's
 //! corpus, litehtml's master CSS and the renderer's UA layers, generated sheets of every rule kind and media
 //! query lists of every syntax, and random changes of them. Skipped without `TWIDGET_ORACLE_DIR`.
 
@@ -23,7 +23,6 @@ use twidget_litehtml::{Names, Px};
 /// One lhdump run of stylesheet cases.
 struct SheetRun {
     lh: Lh,
-    later: Later,
     grid: Vec<MediaFeatures>,
     c: Comparison,
     sheets: Vec<Vec<u8>>,
@@ -33,22 +32,14 @@ struct SheetRun {
 
 impl SheetRun {
     fn new() -> SheetRun {
-        SheetRun {
-            lh: Lh::new(),
-            later: Later::default(),
-            grid: media_grid(),
-            c: Comparison::new(),
-            sheets: Vec::new(),
-            cases: Vec::new(),
-            counts: BTreeMap::new(),
-        }
+        SheetRun { lh: Lh::new(), grid: media_grid(), c: Comparison::new(), sheets: Vec::new(), cases: Vec::new(), counts: BTreeMap::new() }
     }
 
     fn count(&mut self, what: impl Into<String>, n: usize) {
         *self.counts.entry(what.into()).or_default() += n;
     }
 
-    /// A case to answer once the run has learnt what the later stages say of its sheets.
+    /// A case to answer when the run is checked.
     fn case(&mut self, op: u8, input: Vec<u8>, what: impl Into<String>) {
         if op == b'w' {
             self.sheets.push(input[1..].to_vec());
@@ -85,19 +76,17 @@ impl SheetRun {
 
     fn check(mut self, name: &str) {
         let Some(oracle) = Oracle::find("lhdump") else { return };
-        self.later.learn(&oracle, &self.sheets);
         self.c.setting(&grid_setting(&self.grid));
         let cases = std::mem::take(&mut self.cases);
         for (op, input, what) in cases {
-            let answer = self.lh.sheet_answer(&self.later, &self.grid, op, &input);
+            let answer = self.lh.sheet_answer(&self.grid, op, &input);
             self.tally(op, &input, &answer);
             self.c.case(&framed(op, &input), answer, what);
         }
         let total = self.c.len();
-        let learnt = self.later.supported.len();
         self.c.check(&oracle);
         let counts: Vec<String> = self.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        eprintln!("{name}: {total} answers alike ({learnt} @supports declarations learnt); {}", counts.join(", "));
+        eprintln!("{name}: {total} answers alike; {}", counts.join(", "));
     }
 
     fn tally(&mut self, op: u8, input: &[u8], answer: &(u8, Vec<u8>)) {
@@ -402,8 +391,7 @@ fn declarations_keep_their_parts() {
 
 fn media(text: &str) -> twidget_litehtml::media_query::MediaQueryList {
     let lh = Lh::new();
-    let later = Later::default();
-    let sheets = Sheets { lh: &lh, later: &later, container: TestContainer, mode: Default::default() };
+    let sheets = Sheets { lh: &lh, container: TestContainer, mode: Default::default() };
     use twidget_litehtml::stylesheet::StyleSheetHost;
     twidget_litehtml::media_query::parse_media_query_list_text(text.as_bytes(), &sheets.media_document())
 }
@@ -443,10 +431,8 @@ fn media_queries_answer_in_three_values() {
 fn a_walk_orders_selectors_under_their_rules() {
     use twidget_litehtml::stylesheet::{Css, StyleSheetInput};
     let lh = Lh::new();
-    let mut later = Later::default();
     let sheet = b"@import 'a.css' print; a, b {c:d} @media screen{e{f:g}} @layer{h{}} @import 'm.css'; @supports not (x:y){i{}}";
-    later.supported.insert(token_list_bytes(&normalize(b"x:y", f_componentize, None)), false);
-    let sheets = Sheets { lh: &lh, later: &later, container: TestContainer, mode: Default::default() };
+    let sheets = Sheets { lh: &lh, container: TestContainer, mode: Default::default() };
     let mut css = Css::default();
     css.parse_css_stylesheet(StyleSheetInput::Text(sheet), b"", &sheets, None, true);
     let walked: Vec<(i32, bool, bool)> = css.selectors().iter().map(|s| (s.m_order, s.m_layered, s.m_media_query.is_some())).collect();

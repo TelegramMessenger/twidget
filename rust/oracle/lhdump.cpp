@@ -1,6 +1,7 @@
 // lhdump: the litehtml fork's answers on stdin, for each stage of its Rust port (rust/PLAN.md, "L. The litehtml port"); rust/crates/litehtml/tests/common/mod.rs lays out every record and answer.
 #include "codepoint.h"
 #include "css.h"
+#include "css_effects.h"
 #include "css_length.h"
 #include "css_parser.h"
 #include "css_tokenizer.h"
@@ -217,7 +218,7 @@ keep_whitespace_fn keeper(uint8_t mode) {
 }
 
 // The document of the stylesheet cases: the helper's container as far as a stylesheet asks it (pt, the default font size, the media features of a 375 x 667 screen at 2x), with a few sheets to @import.
-class OracleContainer final : public document_container {
+class OracleContainer : public document_container {
 public:
     uint_ptr create_font(const font_description&, const document*, font_metrics* fm) override {
         if (fm) *fm = font_metrics();
@@ -275,6 +276,126 @@ public:
     }
 };
 
+// The containers of the declaration cases: lhdump's own (375 x 667), the renderer's (its sanitize_declaration copied as core/src/renderer.cpp has it, untrusted, 412 x 915), and one that resolves a few colour names.
+class RendererLikeContainer final : public OracleContainer {
+public:
+    bool sanitize_declaration(const std::string& name, const css_token_vector& value) override {
+        if (value.size() != 1 || (name != "position" && name != "display")) return true;
+        const std::string keyword = value[0].ident();
+        return name == "position" ? keyword != "sticky" : keyword != "list-item" && keyword != "inline-text";
+    }
+    void get_media_features(media_features& m) const override {
+        OracleContainer::get_media_features(m);
+        m.width = m.device_width = 412;
+        m.height = m.device_height = 915;
+    }
+};
+
+class ColorNamesContainer final : public OracleContainer {
+public:
+    std::string resolve_color(const std::string& color) const override {
+        if (color == "brand") return "#0a0b0c";
+        if (color == "Accentx") return "rgb(1 2 3 / 50%)";
+        if (color == "twotok") return "red blue";
+        if (color == "alias") return "brand";
+        return {};
+    }
+};
+
+document_container* declaration_container(uint8_t mode) {
+    static OracleContainer plain;
+    static RendererLikeContainer renderer;
+    static ColorNamesContainer names;
+    if (mode == 1) return &plain;
+    if (mode == 2) return &renderer;
+    if (mode == 3) return &names;
+    return nullptr;
+}
+
+void write_gradient(Out& o, const gradient& g) {
+    o.str(_s(g.m_type));
+    o.u32(g.m_side);
+    o.f32(g.angle);
+    o.u32(uint32_t(g.m_colors.size()));
+    for (const auto& stop : g.m_colors) {
+        o.u8(stop.is_color_hint ? 1 : 0);
+        write_color(o, stop.color);
+        o.u8(stop.length ? 1 : 0);
+        if (stop.length) write_length(o, *stop.length);
+        o.u8(stop.angle ? 1 : 0);
+        if (stop.angle) o.f32(*stop.angle);
+    }
+    write_length(o, g.position_x);
+    write_length(o, g.position_y);
+    o.i32(int32_t(g.radial_shape));
+    o.i32(int32_t(g.radial_extent));
+    write_length(o, g.radial_radius_x);
+    write_length(o, g.radial_radius_y);
+    o.f32(g.conic_from_angle);
+    o.i32(int32_t(g.color_space));
+    o.i32(int32_t(g.hue_interpolation));
+}
+
+// A property's value: its flags and order, the variant's index, then what that alternative holds.
+void write_property(Out& o, const property_value& p) {
+    o.u8(p.m_important ? 1 : 0);
+    o.u8(p.m_has_var ? 1 : 0);
+    o.i32(p.m_order);
+    o.u8(uint8_t(p.index()));
+    if (p.is<css_wide_keyword>()) {
+        o.u8(uint8_t(p.get<css_wide_keyword>().kind));
+    } else if (p.is<int>()) {
+        o.i32(p.get<int>());
+    } else if (p.is<int_vector>()) {
+        o.u32(uint32_t(p.get<int_vector>().size()));
+        for (int v : p.get<int_vector>()) o.i32(v);
+    } else if (p.is<css_length>()) {
+        write_length(o, p.get<css_length>());
+    } else if (p.is<length_vector>()) {
+        o.u32(uint32_t(p.get<length_vector>().size()));
+        for (const auto& v : p.get<length_vector>()) write_length(o, v);
+    } else if (p.is<float>()) {
+        o.f32(p.get<float>());
+    } else if (p.is<web_color>()) {
+        write_color(o, p.get<web_color>());
+    } else if (p.is<std::vector<image>>()) {
+        o.u32(uint32_t(p.get<std::vector<image>>().size()));
+        for (const auto& img : p.get<std::vector<image>>()) {
+            o.u8(uint8_t(img.type));
+            o.str(img.url);
+            write_gradient(o, img.m_gradient);
+        }
+    } else if (p.is<std::string>()) {
+        o.str(p.get<std::string>());
+    } else if (p.is<string_vector>()) {
+        o.u32(uint32_t(p.get<string_vector>().size()));
+        for (const auto& v : p.get<string_vector>()) o.str(v);
+    } else if (p.is<size_vector>()) {
+        o.u32(uint32_t(p.get<size_vector>().size()));
+        for (const auto& v : p.get<size_vector>()) {
+            write_length(o, v.width);
+            write_length(o, v.height);
+        }
+    } else if (p.is<css_token_vector>()) {
+        write_tokens(o, p.get<css_token_vector>());
+    }
+}
+
+// Every property a style holds, in the map's (id) order, then the name table's size.
+void write_style(Out& o, const style& st) {
+    std::vector<string_id> held;
+    const size_t names = _id_usage().names;
+    for (size_t id = 0; id < names; id++)
+        if (!st.get_property(string_id(id)).is<invalid>()) held.push_back(string_id(id));
+    o.u32(uint32_t(held.size()));
+    for (string_id id : held) {
+        o.u32(uint32_t(id));
+        o.str(_s(id));
+        write_property(o, st.get_property(id));
+    }
+    o.u32(uint32_t(_id_usage().names));
+}
+
 const document::ptr& stylesheet_document() {
     static OracleContainer container;
     static const document::ptr doc = document::createFromString("<!DOCTYPE html><html><head></head><body></body></html>", &container, "", "");
@@ -285,13 +406,6 @@ const document::ptr& stylesheet_document() {
 std::vector<media_features>& grid() {
     static std::vector<media_features> features;
     return features;
-}
-
-css_token_vector read_tokens(In& in) {
-    css_token_vector tokens;
-    const uint32_t n = in.u32();
-    for (uint32_t i = 0; i < n && in.at < in.s.size(); i++) tokens.push_back(read_token(in, 0));
-    return tokens;
 }
 
 void write_declarations(Out& o, const raw_declaration::vector& decls) {
@@ -884,10 +998,121 @@ bool run(int op, std::string_view input) {
         answer(1, rewrite_color_scheme(in.rest(), dark));
         return true;
     }
-    case 'Y': { // whether style::add of tokens (u32 count, tokens) keeps a property, as @supports asks it of a declaration
+    case 'f': { // a style block through style.cpp: u8 container (0 none, 1 lhdump's, 2 the renderer's, 3 colour names), u8 entry (0 add of text, 1 add of its tokens componentized, 2 add_property of a name and text, 3 that and important), baseurl, the name for 2 and 3, then the text; every property the style holds
+        document_container* container = declaration_container(in.u8());
+        const uint8_t entry = in.u8();
+        const std::string baseurl = in.str();
+        const std::string name = entry >= 2 ? in.str() : std::string();
+        const std::string text = in.rest();
         style st;
-        st.add(read_tokens(in), "", stylesheet_document()->container());
-        answer(st.empty() ? 0 : 1, {});
+        if (entry == 0) st.add(text, baseurl, container);
+        else if (entry == 1) st.add(normalize(text, f_componentize), baseurl, container);
+        else st.add_property(_id(name), text, baseurl, entry == 3, container);
+        write_style(o, st);
+        answer(st.empty() ? 0 : 1, o.s);
+        return true;
+    }
+    case 'y': { // css_effects.cpp on a value: u8 which (0 box-shadow, 1 filter, 2 transform, 3 transform-origin, 4 clip-path, 5 grid track list, 6 grid placement, 7 the fast transform tokens of the text, 8 fold_math), u8 container as for 'f', the text componentized without whitespace
+        const uint8_t which = in.u8();
+        document_container* container = declaration_container(in.u8());
+        const std::string text = in.rest();
+        css_token_vector tokens = normalize(text, f_componentize | f_remove_whitespace);
+        bool ok = false;
+        switch (which) {
+        case 0: {
+            box_shadow_vector shadows;
+            ok = parse_box_shadow(tokens, shadows, container);
+            o.u32(uint32_t(shadows.size()));
+            for (const auto& s : shadows) {
+                for (const css_length* len : {&s.x, &s.y, &s.blur, &s.spread}) write_length(o, *len);
+                write_color(o, s.color);
+                o.u8(s.inset ? 1 : 0);
+            }
+            break;
+        }
+        case 1: {
+            filter_vector filters;
+            ok = parse_filter(tokens, filters, container);
+            o.u32(uint32_t(filters.size()));
+            for (const auto& f : filters) {
+                o.i32(int32_t(f.kind));
+                o.f32(f.amount);
+                for (const css_length* len : {&f.x, &f.y, &f.radius}) write_length(o, *len);
+                write_color(o, f.color);
+            }
+            o.f32(filter_reach(filters));
+            break;
+        }
+        case 2: {
+            transform_vector functions;
+            ok = parse_transform(tokens, functions);
+            o.u32(uint32_t(functions.size()));
+            for (const auto& f : functions) {
+                o.i32(int32_t(f.kind));
+                write_length(o, f.x);
+                write_length(o, f.y);
+                for (float v : f.v) o.f32(v);
+            }
+            break;
+        }
+        case 3: {
+            css_length x(1, css_units_em), y(2, css_units_em);
+            ok = parse_transform_origin(tokens, x, y);
+            write_length(o, x);
+            write_length(o, y);
+            break;
+        }
+        case 4: {
+            clip_path_shape shape;
+            ok = parse_clip_path(tokens, shape);
+            o.i32(int32_t(shape.kind));
+            o.u32(uint32_t(shape.values.size()));
+            for (const auto& v : shape.values) write_length(o, v);
+            o.u8(shape.evenodd ? 1 : 0);
+            break;
+        }
+        case 5: {
+            grid_track_list list;
+            ok = parse_grid_track_list(tokens, list);
+            for (const auto* sizes : {&list.tracks, &list.repeat}) {
+                o.u32(uint32_t(sizes->size()));
+                for (const auto& t : *sizes) {
+                    o.i32(int32_t(t.min_type));
+                    o.i32(int32_t(t.max_type));
+                    write_length(o, t.min_len);
+                    write_length(o, t.max_len);
+                    o.f32(t.fr);
+                }
+            }
+            o.i32(list.repeat_at);
+            o.u8(list.auto_fit ? 1 : 0);
+            break;
+        }
+        case 6: {
+            grid_placement placement;
+            ok = parse_grid_placement(tokens, placement);
+            o.i32(placement.start);
+            o.i32(placement.end);
+            o.i32(placement.span);
+            break;
+        }
+        case 7: {
+            css_token_vector fast;
+            ok = fast_transform_tokens(text, fast);
+            write_tokens(o, fast);
+            break;
+        }
+        case 8: {
+            o.u8(has_foldable_math(tokens) ? 1 : 0);
+            o.u8(has_viewport_units(tokens) ? 1 : 0);
+            o.u8(has_viewport_units(text) ? 1 : 0);
+            ok = fold_math(tokens, container);
+            write_tokens(o, tokens);
+            break;
+        }
+        default: return false;
+        }
+        answer(ok ? 1 : 0, o.s);
         return true;
     }
     case 'U': { // parse_url of a token: the url

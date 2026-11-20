@@ -13,8 +13,10 @@
 #![allow(non_upper_case_globals, non_camel_case_types)]
 
 pub mod codepoint;
+pub mod css_effects;
 pub mod css_length;
 pub mod css_parser;
+pub mod css_position;
 pub mod css_selector;
 pub mod css_tokenizer;
 pub mod css_values;

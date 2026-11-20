@@ -9,7 +9,7 @@
 //! once and shares (it is `Sync`), and a test can make fresh.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::html::{split_string, trim};
 
@@ -458,6 +458,8 @@ impl Table {
 #[derive(Debug)]
 pub struct Names {
     table: Mutex<Table>,
+    /// style.cpp's `raw_declaration_ids()`, a function-local static: interned the first time it is asked for.
+    raw_declarations: OnceLock<crate::style::RawDeclarationIds>,
 }
 
 impl Default for Names {
@@ -469,7 +471,7 @@ impl Default for Names {
 impl Names {
     /// The table as the C++ has it when its statics are made: `init()`, then `empty_id` and `star_id`.
     pub fn new() -> Names {
-        let names = Names { table: Mutex::new(Table::default()) };
+        let names = Names { table: Mutex::new(Table::default()), raw_declarations: OnceLock::new() };
         for name in split_string(INITIAL_STRING_IDS.as_bytes(), b",", b"", b"\"") {
             let name = trim(&name, crate::html::WHITESPACE);
             debug_assert!(name.first() == Some(&b'_') && name.last() == Some(&b'_'));
@@ -507,5 +509,12 @@ impl Names {
     pub fn usage(&self) -> StringIdUsage {
         let table = self.lock();
         StringIdUsage { names: table.array.len(), bytes: table.array_bytes }
+    }
+
+    /// The names whose declarations the renderer keeps raw, with their `-lh-raw-` twins (style.cpp's
+    /// `raw_declaration_ids()`), interned in this table the first time any style asks: once per process, as the
+    /// C++ static.
+    pub fn raw_declaration_ids(&self) -> &crate::style::RawDeclarationIds {
+        self.raw_declarations.get_or_init(|| crate::style::intern_raw_declaration_ids(self))
     }
 }

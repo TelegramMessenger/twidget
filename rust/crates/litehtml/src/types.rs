@@ -65,3 +65,10 @@ pub struct MediaFeatures {
     /// In dpi.
     pub resolution: Px,
 }
+
+/// `contain_flags`: what `contain` declares, as flags.
+pub const contain_size: i32 = 0x01;
+pub const contain_inline_size: i32 = 0x02;
+pub const contain_layout: i32 = 0x04;
+pub const contain_style: i32 = 0x08;
+pub const contain_paint: i32 = 0x10;

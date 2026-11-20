@@ -60,8 +60,6 @@
 //!   u32 count and each selector's i32 order, u8 layered, i32 rule and i32 media list (-1 none, else in order
 //!   of first use), then u32 lists and each over the grid (u8 used).
 //! - `o` u8 dark, text: the renderer's `rewrite_color_scheme`.
-//! - `Y` u32 count and tokens: status 1 when `style::add` keeps a property of them (stage L5's, asked before
-//!   a run).
 //! - `U` a token: `parse_url`. `X` bytes: `decode` as UTF-8. `V` a token: `from_token` with
 //!   f_length_percentage, then the document's `to_pixels` (f32) and `cvt_units` (the length after it).
 //! - `h` u8 flips, the html, u32 sheets and their texts: a document of the html (litehtml's master CSS), then
@@ -72,6 +70,20 @@
 //!   element (at most 48) `:hover`, then `:active` too, set up the chain, and every selector that reads them
 //!   against every node (u8).
 //! - `j` options, text: Gumbo's parse of the text, every node and error (see `gumbo`).
+//!
+//! The declaration records (stage L5) read one of four containers by a u8: 0 none, 1 lhdump's (a 375 x 667
+//! screen), 2 the renderer's (its `sanitize_declaration` untrusted, 412 x 915), 3 one that resolves a few
+//! colour names (`DeclContainer`). Their caches and the name table are the process's, as `Lh` keeps them:
+//!
+//! - `f` u8 container, u8 entry (0 `style::add` of the text, 1 `add` of its tokens componentized, 2
+//!   `add_property` of a name and the text, 3 that `!important`), baseurl, the name for 2 and 3, the text:
+//!   status 1 when the style holds a property; u32 count and each property in id order (u32 id, name, u8
+//!   important, u8 has_var, i32 order, u8 the variant's index and its value, see `property_out`), then the
+//!   name table's size.
+//! - `y` u8 which, u8 container, the text componentized without whitespace: css_effects.cpp's parser of a
+//!   value the style keeps as tokens (0 box-shadow, 1 filter, 2 transform, 3 transform-origin, 4 clip-path,
+//!   5 grid track list, 6 grid placement), the fast transform tokens of the text (7), or `fold_math` (8);
+//!   status 1 when it holds, and what it made (see `effects_answer`).
 
 #![allow(dead_code, unused_imports)]
 
@@ -92,9 +104,8 @@ use twidget_litehtml::html::lowcase;
 use twidget_litehtml::html_tag::{Matcher, SelectElements};
 use twidget_litehtml::media_query::{MediaCondition, MediaDocument, MediaInParens, MediaQueryListList, parse_media_query_list_text};
 use twidget_litehtml::style::parse_url;
-use twidget_litehtml::stylesheet::{
-    Css, RawDeclaration, RawRule, RuleType, StyleRule, StyleSheetHost, StyleSheetInput, supports_candidates,
-};
+use twidget_litehtml::style::{DeclarationCache, PropertyValue, Style, Value};
+use twidget_litehtml::stylesheet::{Css, RawDeclaration, RawRule, RuleType, StyleRule, StyleSheetHost, StyleSheetInput};
 use twidget_litehtml::types::{FontMetrics, MediaFeatures};
 use twidget_litehtml::*;
 
@@ -440,10 +451,11 @@ pub fn keeper(mode: u8) -> Option<css_parser::KeepWhitespace<'static>> {
     if mode == 0 { None } else { Some(&media_keep) }
 }
 
-/// The Rust side of one lhdump process: the name table its cases share.
+/// The Rust side of one lhdump process: the name table and the declaration cache its cases share.
 #[derive(Default)]
 pub struct Lh {
     pub names: Names,
+    pub cache: DeclarationCache,
 }
 
 impl Lh {
@@ -1612,6 +1624,9 @@ impl DocumentContainer for TestContainer {
     fn pt_to_px(&self, pt: f32) -> Px {
         Px(pt * 96.0 / 72.0)
     }
+    fn get_media_features(&self) -> MediaFeatures {
+        document_media()
+    }
     fn get_default_font_size(&self) -> Px {
         Px(16.0)
     }
@@ -1690,12 +1705,6 @@ pub fn grid_setting(grid: &[MediaFeatures]) -> Vec<u8> {
     framed(b'g', &o.take())
 }
 
-pub fn token_list_bytes(list: &[CssToken]) -> Vec<u8> {
-    let mut o = Out::default();
-    tokens(&mut o, list);
-    o.take()
-}
-
 fn declarations_out(o: &mut Out, decls: &[RawDeclaration]) {
     o.u32(decls.len() as u32);
     for d in decls {
@@ -1743,67 +1752,9 @@ fn condition_out(o: &mut Out, condition: &MediaCondition) {
     }
 }
 
-/// What the stylesheet cases need of a run beyond the name table: the grid, and the answers of the stages
-/// not ported yet (selector lists, declarations), learnt from lhdump before the run.
-#[derive(Debug, Default)]
-pub struct Later {
-    pub supported: std::collections::HashMap<Vec<u8>, bool>,
-}
-
-impl Later {
-    /// Every block of an `@supports` prelude a walk of these sheets may read as a declaration, asked of lhdump
-    /// once (stage L5's question).
-    pub fn learn(&mut self, oracle: &Oracle, sheets: &[Vec<u8>]) {
-        let mut candidates = Vec::new();
-        fn walk(rules: &[RawRule], candidates: &mut Vec<CssTokenVector>) {
-            for rule in rules {
-                if rule.ty == RuleType::qualified {
-                    continue;
-                }
-                if lowcase(&rule.name) == b"supports" {
-                    supports_candidates(&normalize_tokens(rule.prelude.clone(), f_componentize, None), candidates);
-                }
-                if rule.block.ty == CURLY_BLOCK {
-                    walk(&css_parser::parse_stylesheet_tokens(&rule.block.value, false), candidates);
-                }
-            }
-        }
-        let mut texts: Vec<Vec<u8>> = sheets.to_vec();
-        for url in [&b"a.css"[..], b"m.css", b"nested.css", b"layer.css"] {
-            texts.push(imported(url).unwrap_or_default().to_vec());
-        }
-        for text in &texts {
-            for scheme in [None, Some(false), Some(true)] {
-                let text = match scheme {
-                    None => text.clone(),
-                    Some(dark) => twidget_css::rewrite_color_scheme(text, dark),
-                };
-                walk(&css_parser::parse_stylesheet(&text, true), &mut candidates);
-            }
-        }
-        let mut input = Vec::new();
-        let mut asked_candidates = Vec::new();
-        for candidate in candidates {
-            let key = token_list_bytes(&candidate);
-            if !self.supported.contains_key(&key) && !asked_candidates.contains(&key) {
-                input.extend(framed(b'Y', &key));
-                asked_candidates.push(key);
-            }
-        }
-        if asked_candidates.is_empty() {
-            return;
-        }
-        let answers = oracle.run(input, asked_candidates.len());
-        for (key, answer) in asked_candidates.into_iter().zip(&answers) {
-            self.supported.insert(key, answer.0 == 1);
-        }
-    }
-}
-
 /// The document a stylesheet case reads, as lhdump's.
 pub struct Sheets<'a> {
     pub lh: &'a Lh,
-    pub later: &'a Later,
     pub container: TestContainer,
     pub mode: DocumentMode,
 }
@@ -1824,18 +1775,15 @@ impl StyleSheetHost for Sheets<'_> {
     fn mode(&self) -> DocumentMode {
         self.mode
     }
-    fn supports_declaration(&self, tokens: &[CssToken]) -> bool {
-        *self.later.supported.get(&token_list_bytes(tokens)).expect("a declaration the run learnt")
-    }
     fn add_media_list(&self, _list: &std::sync::Arc<MediaQueryListList>) {}
 }
 
 impl Lh {
     /// What lhdump answers to a stylesheet record (`r`, `B`, `e`, `w`, `o`, `U`, `X`, `V`) against `grid`.
-    pub fn sheet_answer(&self, later: &Later, grid: &[MediaFeatures], op: u8, input: &[u8]) -> (u8, Vec<u8>) {
+    pub fn sheet_answer(&self, grid: &[MediaFeatures], op: u8, input: &[u8]) -> (u8, Vec<u8>) {
         let mut i = In::new(input);
         let mut o = Out::default();
-        let sheets = Sheets { lh: self, later, container: TestContainer, mode: DocumentMode::no_quirks_mode };
+        let sheets = Sheets { lh: self, container: TestContainer, mode: DocumentMode::no_quirks_mode };
         match op {
             b'r' => {
                 let top_level = i.u8() != 0;
@@ -2385,7 +2333,7 @@ pub fn match_input(flips: bool, html: &[u8], sheets: &[Vec<u8>]) -> Vec<u8> {
 
 /// What the Rust side answers to an `h` record, given the DOM lhdump answered with (which the Rust side
 /// cannot build before stage L3): that DOM as it came, then the selectors and the matrix.
-pub fn match_answer(lh: &Lh, later: &Later, input: &[u8], cpp: &[u8], counts: &mut std::collections::BTreeMap<String, usize>) -> Vec<u8> {
+pub fn match_answer(lh: &Lh, input: &[u8], cpp: &[u8], counts: &mut std::collections::BTreeMap<String, usize>) -> Vec<u8> {
     let mut i = In::new(input);
     let flips = i.u8() != 0;
     let _html = i.str();
@@ -2393,7 +2341,7 @@ pub fn match_answer(lh: &Lh, later: &Later, input: &[u8], cpp: &[u8], counts: &m
     let (mode, mut tree, dom_len) = read_dom(&lh.names, cpp);
     let mut o = Out::default();
     o.s.extend_from_slice(&cpp[..dom_len.min(cpp.len())]);
-    let sheets = Sheets { lh, later, container: TestContainer, mode };
+    let sheets = Sheets { lh, container: TestContainer, mode };
     let mut selectors = Vec::new();
     for text in &sheet_texts {
         let mut sheet = Css::default();
@@ -2459,11 +2407,9 @@ pub fn match_answer(lh: &Lh, later: &Later, input: &[u8], cpp: &[u8], counts: &m
 }
 
 /// Runs `h` records through lhdump and compares each answer with the Rust one; returns what they reached.
-pub fn check_matches(name: &str, cases: Vec<(Vec<u8>, String)>, sheets: &[Vec<u8>]) {
+pub fn check_matches(name: &str, cases: Vec<(Vec<u8>, String)>) {
     let Some(oracle) = Oracle::find("lhdump") else { return };
     let lh = Lh::new();
-    let mut later = Later::default();
-    later.learn(&oracle, sheets);
     let mut input = Vec::new();
     for (case, _) in &cases {
         input.extend(framed(b'h', case));
@@ -2472,7 +2418,7 @@ pub fn check_matches(name: &str, cases: Vec<(Vec<u8>, String)>, sheets: &[Vec<u8
     let mut counts = std::collections::BTreeMap::new();
     let mut differences = Vec::new();
     for ((case, what), cpp) in cases.iter().zip(&answers) {
-        let rust = match_answer(&lh, &later, case, &cpp.1, &mut counts);
+        let rust = match_answer(&lh, case, &cpp.1, &mut counts);
         if rust != cpp.1 {
             let at = rust.iter().zip(&cpp.1).position(|(a, b)| a != b).unwrap_or(rust.len().min(cpp.1.len()));
             differences.push(format!("{what}: {} / {} bytes, first difference at byte {at}", cpp.1.len(), rust.len()));
@@ -2705,4 +2651,322 @@ pub fn any_selector_sheet(random: &mut Lcg) -> String {
         sheet.push_str("{}\n");
     }
     sheet
+}
+
+// ---- Stage L5: declarations -------------------------------------------------------------------------------
+
+/// The containers of the declaration records, as lhdump's `declaration_container` makes them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclContainer {
+    /// lhdump's `OracleContainer`.
+    Plain,
+    /// The renderer's `sanitize_declaration` (core/src/renderer.cpp, untrusted) on a 412 x 915 viewport.
+    Renderer,
+    /// A few colour names resolved.
+    ColorNames,
+}
+
+impl twidget_litehtml::web_color::ResolveColor for DeclContainer {
+    fn resolve_color(&self, name: &[u8]) -> Vec<u8> {
+        if *self != DeclContainer::ColorNames {
+            return Vec::new();
+        }
+        match name {
+            b"brand" => b"#0a0b0c".to_vec(),
+            b"Accentx" => b"rgb(1 2 3 / 50%)".to_vec(),
+            b"twotok" => b"red blue".to_vec(),
+            b"alias" => b"brand".to_vec(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl DocumentContainer for DeclContainer {
+    fn pt_to_px(&self, pt: f32) -> Px {
+        Px(pt * 96.0 / 72.0)
+    }
+    fn get_default_font_size(&self) -> Px {
+        Px(16.0)
+    }
+    fn import_css(&self, url: &[u8], baseurl: &mut Vec<u8>) -> Vec<u8> {
+        TestContainer.import_css(url, baseurl)
+    }
+    fn get_media_features(&self) -> MediaFeatures {
+        let mut m = document_media();
+        if *self == DeclContainer::Renderer {
+            m.width = Px(412.0);
+            m.device_width = Px(412.0);
+            m.height = Px(915.0);
+            m.device_height = Px(915.0);
+        }
+        m
+    }
+    fn sanitize_declaration(&self, name: &[u8], value: &[CssToken]) -> bool {
+        renderer_sanitize_declaration(*self != DeclContainer::Renderer, name, value)
+    }
+}
+
+/// The renderer's `sanitize_declaration` (core/src/renderer.cpp), as lhdump copies it: the keywords the fork
+/// knows outside the profile, which the validator cannot see when they arrive through `var()`.
+pub fn renderer_sanitize_declaration(trusted: bool, name: &[u8], value: &[CssToken]) -> bool {
+    if trusted || value.len() != 1 || (name != b"position" && name != b"display") {
+        return true;
+    }
+    let keyword = value[0].ident();
+    if name == b"position" { keyword != b"sticky" } else { keyword != b"list-item" && keyword != b"inline-text" }
+}
+
+static PLAIN: DeclContainer = DeclContainer::Plain;
+static RENDERER: DeclContainer = DeclContainer::Renderer;
+static COLOR_NAMES: DeclContainer = DeclContainer::ColorNames;
+
+/// The container of a record's u8.
+pub fn decl_container(mode: u8) -> Option<&'static dyn DocumentContainer> {
+    match mode {
+        1 => Some(&PLAIN),
+        2 => Some(&RENDERER),
+        3 => Some(&COLOR_NAMES),
+        _ => None,
+    }
+}
+
+/// An `f` record.
+pub fn style_input(container: u8, entry: u8, baseurl: &[u8], name: &[u8], text: &[u8]) -> Vec<u8> {
+    let mut o = Out::default();
+    o.u8(container).u8(entry).str(baseurl);
+    if entry >= 2 {
+        o.str(name);
+    }
+    o.s.extend_from_slice(text);
+    o.take()
+}
+
+/// A `y` record.
+pub fn effects_input(which: u8, container: u8, text: &[u8]) -> Vec<u8> {
+    [&[which, container][..], text].concat()
+}
+
+fn gradient_out(o: &mut Out, names: &Names, g: &twidget_litehtml::gradient::Gradient) {
+    o.str(&names.s(g.m_type)).u32(g.m_side).f32(g.angle).u32(g.m_colors.len() as u32);
+    for stop in &g.m_colors {
+        o.u8(u8::from(stop.is_color_hint)).color(&stop.color);
+        o.u8(u8::from(stop.length.is_some()));
+        if let Some(len) = &stop.length {
+            length(o, len);
+        }
+        o.u8(u8::from(stop.angle.is_some()));
+        if let Some(angle) = stop.angle {
+            o.f32(angle);
+        }
+    }
+    length(o, &g.position_x);
+    length(o, &g.position_y);
+    o.i32(g.radial_shape).i32(g.radial_extent.index());
+    length(o, &g.radial_radius_x);
+    length(o, &g.radial_radius_y);
+    o.f32(g.conic_from_angle).i32(g.color_space.index()).i32(g.hue_interpolation.index());
+}
+
+/// A property as lhdump's `write_property` writes it.
+pub fn property_out(o: &mut Out, names: &Names, p: &PropertyValue) {
+    o.u8(u8::from(p.m_important)).u8(u8::from(p.m_has_var)).i32(p.m_order).u8(p.value.index());
+    match &p.value {
+        Value::Invalid | Value::Inherit => {}
+        Value::CssWideKeyword(kind) => {
+            o.u8(*kind as u8);
+        }
+        Value::Int(v) => {
+            o.i32(*v);
+        }
+        Value::IntVector(list) => {
+            o.u32(list.len() as u32);
+            for v in list {
+                o.i32(*v);
+            }
+        }
+        Value::Length(len) => length(o, len),
+        Value::LengthVector(list) => {
+            o.u32(list.len() as u32);
+            for len in list {
+                length(o, len);
+            }
+        }
+        Value::Float(v) => {
+            o.f32(*v);
+        }
+        Value::Color(c) => {
+            o.color(c);
+        }
+        Value::Images(list) => {
+            o.u32(list.len() as u32);
+            for img in list {
+                o.u8(img.ty as u8).str(&img.url);
+                gradient_out(o, names, &img.m_gradient);
+            }
+        }
+        Value::String(v) => {
+            o.str(v);
+        }
+        Value::Strings(list) => {
+            o.u32(list.len() as u32);
+            for v in list {
+                o.str(v);
+            }
+        }
+        Value::Sizes(list) => {
+            o.u32(list.len() as u32);
+            for size in list {
+                length(o, &size.width);
+                length(o, &size.height);
+            }
+        }
+        Value::Tokens(list) => tokens(o, list),
+    }
+}
+
+/// Every property of a style in id order, then the name table's size: lhdump's `write_style`.
+pub fn style_out(o: &mut Out, names: &Names, st: &Style) {
+    o.u32(st.properties().len() as u32);
+    for (&id, p) in st.properties() {
+        o.u32(id.0).str(&names.s(id));
+        property_out(o, names, p);
+    }
+    o.u32(names.usage().names as u32);
+}
+
+impl Lh {
+    /// What lhdump answers to an `f` record.
+    pub fn style_answer(&self, input: &[u8]) -> (u8, Vec<u8>) {
+        self.style_case(input).1
+    }
+
+    /// The style of an `f` record, and the answer.
+    pub fn style_case(&self, input: &[u8]) -> (Style, (u8, Vec<u8>)) {
+        let mut i = In::new(input);
+        let container = decl_container(i.u8());
+        let entry = i.u8();
+        let baseurl = i.str();
+        let name = if entry >= 2 { i.str() } else { Vec::new() };
+        let text = i.rest();
+        let mut st = Style::default();
+        match entry {
+            0 => st.add_text(&self.names, &self.cache, &text, &baseurl, container),
+            1 => st.add(&self.names, &normalize(&text, f_componentize, None), &baseurl, container),
+            _ => {
+                let id = self.names.id(&name);
+                st.add_property_text(&self.names, id, &text, &baseurl, entry == 3, container);
+            }
+        }
+        let mut o = Out::default();
+        style_out(&mut o, &self.names, &st);
+        let answer = (u8::from(!st.empty()), o.take());
+        (st, answer)
+    }
+
+    /// What lhdump answers to a `y` record.
+    pub fn effects_answer(&self, input: &[u8]) -> (u8, Vec<u8>) {
+        use twidget_litehtml::css_effects::*;
+        let names = &self.names;
+        let which = input.first().copied().unwrap_or(0);
+        let container = decl_container(input.get(1).copied().unwrap_or(0));
+        let text = input.get(2..).unwrap_or_default();
+        let mut toks = normalize(text, f_componentize | f_remove_whitespace, None);
+        let mut o = Out::default();
+        let ok = match which {
+            0 => {
+                let mut shadows = Vec::new();
+                let ok = parse_box_shadow(names, &toks, &mut shadows, container);
+                o.u32(shadows.len() as u32);
+                for s in &shadows {
+                    for len in [&s.x, &s.y, &s.blur, &s.spread] {
+                        length(&mut o, len);
+                    }
+                    o.color(&s.color).u8(u8::from(s.inset));
+                }
+                ok
+            }
+            1 => {
+                let mut filters = Vec::new();
+                let ok = parse_filter(names, &toks, &mut filters, container);
+                o.u32(filters.len() as u32);
+                for f in &filters {
+                    o.i32(f.kind as i32).f32(f.amount);
+                    for len in [&f.x, &f.y, &f.radius] {
+                        length(&mut o, len);
+                    }
+                    o.color(&f.color);
+                }
+                o.f32(filter_reach(&filters));
+                ok
+            }
+            2 => {
+                let mut functions = Vec::new();
+                let ok = parse_transform(names, &toks, &mut functions);
+                o.u32(functions.len() as u32);
+                for f in &functions {
+                    o.i32(f.kind as i32);
+                    length(&mut o, &f.x);
+                    length(&mut o, &f.y);
+                    for v in f.v {
+                        o.f32(v);
+                    }
+                }
+                ok
+            }
+            3 => {
+                let mut x = CssLength::new(1.0, CssUnits::css_units_em);
+                let mut y = CssLength::new(2.0, CssUnits::css_units_em);
+                let ok = parse_transform_origin(&toks, &mut x, &mut y);
+                length(&mut o, &x);
+                length(&mut o, &y);
+                ok
+            }
+            4 => {
+                let mut shape = ClipPathShape::default();
+                let ok = parse_clip_path(&toks, &mut shape);
+                o.i32(shape.kind as i32).u32(shape.values.len() as u32);
+                for v in &shape.values {
+                    length(&mut o, v);
+                }
+                o.u8(u8::from(shape.evenodd));
+                ok
+            }
+            5 => {
+                let mut list = GridTrackList::default();
+                let ok = parse_grid_track_list(&toks, &mut list);
+                for sizes in [&list.tracks, &list.repeat] {
+                    o.u32(sizes.len() as u32);
+                    for t in sizes {
+                        o.i32(t.min_type as i32).i32(t.max_type as i32);
+                        length(&mut o, &t.min_len);
+                        length(&mut o, &t.max_len);
+                        o.f32(t.fr);
+                    }
+                }
+                o.i32(list.repeat_at).u8(u8::from(list.auto_fit));
+                ok
+            }
+            6 => {
+                let mut placement = GridPlacement::default();
+                let ok = parse_grid_placement(&toks, &mut placement);
+                o.i32(placement.start).i32(placement.end).i32(placement.span);
+                ok
+            }
+            7 => {
+                let mut fast = Vec::new();
+                let ok = fast_transform_tokens(text, &mut fast);
+                tokens(&mut o, &fast);
+                ok
+            }
+            _ => {
+                o.u8(u8::from(has_foldable_math(&toks)))
+                    .u8(u8::from(has_viewport_units(&toks)))
+                    .u8(u8::from(has_viewport_units_text(text)));
+                let ok = fold_math(names, &mut toks, container, 0);
+                tokens(&mut o, &toks);
+                ok
+            }
+        };
+        (u8::from(ok), o.take())
+    }
 }
