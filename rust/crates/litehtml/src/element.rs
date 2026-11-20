@@ -145,12 +145,15 @@ impl Default for TextState {
     }
 }
 
-/// `form_look`: what a form control's computed style decides about how it is drawn.
+/// `form_look`: what a form control's computed style decides about how it is drawn, and what its last paint asked
+/// the container (whether controls are active, the accent colour).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FormLook {
     pub dark: bool,
     pub disabled: bool,
     pub native: bool,
+    pub active: bool,
+    pub accent: WebColor,
 }
 
 /// An element of any class: what `element` holds, what `html_tag` adds, and the class's own.

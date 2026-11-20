@@ -103,6 +103,11 @@
 //! - `Y` as `l`, with steps `w` f32 width, u8 budget (0 the renderer's, 1 a u64 that follows): the document laid out,
 //!   its natural width; each dump step the layout, the container's calls with the viewport, image sizes and text
 //!   breakers (see `layout`).
+//!
+//! The paint's record (stage L13) is the layout's with paint steps:
+//!
+//! - `Q` as `Y`, with steps `p` and the paint's settings: the document painted, every paint call the container gets
+//!   logged with its arguments among its other calls; each dump step what painting keeps (see `paint`).
 
 #![allow(dead_code, unused_imports)]
 
@@ -128,10 +133,67 @@ use twidget_litehtml::stylesheet::{Css, RawDeclaration, RawRule, RuleType, Style
 use twidget_litehtml::types::{FontMetrics, MediaFeatures};
 use twidget_litehtml::*;
 
+/// The paint calls `document_container.h` leaves pure, drawing nothing: the containers of the stages before
+/// painting implement them so.
+macro_rules! paints_nothing {
+    () => {
+        fn draw_text(
+            &self,
+            _hdc: u64,
+            _text: &[u8],
+            _font: u64,
+            _color: twidget_litehtml::web_color::WebColor,
+            _pos: &twidget_litehtml::types::Position,
+        ) {
+        }
+        fn draw_list_marker(&self, _hdc: u64, _marker: &twidget_litehtml::document_container::ListMarker) {}
+        fn draw_image(&self, _hdc: u64, _layer: &twidget_litehtml::background::BackgroundLayer, _url: &[u8], _base_url: &[u8]) {}
+        fn draw_solid_fill(
+            &self,
+            _hdc: u64,
+            _layer: &twidget_litehtml::background::BackgroundLayer,
+            _color: &twidget_litehtml::web_color::WebColor,
+        ) {
+        }
+        fn draw_linear_gradient(
+            &self,
+            _hdc: u64,
+            _layer: &twidget_litehtml::background::BackgroundLayer,
+            _gradient: &twidget_litehtml::background::LinearGradient,
+        ) {
+        }
+        fn draw_radial_gradient(
+            &self,
+            _hdc: u64,
+            _layer: &twidget_litehtml::background::BackgroundLayer,
+            _gradient: &twidget_litehtml::background::RadialGradient,
+        ) {
+        }
+        fn draw_conic_gradient(
+            &self,
+            _hdc: u64,
+            _layer: &twidget_litehtml::background::BackgroundLayer,
+            _gradient: &twidget_litehtml::background::ConicGradient,
+        ) {
+        }
+        fn draw_borders(
+            &self,
+            _hdc: u64,
+            _borders: &twidget_litehtml::borders::Borders,
+            _draw_pos: &twidget_litehtml::types::Position,
+            _root: bool,
+        ) {
+        }
+        fn set_clip(&self, _pos: &twidget_litehtml::types::Position, _bdr_radius: &twidget_litehtml::borders::BorderRadiuses) {}
+        fn del_clip(&self) {}
+    };
+}
+
 pub mod cascade;
 pub mod dom;
 pub mod gumbo;
 pub mod layout;
+pub mod paint;
 pub mod render;
 pub mod svg;
 pub mod values;
@@ -1649,6 +1711,7 @@ impl twidget_litehtml::web_color::ResolveColor for TestContainer {
 }
 
 impl DocumentContainer for TestContainer {
+    paints_nothing!();
     fn pt_to_px(&self, pt: f32) -> Px {
         Px(pt * 96.0 / 72.0)
     }
@@ -2876,6 +2939,7 @@ impl twidget_litehtml::web_color::ResolveColor for DeclContainer {
 }
 
 impl DocumentContainer for DeclContainer {
+    paints_nothing!();
     fn pt_to_px(&self, pt: f32) -> Px {
         Px(pt * 96.0 / 72.0)
     }

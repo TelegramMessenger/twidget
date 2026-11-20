@@ -705,7 +705,13 @@ impl CssProperties {
         cxx::f64_to_int(v)
     }
 
-    /// `is_paint_group()`.
+    /// `clips_contents()`: overflow other than visible, or `contain: paint`.
+    pub fn clips_contents(&self) -> bool {
+        self.m_overflow > overflow_visible || (self.m_contain & crate::types::contain_paint) != 0
+    }
+
+    /// `is_paint_group()`: a clip path, sticky, opacity under 1, a transform, a hidden backface, a filter or a
+    /// backdrop filter.
     pub fn is_paint_group(&self) -> bool {
         !self.m_clip_path.empty()
             || self.m_el_position == element_position_sticky

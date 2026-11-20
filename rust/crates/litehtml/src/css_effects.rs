@@ -133,6 +133,76 @@ impl ClipPathShape {
     pub fn empty(&self) -> bool {
         self.kind == ClipPathKind::none
     }
+
+    /// `resolve(box)`: the shape's outline over a box: a polygon's points, or an inset's, circle's or ellipse's
+    /// rounded rectangle as four lines and four cubics; closed unless empty.
+    pub fn resolve(&self, bx: &Position) -> VectorPath {
+        let mut path = VectorPath { evenodd: self.evenodd, ..VectorPath::default() };
+        let add = |path: &mut VectorPath, op: PathOp, points: &[f32]| {
+            path.ops.push(op);
+            path.points.extend_from_slice(points);
+        };
+        let (x, y, w, h) = (bx.x.value(), bx.y.value(), bx.width.value(), bx.height.value());
+        let values = &self.values;
+        if self.kind == ClipPathKind::polygon {
+            let mut i = 0;
+            while i + 1 < values.len() {
+                add(
+                    &mut path,
+                    if i == 0 { PathOp::r#move } else { PathOp::line },
+                    &[x + values[i].calc_percent(bx.width).value(), y + values[i + 1].calc_percent(bx.height).value()],
+                );
+                i += 2;
+            }
+        } else if self.kind != ClipPathKind::none {
+            let (mut l, mut t, mut r, mut b, mut rx, mut ry);
+            if self.kind == ClipPathKind::inset {
+                l = x + values[3].calc_percent(bx.width).value();
+                t = y + values[0].calc_percent(bx.height).value();
+                r = x + w - values[1].calc_percent(bx.width).value();
+                b = y + h - values[2].calc_percent(bx.height).value();
+                if r < l {
+                    l = (l + r) / 2.0;
+                    r = l;
+                }
+                if b < t {
+                    t = (t + b) / 2.0;
+                    b = t;
+                }
+                rx = if values.len() > 4 { values[4].calc_percent(bx.width).value() } else { 0.0 };
+                ry = if values.len() > 4 { values[4].calc_percent(bx.height).value() } else { 0.0 };
+                rx = crate::cxx::min_f32(rx, (r - l) / 2.0);
+                ry = crate::cxx::min_f32(ry, (b - t) / 2.0);
+            } else {
+                let radii = if self.kind == ClipPathKind::circle { 1 } else { 2 };
+                let cx = x + values[radii].calc_percent(bx.width).value();
+                let cy = y + values[radii + 1].calc_percent(bx.height).value();
+                // std::hypot(w, h) / std::sqrt(2.f): hypot of floats in float.
+                let base = if self.kind == ClipPathKind::circle { crate::Px(w.hypot(h) / 2.0f32.sqrt()) } else { bx.width };
+                rx = values[0].calc_percent(base).value();
+                ry = if self.kind == ClipPathKind::circle { rx } else { values[1].calc_percent(bx.height).value() };
+                l = cx - rx;
+                r = cx + rx;
+                t = cy - ry;
+                b = cy + ry;
+            }
+            #[allow(clippy::excessive_precision)]
+            let k = 0.5522847498f32;
+            add(&mut path, PathOp::r#move, &[l + rx, t]);
+            add(&mut path, PathOp::line, &[r - rx, t]);
+            add(&mut path, PathOp::cubic, &[r - rx + rx * k, t, r, t + ry - ry * k, r, t + ry]);
+            add(&mut path, PathOp::line, &[r, b - ry]);
+            add(&mut path, PathOp::cubic, &[r, b - ry + ry * k, r - rx + rx * k, b, r - rx, b]);
+            add(&mut path, PathOp::line, &[l + rx, b]);
+            add(&mut path, PathOp::cubic, &[l + rx - rx * k, b, l, b - ry + ry * k, l, b - ry]);
+            add(&mut path, PathOp::line, &[l, t + ry]);
+            add(&mut path, PathOp::cubic, &[l, t + ry - ry * k, l + rx - rx * k, t, l + rx, t]);
+        }
+        if !path.ops.is_empty() {
+            add(&mut path, PathOp::close, &[]);
+        }
+        path
+    }
 }
 
 /// `grid_track_size::type_t`.
@@ -226,6 +296,28 @@ impl TransformMatrix {
             ty: self.tx * m.b + self.ty * m.d + m.ty,
         }
     }
+}
+
+/// `shadow_paint`: a box shadow in pixels, as the container draws it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShadowPaint {
+    pub x: crate::Px,
+    pub y: crate::Px,
+    pub blur: crate::Px,
+    pub spread: crate::Px,
+    pub color: WebColor,
+    pub inset: bool,
+}
+
+/// `filter_paint`: a filter (or backdrop filter) chain, the area it reaches, the box it belongs to with its radii,
+/// and the element whose it is.
+#[derive(Clone, Copy, Debug)]
+pub struct FilterPaint<'a> {
+    pub steps: &'a [FilterFunction],
+    pub bounds: Position,
+    pub r#box: Position,
+    pub radius: crate::borders::BorderRadiuses,
+    pub owner: Option<crate::ElementId>,
 }
 
 /// `paint_group`: what a painter composes a group with.

@@ -1,17 +1,26 @@
 //! `el_form.cpp`: what the form controls take from their attributes and the boxes they make for what they show
 //! (`lh-input-text`, `lh-input-spin`, `lh-range-track` and `lh-range-thumb`, `lh-select-value`,
 //! `lh-placeholder`), each an `html_tag` with an inline style, and their look as their computed style decides it
-//! (with what it changes of that style). Their painting is a later stage's.
+//! (with what it changes of that style), and their painting (stage L13): fields, buttons' bezels, checkboxes,
+//! radios, ranges, colour wells, steppers, a select's chevrons, a textarea's grip, meters and progress bars, a
+//! fieldset's frame broken by its legend.
 
+use crate::Px;
+use crate::background::BackgroundLayer;
+use crate::borders::{BorderRadiuses, Borders};
+use crate::css_effects::{PathOp, ShadowPaint, VectorPath};
 use crate::css_length::CssLength;
 use crate::css_parser::{f_componentize, f_remove_whitespace, normalize};
 use crate::css_properties::{Background, CssBorders, CssProperties};
 use crate::css_values::*;
 use crate::cxx;
 use crate::document::{Document, Env, StyleCx};
-use crate::element::{ElementId, ElementKind, ElementState};
+use crate::document_container::DocumentContainer;
+use crate::element::{ElementId, ElementKind, ElementState, FormLook};
 use crate::html::{WHITESPACE, lowcase, trim};
-use crate::string_id::{_legend_, _optgroup_, _option_};
+use crate::render_item::RenderId;
+use crate::string_id::{_legend_, _meter_, _optgroup_, _option_};
+use crate::types::Position;
 use crate::web_color::{WebColor, parse_color};
 
 /// What a control shows when it would show nothing: a zero-width space, so that its line has a height.
@@ -669,6 +678,553 @@ impl Document {
         {
             *loaded = true;
             cx.container.load_image(crate::gumbo::c_str(src), None, redraw);
+        }
+    }
+}
+
+// ---- Painting (stage L13): the controls drawn over their boxes ------------------------------------------------
+
+/// `palette`, whole: every colour a control is drawn in, light or dark.
+struct Paint {
+    field: WebColor,
+    field_border: WebColor,
+    box_border: WebColor,
+    box_border_off: WebColor,
+    box_on: WebColor,
+    box_on_off: WebColor,
+    mark: WebColor,
+    mark_off: WebColor,
+    track_fill: WebColor,
+    track_rest: WebColor,
+    track_fill_off: WebColor,
+    track_rest_off: WebColor,
+    thumb: WebColor,
+    thumb_shadow: WebColor,
+    well: WebColor,
+    bezel: WebColor,
+    bezel_off: WebColor,
+    stepper: WebColor,
+    stepper_line: WebColor,
+    stepper_arrow: WebColor,
+}
+
+/// `colors(dark)`, the colours painting reads.
+fn paint_colors(dark: bool) -> Paint {
+    let c = WebColor::rgba;
+    if dark {
+        Paint {
+            field: c(30, 30, 30, 255),
+            field_border: c(84, 84, 86, 255),
+            box_border: c(154, 154, 154, 255),
+            box_border_off: c(92, 92, 92, 255),
+            box_on: c(40, 40, 40, 255),
+            box_on_off: c(35, 35, 35, 255),
+            mark: c(222, 222, 222, 255),
+            mark_off: c(128, 128, 128, 255),
+            track_fill: c(102, 102, 102, 255),
+            track_rest: c(52, 52, 52, 255),
+            track_fill_off: c(59, 59, 60, 255),
+            track_rest_off: c(38, 38, 39, 255),
+            thumb: c(255, 255, 255, 255),
+            thumb_shadow: c(0, 0, 0, 110),
+            well: c(39, 39, 41, 255),
+            bezel: c(47, 47, 47, 255),
+            bezel_off: c(36, 36, 37, 255),
+            stepper: c(41, 41, 41, 255),
+            stepper_line: c(54, 54, 54, 255),
+            stepper_arrow: c(158, 158, 158, 255),
+        }
+    } else {
+        Paint {
+            field: c(255, 255, 255, 255),
+            field_border: c(197, 197, 197, 255),
+            box_border: c(128, 128, 128, 255),
+            box_border_off: c(191, 191, 191, 255),
+            box_on: c(243, 243, 243, 255),
+            box_on_off: c(248, 248, 248, 255),
+            mark: c(37, 37, 37, 255),
+            mark_off: c(143, 143, 143, 255),
+            track_fill: c(170, 170, 170, 255),
+            track_rest: c(230, 230, 230, 255),
+            track_fill_off: c(220, 220, 220, 255),
+            track_rest_off: c(245, 245, 245, 255),
+            thumb: c(255, 255, 255, 255),
+            thumb_shadow: c(0, 0, 0, 56),
+            well: c(243, 243, 243, 255),
+            bezel: c(235, 235, 235, 255),
+            bezel_off: c(247, 247, 247, 255),
+            stepper: c(243, 243, 243, 255),
+            stepper_line: c(228, 228, 228, 255),
+            stepper_arrow: c(122, 122, 122, 255),
+        }
+    }
+}
+
+/// `fill_box(hdc, container, box, radius, color)`: a rounded box filled (its radius at most half its smaller
+/// side), nothing for an empty box or a transparent colour.
+fn fill_box(hdc: u64, container: &dyn DocumentContainer, bx: &Position, radius: Px, color: &WebColor) {
+    if bx.width <= Px(0.0) || bx.height <= Px(0.0) || color.alpha == 0 {
+        return;
+    }
+    let mut layer = BackgroundLayer { border_box: *bx, clip_box: *bx, origin_box: *bx, ..BackgroundLayer::default() };
+    let r = radius.min(bx.width.min(bx.height) / Px(2.0));
+    layer.border_radius = BorderRadiuses {
+        top_left_x: r,
+        top_left_y: r,
+        top_right_x: r,
+        top_right_y: r,
+        bottom_right_x: r,
+        bottom_right_y: r,
+        bottom_left_x: r,
+        bottom_left_y: r,
+    };
+    layer.repeat = BackgroundRepeat::background_repeat_no_repeat.index();
+    container.draw_solid_fill(hdc, &layer, color);
+}
+
+/// `add_rounded(path, x, y, w, h, r)`: a rounded rectangle, its radius at most half its smaller side.
+fn add_rounded(path: &mut VectorPath, x: f32, y: f32, w: f32, h: f32, r: f32) {
+    let r = cxx::max_f32(0.0, cxx::min_f32(r, cxx::min_f32(w, h) / 2.0));
+    let k = 0.5523f32 * r;
+    let mut to = |op: PathOp, points: &[f32]| {
+        path.ops.push(op);
+        path.points.extend_from_slice(points);
+    };
+    to(PathOp::r#move, &[x + r, y]);
+    to(PathOp::line, &[x + w - r, y]);
+    to(PathOp::cubic, &[x + w - r + k, y, x + w, y + r - k, x + w, y + r]);
+    to(PathOp::line, &[x + w, y + h - r]);
+    to(PathOp::cubic, &[x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h]);
+    to(PathOp::line, &[x + r, y + h]);
+    to(PathOp::cubic, &[x + r - k, y + h, x, y + h - r + k, x, y + h - r]);
+    to(PathOp::line, &[x, y + r]);
+    to(PathOp::cubic, &[x, y + r - k, x + r - k, y, x + r, y]);
+    to(PathOp::close, &[]);
+}
+
+/// `stroke_box(hdc, container, box, radius, width, color)`: a rounded box's outline stroked inside it.
+fn stroke_box(hdc: u64, container: &dyn DocumentContainer, bx: &Position, radius: f32, width: f32, color: &WebColor) {
+    if bx.width <= Px(0.0) || bx.height <= Px(0.0) || color.alpha == 0 {
+        return;
+    }
+    let mut path = VectorPath::default();
+    let half = width / 2.0;
+    add_rounded(
+        &mut path,
+        bx.x.value() + half,
+        bx.y.value() + half,
+        bx.width.value() - width,
+        bx.height.value() - width,
+        cxx::max_f32(0.0, radius - half),
+    );
+    path.stroke = true;
+    path.stroke_width = width;
+    path.stroke_color = *color;
+    container.draw_path(hdc, &path);
+}
+
+/// `stroke_lines(hdc, container, points, width, color)`: a polyline through the points (an odd last number
+/// dropped), with round caps and joins.
+fn stroke_lines(hdc: u64, container: &dyn DocumentContainer, points: &[f32], width: f32, color: &WebColor) {
+    let mut path = VectorPath::default();
+    let mut first = true;
+    for pair in points.chunks_exact(2) {
+        path.ops.push(if first { PathOp::r#move } else { PathOp::line });
+        path.points.push(pair[0]);
+        path.points.push(pair[1]);
+        first = false;
+    }
+    path.stroke = true;
+    path.stroke_width = width;
+    path.stroke_color = *color;
+    path.line_cap = 1;
+    path.line_join = 1;
+    container.draw_path(hdc, &path);
+}
+
+/// `draw_chevrons(hdc, container, cx, cy, w, h, gap, width, color)`: an up and a down chevron about a centre.
+#[allow(clippy::too_many_arguments)]
+fn draw_chevrons(hdc: u64, container: &dyn DocumentContainer, cx: f32, cy: f32, w: f32, h: f32, gap: f32, width: f32, color: &WebColor) {
+    let half = w / 2.0;
+    stroke_lines(hdc, container, &[cx - half, cy - gap, cx, cy - gap - h, cx + half, cy - gap], width, color);
+    stroke_lines(hdc, container, &[cx - half, cy + gap, cx, cy + gap + h, cx + half, cy + gap], width, color);
+}
+
+/// `inset(box, dx, dy)`.
+fn inset(mut bx: Position, dx: f32, dy: f32) -> Position {
+    bx.x += Px(dx);
+    bx.y += Px(dy);
+    bx.width -= Px(2.0 * dx);
+    bx.height -= Px(2.0 * dy);
+    bx
+}
+
+/// `draw_bezel(hdc, container, box, look)`: a button's face, inset.
+fn draw_bezel(hdc: u64, container: &dyn DocumentContainer, bx: &Position, look: &FormLook) {
+    let p = paint_colors(look.dark);
+    fill_box(hdc, container, &inset(*bx, 2.0, 1.5), Px(5.0), if look.disabled { &p.bezel_off } else { &p.bezel });
+}
+
+/// `draw_field(hdc, container, box, look, radius)`: a text field's face and its hairline border.
+fn draw_field(hdc: u64, container: &dyn DocumentContainer, bx: &Position, look: &FormLook, radius: f32) {
+    let p = paint_colors(look.dark);
+    fill_box(hdc, container, bx, Px(radius), &p.field);
+    stroke_box(hdc, container, bx, radius, 0.5, &p.field_border);
+}
+
+impl Document {
+    /// `border_box(ri, x, y)`: the item's border box at `x`, `y`.
+    fn control_border_box(&self, ri: RenderId, x: Px, y: Px) -> Position {
+        let it = self.render.item(ri);
+        let mut pos = it.pos;
+        pos.x += x;
+        pos.y += y;
+        pos.grow(&it.padding);
+        pos.grow(&it.borders);
+        pos
+    }
+
+    /// `refresh_active(look, css, container)`: whether controls are active, and the accent (the style's unless it is
+    /// transparent, else the container's), asked of the container in that order.
+    fn refresh_active(&mut self, cx: &StyleCx, id: ElementId) -> FormLook {
+        let active = cx.container.controls_active();
+        let accent = self.el(id).css.m_accent_color;
+        let accent = if accent.alpha != 0 { accent } else { cx.container.control_accent() };
+        let look = &mut self.el_mut(id).look;
+        look.active = active;
+        look.accent = accent;
+        *look
+    }
+
+    /// `el_input::draw(hdc, x, y, clip, ri)`: the tag's drawing, then over the border box a native field's face (a
+    /// search field's fully rounded) and a number field's stepper, a button's bezel, a checkbox's or radio's box
+    /// and mark, a range's track, fill, thumb and its shadow, or a colour's well and swatch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_input_draw(&mut self, cx: &StyleCx, id: ElementId, hdc: u64, x: Px, y: Px, clip: Option<&Position>, ri: RenderId) {
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        let bx = self.control_border_box(ri, x, y);
+        if bx.width <= Px(0.0) || bx.height <= Px(0.0) {
+            return;
+        }
+        let container = cx.container;
+        let look = self.el(id).look;
+        let p = paint_colors(look.dark);
+        let look = self.refresh_active(cx, id);
+        let tint = look.active && !look.disabled;
+        let (ty, checked, fraction, swatch) = match &self.el(id).state {
+            ElementState::Input { ty, checked, fraction, swatch } => (ty.clone(), *checked, *fraction, *swatch),
+            _ => (Vec::new(), false, 0.5, WebColor::BLACK),
+        };
+        if is_text_like(&ty) {
+            if look.native {
+                draw_field(hdc, container, &bx, &look, if ty == b"search" { bx.height.value() / 2.0 } else { 6.0 });
+            }
+            if ty == b"number" && self.el(id).css.m_appearance != Appearance::appearance_none.index() {
+                let it = self.render.item(ri);
+                for &child in &it.children {
+                    let tag = self.get_tag_name(cx.names, self.render.item(child).element);
+                    if tag != b"lh-input-spin" {
+                        continue;
+                    }
+                    let mut spin = self.render.item(child).pos;
+                    spin.x += x + it.pos.x;
+                    spin.y += y + it.pos.y;
+                    let h = cxx::min_f32(12.5, bx.height.value() - 6.0);
+                    if h < 6.0 {
+                        break;
+                    }
+                    let bezel = Position::new(spin.x, bx.y + (bx.height - Px(h)) / Px(2.0), spin.width, Px(h));
+                    fill_box(hdc, container, &bezel, Px(3.0), &p.stepper);
+                    let cx_ = (bezel.x + bezel.width / Px(2.0)).value();
+                    let cy = (bezel.y + bezel.height / Px(2.0)).value();
+                    fill_box(
+                        hdc,
+                        container,
+                        &Position::new(bezel.x + Px(1.0), Px(cy - 0.5), bezel.width - Px(2.0), Px(1.0)),
+                        Px(0.0),
+                        &p.stepper_line,
+                    );
+                    let a = cxx::min_f32(2.0, h / 6.0);
+                    draw_chevrons(hdc, container, cx_, cy, 5.0, a, h / 4.0 - a / 2.0 + 0.25, 1.0, &p.stepper_arrow);
+                    break;
+                }
+            }
+        } else if !look.native {
+            // A control drawn by its style alone: nothing more.
+        } else if is_button_like(&ty) {
+            draw_bezel(hdc, container, &bx, &look);
+        } else if ty == b"checkbox" || ty == b"radio" {
+            let side = cxx::min_f32(bx.width.value(), bx.height.value());
+            let check = Position::new(bx.x + (bx.width - Px(side)) / Px(2.0), bx.y + (bx.height - Px(side)) / Px(2.0), Px(side), Px(side));
+            let radius = if ty == b"radio" { side / 2.0 } else { side * 0.29 };
+            let unit = side / 12.0;
+            if checked {
+                let fill = if tint {
+                    look.accent
+                } else if look.disabled {
+                    p.box_on_off
+                } else {
+                    p.box_on
+                };
+                fill_box(hdc, container, &check, Px(radius), &fill);
+                let mark = if tint {
+                    WebColor::WHITE
+                } else if look.disabled {
+                    p.mark_off
+                } else {
+                    p.mark
+                };
+                let ox = check.x.value();
+                let oy = check.y.value();
+                if ty == b"radio" {
+                    let d = 4.5 * unit;
+                    fill_box(
+                        hdc,
+                        container,
+                        &Position::new(Px(ox + (side - d) / 2.0), Px(oy + (side - d) / 2.0), Px(d), Px(d)),
+                        Px(d / 2.0),
+                        &mark,
+                    );
+                } else {
+                    stroke_lines(
+                        hdc,
+                        container,
+                        &[ox + 3.4 * unit, oy + 6.4 * unit, ox + 5.3 * unit, oy + 8.4 * unit, ox + 8.7 * unit, oy + 3.7 * unit],
+                        1.45 * unit,
+                        &mark,
+                    );
+                }
+            } else {
+                fill_box(hdc, container, &check, Px(radius), &p.field);
+                stroke_box(hdc, container, &check, radius, 1.5 * unit, if look.disabled { &p.box_border_off } else { &p.box_border });
+            }
+        } else if ty == b"range" {
+            let thumb_w = cxx::min_f32(24.0, bx.width.value());
+            let thumb_h = 16.0f32;
+            let track_h = 8.0f32;
+            let cy = (bx.y + bx.height / Px(2.0)).value();
+            let travel = cxx::max_f32(0.0, bx.width.value() - thumb_w);
+            let center = bx.x.value() + thumb_w / 2.0 + travel * fraction;
+            let rest = Position::new(bx.x + Px(1.0), Px(cy - track_h / 2.0), bx.width - Px(2.0), Px(track_h));
+            fill_box(hdc, container, &rest, Px(track_h / 2.0), if look.disabled { &p.track_rest_off } else { &p.track_rest });
+            let filled = Position::new(rest.x, rest.y, Px(center) - rest.x, rest.height);
+            let fill = if tint {
+                look.accent
+            } else if look.disabled {
+                p.track_fill_off
+            } else {
+                p.track_fill
+            };
+            fill_box(hdc, container, &filled, Px(track_h / 2.0), &fill);
+            let knob = Position::new(Px(center - thumb_w / 2.0), Px(cy - thumb_h / 2.0), Px(thumb_w), Px(thumb_h));
+            let r = Px(thumb_h / 2.0);
+            let round = BorderRadiuses {
+                top_left_x: r,
+                top_left_y: r,
+                top_right_x: r,
+                top_right_y: r,
+                bottom_left_x: r,
+                bottom_left_y: r,
+                bottom_right_x: r,
+                bottom_right_y: r,
+            };
+            let shadow = ShadowPaint { x: Px(0.0), y: Px(0.0), blur: Px(3.0), spread: Px(0.0), color: p.thumb_shadow, inset: false };
+            container.draw_box_shadow(hdc, &knob, &round, &shadow);
+            fill_box(hdc, container, &knob, Px(thumb_h / 2.0), &p.thumb);
+        } else if ty == b"color" {
+            fill_box(hdc, container, &bx, bx.height / Px(2.0), &p.well);
+            let swatch_box = inset(bx, 3.0, 3.0);
+            fill_box(hdc, container, &swatch_box, swatch_box.height / Px(2.0), &swatch);
+        }
+    }
+
+    /// `el_select::draw(hdc, x, y, clip, ri)`: the tag's drawing, a native select's bezel and, wider than 24 px, its
+    /// chevrons in its colour.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_select_draw(&mut self, cx: &StyleCx, id: ElementId, hdc: u64, x: Px, y: Px, clip: Option<&Position>, ri: RenderId) {
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        let bx = self.control_border_box(ri, x, y);
+        if bx.width <= Px(0.0) || bx.height <= Px(0.0) {
+            return;
+        }
+        let el = self.el(id);
+        if el.look.native {
+            draw_bezel(hdc, cx.container, &bx, &el.look);
+        }
+        if el.arrow && bx.width > Px(24.0) {
+            let cx_ = (bx.x + bx.width).value() - 10.5 - 3.0;
+            let cy = (bx.y + bx.height / Px(2.0)).value();
+            draw_chevrons(hdc, cx.container, cx_, cy, 6.0, 3.0, 1.25, 1.3, &el.css.m_color);
+        }
+    }
+
+    /// `el_button::draw(hdc, x, y, clip, ri)`: the tag's drawing and a native button's bezel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_button_draw(&mut self, cx: &StyleCx, id: ElementId, hdc: u64, x: Px, y: Px, clip: Option<&Position>, ri: RenderId) {
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        let look = self.el(id).look;
+        if look.native {
+            draw_bezel(hdc, cx.container, &self.control_border_box(ri, x, y), &look);
+        }
+    }
+
+    /// `el_textarea::draw(hdc, x, y, clip, ri)`: a native field's face under the tag's drawing, then a resize grip
+    /// in a box larger than 12 px that resizes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_textarea_draw(&mut self, cx: &StyleCx, id: ElementId, hdc: u64, x: Px, y: Px, clip: Option<&Position>, ri: RenderId) {
+        let container = cx.container;
+        let bx = self.control_border_box(ri, x, y);
+        let look = self.el(id).look;
+        if look.native {
+            draw_field(hdc, container, &bx, &look, 6.0);
+        }
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        if bx.width > Px(12.0) && bx.height > Px(12.0) && self.el(id).css.m_resize != Resize::resize_none.index() {
+            let rx = (bx.x + bx.width).value() - 4.0;
+            let by = (bx.y + bx.height).value() - 4.0;
+            let p = paint_colors(look.dark);
+            stroke_lines(hdc, container, &[rx - 8.0, by, rx, by - 8.0], 1.0, &p.stepper_arrow);
+            stroke_lines(hdc, container, &[rx - 4.0, by, rx, by - 4.0], 1.0, &p.stepper_arrow);
+        }
+    }
+
+    /// `el_meter::draw(hdc, x, y, clip, ri)`: the tag's drawing, then a native meter's or progress bar's track and
+    /// its filled part: a meter's in the green, yellow or red of how far its value's region is from the optimum's,
+    /// a progress bar's in the accent while controls are active.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_meter_draw(&mut self, cx: &StyleCx, id: ElementId, hdc: u64, x: Px, y: Px, clip: Option<&Position>, ri: RenderId) {
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        let bx = self.control_border_box(ri, x, y);
+        let look = self.el(id).look;
+        if !look.native || bx.width <= Px(2.0) || bx.height <= Px(0.0) {
+            return;
+        }
+        let container = cx.container;
+        let p = paint_colors(look.dark);
+        let meter = self.tag(id) == _meter_;
+        let track_h = cxx::min_f32(bx.height.value(), if meter { 12.0 } else { 8.0 });
+        let track = Position::new(bx.x + Px(1.0), bx.y + (bx.height - Px(track_h)) / Px(2.0), bx.width - Px(2.0), Px(track_h));
+        fill_box(hdc, container, &track, Px(track_h / 2.0), &p.track_rest);
+        let look = self.refresh_active(cx, id);
+        let mut fraction = 0.0f32;
+        let mut fill = if look.active { look.accent } else { p.track_fill };
+        if meter {
+            let min = self.attr_number(id, b"min", 0.0);
+            let max = cxx::max_f32(min, self.attr_number(id, b"max", 1.0));
+            let value = cxx::max_f32(min, cxx::min_f32(max, self.attr_number(id, b"value", 0.0)));
+            let low = cxx::max_f32(min, cxx::min_f32(max, self.attr_number(id, b"low", min)));
+            let high = cxx::max_f32(low, cxx::min_f32(max, self.attr_number(id, b"high", max)));
+            let best = cxx::max_f32(min, cxx::min_f32(max, self.attr_number(id, b"optimum", (min + max) / 2.0)));
+            fraction = if max > min { (value - min) / (max - min) } else { 0.0 };
+            let region = |v: f32| -> i32 {
+                if v < low {
+                    0
+                } else if v > high {
+                    2
+                } else {
+                    1
+                }
+            };
+            let gap = (region(value) - region(best)).abs();
+            fill = if gap == 0 {
+                if look.dark { WebColor::rgba(48, 209, 88, 255) } else { WebColor::rgba(52, 199, 89, 255) }
+            } else if gap == 1 {
+                if look.dark { WebColor::rgba(255, 214, 10, 255) } else { WebColor::rgba(255, 204, 0, 255) }
+            } else if look.dark {
+                WebColor::rgba(255, 69, 58, 255)
+            } else {
+                WebColor::rgba(255, 59, 48, 255)
+            };
+        } else if self.get_attr(id, b"value").is_some() {
+            let max = self.attr_number(id, b"max", 1.0);
+            let max = if max > 0.0 { max } else { 1.0 };
+            fraction = cxx::max_f32(0.0, cxx::min_f32(1.0, self.attr_number(id, b"value", 0.0) / max));
+        }
+        if fraction > 0.0 {
+            let mut filled = track;
+            filled.width = Px(track.width.value() * fraction);
+            fill_box(hdc, container, &filled, Px(track_h / 2.0), &fill);
+        }
+    }
+
+    /// `el_fieldset::draw(hdc, x, y, clip, ri)`: without a legend laid out, the tag's drawing; with one, the
+    /// background over the frame (the border box moved down to the legend's middle) and the borders clipped to the
+    /// three parts around the legend's gap.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_fieldset_draw(&mut self, cx: &StyleCx, id: ElementId, hdc: u64, x: Px, y: Px, clip: Option<&Position>, ri: RenderId) {
+        let first = self.legend(id);
+        let mut legend_ri = None;
+        if let Some(first) = first {
+            for &child in self.render.children(ri) {
+                if self.render.item(child).element == first {
+                    legend_ri = Some(child);
+                    break;
+                }
+            }
+        }
+        let Some(legend_ri) = legend_ri else {
+            self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+            return;
+        };
+        let container = cx.container;
+        let snap = self.paint.snap_scale;
+        let bx = self.control_border_box(ri, x, y);
+        let cb = &self.el(id).css.m_css_borders;
+        let it = self.render.item(ri);
+        let top_w = it.borders.top;
+        let li = self.render.item(legend_ri);
+        let mut legend_box = li.pos;
+        legend_box.x += x + it.pos.x;
+        legend_box.y += y + it.pos.y;
+        legend_box.grow(&li.padding);
+        legend_box.grow(&li.borders);
+        let shift = Px(0.0).max((legend_box.height - top_w) / Px(2.0));
+        let mut frame = bx;
+        frame.y += shift;
+        frame.height -= shift;
+        let radius = cb.radius.calc_percents(frame.width, frame.height);
+
+        if let Some(bg) = self.get_background(id, false) {
+            let mut content = frame;
+            content.shrink(&it.borders);
+            content.shrink(&it.padding);
+            for i in (0..bg.get_layers_number()).rev() {
+                let mut layer = BackgroundLayer::default();
+                if !bg.get_layer(self, cx, i, content, id, ri, &mut layer) {
+                    continue;
+                }
+                layer.border_box = frame;
+                layer.border_radius = radius;
+                layer.border_box.round(snap);
+                layer.clip_box.round(snap);
+                layer.origin_box.round(snap);
+                bg.draw_layer(hdc, i, &layer, container);
+            }
+        }
+        if cb.is_visible() {
+            let mut b = Borders::from(cb);
+            b.radius = radius;
+            frame.round(snap);
+            let none = BorderRadiuses::default();
+            let gap_l = legend_box.x;
+            let gap_r = legend_box.x + legend_box.width;
+            let left = frame.x - Px(1.0);
+            let right = frame.x + frame.width + Px(1.0);
+            let above = frame.y - Px(1.0);
+            let below = frame.y + frame.height + Px(1.0);
+            let parts = [
+                Position::new(left, above, gap_l - left, below - above),
+                Position::new(gap_r, above, right - gap_r, below - above),
+                Position::new(gap_l, frame.y + top_w, gap_r - gap_l, below - frame.y - top_w),
+            ];
+            for part in &parts {
+                if part.width <= Px(0.0) || part.height <= Px(0.0) {
+                    continue;
+                }
+                container.set_clip(part, &none);
+                container.draw_borders(hdc, &b, &frame, false);
+                container.del_clip();
+            }
         }
     }
 }

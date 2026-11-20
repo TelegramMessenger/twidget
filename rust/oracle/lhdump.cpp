@@ -13,6 +13,7 @@
 #include "lhdump_dom.h"
 #include "lhdump_grid.h"
 #include "lhdump_gumbo.h"
+#include "lhdump_paint.h"
 #include "master_css.h"
 #include "num_cvt.h"
 #include "render_block.h"
@@ -686,7 +687,7 @@ void clear_switches() {
 // ---- Stage L5: the cascade ('l') ----
 
 // The cascade's container: the renderer's answers where the fork asks (fonts with fixed metrics per description, widths per byte, ASCII text transforms, the trusted switch and its sanitize_declaration), its viewport set by the case, every font, width, image and transform call logged; for layout the viewport, image sizes from the source's bytes and text breakers that break between any two characters, logged too.
-class CascadeContainer final : public OracleContainer {
+class CascadeContainer final : public lhdump_paint::Painting<OracleContainer> {
 public:
     float width = 375, height = 667, dpr = 2;
     bool trusted = false;
@@ -696,6 +697,7 @@ public:
         int64_t n = 0;
     };
     mutable std::vector<Call> calls;
+    void log(char kind, const std::string& a, const std::string& b, int64_t n) const override { calls.push_back({kind, a, b, n}); }
     std::map<uint_ptr, float> sizes;
     uint_ptr next = 0;
     uint64_t breakers = 0;
@@ -1592,6 +1594,81 @@ uint64_t renderer_layout_budget(document& doc) {
     return 100000 + 50 * elements;
 }
 
+// ---- Stage L13: painting ('Q') ----
+
+// The numbering of a document's items and DOM elements, as write_layout's.
+struct PaintIndex {
+    TreeIndex t;
+    std::vector<std::pair<element::ptr, int32_t>> nodes;
+
+    explicit PaintIndex(document& doc) {
+        if (doc.root()) cascade_walk(doc.root(), -1, nodes);
+        for (size_t k = 0; k < nodes.size(); k++) t.dom[nodes[k].first.get()] = int32_t(k);
+        if (doc.root_render()) t.visit(doc.root_render().get());
+        for (const auto& item : lhdump_dom::field<lhdump_dom::DocTabular>(doc)) t.visit(item.get());
+    }
+};
+
+// A paint step: f32 x, y, u8 flags (1 a clip, 2 cull, 4 trace, 8 controls active, 16 bare shadows), the clip, f32 snap scale, u32 hdc, the elements (as k-th of the walk) skipped, without background images and without scroll content (u32 count, each u32), i32 the element with bare effects and the unclipped scroller (-1 none), u8 r, g, b, a the controls' accent; answered with u8 1 and, when tracing, u32 items drawn and each i32.
+void paint_step(In& in, Out& o, document& doc, CascadeContainer& container) {
+    const float x = in.f32();
+    const float y = in.f32();
+    const uint8_t flags = in.u8();
+    position clip;
+    if (flags & 1) {
+        clip.x = in.f32();
+        clip.y = in.f32();
+        clip.width = in.f32();
+        clip.height = in.f32();
+    }
+    const float snap = in.f32();
+    const uint32_t hdc = in.u32();
+    PaintIndex index(doc);
+    auto pick = [&](uint32_t k) -> const element* { return index.nodes.empty() ? nullptr : index.nodes[k % index.nodes.size()].first.get(); };
+    for (auto* set : {&doc.skip_paint, &doc.skip_background_images, &doc.skip_scroll_content}) {
+        const uint32_t n = in.u32();
+        for (uint32_t i = 0; i < n && in.at < in.s.size(); i++)
+            if (const element* el = pick(in.u32())) set->insert(el);
+    }
+    const int32_t bare = in.i32();
+    const int32_t unclipped = in.i32();
+    doc.bare_effects = bare >= 0 ? pick(uint32_t(bare)) : nullptr;
+    doc.unclipped_scroll = unclipped >= 0 ? pick(uint32_t(unclipped)) : nullptr;
+    doc.bare_shadows = (flags & 16) != 0;
+    const uint8_t r = in.u8(), g = in.u8(), b = in.u8(), a = in.u8();
+    container.accent = web_color(r, g, b, a);
+    container.active = (flags & 8) != 0;
+    std::map<const element*, int32_t> owners;
+    for (size_t k = 0; k < index.nodes.size(); k++) owners[index.nodes[k].first.get()] = int32_t(k);
+    container.owners = &owners;
+    std::vector<const render_item*> trace;
+    if (flags & 4) g_paint_trace = &trace;
+    pixel_snap_scale() = snap;
+    doc.draw(uint_ptr(hdc), pixel_t(x), pixel_t(y), (flags & 1) ? &clip : nullptr, (flags & 2) != 0);
+    pixel_snap_scale() = 1;
+    g_paint_trace = nullptr;
+    container.owners = nullptr;
+    doc.skip_paint.clear();
+    doc.skip_background_images.clear();
+    doc.skip_scroll_content.clear();
+    doc.bare_effects = nullptr;
+    doc.unclipped_scroll = nullptr;
+    doc.bare_shadows = false;
+    o.u8(1);
+    if (flags & 4) {
+        o.u32(uint32_t(trace.size()));
+        for (const render_item* ri : trace) o.i32(index.t.of(ri));
+    }
+}
+
+// What painting keeps after a step, in write_layout's numbering: lhdump_paint.h's write_paint_state.
+void write_paint(Out& o, document& doc) {
+    PaintIndex index(doc);
+    std::vector<element*> nodes;
+    for (const auto& [el, parent] : index.nodes) nodes.push_back(el.get());
+    lhdump_paint::write_paint_state(o, doc, index.t.items, nodes);
+}
+
 // f32 width, height and dpr, the master and user sheets, the html, then u32 steps (u8 'd' dump (the cascade, with mode 1 the render tree, with mode 2 the layout), 'm' f32 width and height then media_changed, 'h', 'a' or 'x' u32 k for :hover, :active or leaving on the k-th tag then find_styles_changes, 'r' refresh_styles and compute_styles of the root, 'w' f32 width and u8 how (bit 0: the renderer's budget or a u64 that follows; the rest the render_type) then render, answered with its f32): the document as createUpdatableFromString finalizes it with the user sheet, each step's answer and the names the case interned (as one string), then the container's calls by phase (the finalization, then each step).
 void cascade(In& in, Out& o, int mode) {
     const size_t names_before = _id_usage().names;
@@ -1633,7 +1710,9 @@ void cascade(In& in, Out& o, int mode) {
         if (last_op != 'w') lhdump_grid::trace().clear();
         last_op = op;
         if (op == 'd') {
-            if (mode == 2)
+            if (mode == 3)
+                write_paint(o, *doc);
+            else if (mode == 2)
                 write_layout(o, *doc);
             else if (mode == 1)
                 write_render_tree(o, *doc);
@@ -1646,6 +1725,10 @@ void cascade(In& in, Out& o, int mode) {
             const uint8_t how = in.u8();
             doc->set_layout_budget((how & 1) ? in.u64() : renderer_layout_budget(*doc));
             o.f32(doc->render(pixel_t(width), render_type(how >> 1)).value());
+            continue;
+        }
+        if (op == 'p') {
+            paint_step(in, o, *doc, container);
             continue;
         }
         if (op == 'm') {
@@ -2327,6 +2410,11 @@ bool run(int op, std::string_view input) {
     }
     case 'Y': { // layout: as 'l', with layout steps ('w'), and each dump step the layout (write_layout)
         cascade(in, o, 2);
+        answer(1, o.s);
+        return true;
+    }
+    case 'Q': { // painting: as 'Y', with paint steps ('p') whose container calls are logged with their arguments, and each dump step what painting keeps (write_paint)
+        cascade(in, o, 3);
         answer(1, o.s);
         return true;
     }

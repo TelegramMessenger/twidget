@@ -7,8 +7,9 @@
 //! cells laid out at their columns' width, the rows' heights from their cells (rowspans after), the table's height
 //! shared among the rows, the cells placed and vertically aligned in their rows, then the captions above and below.
 //! `render_item_table_part` and `render_item_table_row` have the base class's `init()` and `_render`; a row's boxes
-//! for the document's size are `layout.rs`'s. Painting the table (`draw_children`, its ink, the captions' offset)
-//! is stage L13's.
+//! for the document's size are `layout.rs`'s. Painting (stage L13): a table's captions, rows' backgrounds and cells
+//! (their borders deferred when collapsed, then drawn after the table's own), its ink and the captions' offset, a
+//! row's boxes.
 
 use crate::Px;
 use crate::css_values::{BorderCollapse, BorderStyle, BoxSizing, CaptionSide, CssUnits, TableLayout};
@@ -652,5 +653,186 @@ impl Document {
             }
         }
         table_height
+    }
+}
+
+/// The table's grid, which painting finds in place (layout gives it back after the cells are laid out).
+fn grid_of(doc: &Document, id: RenderId) -> Option<&TableGrid> {
+    doc.render.item(id).table.as_ref().and_then(|t| t.grid.as_deref())
+}
+
+impl Document {
+    /// `render_item_table::draw_children(hdc, x, y, clip, flag, zindex)`: its captions (drawn in the blocks' pass),
+    /// then row by row the row's background (blocks' pass) and its cells (drawn in the blocks' pass, their borders
+    /// deferred when the borders collapse), each one's children for the pass; culled cells and captions left out.
+    /// With collapsed borders, in the blocks' pass, the table's borders and then each cell's, where the clip meets
+    /// them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn table_draw_children(
+        &mut self,
+        cx: &StyleCx,
+        id: RenderId,
+        hdc: u64,
+        x: Px,
+        y: Px,
+        clip: Option<&Position>,
+        flag: crate::paint::DrawFlag,
+        zindex: i32,
+    ) {
+        use crate::paint::DrawFlag;
+        let Some((captions, rows, cols)) = grid_of(self, id).map(|g| (g.captions.len(), g.rows_count, g.cols_count)) else {
+            return;
+        };
+        let mut pos = self.render.item(id).pos;
+        pos.x += x;
+        pos.y += y;
+        let cull = clip.is_some() && self.culls_paint();
+        let collapsed = self.ri_css(id).m_border_collapse == BorderCollapse::border_collapse_collapse.index();
+        let generation = self.paint_generation();
+        for k in 0..captions {
+            let Some(caption) = grid_of(self, id).map(|g| g.captions[k]) else { return };
+            if !self.is_visible(caption) {
+                continue;
+            }
+            if let Some(clip) = clip
+                && cull
+                && self.ink(caption, generation, false).misses(clip, pos.x.value(), pos.y.value())
+            {
+                continue;
+            }
+            if flag == DrawFlag::draw_block {
+                self.trace_table_item(caption);
+                let element = self.render.item(caption).element;
+                self.draw_element(cx, element, hdc, pos.x, pos.y, clip, caption);
+            }
+            self.draw_children(cx, caption, hdc, pos.x, pos.y, clip, flag, zindex);
+        }
+        for row in 0..rows {
+            let Some(el_row) = grid_of(self, id).and_then(|g| g.rows[row as usize].el_row) else { continue };
+            let row_visible = self.is_visible(el_row);
+            if row_visible && flag == DrawFlag::draw_block {
+                let element = self.render.item(el_row).element;
+                self.draw_element_background(cx, element, hdc, pos.x, pos.y, clip, el_row);
+            }
+            for col in 0..cols {
+                let Some(cell_el) = grid_of(self, id).and_then(|g| g.cell(col, row)).and_then(|c| c.el) else { continue };
+                if row_visible && self.is_visible(cell_el) {
+                    if let Some(clip) = clip
+                        && cull
+                        && self.ink(cell_el, generation, false).misses(clip, pos.x.value(), pos.y.value())
+                    {
+                        continue;
+                    }
+                    if flag == DrawFlag::draw_block {
+                        self.trace_table_item(cell_el);
+                        let deferred = self.render.item(cell_el).defer_borders;
+                        self.render.item_mut(cell_el).defer_borders = collapsed;
+                        let element = self.render.item(cell_el).element;
+                        self.draw_element(cx, element, hdc, pos.x, pos.y, clip, cell_el);
+                        self.render.item_mut(cell_el).defer_borders = deferred;
+                    }
+                    self.draw_children(cx, cell_el, hdc, pos.x, pos.y, clip, flag, zindex);
+                }
+            }
+        }
+        if collapsed && flag == DrawFlag::draw_block {
+            let it = self.render.item(id);
+            let mut table_box = pos;
+            table_box.grow(&it.padding);
+            table_box.grow(&it.borders);
+            if table_box.does_intersect(clip, false) {
+                self.draw_borders(cx, id, hdc, table_box);
+            }
+            for row in 0..rows {
+                let Some(el_row) = grid_of(self, id).and_then(|g| g.rows[row as usize].el_row) else { continue };
+                if !self.is_visible(el_row) {
+                    continue;
+                }
+                for col in 0..cols {
+                    let Some(cell_el) = grid_of(self, id).and_then(|g| g.cell(col, row)).and_then(|c| c.el) else { continue };
+                    if !self.is_visible(cell_el) {
+                        continue;
+                    }
+                    let c = self.render.item(cell_el);
+                    let mut bx = c.pos;
+                    bx.x += pos.x;
+                    bx.y += pos.y;
+                    bx.grow(&c.padding);
+                    bx.grow(&c.borders);
+                    if bx.does_intersect(clip, false) {
+                        self.draw_borders(cx, cell_el, hdc, bx);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `g_paint_trace->push_back(item)` when tracing.
+    fn trace_table_item(&mut self, item: RenderId) {
+        if let Some(trace) = self.paint.trace.as_mut() {
+            trace.push(item);
+        }
+    }
+
+    /// `render_item_table::add_children_ink(generation, ink)`: its captions' ink, each row's own ink and its cells'
+    /// ink, at the table's place.
+    pub fn table_add_children_ink(&mut self, id: RenderId, generation: u32, ink: &mut crate::paint::PaintInk) {
+        let Some((captions, rows, cols)) = grid_of(self, id).map(|g| (g.captions.len(), g.rows_count, g.cols_count)) else {
+            return;
+        };
+        let dx = self.render.item(id).pos.x.value();
+        let dy = self.render.item(id).pos.y.value();
+        for k in 0..captions {
+            let Some(caption) = grid_of(self, id).map(|g| g.captions[k]) else { return };
+            let child = self.ink(caption, generation, false);
+            ink.add_ink(&child, dx, dy);
+        }
+        for row in 0..rows {
+            if let Some(el_row) = grid_of(self, id).and_then(|g| g.rows[row as usize].el_row) {
+                self.add_self_ink(el_row, ink, dx, dy);
+            }
+            for col in 0..cols {
+                if let Some(cell_el) = grid_of(self, id).and_then(|g| g.cell(col, row)).and_then(|c| c.el) {
+                    let child = self.ink(cell_el, generation, false);
+                    ink.add_ink(&child, dx, dy);
+                }
+            }
+        }
+    }
+
+    /// `render_item_table::get_draw_vertical_offset()`: the top captions' height.
+    pub fn table_draw_vertical_offset(&self, id: RenderId) -> Px {
+        grid_of(self, id).map_or(Px(0.0), |g| g.top_captions_height)
+    }
+
+    /// `render_item_table_row::for_inline_boxes(process)`: each cell's box (its margin box's width, the row's
+    /// padding and borders above and below), the first and last marked.
+    pub fn table_row_for_inline_boxes(&self, id: RenderId, process: &mut dyn FnMut(&Position, bool, bool) -> bool) -> bool {
+        let it = self.render.item(id);
+        let mut prev_pos: Option<Position> = None;
+        let mut first = true;
+        for &el in &it.children {
+            if self.ri_css(el).m_display == crate::css_values::StyleDisplay::display_table_cell.index() {
+                if let Some(prev) = prev_pos {
+                    if !process(&prev, first, false) {
+                        return true;
+                    }
+                    if first {
+                        first = false;
+                    }
+                }
+                let c = self.render.item(el);
+                let mut pos = Position::default();
+                pos.x = c.left() + c.margins.left;
+                pos.y = c.top() - it.padding.top - it.borders.top;
+                pos.width = c.right() - pos.x - c.margins.right - c.margins.left;
+                pos.height = c.height() + it.padding.top + it.padding.bottom + it.borders.top + it.borders.bottom;
+                prev_pos = Some(pos);
+            }
+        }
+        if let Some(prev) = prev_pos {
+            process(&prev, first, true);
+        }
+        true
     }
 }

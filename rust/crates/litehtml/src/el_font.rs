@@ -6,7 +6,7 @@ use crate::string_id::{_color_, _font_family_, _font_size_};
 
 /// `atoi(str)`, undefined past `int`: the Windows C runtime saturates, the others give `strtol`'s `long` cut to
 /// `int`.
-fn c_atoi(str: &[u8]) -> i32 {
+pub(crate) fn c_atoi(str: &[u8]) -> i32 {
     if cfg!(windows) { twidget_cstd::atoi(str) } else { twidget_cstd::strtol(str).0 as i32 }
 }
 

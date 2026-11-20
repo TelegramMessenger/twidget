@@ -1,5 +1,6 @@
 //! `el_image.cpp` as a document is built: an `<img>` or `<canvas>` (and a generated image) keeps its `src`, and
-//! its `width` and `height` are dimensions. What it draws and measures is later stages'.
+//! its `width` and `height` are dimensions; its box is painted as a tag's (stage L13). The image it draws over its
+//! box (`object-fit`, `fitted`) is stage L15's: painting reaches it as a seam.
 
 use crate::document::{Document, Env};
 use crate::element::{ElementId, ElementState};
@@ -16,6 +17,29 @@ impl Document {
         }
         if let Some(str) = self.get_attr(id, b"height").map(<[u8]>::to_vec) {
             self.map_to_dimension_property(id, _height_, &str);
+        }
+    }
+
+    /// `el_image::draw(hdc, x, y, clip, ri)`: the tag's drawing; then, where the clip meets its rounded box and the
+    /// box is not empty, the image drawn as a background layer (stage L15: the seam, logged as unported).
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_image_draw(
+        &self,
+        cx: &crate::document::StyleCx,
+        id: ElementId,
+        hdc: u64,
+        x: crate::Px,
+        y: crate::Px,
+        clip: Option<&crate::types::Position>,
+        ri: crate::render_item::RenderId,
+    ) {
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        let mut pos = self.render.item(ri).pos;
+        pos.x += x;
+        pos.y += y;
+        pos.round(self.paint.snap_scale);
+        if pos.does_intersect(clip, false) && pos.width > crate::Px(0.0) && pos.height > crate::Px(0.0) {
+            cx.container.paint_unported(hdc, "image");
         }
     }
 }

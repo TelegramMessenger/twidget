@@ -70,6 +70,7 @@ impl twidget_litehtml::web_color::ResolveColor for DomContainer {
 }
 
 impl DocumentContainer for DomContainer {
+    paints_nothing!();
     fn pt_to_px(&self, pt: f32) -> Px {
         Px(pt * 96.0 / 72.0)
     }

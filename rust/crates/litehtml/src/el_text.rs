@@ -1,11 +1,12 @@
 //! `el_text.cpp` and `el_space.cpp` as the cascade has them: a text takes its parent's font, line height and text
-//! properties, its text as `text-transform` and white-space make it, and its measure in the parent's font. Its
-//! drawing and breaking are later stages'.
+//! properties, its text as `text-transform` and white-space make it, and its measure in the parent's font; and its
+//! drawing (stage L13): each piece in its parent's font and colour, an ellipsis's cut text cut.
 
 use crate::Px;
 use crate::css_values::{ElementFloat, ElementPosition, StyleDisplay, TextTransform, WhiteSpace};
 use crate::document::{Document, StyleCx};
 use crate::element::ElementId;
+use crate::render_item::RenderId;
 use crate::types::FontMetrics;
 
 impl Document {
@@ -145,5 +146,77 @@ impl Document {
             self.el_mut(id).text_state.breaker = made;
         }
         self.el(id).text_state.breaker
+    }
+
+    /// `el_text::draw(hdc, x, y, clip, ri)`: nothing for collapsible white space the font does not draw; a text cut
+    /// into pieces draws each; else its text (a piece's own, cut where an ellipsis cut it) in its parent's font and
+    /// colour at its box snapped vertically, when the clip meets the box grown by half its height (at least 4) and
+    /// its parent's text shadows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_text_draw(&self, cx: &StyleCx, id: ElementId, hdc: u64, x: Px, y: Px, clip: Option<&crate::types::Position>, ri: RenderId) {
+        if self.is_white_space(id) && !self.el(id).text_state.draw_spaces {
+            return;
+        }
+        let item = self.render.item(ri);
+        let text_item = item.text.as_deref();
+        if let Some(text) = text_item
+            && !text.fragments.is_empty()
+        {
+            for &fragment in &text.fragments {
+                self.el_text_draw(cx, id, hdc, x, y, clip, fragment);
+            }
+            return;
+        }
+
+        let mut pos = item.pos;
+        pos.x += x;
+        pos.y += y;
+        {
+            let k = self.paint.snap_scale;
+            pos.y = Px((pos.y.value() * k).round() / k);
+        }
+
+        let mut ink = pos;
+        {
+            let mut slack = Px(4.0).max(ink.height / Px(2.0));
+            if let Some(owner) = self.parent(id) {
+                let mut reach = 0.0f32;
+                for shadow in &self.el(owner).css.m_text_shadows {
+                    reach = crate::cxx::max_f32(
+                        reach,
+                        shadow.blur.val().abs() * 2.0
+                            + shadow.spread.val().abs()
+                            + crate::cxx::max_f32(shadow.x.val().abs(), shadow.y.val().abs()),
+                    );
+                }
+                slack += Px(reach);
+            }
+            ink.x -= slack;
+            ink.y -= slack;
+            ink.width += slack * Px(2.0);
+            ink.height += slack * Px(2.0);
+        }
+        if ink.does_intersect(clip, false)
+            && let Some(el_parent) = self.parent(id)
+        {
+            let font = self.el(el_parent).css.m_font;
+            if font != 0 {
+                let color = self.el(el_parent).css.m_color;
+                let shown: &[u8] = match text_item {
+                    Some(text) if text.is_fragment => &text.fragment_text,
+                    _ => self.display_text(id),
+                };
+                match text_item {
+                    Some(text) if text.cut >= 0 => {
+                        // text-overflow: ellipsis cut it (render_item_inline_context::apply_ellipsis).
+                        if text.cut > 0 {
+                            let cut = (text.cut as usize).min(shown.len());
+                            cx.container.draw_text(hdc, crate::gumbo::c_str(&shown[..cut]), font, color, &pos);
+                        }
+                    }
+                    _ => cx.container.draw_text(hdc, crate::gumbo::c_str(shown), font, color, &pos),
+                }
+            }
+        }
     }
 }

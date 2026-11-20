@@ -546,6 +546,55 @@ impl twidget_litehtml::web_color::ResolveColor for CsContainer {
 }
 
 impl DocumentContainer for CsContainer {
+    fn draw_text(
+        &self,
+        _hdc: u64,
+        _text: &[u8],
+        _font: u64,
+        _color: twidget_litehtml::web_color::WebColor,
+        _pos: &twidget_litehtml::types::Position,
+    ) {
+    }
+    fn draw_list_marker(&self, _hdc: u64, _marker: &twidget_litehtml::document_container::ListMarker) {}
+    fn draw_image(&self, _hdc: u64, _layer: &twidget_litehtml::background::BackgroundLayer, _url: &[u8], _base_url: &[u8]) {}
+    fn draw_solid_fill(
+        &self,
+        _hdc: u64,
+        _layer: &twidget_litehtml::background::BackgroundLayer,
+        _color: &twidget_litehtml::web_color::WebColor,
+    ) {
+    }
+    fn draw_linear_gradient(
+        &self,
+        _hdc: u64,
+        _layer: &twidget_litehtml::background::BackgroundLayer,
+        _gradient: &twidget_litehtml::background::LinearGradient,
+    ) {
+    }
+    fn draw_radial_gradient(
+        &self,
+        _hdc: u64,
+        _layer: &twidget_litehtml::background::BackgroundLayer,
+        _gradient: &twidget_litehtml::background::RadialGradient,
+    ) {
+    }
+    fn draw_conic_gradient(
+        &self,
+        _hdc: u64,
+        _layer: &twidget_litehtml::background::BackgroundLayer,
+        _gradient: &twidget_litehtml::background::ConicGradient,
+    ) {
+    }
+    fn draw_borders(
+        &self,
+        _hdc: u64,
+        _borders: &twidget_litehtml::borders::Borders,
+        _draw_pos: &twidget_litehtml::types::Position,
+        _root: bool,
+    ) {
+    }
+    fn set_clip(&self, _pos: &twidget_litehtml::types::Position, _bdr_radius: &twidget_litehtml::borders::BorderRadiuses) {}
+    fn del_clip(&self) {}
     fn pt_to_px(&self, pt: f32) -> Px {
         Px(pt * 96.0 / 72.0)
     }

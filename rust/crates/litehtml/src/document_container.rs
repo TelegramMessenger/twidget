@@ -2,14 +2,18 @@
 //! it, as far as the ported stages ask it. Later stages add the rest of the C++ interface here. A method with a
 //! body here has that body in the C++ too, but those the C++ leaves pure, which do here what the renderer's
 //! container does where that is nothing (core/src/renderer.cpp), or answer as a container without fonts would.
+//! The paint calls the C++ leaves pure (the texts, markers, layers, borders and clips) have no body here either.
 
 use crate::Px;
+use crate::background::{BackgroundLayer, ConicGradient, LinearGradient, RadialGradient};
+use crate::borders::{BorderRadiuses, Borders};
+use crate::css_effects::{FilterPaint, PaintGroup, ShadowPaint, VectorPath};
 use crate::css_tokenizer::CssToken;
 use crate::element::ElementId;
 use crate::font_description::FontDescription;
 use crate::types::{FontMetrics, MediaFeatures, Position, Size};
 use crate::utf8_strings::{utf8_to_utf32, utf32_to_utf8};
-use crate::web_color::ResolveColor;
+use crate::web_color::{ResolveColor, WebColor};
 
 /// `document_container`.
 pub trait DocumentContainer: ResolveColor {
@@ -124,6 +128,111 @@ pub trait DocumentContainer: ResolveColor {
 
     /// The document no longer keeps the breaker (the C++'s last `shared_ptr` to it goes). No call in the C++.
     fn drop_text_breaker(&self, _breaker: u64) {}
+
+    // ---- Painting (stage L13), in the C++'s order --------------------------------------------------------------
+
+    /// `draw_text(hdc, text, font, color, pos)`: a text (up to its first NUL) in the font and colour, its box at
+    /// `pos`.
+    fn draw_text(&self, hdc: u64, text: &[u8], font: u64, color: WebColor, pos: &Position);
+
+    /// `draw_list_marker(hdc, marker)`: a list item's marker that is not drawn as text.
+    fn draw_list_marker(&self, hdc: u64, marker: &ListMarker);
+
+    /// `draw_image(hdc, layer, url, base_url)`: a background image's layer.
+    fn draw_image(&self, hdc: u64, layer: &BackgroundLayer, url: &[u8], base_url: &[u8]);
+
+    /// `draw_solid_fill(hdc, layer, color)`: a background colour's layer (and the form controls' fills).
+    fn draw_solid_fill(&self, hdc: u64, layer: &BackgroundLayer, color: &WebColor);
+
+    /// `draw_linear_gradient(hdc, layer, gradient)`.
+    fn draw_linear_gradient(&self, hdc: u64, layer: &BackgroundLayer, gradient: &LinearGradient);
+
+    /// `draw_radial_gradient(hdc, layer, gradient)`.
+    fn draw_radial_gradient(&self, hdc: u64, layer: &BackgroundLayer, gradient: &RadialGradient);
+
+    /// `draw_conic_gradient(hdc, layer, gradient)`.
+    fn draw_conic_gradient(&self, hdc: u64, layer: &BackgroundLayer, gradient: &ConicGradient);
+
+    /// `draw_borders(hdc, borders, draw_pos, root)`: a box's borders (or outline) around `draw_pos`.
+    fn draw_borders(&self, hdc: u64, borders: &Borders, draw_pos: &Position, root: bool);
+
+    /// `set_clip(pos, bdr_radius)`: what is drawn until the matching `del_clip` is clipped to the rounded box.
+    fn set_clip(&self, pos: &Position, bdr_radius: &BorderRadiuses);
+
+    /// `del_clip()`: the last clip set (or clip path) ends.
+    fn del_clip(&self);
+
+    /// `suspend_clips()`: a fixed box escapes the clips set so far, until `resume_clips`.
+    fn suspend_clips(&self) {}
+
+    /// `resume_clips()`.
+    fn resume_clips(&self) {}
+
+    /// `draw_box_shadow(hdc, box, radius, shadow)`.
+    fn draw_box_shadow(&self, _hdc: u64, _box: &Position, _radius: &BorderRadiuses, _shadow: &ShadowPaint) {}
+
+    /// `set_clip_path(path)`: a `clip-path` clips until the matching `del_clip`.
+    fn set_clip_path(&self, _path: &VectorPath) {}
+
+    /// `point_in_clip_path(path, x, y)`: whether a point is inside a `clip-path` (hit testing, stage L16).
+    fn point_in_clip_path(&self, _path: &VectorPath, _x: Px, _y: Px) -> bool {
+        true
+    }
+
+    /// `begin_group(hdc, group)`: what is drawn until the matching `end_group` is composed as one group.
+    fn begin_group(&self, _hdc: u64, _group: &PaintGroup) {}
+
+    /// `draw_filtered(hdc, filter, paint)`: `paint` draws the filtered content into the target it is given.
+    fn draw_filtered(&self, hdc: u64, _filter: &FilterPaint, paint: &mut dyn FnMut(u64)) {
+        paint(hdc);
+    }
+
+    /// `draw_backdrop(hdc, filter)`: what is behind the box filtered.
+    fn draw_backdrop(&self, _hdc: u64, _filter: &FilterPaint) {}
+
+    /// `draw_path(hdc, path)`: a vector path filled or stroked.
+    fn draw_path(&self, _hdc: u64, _path: &VectorPath) {}
+
+    /// `end_group(hdc)`.
+    fn end_group(&self, _hdc: u64) {}
+
+    /// `draw_cached(hdc, box, key, paint)`: whether the container drew a paint it keeps under the key (calling
+    /// `paint` to make it, when it does not have it yet); false when it keeps none.
+    fn draw_cached(&self, _hdc: u64, _box: &Position, _key: u64, _paint: &mut dyn FnMut(u64)) -> bool {
+        false
+    }
+
+    /// `draw_isolated(hdc, box, paint)`: `paint` drawn apart from what is around it.
+    fn draw_isolated(&self, hdc: u64, _box: &Position, paint: &mut dyn FnMut(u64)) {
+        paint(hdc);
+    }
+
+    /// `controls_active()`: whether form controls are drawn in their active (accent) look.
+    fn controls_active(&self) -> bool {
+        false
+    }
+
+    /// `control_accent()`: the accent colour of controls whose style gives none.
+    fn control_accent(&self) -> WebColor {
+        WebColor::rgba(0, 122, 255, 255)
+    }
+
+    /// No call in the C++: painting reached what a later stage ports (`"svg"`, L14: an `<svg>`'s own painting
+    /// after its box; `"image"`, L15: an `<img>`'s image after its box) and drew nothing there.
+    fn paint_unported(&self, _hdc: u64, _what: &'static str) {}
+}
+
+/// `list_marker`: a list item's marker as `draw_list_marker` gets it: its image (none when empty) and base url (a
+/// null pointer when `None`), `list_style_type`, colour, box, number (-1 for the shapes) and font.
+#[derive(Clone, Debug, Default)]
+pub struct ListMarker {
+    pub image: Vec<u8>,
+    pub baseurl: Option<Vec<u8>>,
+    pub marker_type: i32,
+    pub color: WebColor,
+    pub pos: Position,
+    pub index: i32,
+    pub font: u64,
 }
 
 /// A container as `parse_color` takes it: for the names it resolves.

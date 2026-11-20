@@ -300,6 +300,8 @@ pub struct RenderItem {
     pub inline: Option<Box<InlineState>>,
     /// A `render_item_flex`'s own.
     pub flex: Option<Box<FlexState>>,
+    /// `m_ink`, `m_drawn_ink` and `m_ink_generation`.
+    pub ink: crate::paint::InkCache,
     /// The owners that hold the item.
     strong: u32,
     generation: u32,
@@ -489,6 +491,7 @@ impl Document {
             text: (kind == RenderKind::render_text).then(Box::default),
             inline: (kind == RenderKind::render_item_inline_context).then(Box::default),
             flex: (kind == RenderKind::render_item_flex).then(Box::default),
+            ink: crate::paint::InkCache::default(),
             strong: 0,
             generation: 0,
             live: false,

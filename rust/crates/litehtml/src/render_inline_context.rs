@@ -872,3 +872,34 @@ impl Document {
         self.render_item_measure(cx, this, x, y, cb, fmt_ctx, second_pass, measured_height)
     }
 }
+
+impl Document {
+    /// `render_item_inline_context::draw_children(hdc, x, y, clip, flag, zindex)`: the base class's, then in the
+    /// inlines' pass each ellipsis `text-overflow` placed, in the block's font and colour.
+    #[allow(clippy::too_many_arguments)]
+    pub fn inline_context_draw_children(
+        &mut self,
+        cx: &StyleCx,
+        id: RenderId,
+        hdc: u64,
+        x: Px,
+        y: Px,
+        clip: Option<&Position>,
+        flag: crate::paint::DrawFlag,
+        zindex: i32,
+    ) {
+        self.render_item_draw_children(cx, id, hdc, x, y, clip, flag, zindex);
+        let css = self.ri_css(id);
+        let ellipses = self.render.item(id).inline.as_ref().map_or(&[][..], |ic| &ic.ellipses[..]);
+        if flag != crate::paint::DrawFlag::draw_inlines || ellipses.is_empty() || css.m_font == 0 {
+            return;
+        }
+        let it = self.render.item(id);
+        for at in ellipses {
+            let mut at = *at;
+            at.x += it.pos.x + x;
+            at.y += it.pos.y + y;
+            cx.container.draw_text(hdc, "\u{2026}".as_bytes(), css.m_font, css.m_color, &at);
+        }
+    }
+}

@@ -169,6 +169,33 @@ impl Position {
     pub fn is_point_inside(&self, x: Px, y: Px) -> bool {
         x >= self.left() && x < self.right() && y >= self.top() && y < self.bottom()
     }
+
+    /// `round()`: the edges snapped to the pixel grid of the scale `k` (the C++'s `pixel_snap_scale()`, a thread's
+    /// setting that the Apple host sets around a paint; 1 elsewhere).
+    pub fn round(&mut self, k: f32) {
+        let left = (self.x.value() * k).round() / k;
+        let top = (self.y.value() * k).round() / k;
+        let right = ((self.x.value() + self.width.value()) * k).round() / k;
+        let bottom = ((self.y.value() + self.height.value()) * k).round() / k;
+        self.x = Px(left);
+        self.y = Px(top);
+        self.width = Px(right - left);
+        self.height = Px(bottom - top);
+    }
+}
+
+/// `pointF`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PointF {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl PointF {
+    /// `pointF(x, y)`.
+    pub const fn new(x: f32, y: f32) -> PointF {
+        PointF { x, y }
+    }
 }
 
 /// `size`.

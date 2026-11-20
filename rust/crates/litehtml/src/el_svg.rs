@@ -12,7 +12,8 @@
 //! Not here yet (the painting half of stage L14): `svg_painter`'s walk (groups, opacity, visibility, the group
 //! cache and its keys, hit testing), `svg_property` and the paints read through it (`svg_paint`,
 //! `svg_number`, `svg_ident`, a gradient's stops, dashes, caps), text runs (`svg_text_runs`, `svg_text_box`:
-//! fonts and layout), and `el_svg::draw` with its paint cache and `<use>` budget per paint generation.
+//! fonts and layout), and `el_svg::draw` with its paint cache and `<use>` budget per paint generation: painting
+//! (stage L13) draws an `<svg>`'s box as a tag's and reaches what it draws inside as a seam.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +28,32 @@ use crate::types::{Position, Size};
 use crate::{Px, StringId};
 
 impl Document {
+    /// `el_svg::draw(hdc, x, y, clip, ri)`: the tag's drawing; then, unless tracing, where its box is not empty and
+    /// the clip meets it, what it draws inside (stage L14: the seam, logged as unported).
+    #[allow(clippy::too_many_arguments)]
+    pub fn el_svg_draw(
+        &self,
+        cx: &crate::document::StyleCx,
+        id: ElementId,
+        hdc: u64,
+        x: Px,
+        y: Px,
+        clip: Option<&Position>,
+        ri: crate::render_item::RenderId,
+    ) {
+        self.html_tag_draw(cx, id, hdc, x, y, clip, ri);
+        if self.paint.trace.is_some() {
+            return;
+        }
+        let mut pos = self.render.item(ri).pos;
+        pos.x += x;
+        pos.y += y;
+        if pos.width <= Px(0.0) || pos.height <= Px(0.0) || !pos.does_intersect(clip, false) {
+            return;
+        }
+        cx.container.paint_unported(hdc, "svg");
+    }
+
     /// `el_svg::parse_attributes()`: `html_tag`'s, then a non-empty `width` and `height`.
     pub fn el_svg_parse_attributes(&mut self, env: &Env, id: ElementId) {
         self.html_tag_parse_attributes(env, id);

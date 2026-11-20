@@ -1640,6 +1640,7 @@ impl Document {
     /// the positioned boxes placed when there are absolute or fixed ones; the document's size. Gives the root's
     /// natural width. `render_fixed_only` places the fixed boxes again and nothing else (it gives 0).
     pub fn layout_document_as(&mut self, cx: &StyleCx, max_width: Px, rt: RenderType) -> Px {
+        self.invalidate_paint();
         let mut ret = Px(0.0);
         self.layout.spent = 0;
         let Some(root_render) = self.render.root else { return ret };

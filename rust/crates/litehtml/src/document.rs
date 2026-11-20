@@ -146,6 +146,9 @@ pub struct Switches {
     /// `LHReuseColumnMeasure()`: a column flex item's auto or content basis is the height its min-height measured,
     /// not measured again: not `LH_NO_COLUMN_REUSE`.
     pub column_reuse: bool,
+    /// `draw_group` culls a transformed group's content against the clip mapped into it: not
+    /// `LH_NO_TRANSFORMED_CULLING`.
+    pub transformed_culling: bool,
 }
 
 impl Default for Switches {
@@ -160,6 +163,7 @@ impl Default for Switches {
             positioned_reuse: true,
             layout_cache_check: false,
             column_reuse: true,
+            transformed_culling: true,
         }
     }
 }
@@ -305,6 +309,8 @@ pub struct Document {
     pub free_elements: Vec<ElementId>,
     /// What layout keeps of the document.
     pub layout: crate::layout::DocLayout,
+    /// What painting keeps of the document, and what the renderer sets for a paint (stage L13).
+    pub paint: crate::paint::DocPaint,
 }
 
 /// `svg_geometry_attribute(name)`: the SVG attributes whose values are holes (unless a selector names them).
@@ -712,6 +718,7 @@ impl Document {
     /// applied, the document's and the user's sheets applied, every element's computed style, and the render tree
     /// ([`Document::create_render_tree`]).
     pub fn finalize_from_external_root(&mut self, cx: &StyleCx, root: Option<ElementId>, base_master_styles: &[u8], user_styles: &[u8]) {
+        self.invalidate_paint();
         if self.finalized {
             return;
         }
@@ -814,6 +821,7 @@ impl Document {
 
     /// `update_media_lists(features)`: every list's answer under the features; whether one changed.
     pub fn update_media_lists(&mut self, cx: &StyleCx, features: &MediaFeatures) -> bool {
+        self.invalidate_paint();
         let mut update_styles = false;
         for media_list in &self.media_lists {
             if media_list.apply_media_features(cx.names, features) {
@@ -827,6 +835,7 @@ impl Document {
     /// the render tree made again (without `fix_tables_layout`, its tabular list kept: see
     /// [`Document::recreate_render_tree_on_media_change`]).
     pub fn media_changed(&mut self, cx: &StyleCx) -> bool {
+        self.invalidate_paint();
         self.media = cx.container.get_media_features();
         let media = self.media;
         if self.update_media_lists(cx, &media)
@@ -908,6 +917,7 @@ impl Document {
     /// and its parent a row group, a cell's parent a row; captions and columns left alone).
     pub fn fix_tables_layout(&mut self, cx: &StyleCx) {
         use crate::render_item::*;
+        self.invalidate_paint();
         let limit = self.render.tabular.len() * 8 + 64;
         let mut processed = 0;
         let mut k = 0;

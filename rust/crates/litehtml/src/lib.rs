@@ -12,6 +12,8 @@
 #![forbid(unsafe_code)]
 #![allow(non_upper_case_globals, non_camel_case_types)]
 
+pub mod background;
+pub mod borders;
 pub mod codepoint;
 pub mod css_effects;
 pub mod css_length;
@@ -55,6 +57,7 @@ pub mod layout;
 pub mod line_box;
 pub mod media_query;
 pub mod num_cvt;
+pub mod paint;
 pub mod pixel_type;
 pub mod render_block;
 pub mod render_block_context;

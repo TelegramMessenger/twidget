@@ -24,8 +24,10 @@ use crate::html::{WHITESPACE, join_string, lowcase, match_at, split_string};
 use crate::html_microsyntaxes::{
     HtmlDimensionType, html_parse_dimension_value, html_parse_non_negative_integer, html_parse_nonzero_dimension_value,
 };
+use crate::render_item::RenderId;
 use crate::string_id::*;
 use crate::style::{PropertyValue, Style, Value, VarElement, raw_declaration_id};
+use crate::types::Position;
 use crate::{Names, StringId};
 
 /// `select_result`.
@@ -1440,5 +1442,425 @@ impl Document {
             i += 1;
         }
         ret
+    }
+}
+
+// ---- Painting (stage L13) ------------------------------------------------------------------------------------
+
+/// `shadow_paint_for(shadow)`: a box shadow's lengths as pixels, its blur at least 0.
+fn shadow_paint_for(shadow: &crate::css_effects::BoxShadow) -> crate::css_effects::ShadowPaint {
+    crate::css_effects::ShadowPaint {
+        x: crate::Px(shadow.x.val()),
+        y: crate::Px(shadow.y.val()),
+        blur: crate::Px(crate::cxx::max_f32(0.0, shadow.blur.val())),
+        spread: crate::Px(shadow.spread.val()),
+        color: shadow.color,
+        inset: shadow.inset,
+    }
+}
+
+impl Document {
+    /// `html_tag::get_background(own_only)`: the element's background unless it is empty (`own_only`); otherwise the
+    /// root's or, when that is empty, its body's own; a body's none when its parent has none of its own (the parent
+    /// draws it); an empty one none.
+    pub fn get_background(&self, id: ElementId, own_only: bool) -> Option<&crate::css_properties::Background> {
+        if !self.kind(id).is_html_tag() {
+            return None;
+        }
+        let bg = &self.el(id).css.m_bg;
+        if own_only {
+            // return own background with check for empty one
+            return if bg.is_empty() { None } else { Some(bg) };
+        }
+        if bg.is_empty() {
+            // if this is root element (<html>) try to get background from body
+            if self.el_is_root(id) {
+                for &el in self.children(id) {
+                    if self.is_body(el) {
+                        // return own body background
+                        return self.get_background(el, true);
+                    }
+                }
+            }
+            return None;
+        }
+        if self.is_body(id)
+            && let Some(el_parent) = self.parent(id)
+            && self.get_background(el_parent, true).is_none()
+        {
+            // parent of body will draw background for body
+            return None;
+        }
+        Some(bg)
+    }
+
+    /// `html_tag::draw(hdc, x, y, clip, ri)`: the background, then a list item's marker inside its overflow clip.
+    #[allow(clippy::too_many_arguments)]
+    pub fn html_tag_draw(&self, cx: &StyleCx, id: ElementId, hdc: u64, x: crate::Px, y: crate::Px, clip: Option<&Position>, ri: RenderId) {
+        let mut pos = self.render.item(ri).pos;
+        pos.x += x;
+        pos.y += y;
+
+        self.draw_background(cx, id, hdc, x, y, clip, ri);
+
+        let css = &self.el(id).css;
+        if css.m_display == StyleDisplay::display_list_item.index()
+            && (css.m_list_style_type != crate::css_values::ListStyleType::list_style_type_none.index()
+                || !css.m_list_style_image.is_empty())
+        {
+            let it = self.render.item(ri);
+            if css.clips_contents() {
+                let mut border_box = pos;
+                border_box.grow(&it.padding);
+                border_box.grow(&it.borders);
+                let mut bdr_radius = css.m_css_borders.radius.calc_percents(border_box.width, border_box.height);
+                bdr_radius.shrink(&it.borders);
+                bdr_radius.shrink(&it.padding);
+                cx.container.set_clip(&pos, &bdr_radius);
+            }
+
+            self.draw_list_marker(cx, id, hdc, &pos, ri);
+
+            if css.clips_contents() {
+                cx.container.del_clip();
+            }
+        }
+    }
+
+    /// `html_tag::draw_background(hdc, x, y, clip, ri)`: for an inline, each of its boxes that the clip meets (grown
+    /// by its outer shadows), with the left side and radii on the first and the right ones on the last: its outer
+    /// shadows, background layers, inset shadows and borders; for a box that the clip meets (grown by its outer
+    /// shadows and outline), or the root: its outer shadows (not with the renderer's bare shadows), background layers
+    /// (the root's over the clip), inset shadows on the padding box, borders (unless deferred or a collapsed table's)
+    /// and outline. Background images are left out for what the renderer asks.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    pub fn draw_background(
+        &self,
+        cx: &StyleCx,
+        id: ElementId,
+        hdc: u64,
+        x: crate::Px,
+        y: crate::Px,
+        clip: Option<&Position>,
+        ri: RenderId,
+    ) {
+        use crate::Px;
+        use crate::css_values::{BorderCollapse, BorderStyle};
+        let skipped_images = &self.paint.skip_background_images;
+        let skip_images = !skipped_images.is_empty() && skipped_images.contains(&id);
+        let css = &self.el(id).css;
+        let outline_style = &css.m_outline;
+        if self.get_background(id, false).is_none()
+            && !css.m_css_borders.is_visible()
+            && css.m_box_shadows.is_empty()
+            && !(outline_style.width.val() > 0.0 && outline_style.style != BorderStyle::border_style_none.index())
+        {
+            return;
+        }
+        let mut inline_reach = Px(0.0);
+        for shadow in &css.m_box_shadows {
+            if !shadow.inset {
+                inline_reach = inline_reach.max(Px(shadow.blur.val().abs() * 2.0
+                    + crate::cxx::max_f32(0.0, shadow.spread.val())
+                    + crate::cxx::max_f32(shadow.x.val().abs(), shadow.y.val().abs())));
+            }
+        }
+        let item = self.render.item(ri);
+        let snap = self.paint.snap_scale;
+        let container = cx.container;
+        let inline_processed = self.for_inline_boxes(ri, &mut |box_, first, last| {
+            let bg = self.get_background(id, false);
+
+            let mut bx = *box_;
+            bx.x += x;
+            bx.y += y;
+            let mut reach_box = bx;
+            reach_box.x -= inline_reach;
+            reach_box.y -= inline_reach;
+            reach_box.width += inline_reach * 2;
+            reach_box.height += inline_reach * 2;
+
+            if reach_box.does_intersect(clip, false) {
+                let mut content_box = bx;
+                content_box.shrink(&item.borders);
+                content_box.shrink(&item.padding);
+
+                let mut bdr = crate::css_properties::CssBorders::default();
+                let r = &css.m_css_borders.radius;
+                // set left borders radius for the first box
+                if first {
+                    bdr.radius.bottom_left_x = r.bottom_left_x.clone();
+                    bdr.radius.bottom_left_y = r.bottom_left_y.clone();
+                    bdr.radius.top_left_x = r.top_left_x.clone();
+                    bdr.radius.top_left_y = r.top_left_y.clone();
+                }
+                // set right borders radius for the last box
+                if last {
+                    bdr.radius.bottom_right_x = r.bottom_right_x.clone();
+                    bdr.radius.bottom_right_y = r.bottom_right_y.clone();
+                    bdr.radius.top_right_x = r.top_right_x.clone();
+                    bdr.radius.top_right_y = r.top_right_y.clone();
+                }
+                bdr.top = css.m_css_borders.top.clone();
+                bdr.bottom = css.m_css_borders.bottom.clone();
+                if first {
+                    bdr.left = css.m_css_borders.left.clone();
+                }
+                if last {
+                    bdr.right = css.m_css_borders.right.clone();
+                }
+
+                let inline_shadows = &css.m_box_shadows;
+                let mut shadow_box = bx;
+                shadow_box.round(snap);
+                let shadow_radius = bdr.radius.calc_percents(bx.width, bx.height);
+                for shadow in inline_shadows.iter().rev() {
+                    if !shadow.inset {
+                        container.draw_box_shadow(hdc, &shadow_box, &shadow_radius, &shadow_paint_for(shadow));
+                    }
+                }
+                if let Some(bg) = bg {
+                    let num_layers = bg.get_layers_number();
+                    for i in (0..num_layers).rev() {
+                        let mut layer = crate::background::BackgroundLayer::default();
+                        if !bg.get_layer(self, cx, i, content_box, id, ri, &mut layer) {
+                            continue;
+                        }
+                        layer.border_radius = bdr.radius.calc_percents(bx.width, bx.height);
+                        layer.border_box.round(snap);
+                        layer.clip_box.round(snap);
+                        layer.origin_box.round(snap);
+                        if skip_images && bg.get_layer_type(i) != crate::background::LayerType::type_color {
+                            continue;
+                        }
+                        bg.draw_layer(hdc, i, &layer, container);
+                    }
+                }
+                for shadow in inline_shadows.iter().rev() {
+                    if shadow.inset {
+                        container.draw_box_shadow(hdc, &shadow_box, &shadow_radius, &shadow_paint_for(shadow));
+                    }
+                }
+                if bdr.is_visible() {
+                    let mut b = crate::borders::Borders::from(&bdr);
+                    b.radius = bdr.radius.calc_percents(bx.width, bx.height);
+                    bx.round(snap);
+                    container.draw_borders(hdc, &b, &bx, false);
+                }
+            }
+            true
+        });
+
+        if !inline_processed {
+            let mut pos = item.pos;
+            pos.x += x;
+            pos.y += y;
+
+            let mut border_box = pos;
+            border_box.grow(&item.padding);
+            border_box.grow(&item.borders);
+
+            let mut ink = border_box;
+            for shadow in &css.m_box_shadows {
+                if !shadow.inset {
+                    let reach = Px(shadow.blur.val().abs() + crate::cxx::max_f32(0.0, shadow.spread.val()))
+                        + Px(crate::cxx::max_f32(shadow.x.val().abs(), shadow.y.val().abs()));
+                    ink.grow(&crate::paint::margins_of(reach));
+                }
+            }
+            let outline_reach = Px(css.m_outline.width.val()) + Px(0.0).max(Px(css.m_outline_offset.val()));
+            if outline_reach > Px(0.0) {
+                ink.grow(&crate::paint::margins_of(outline_reach));
+            }
+
+            if ink.does_intersect(clip, false) || self.el_is_root(id) {
+                let v_offset = self.get_draw_vertical_offset(ri);
+                pos.y += v_offset;
+                pos.height -= v_offset;
+
+                let mut shadow_box = border_box;
+                shadow_box.round(snap);
+                let shadow_radius = css.m_css_borders.radius.calc_percents(shadow_box.width, shadow_box.height);
+                let shadows = &css.m_box_shadows;
+                let bare = self.paint.bare_shadows && self.paint.bare_effects == Some(id);
+                for shadow in shadows.iter().rev() {
+                    if !shadow.inset && !bare {
+                        container.draw_box_shadow(hdc, &shadow_box, &shadow_radius, &shadow_paint_for(shadow));
+                    }
+                }
+
+                if let Some(bg) = self.get_background(id, false) {
+                    let num_layers = bg.get_layers_number();
+                    for i in (0..num_layers).rev() {
+                        let mut layer = crate::background::BackgroundLayer::default();
+                        if !bg.get_layer(self, cx, i, pos, id, ri, &mut layer) {
+                            continue;
+                        }
+                        if self.el_is_root(id)
+                            && let Some(clip) = clip
+                        {
+                            layer.clip_box = *clip;
+                            layer.border_box = *clip;
+                        }
+                        layer.border_box.round(snap);
+                        layer.clip_box.round(snap);
+                        layer.origin_box.round(snap);
+                        if skip_images && bg.get_layer_type(i) != crate::background::LayerType::type_color {
+                            continue;
+                        }
+                        bg.draw_layer(hdc, i, &layer, container);
+                    }
+                }
+
+                if !shadows.is_empty() {
+                    let mut padding_box = shadow_box;
+                    padding_box.shrink(&item.borders);
+                    let mut inner = shadow_radius;
+                    inner.shrink(&item.borders);
+                    for shadow in shadows.iter().rev() {
+                        if shadow.inset {
+                            container.draw_box_shadow(hdc, &padding_box, &inner, &shadow_paint_for(shadow));
+                        }
+                    }
+                }
+
+                let collapsed_table = (css.m_display == StyleDisplay::display_table.index()
+                    || css.m_display == StyleDisplay::display_inline_table.index())
+                    && css.m_border_collapse == BorderCollapse::border_collapse_collapse.index();
+                if !item.defer_borders && !collapsed_table {
+                    self.draw_borders(cx, ri, hdc, border_box);
+                }
+
+                let outline = &css.m_outline;
+                if outline.width.val() > 0.0 && outline.style != BorderStyle::border_style_none.index() {
+                    let grow = Px(css.m_outline_offset.val()) + Px(outline.width.val());
+                    let mut outline_box = shadow_box;
+                    outline_box.grow(&crate::paint::margins_of(grow));
+                    let side = crate::borders::Border::from(outline);
+                    let mut ob = crate::borders::Borders { left: side, top: side, right: side, bottom: side, radius: shadow_radius };
+                    if ob.radius.top_left_x > Px(0.0)
+                        || ob.radius.top_right_x > Px(0.0)
+                        || ob.radius.bottom_left_x > Px(0.0)
+                        || ob.radius.bottom_right_x > Px(0.0)
+                    {
+                        ob.radius.grow(&crate::paint::margins_of(grow));
+                    }
+                    container.draw_borders(hdc, &ob, &outline_box, false);
+                }
+            }
+        }
+    }
+
+    /// `html_tag::draw_list_marker(hdc, pos, ri)`: a list item's marker: its image's box (from the size the container
+    /// knows), or for a counted type the number and a dot right-aligned on the first line's baseline in its font,
+    /// else a shape a third of the font high centred on the first line; outside the box for `outside` (a counted
+    /// type two space widths left).
+    pub fn draw_list_marker(&self, cx: &StyleCx, id: ElementId, hdc: u64, pos: &Position, ri: RenderId) {
+        use crate::Px;
+        use crate::css_values::{ListStylePosition, ListStyleType};
+        let css = &self.el(id).css;
+        let mut lm = crate::document_container::ListMarker::default();
+
+        let mut img_size = crate::types::Size::default();
+        if !css.m_list_style_image.is_empty() {
+            lm.image = css.m_list_style_image.clone();
+            lm.baseurl = Some(css.m_list_style_image_baseurl.clone());
+            img_size =
+                cx.container.get_image_size(crate::gumbo::c_str(&lm.image), Some(crate::gumbo::c_str(&css.m_list_style_image_baseurl)));
+        } else {
+            lm.baseurl = None;
+        }
+
+        let ln_height = css.m_line_height.computed_value;
+        let sz_font = css.get_font_size();
+        lm.pos.x = pos.x;
+        lm.pos.width = sz_font / Px(3.0);
+        lm.color = css.m_color;
+        lm.marker_type = css.m_list_style_type;
+        lm.font = css.m_font;
+
+        let counted = css.m_list_style_type >= ListStyleType::list_style_type_armenian.index();
+        if counted {
+            let li_baseline = pos.y + self.get_first_baseline(ri) - self.render.item(ri).content_offset_top();
+            lm.pos.y = li_baseline - css.m_font_metrics.ascent;
+            lm.pos.height = css.m_font_metrics.height;
+            lm.index = crate::el_font::c_atoi(self.get_attr(id, b"list_index").unwrap_or(b"0"));
+        } else {
+            lm.pos.height = sz_font / Px(3.0);
+            lm.pos.y = pos.y + ln_height / Px(2.0) - lm.pos.height / Px(2.0);
+            lm.index = -1;
+        }
+
+        if img_size.width != Px(0.0) && img_size.height != Px(0.0) {
+            if lm.pos.y + img_size.height > pos.y + pos.height {
+                lm.pos.y = pos.y + pos.height - img_size.height;
+            }
+            if img_size.width > lm.pos.width {
+                lm.pos.x -= img_size.width - lm.pos.width;
+            }
+            lm.pos.width = img_size.width;
+            lm.pos.height = img_size.height;
+        }
+
+        if css.m_list_style_position == ListStylePosition::list_style_position_outside.index() {
+            if counted {
+                if lm.font != 0 {
+                    let tw_space = cx.container.text_width(b" ", lm.font);
+                    lm.pos.x = pos.x - tw_space * Px(2.0);
+                    lm.pos.width = tw_space;
+                } else {
+                    lm.pos.width = Px(0.0);
+                }
+            } else {
+                lm.pos.x -= sz_font;
+            }
+        }
+
+        if counted {
+            let mut marker_text = self.get_list_marker_text(id, lm.index);
+            if marker_text.is_empty() {
+                cx.container.draw_list_marker(hdc, &lm);
+            } else if lm.font != 0 {
+                marker_text.push(b'.');
+                let tw = cx.container.text_width(crate::gumbo::c_str(&marker_text), lm.font);
+                let mut text_pos = lm.pos;
+                text_pos.move_to(text_pos.right() - tw, text_pos.y);
+                text_pos.width = tw;
+                text_pos.round(self.paint.snap_scale);
+                cx.container.draw_text(hdc, crate::gumbo::c_str(&marker_text), lm.font, lm.color, &text_pos);
+            }
+        } else {
+            cx.container.draw_list_marker(hdc, &lm);
+        }
+    }
+
+    /// `html_tag::get_list_marker_text(index)`: the number as the counted type writes it; empty for the types
+    /// without one.
+    pub fn get_list_marker_text(&self, id: ElementId, index: i32) -> Vec<u8> {
+        use crate::css_values::ListStyleType as L;
+        use crate::num_cvt;
+        let t = self.el(id).css.m_list_style_type;
+        if t == L::list_style_type_decimal.index() {
+            crate::cxx::to_string_int(index)
+        } else if t == L::list_style_type_decimal_leading_zero.index() {
+            let mut txt = crate::cxx::to_string_int(index);
+            if txt.len() == 1 {
+                txt.insert(0, b'0');
+            }
+            txt
+        } else if t == L::list_style_type_lower_latin.index() || t == L::list_style_type_lower_alpha.index() {
+            num_cvt::to_latin_lower(index)
+        } else if t == L::list_style_type_lower_greek.index() {
+            num_cvt::to_greek_lower(index)
+        } else if t == L::list_style_type_upper_alpha.index() || t == L::list_style_type_upper_latin.index() {
+            num_cvt::to_latin_upper(index)
+        } else if t == L::list_style_type_lower_roman.index() {
+            num_cvt::to_roman_lower(index)
+        } else if t == L::list_style_type_upper_roman.index() {
+            num_cvt::to_roman_upper(index)
+        } else {
+            Vec::new()
+        }
     }
 }

@@ -31,6 +31,13 @@ use twidget_litehtml::document::{Document, StyleCx, Switches};
 use twidget_litehtml::element::{ElementKind, ElementState, FormLook};
 use twidget_litehtml::font_description::FontDescription;
 use twidget_litehtml::types::{Position, RenderType, Size};
+use twidget_litehtml::web_color::WebColor;
+
+use super::paint::PaintLog;
+use twidget_litehtml::background::{BackgroundLayer, ConicGradient, LinearGradient, RadialGradient};
+use twidget_litehtml::borders::{BorderRadiuses, Borders};
+use twidget_litehtml::css_effects::{FilterPaint, PaintGroup, ShadowPaint, VectorPath};
+use twidget_litehtml::document_container::ListMarker;
 
 /// A mark: byte offset, field, element (-1 for a field).
 pub type Mark = (usize, &'static str, i32);
@@ -70,6 +77,8 @@ pub struct CascadeContainer {
     next: Cell<u64>,
     /// The breakers made, by handle - 1: their text and font size.
     breakers: RefCell<Vec<(Vec<u8>, f32)>>,
+    /// What the paint calls answer (stage L13).
+    pub paint: PaintLog,
 }
 
 /// The code points of a text as byte ranges (a lead byte and its continuation bytes).
@@ -98,7 +107,12 @@ impl CascadeContainer {
             sizes: RefCell::new(BTreeMap::new()),
             next: Cell::new(0),
             breakers: RefCell::new(Vec::new()),
+            paint: PaintLog::default(),
         }
+    }
+
+    fn log(&self, kind: u8, a: &[u8], b: Vec<u8>, hdc: u64) {
+        self.calls.borrow_mut().push((kind, a.to_vec(), b, hdc));
     }
 }
 
@@ -242,6 +256,85 @@ impl DocumentContainer for CascadeContainer {
                 start = *c == b' ';
             }
         }
+    }
+    fn draw_text(&self, hdc: u64, text: &[u8], font: u64, color: WebColor, pos: &Position) {
+        self.log(b't', text, PaintLog::text(font, color, pos), hdc);
+    }
+    fn draw_list_marker(&self, hdc: u64, marker: &ListMarker) {
+        self.log(b'k', &marker.image, PaintLog::marker(marker), hdc);
+    }
+    fn draw_image(&self, hdc: u64, layer: &BackgroundLayer, url: &[u8], base_url: &[u8]) {
+        self.log(b'g', url, PaintLog::image(layer, base_url), hdc);
+    }
+    fn draw_solid_fill(&self, hdc: u64, layer: &BackgroundLayer, color: &WebColor) {
+        self.log(b'f', b"", PaintLog::fill(layer, color), hdc);
+    }
+    fn draw_linear_gradient(&self, hdc: u64, layer: &BackgroundLayer, gradient: &LinearGradient) {
+        self.log(b'l', b"", PaintLog::linear(layer, gradient), hdc);
+    }
+    fn draw_radial_gradient(&self, hdc: u64, layer: &BackgroundLayer, gradient: &RadialGradient) {
+        self.log(b'r', b"", PaintLog::radial(layer, gradient), hdc);
+    }
+    fn draw_conic_gradient(&self, hdc: u64, layer: &BackgroundLayer, gradient: &ConicGradient) {
+        self.log(b'c', b"", PaintLog::conic(layer, gradient), hdc);
+    }
+    fn draw_borders(&self, hdc: u64, borders: &Borders, draw_pos: &Position, root: bool) {
+        self.log(b'd', b"", PaintLog::borders(borders, draw_pos, root), hdc);
+    }
+    fn set_clip(&self, pos: &Position, bdr_radius: &BorderRadiuses) {
+        self.log(b'C', b"", PaintLog::clip(pos, bdr_radius), 0);
+    }
+    fn del_clip(&self) {
+        self.log(b'D', b"", Vec::new(), 0);
+    }
+    fn suspend_clips(&self) {
+        self.log(b'U', b"", Vec::new(), 0);
+    }
+    fn resume_clips(&self) {
+        self.log(b'R', b"", Vec::new(), 0);
+    }
+    fn draw_box_shadow(&self, hdc: u64, bx: &Position, radius: &BorderRadiuses, shadow: &ShadowPaint) {
+        self.log(b'h', b"", PaintLog::shadow(bx, radius, shadow), hdc);
+    }
+    fn set_clip_path(&self, path: &VectorPath) {
+        self.log(b'P', b"", PaintLog::path(path), 0);
+    }
+    fn begin_group(&self, hdc: u64, group: &PaintGroup) {
+        self.log(b'G', b"", self.paint.group(group), hdc);
+    }
+    fn draw_filtered(&self, hdc: u64, filter: &FilterPaint, paint: &mut dyn FnMut(u64)) {
+        self.log(b'X', b"", self.paint.filter(filter), hdc);
+        paint(hdc * 2 + 1);
+        self.log(b'x', b"", Vec::new(), hdc);
+    }
+    fn draw_backdrop(&self, hdc: u64, filter: &FilterPaint) {
+        self.log(b'K', b"", self.paint.filter(filter), hdc);
+    }
+    fn draw_path(&self, hdc: u64, path: &VectorPath) {
+        self.log(b'p', b"", PaintLog::path(path), hdc);
+    }
+    fn end_group(&self, hdc: u64) {
+        self.log(b'E', b"", Vec::new(), hdc);
+    }
+    fn draw_cached(&self, hdc: u64, bx: &Position, key: u64, _paint: &mut dyn FnMut(u64)) -> bool {
+        self.log(b'A', b"", PaintLog::boxed(bx, Some(key)), hdc);
+        false
+    }
+    fn draw_isolated(&self, hdc: u64, bx: &Position, paint: &mut dyn FnMut(u64)) {
+        self.log(b'O', b"", PaintLog::boxed(bx, None), hdc);
+        paint(hdc * 2 + 1);
+        self.log(b'o', b"", Vec::new(), hdc);
+    }
+    fn controls_active(&self) -> bool {
+        self.log(b'Q', b"", Vec::new(), 0);
+        self.paint.active.get()
+    }
+    fn control_accent(&self) -> WebColor {
+        self.log(b'q', b"", Vec::new(), 0);
+        self.paint.accent.get()
+    }
+    fn paint_unported(&self, hdc: u64, what: &'static str) {
+        self.log(b'Z', what.as_bytes(), Vec::new(), hdc);
     }
 }
 
@@ -588,6 +681,8 @@ pub enum Step {
     /// A layout at the width within the renderer's budget, of the render type (`render_type`: 0 all, 1 all but the
     /// fixed boxes' placement, 2 the fixed boxes only).
     LayoutAs(f32, u8),
+    /// A paint (stage L13, `Q` records).
+    Paint(Box<super::paint::PaintStep>),
 }
 
 /// An `l` record's input.
@@ -623,6 +718,10 @@ pub fn cascade_record(width: f32, height: f32, dpr: f32, master: &[u8], user: &[
             }
             Step::LayoutAs(w, rt) => {
                 o.u8(b'w').f32(*w).u8(*rt << 1);
+            }
+            Step::Paint(step) => {
+                o.u8(b'p');
+                step.write(&mut o);
             }
         }
     }
@@ -792,6 +891,7 @@ pub fn record_answer(lh: &Lh, switches: Switches, input: &[u8], dump: &mut dyn F
                 let ret = doc.layout_document_as(&cx, Px(width), rt);
                 o.f32(ret.value());
             }
+            b'p' => super::paint::paint_step(&mut i, &mut o, &cx, &mut doc, &container.paint),
             _ => {
                 let k = i.u32();
                 let mut nodes = Vec::new();
