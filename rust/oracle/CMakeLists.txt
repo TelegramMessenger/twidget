@@ -44,3 +44,6 @@ target_include_directories(base64_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCL
 
 add_executable(canvas_oracle canvas_oracle.cpp "${TW_CORE}/canvas.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/wire.cpp" "${TW_CORE}/encode.cpp")
 target_include_directories(canvas_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")
+
+add_executable(animations_oracle animations_oracle.cpp "${TW_CORE}/animations.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/paint_policy.cpp")
+target_include_directories(animations_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")

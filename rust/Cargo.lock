@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "twidget_animations"
+version = "0.1.0"
+dependencies = [
+ "twidget_css",
+ "twidget_json",
+ "twidget_paint",
+ "twidget_testkit",
+]
+
+[[package]]
 name = "twidget_base64"
 version = "0.1.0"
 dependencies = [
