@@ -126,6 +126,9 @@ constexpr int CANVAS_FONTS = 1 << 20;
 struct Stub : Backend {
     int next = 0, next_canvas_font = CANVAS_FONTS;
     Out* log = nullptr;
+    // A script's 'B' step: in mode 1 a document font's widths grow a quarter pixel a call, five calls round, so the container's width cache and every measure show.
+    int mode = 0;
+    uint64_t measured = 0;
     void metrics(float size, FontMetrics& out) {
         out.ascent = size * 0.8f;
         out.descent = size * 0.2f;
@@ -162,6 +165,7 @@ struct Stub : Backend {
             log->raw(int32_t(font));
             log->str(text);
         }
+        if (mode == 1 && font <= CANVAS_FONTS) return 8.0f * float(text.size()) + float(measured++ % 5) * 0.25f;
         return 8.0f * float(text.size());
     }
     bool load_image(int, const std::string& url, float& w, float& h) override {
@@ -733,6 +737,10 @@ void script(In& in, Out& o) {
         }
         case 'P': r->set_patching(in.u8() != 0); break;
         case 'g': r->charge(in.f64()); break;
+        case 'B':
+            backend.mode = in.u8();
+            backend.measured = 0;
+            break;
         case 'n': {
             extra.u8(r->wants_tick());
             extra.raw(r->next_tick_in());

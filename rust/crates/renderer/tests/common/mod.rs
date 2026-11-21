@@ -164,6 +164,9 @@ pub enum Step {
     Inspect,
     /// charge(seconds), the render throttle's.
     Charge(f64),
+    /// The stub backend's measuring from here on: 0 as core_tests' (8 px a byte), 1 a document font's widths a quarter
+    /// pixel wider each call, five calls round, which shows the container's width cache and every measure.
+    Backend(u8),
 }
 
 impl Step {
@@ -193,6 +196,7 @@ impl Step {
             Step::Patching(_) => b'P',
             Step::Inspect => b'n',
             Step::Charge(_) => b'g',
+            Step::Backend(_) => b'B',
         }
     }
 
@@ -222,6 +226,7 @@ impl Step {
             Step::Patching(_) => "set_patching",
             Step::Inspect => "inspect",
             Step::Charge(_) => "charge",
+            Step::Backend(_) => "backend",
         }
     }
 }
@@ -314,6 +319,9 @@ impl Script {
                 }
                 Step::Charge(seconds) => {
                     f.f64(*seconds);
+                }
+                Step::Backend(mode) => {
+                    f.u8(*mode);
                 }
                 Step::EndEditing
                 | Step::ClearSelection
@@ -510,6 +518,12 @@ impl Backend for Stub {
     }
 }
 
+thread_local! {
+    /// The stub's measuring mode and the document-font widths measured in it ([`Step::Backend`]), for the run on this
+    /// thread.
+    pub static MEASURING: Cell<(u8, u64)> = const { Cell::new((0, 0)) };
+}
+
 /// The oracle's stub backend as the container meets it (the C++ `Stub`'s calls the renderer does not log): document
 /// fonts numbered from 1, 8 px a byte of text, images that decode as their URL says ("fail" never, "async" later with
 /// no size, any other at 24 x 16).
@@ -526,6 +540,11 @@ impl Backend for FontStub {
     }
     fn delete_font(&mut self, _font: i32) {}
     fn text_width(&mut self, _font: i32, text: &[u8]) -> f32 {
+        let (mode, measured) = MEASURING.with(Cell::get);
+        if mode == 1 {
+            MEASURING.with(|m| m.set((mode, measured + 1)));
+            return 8.0 * text.len() as f32 + (measured % 5) as f32 * 0.25;
+        }
         8.0 * text.len() as f32
     }
     fn load_image(&mut self, _id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool {
@@ -1092,6 +1111,7 @@ pub fn run_on<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: E,
 pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: E, tally: &mut Tally, after: impl FnOnce(&mut E)) -> Run {
     let shared = shared.unwrap_or_default();
     let replaying = !shared.borrow().entries.is_empty();
+    MEASURING.with(|m| m.set((0, 0)));
     let clock = Rc::new(Cell::new(script.t0));
     let mut r: Renderer<E, Stub> =
         Renderer::new(script.width, script.dpr, script.dark, engine, Stub::new(), Some(Box::new(StepClock(clock.clone()))));
@@ -1212,6 +1232,7 @@ pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: 
                 extra.u32(r.px_height());
             }
             Step::Charge(seconds) => r.core_mut().charge(*seconds),
+            Step::Backend(mode) => MEASURING.with(|m| m.set((*mode, 0))),
         }
         messages(&out, &mut o, tally);
         o.0.extend_from_slice(&extra.0);
