@@ -21,6 +21,14 @@ too_many_arguments = "allow"
 needless_range_loop = "allow"
 field_reassign_with_default = "allow"
 
+# nova-safe's own copies of crates.io crates with their `unsafe` removed, which the helper links through
+# widget-sandbox's engine: cargo applies a workspace's patches only from the root, so nova-safe's are repeated here.
+[patch.crates-io]
+bitflags = { path = "../../nova-safe/oxc/vendor/bitflags" }
+cow-utils = { path = "../../nova-safe/oxc/vendor/cow-utils" }
+num-traits = { path = "../../nova-safe/num-traits" }
+unicode-id-start = { path = "../../nova-safe/oxc/vendor/unicode-id-start" }
+
 [profile.release]
 codegen-units = 1
 panic = "unwind"

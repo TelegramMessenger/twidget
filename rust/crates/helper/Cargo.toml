@@ -1,6 +1,6 @@
 [package]
 name = "twidget_helper"
-description = "The widget helper's tdesktop glue: the hosted wire's 0xFF controls, the renderer rules, the Debug tap, the cursor styles and the hosted glue"
+description = "The widget helper's tdesktop glue and its serving: the hosted wire's 0xFF controls, the renderer rules, the Debug tap, the cursor styles, the hosted glue, and the stream served with them"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,15 +11,19 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+twidget_bundle_stamp = { path = "../../../../widget-sandbox/packages/rust/crates/bundle_stamp" }
 twidget_canvas = { path = "../canvas" }
 twidget_css = { path = "../css" }
 twidget_document = { path = "../document" }
 twidget_ends = { path = "../ends" }
 twidget_gesture = { path = "../../../../widget-sandbox/packages/rust/crates/gesture" }
+twidget_host = { path = "../../../../widget-sandbox/packages/rust/crates/host" }
+twidget_js = { path = "../../../../widget-sandbox/packages/rust/crates/js" }
 twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
 twidget_litehtml = { path = "../litehtml" }
 twidget_remote = { path = "../remote" }
 twidget_renderer = { path = "../renderer" }
+twidget_stream = { path = "../../../../widget-sandbox/packages/rust/crates/stream" }
 twidget_wire = { path = "../wire" }
 
 [dev-dependencies]

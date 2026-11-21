@@ -8,6 +8,7 @@
 //! - [`cursor`]: `tgw/tgw_cursor.{h,cpp}`, the CSS cursor at the pointer from a litehtml document of its own;
 //! - [`glue`]: `tgw/tgw_hosted_glue.{h,cpp}`, a hosted widget's renderer: a renderer end on `twidget_document`'s
 //!   engine behind the platform's controls;
+//! - [`serve`]: `_other/widget_helper_renderer.cpp`, the helper's stream served with this glue;
 //! - [`seams`]: the renderer and platform the glue is written against (widget-sandbox's `renderer.h` and
 //!   `remote_hosted.h`).
 
@@ -18,6 +19,7 @@ pub mod forward;
 pub mod glue;
 pub mod rules;
 pub mod seams;
+pub mod serve;
 pub mod tap;
 pub mod wire;
 
@@ -27,4 +29,5 @@ pub use forward::{
 };
 pub use glue::{HostedOptions, MsClock, make_hosted_renderer, prepare_hosted_renderers};
 pub use seams::{DiagSink, Link, MessageSink, Platform, PlatformObserver, Renderer};
+pub use serve::{hosted_renderers, serve};
 pub use tap::{HelperRendererBuild, SteadyMicros, tap_helper_renderer, untapped_helper_renderer};
