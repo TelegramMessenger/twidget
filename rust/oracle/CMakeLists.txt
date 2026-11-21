@@ -121,6 +121,10 @@ if (MSVC)
 endif()
 add_executable(shadow_oracle shadow_oracle.cpp "${TW_CORE}/wire.cpp")
 target_link_libraries(shadow_oracle PRIVATE oracle_core)
+# bench_oracle: tests/bench.cpp unchanged on that renderer, its calls and the Backend's traced on a step clock for twidget_bench (T9).
+add_executable(bench_oracle bench_oracle.cpp "${TW_CORE}/wire.cpp")
+target_include_directories(bench_oracle PRIVATE "${TW_ROOT}/tests")
+target_link_libraries(bench_oracle PRIVATE oracle_core)
 # computed_style.cpp included whole, so that its helpers in an unnamed namespace can be called, over the same litehtml as lhdump.
 add_executable(computed_style_oracle computed_style_oracle.cpp "${TW_CORE}/css.cpp")
 target_include_directories(computed_style_oracle PRIVATE "${TW_CORE}" "${TW_SANDBOX_INCLUDE}")

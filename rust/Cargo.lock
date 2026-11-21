@@ -377,6 +377,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_bench"
+version = "0.1.0"
+dependencies = [
+ "twidget_cstd",
+ "twidget_document",
+ "twidget_encode",
+ "twidget_ends",
+ "twidget_json",
+ "twidget_renderer",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_bundle_stamp"
 version = "0.1.0"
 

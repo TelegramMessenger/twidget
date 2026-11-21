@@ -1,0 +1,20 @@
+[package]
+name = "twidget_bench"
+description = "tests/bench.cpp on the Rust renderer (T9): the same busy-widget scenarios, sent as the same protocol ops through the same frame loop on a stub backend, with the same reported frame costs; traced call by call to show it does the C++ bench's work"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_cstd = { path = "../cstd" }
+twidget_document = { path = "../document" }
+twidget_encode = { path = "../encode" }
+twidget_ends = { path = "../ends" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_renderer = { path = "../renderer" }
+twidget_wire = { path = "../wire" }
