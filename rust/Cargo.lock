@@ -25,6 +25,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova_embed_ffi"
+version = "1.0.0"
+dependencies = [
+ "nova_embed",
+]
+
+[[package]]
 name = "nova_vm"
 version = "1.0.0"
 dependencies = [
@@ -516,6 +523,26 @@ dependencies = [
  "twidget_litehtml",
  "twidget_remote",
  "twidget_renderer",
+ "twidget_shadow",
+ "twidget_stream",
+ "twidget_testkit",
+ "twidget_wire",
+]
+
+[[package]]
+name = "twidget_helper_ffi"
+version = "0.1.0"
+dependencies = [
+ "nova_embed_ffi",
+ "twidget_bundle_stamp",
+ "twidget_engine",
+ "twidget_events",
+ "twidget_gesture",
+ "twidget_helper",
+ "twidget_js",
+ "twidget_json",
+ "twidget_remote",
+ "twidget_server",
  "twidget_shadow",
  "twidget_stream",
  "twidget_testkit",

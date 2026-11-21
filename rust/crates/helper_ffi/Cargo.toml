@@ -1,0 +1,49 @@
+[package]
+name = "twidget_helper_ffi"
+description = "The widget helper's C ABI: the C++ OS glue's stream, platform and lockdown as callbacks to twidget_helper's serving"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+# The one crate of the helper allowed `unsafe` (tools/unsafe_report.py): the workspace's lints but `forbid(unsafe_code)`,
+# and every unsafe block and impl with its SAFETY note.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+float_cmp = "allow"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+field_reassign_with_default = "allow"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+
+[dependencies]
+nova_embed_ffi = { path = "../../../../nova-safe/nova_embed_ffi", optional = true }
+twidget_helper = { path = "../helper" }
+twidget_js = { path = "../../../../widget-sandbox/packages/rust/crates/js" }
+twidget_stream = { path = "../../../../widget-sandbox/packages/rust/crates/stream" }
+
+[dev-dependencies]
+twidget_bundle_stamp = { path = "../../../../widget-sandbox/packages/rust/crates/bundle_stamp" }
+twidget_engine = { path = "../../../../widget-sandbox/packages/rust/crates/engine" }
+twidget_events = { path = "../events" }
+twidget_gesture = { path = "../../../../widget-sandbox/packages/rust/crates/gesture" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_remote = { path = "../remote" }
+twidget_server = { path = "../../../../widget-sandbox/packages/rust/crates/server" }
+twidget_shadow = { path = "../shadow" }
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }
+twidget_wire = { path = "../wire" }
+
+[features]
+# Nova's own C interface (nova_engine.h) in the same library, for a program whose C++ also drives Nova: the oracle's
+# C++ serving (oracle/helper_oracles.cmake); the helper leaves it out, and so does the unsafe report.
+nova-c-api = ["dep:nova_embed_ffi"]
