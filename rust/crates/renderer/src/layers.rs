@@ -1304,8 +1304,9 @@ impl<E: Engine, B: Backend> Core<E, B> {
         true
     }
 
-    /// `apply_scripted`: the layers moved without a build; false when one moved past what its layer allows.
-    pub(crate) fn apply_scripted(&mut self, doc: &Document, ids: &[i64], now: f64) -> bool {
+    /// `apply_scripted`: the layers moved without a build; false when one moved past what its layer allows. The clock is
+    /// read once every layer may move, as the C++ reads it.
+    pub(crate) fn apply_scripted(&mut self, doc: &Document, ids: &[i64]) -> bool {
         let mut moves: Vec<(i64, LayerKey)> = Vec::new();
         for &id in ids {
             let Some(p) = self.layers.promoted.get(&id) else { return false };
@@ -1327,6 +1328,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
         let clean = !self.dirty || self.layers.composition_only;
         let mut synced = true;
         let mut changed = false;
+        let now = self.now_s();
         for (id, key) in moves {
             let version = self.layers.next_version;
             let Some(p) = self.layers.promoted.get_mut(&id) else { continue };

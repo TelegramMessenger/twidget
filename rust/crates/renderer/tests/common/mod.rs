@@ -532,7 +532,16 @@ thread_local! {
 
 /// The log of a step's Backend calls, which more than one writer shares: the renderer's stub, the replayed tape and the
 /// container's stub.
-pub type SharedLog = Rc<RefCell<Out>>;
+/// The step's log, which the Backend stub and the clock write in the order they are called; `Send`, as a renderer's
+/// clock is.
+#[derive(Clone, Debug, Default)]
+pub struct SharedLog(std::sync::Arc<std::sync::Mutex<Out>>);
+
+impl SharedLog {
+    pub fn borrow_mut(&self) -> std::sync::MutexGuard<'_, Out> {
+        self.0.lock().unwrap()
+    }
+}
 
 /// A container's batch as the oracle's stub writes it down: 'T', u32 texts, each i32 font and str text.
 pub fn widths_line(texts: &[TextInFont]) -> Vec<u8> {
@@ -615,12 +624,14 @@ impl Time {
     }
 }
 
-/// The script's clock: each step's time.
+/// The script's clock: each step's time, each read written into the step's log beside the Backend calls, as the
+/// oracle's clock writes it (`K`), so the port reads the clock where the C++ does.
 #[derive(Debug)]
-pub struct StepClock(pub std::sync::Arc<Time>);
+pub struct StepClock(pub std::sync::Arc<Time>, pub SharedLog);
 
 impl Clock for StepClock {
     fn now_ms(&mut self) -> f64 {
+        self.1.borrow_mut().u8(b'K');
         self.0.get()
     }
 }
@@ -1172,7 +1183,7 @@ pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: 
         script.dark,
         engine,
         Stub::with_log(step_log.clone()),
-        Some(Box::new(StepClock(clock.clone()))),
+        Some(Box::new(StepClock(clock.clone(), step_log.clone()))),
     );
     let mut run = Run::default();
     let mut o = Out::default();

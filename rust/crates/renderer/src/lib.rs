@@ -1624,8 +1624,7 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
                 self.events.load_images(&mut self.doc, &mut self.core, &mut out);
                 let mut applied = false;
                 if let Some(ids) = &scripted {
-                    let now = self.core.now_s();
-                    applied = self.core.apply_scripted(&self.doc, ids, now);
+                    applied = self.core.apply_scripted(&self.doc, ids);
                 }
                 if applied {
                     self.doc.document_changed = false;

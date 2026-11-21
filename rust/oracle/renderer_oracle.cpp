@@ -114,9 +114,14 @@ std::vector<CanvasOp> canonical(std::vector<CanvasOp> ops) {
     return ops;
 }
 
+// The step's time; each read is written into the step's log beside the Backend calls, so the port reads the clock where the renderer does.
 struct StepClock : Clock {
     double ms = 0;
-    double now_ms() override { return ms; }
+    Out* log = nullptr;
+    double now_ms() override {
+        if (log) log->u8('K');
+        return ms;
+    }
 };
 
 // The handles of canvas fonts start here: the renderer's own font calls are told from the container's by their handle.
@@ -646,6 +651,7 @@ void script(In& in, Out& o) {
     twp::tape.on = true;
     Out log;
     backend.log = &log;
+    clock.log = &log;
     auto r = std::make_unique<Renderer>(width, dpr, dark, backend, &clock);
     Out transcript;
     transcript.str(log.s);
@@ -781,6 +787,7 @@ void script(In& in, Out& o) {
     }
     twp::tape.on = false;
     backend.log = nullptr;
+    clock.log = nullptr;
     r.reset();
     o.raw(uint32_t(twp::tape.bytes.size()));
     o.s += twp::tape.bytes;
