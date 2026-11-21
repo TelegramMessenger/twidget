@@ -30,8 +30,8 @@ impl Document {
     /// `el_text::compute_styles()`: the parent's line height, font and metrics, white-space, wrapping and
     /// transform; inline text, no float; a relatively positioned inline ancestor's offsets (and then static, as
     /// any text below a box is); the text as shown (a collapsible space one space, a tab four, a newline nothing,
-    /// else as transformed by the container); and its size in the parent's font, measured again only when the
-    /// font or the transform changed.
+    /// else as transformed by the container); and its size in the parent's font, its width owed again only when the
+    /// font or the transform changed, and measured at once unless the container measures texts later.
     #[inline(never)]
     pub fn el_text_compute_styles(&mut self, cx: &StyleCx, id: ElementId) {
         self.mark_element_layout_dirty(cx, id);
@@ -109,26 +109,71 @@ impl Document {
         let state = &self.el(id).text_state;
         if is_break || font == 0 {
             let state = &mut self.el_mut(id).text_state;
-            state.size = (Px(0.0), Px(0.0));
+            state.size.set((Px(0.0), Px(0.0)));
             state.measured_font = 0;
+            state.width_owed.set(false);
         } else {
             let transform = if state.use_transformed { if white_space { -2 } else { css_transform } } else { -3 };
             let (measured_font, measured_transform) = (state.measured_font, state.measured_transform);
-            let shown = if state.use_transformed { state.transformed_text.clone() } else { text };
             let state = &mut self.el_mut(id).text_state;
-            state.size.1 = fm.height;
+            let (width, _) = state.size.get();
+            state.size.set((width, fm.height));
             if measured_font != font || measured_transform != transform {
                 let breaker = std::mem::take(&mut state.breaker);
                 if breaker != 0 {
                     cx.container.drop_text_breaker(breaker);
                 }
                 let state = &mut self.el_mut(id).text_state;
-                state.size.0 = cx.container.text_width(crate::gumbo::c_str(&shown), font);
                 state.measured_font = font;
                 state.measured_transform = transform;
+                state.width_owed.set(true);
+                if !cx.container.measures_text_later() {
+                    self.measure_width(cx, id);
+                }
             }
         }
         self.el_mut(id).text_state.draw_spaces = fm.draw_spaces;
+    }
+
+    /// `measure_width()`: the width a text owes, measured in the font it was styled with, once.
+    pub fn measure_width(&self, cx: &StyleCx, id: ElementId) {
+        let state = &self.el(id).text_state;
+        if !state.width_owed.get() {
+            return;
+        }
+        state.width_owed.set(false);
+        let width = cx.container.text_width(crate::gumbo::c_str(self.display_text(id)), state.measured_font);
+        let (_, height) = state.size.get();
+        state.size.set((width, height));
+    }
+
+    /// `width_owed()`: the text's width is still to be measured.
+    pub fn width_owed(&self, id: ElementId) -> bool {
+        self.el(id).text_state.width_owed.get()
+    }
+
+    /// `measured_font()`: the font the text was styled with, 0 for none.
+    pub fn measured_font(&self, id: ElementId) -> u64 {
+        self.el(id).text_state.measured_font
+    }
+
+    /// `breaks_in_line()`: inline layout may cut the text between its characters where a line ends.
+    pub fn breaks_in_line(&self, id: ElementId) -> bool {
+        let css = &self.el(id).css;
+        let ws = css.m_white_space;
+        let kept = ws == WhiteSpace::white_space_nowrap.index() || ws == WhiteSpace::white_space_pre.index();
+        let wraps = crate::render_inline_context::get_wrapping(css) != crate::css_values::OverflowWrap::overflow_wrap_normal.index();
+        !self.is_space(id) && !self.is_break(id) && wraps && !kept
+    }
+
+    /// `breaks_at_narrowest()`: the narrowest a box sized to its content can be takes the text's widest character.
+    pub fn breaks_at_narrowest(&self, id: ElementId) -> bool {
+        let css = &self.el(id).css;
+        let ws = css.m_white_space;
+        let kept = ws == WhiteSpace::white_space_pre.index() || ws == WhiteSpace::white_space_nowrap.index();
+        crate::render_inline_context::get_wrapping(css) == crate::css_values::OverflowWrap::overflow_wrap_anywhere.index()
+            && !kept
+            && !self.is_white_space(id)
     }
 
     /// `display_text()`: the text as transformed, or as written.

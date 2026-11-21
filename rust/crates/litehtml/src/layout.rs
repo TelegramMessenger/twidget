@@ -173,7 +173,8 @@ impl Document {
     pub fn get_content_size(&self, cx: &StyleCx, id: ElementId, max_width: Px) -> Size {
         match self.kind(id) {
             ElementKind::el_text | ElementKind::el_space => {
-                let size = self.el(id).text_state.size;
+                self.measure_width(cx, id);
+                let size = self.el(id).text_state.size.get();
                 Size::new(size.0, size.1)
             }
             ElementKind::el_image => {

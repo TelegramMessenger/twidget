@@ -44,6 +44,14 @@ pub type Mark = (usize, &'static str, i32);
 
 thread_local! {
     static MARKS: RefCell<Option<Vec<Mark>>> = const { RefCell::new(None) };
+    /// lhdump's `measure_text_later`, which its `TW_MEASURES_TEXT_LATER` setting sets: the containers let texts owe
+    /// their widths until they are read, as TwidgetCore's does.
+    static MEASURES_TEXT_LATER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The containers of the cases that follow on this thread measure texts when they are read (`TW_MEASURES_TEXT_LATER`).
+pub fn set_measures_text_later(later: bool) {
+    MEASURES_TEXT_LATER.with(|m| m.set(later));
 }
 
 /// Marks of where each element and field of the answers that follow starts, to tell a difference by name.
@@ -140,6 +148,9 @@ impl twidget_litehtml::web_color::ResolveColor for CascadeContainer {
 }
 
 impl DocumentContainer for CascadeContainer {
+    fn measures_text_later(&self) -> bool {
+        MEASURES_TEXT_LATER.with(Cell::get)
+    }
     fn pt_to_px(&self, pt: f32) -> Px {
         Px(pt * 96.0 / 72.0)
     }
@@ -711,7 +722,7 @@ pub fn cascade_out(o: &mut Out, names: &Names, doc: &Document) {
             ElementKind::el_text | ElementKind::el_space => {
                 let t = &el.text_state;
                 o.str(&t.transformed_text).u8(u8::from(t.use_transformed)).u8(u8::from(t.draw_spaces));
-                o.f32(t.size.0.value()).f32(t.size.1.value()).u64(t.measured_font).i32(t.measured_transform);
+                o.f32(t.size.get().0.value()).f32(t.size.get().1.value()).u64(t.measured_font).i32(t.measured_transform);
                 o.u8(u8::from(doc.is_white_space(id))).u8(u8::from(doc.is_break(id)));
             }
             ElementKind::el_before | ElementKind::el_after => {

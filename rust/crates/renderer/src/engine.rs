@@ -64,8 +64,14 @@ pub trait Engine {
     fn create(&mut self, html: &[u8], master: &[u8]) -> bool;
     /// The document and its element index dropped (`Container::drop`, a new master).
     fn drop_document(&mut self);
-    /// The elements under the root, it included (the walk of `Container::layout`), 0 without one.
+    /// The elements under the root, it included (the walk of `Container::layout`), 0 without one. The walk also takes,
+    /// in document order, the texts that owe their widths and the texts no `display: none` box hides, for
+    /// `measure_words`.
     fn element_count(&mut self) -> u64;
+    /// `LayoutWidths::before` on the texts the last walk took: the words they owe that no face has cached and the units
+    /// the shown ones are painted in, measured in one `Backend::text_widths` call, every owed width then paid; the shown
+    /// texts the layout may break kept for its first unmeasured break until `render` ends (`LayoutWidths::after`).
+    fn measure_words(&mut self);
     /// `document::set_layout_budget(budget)` and `document::render(width)`.
     fn render(&mut self, width: f32, budget: u64);
     /// `document::layout_exhausted`: the last layout ran past its budget.

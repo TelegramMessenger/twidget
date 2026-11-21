@@ -34,6 +34,8 @@ struct Run {
     lh: Lh,
     switches: Switches,
     settings: Vec<u8>,
+    /// The containers let texts owe their widths until read (`TW_MEASURES_TEXT_LATER`).
+    later: bool,
     batch: Vec<Case>,
     bytes: usize,
     cases: usize,
@@ -49,6 +51,7 @@ impl Run {
             lh: Lh::new(),
             switches: Switches::default(),
             settings: Vec::new(),
+            later: false,
             batch: Vec::new(),
             bytes: 0,
             cases: 0,
@@ -71,12 +74,14 @@ impl Run {
             "LH_NO_TRANSFORMED_CULLING" => run.switches.transformed_culling = false,
             "LH_NO_SVG_GROUP_CACHE" => run.switches.svg_group_cache = false,
             "LH_SVG_LATE_CACHE" => run.switches.svg_late_cache = true,
+            "TW_MEASURES_TEXT_LATER" => run.later = true,
             other => panic!("no switch {other}"),
         }
         run
     }
 
     fn case(&mut self, input: Vec<u8>, what: impl Into<String>) {
+        set_measures_text_later(self.later);
         let rust = paint_answer(&self.lh, self.switches, &input, &mut self.tally);
         self.cases += 1;
         self.compared += 1;
@@ -1438,6 +1443,7 @@ fn the_switches_paint_alike() {
         "LH_NO_FIXED_LAYOUT_REUSE",
         "LH_LAYOUT_CACHE_CHECK",
         "LH_NO_COLUMN_REUSE",
+        "TW_MEASURES_TEXT_LATER",
     ] {
         let mut run = Run::with_switch("switch", switch);
         let mut random = Lcg::new(0x1D_0002);

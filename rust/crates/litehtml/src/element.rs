@@ -11,6 +11,7 @@
 //! its attributes add ([`Element::declarations`]) as `parse_attributes` makes them, and the cascade adds them to its
 //! style ([`Document::flush_declarations`]).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -124,11 +125,13 @@ pub struct TextState {
     pub use_transformed: bool,
     /// `m_draw_spaces`.
     pub draw_spaces: bool,
-    /// `m_size`: width and height.
-    pub size: (Px, Px),
+    /// `m_size`: width and height; the width read through `get_content_size`, which pays one owed first.
+    pub size: Cell<(Px, Px)>,
     /// `m_measured_font` and `m_measured_transform`: what `m_size.width` was measured in.
     pub measured_font: u64,
     pub measured_transform: i32,
+    /// `m_width_owed`: the width is to be measured in `measured_font` when it is first read.
+    pub width_owed: Cell<bool>,
     /// `m_breaker`: the container's handle of the text's breaker, 0 for none.
     pub breaker: u64,
 }
@@ -139,9 +142,10 @@ impl Default for TextState {
             transformed_text: Vec::new(),
             use_transformed: false,
             draw_spaces: true,
-            size: (Px(0.0), Px(0.0)),
+            size: Cell::new((Px(0.0), Px(0.0))),
             measured_font: 0,
             measured_transform: -1,
+            width_owed: Cell::new(false),
             breaker: 0,
         }
     }

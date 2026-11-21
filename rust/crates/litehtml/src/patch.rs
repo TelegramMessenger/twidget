@@ -1815,8 +1815,9 @@ impl Document {
         state.transformed_text.clear();
         state.use_transformed = false;
         state.draw_spaces = true;
-        state.size = (Px(0.0), Px(0.0));
+        state.size = Cell::new((Px(0.0), Px(0.0)));
         state.measured_font = 0;
+        state.width_owed = Cell::new(false);
         let breaker = std::mem::take(&mut state.breaker);
         if breaker != 0 {
             cx.container.drop_text_breaker(breaker);

@@ -595,13 +595,7 @@ impl Document {
         let is_text = self.is_text(src);
         let wrapping = get_wrapping(self.ri_css(text_item));
         let whitespace = self.ri_css(text_item).m_white_space;
-        if !(is_text
-            && !self.is_space(src)
-            && !self.is_break(src)
-            && wrapping != overflow_wrap_normal
-            && whitespace != white_space_nowrap
-            && whitespace != white_space_pre)
-        {
+        if !(is_text && self.breaks_in_line(src)) {
             return false;
         }
         let top = st.line_boxes.last().map_or(Px(0.0), |b| b.top);
@@ -849,7 +843,7 @@ impl Document {
                         supported = false;
                         break;
                     }
-                    if self.is_white_space(text) {
+                    if !self.breaks_at_narrowest(text) {
                         continue;
                     }
                     let breaker = self.breaker(cx, text);

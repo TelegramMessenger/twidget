@@ -6,7 +6,7 @@
 //! Entries (a tag, then little-endian fields; `str` is a u32 length and bytes, `rect` four f32): 'S' u32 a step
 //! begins; 'V' str a violation the container pushed, which the next answer brings. The input's questions as
 //! events_probe.h writes them ('h' 'b' 'x' 'a' 'u' 'm' 'v' 'c' 'K' 'R' 'w' 'f' 'k' 'j' 'e' 'i' 'I' 'p'; 'L' is the port's). The
-//! document's life: 'n' u64 elements; 'r' f32 width, u64 budget; 'E' u8; 's' u64 boxes; 'z' u64 html digest, u32
+//! document's life: 'n' u64 elements; 'W' the layout's words measured; 'r' f32 width, u64 budget; 'E' u8; 's' u64 boxes; 'z' u64 html digest, u32
 //! length, u8; 'D' the same, u8 patched, u8 changed; 'M'; 'y' u8; 'C' html digest and length, master digest and
 //! length, u8 made; 'X' index; 'H' f64; 'o' u8; 'q' u8; 'F' u64 fonts; 'J' u32 changes (i64 owner, str name, str
 //! value, u8 text), u8 ok, u8 changed; 'Z' u32 patches (i64 id, str style), u8 ok, u8 changed; 'N' u64 names, u64
@@ -62,6 +62,7 @@ pub enum Entry {
     Content { id: i64, size: (f32, f32) },
     // the document's life
     Count(u64),
+    Words,
     Render { width: f32, budget: u64 },
     Exhausted(bool),
     Spent(u64),
@@ -141,6 +142,7 @@ impl Entry {
             Entry::ImageReady { .. } => "image_ready",
             Entry::Content { .. } => "content_size",
             Entry::Count(_) => "element_count",
+            Entry::Words => "measure_words",
             Entry::Render { .. } => "render",
             Entry::Exhausted(_) => "layout_exhausted",
             Entry::Spent(_) => "layout_spent",
@@ -362,6 +364,7 @@ impl Take<'_> {
             b'z' => Entry::ViewportUnits { html: self.digest()?, yes: self.flag()? },
             b'D' => Entry::Update { html: self.digest()?, ok: self.flag()?, changed: self.flag()? },
             b'M' => Entry::MediaChanged,
+            b'W' => Entry::Words,
             b'y' => Entry::PaintOnly(self.flag()?),
             b'C' => Entry::Create { html: self.digest()?, master: self.digest()?, made: self.flag()? },
             b'X' => Entry::Index,
@@ -659,6 +662,10 @@ impl Engine for TapeEngine {
         }, (false, false));
         ok.then_some(changed)
     }
+    fn measure_words(&mut self) {
+        answer!(self.tape, "measure_words", Entry::Words => (), ())
+    }
+
     fn media_changed(&mut self) {
         answer!(self.tape, "media_changed", Entry::MediaChanged => (), ())
     }

@@ -19,9 +19,14 @@ public:
 public:
     Container(Renderer& r, Backend& backend)]=])
 
-# The document's life in Container: the layout budget, patches, a new document, its height and what a new viewport height asks.
-tw_probe(RENDERER_CPP 1 [=[        doc_->set_layout_budget(kLayoutBudgetBase + kLayoutBudgetPerElement * elements);
+# The document's life in Container: the walk's words measured, the layout budget, patches, a new document, its height and what a new viewport height asks.
+tw_probe(RENDERER_CPP 1 [=[        widths_.before(owed, shown);
+#endif
+        doc_->set_layout_budget(kLayoutBudgetBase + kLayoutBudgetPerElement * elements);
         doc_->render(litehtml::pixel_t(width));]=] [=[        twp::count(elements);
+        widths_.before(owed, shown);
+        twp::command('W');
+#endif
         doc_->set_layout_budget(kLayoutBudgetBase + kLayoutBudgetPerElement * elements);
         doc_->render(litehtml::pixel_t(width));
         twp::render(width, kLayoutBudgetBase + kLayoutBudgetPerElement * elements);]=])

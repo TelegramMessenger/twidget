@@ -122,6 +122,12 @@ pub trait DocumentContainer: ResolveColor {
         0
     }
 
+    /// `measures_text_later()`: an `el_text` may owe its width until it is read, so that a container measures many at
+    /// once.
+    fn measures_text_later(&self) -> bool {
+        false
+    }
+
     /// `text_breaker::fit(start, width)`: where the piece of the text from byte `start` that fits in `width` ends.
     fn text_breaker_fit(&self, _breaker: u64, start: usize, _width: Px) -> usize {
         start

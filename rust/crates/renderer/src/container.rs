@@ -60,10 +60,11 @@ impl Container {
         self.built_fonts
     }
 
-    /// Lays the document out within the layout budget. Past it the document stays as far as it got and lays out
-    /// nothing again, and the renderer stops.
+    /// Lays the document out within the layout budget, the words its texts owe measured first in one request. Past the
+    /// budget the document stays as far as it got and lays out nothing again, and the renderer stops.
     pub fn layout(&mut self, engine: &mut dyn Engine, width: f32) -> Option<Exhausted> {
         let elements = engine.element_count();
+        engine.measure_words();
         engine.render(width, LAYOUT_BUDGET_BASE.wrapping_add(LAYOUT_BUDGET_PER_ELEMENT.wrapping_mul(elements)));
         if engine.layout_exhausted() { Some(Exhausted(engine.layout_spent())) } else { None }
     }

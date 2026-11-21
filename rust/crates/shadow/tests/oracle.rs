@@ -80,7 +80,7 @@ fn recorded_sessions_alike() {
     let sessions = corpus();
     assert_eq!(sessions.len(), 4, "the corpus recording's sessions");
     let batches: usize = sessions.iter().map(|s| s.steps.iter().filter(|x| matches!(x, Step::Ops(_))).count()).sum();
-    assert_eq!(batches, 60, "the corpus recording's ops batches");
+    assert_eq!(batches, 59, "the corpus recording's ops batches");
     let mut random = Lcg::new(0x5d_0001);
     let mut tally = Tally::default();
     let mut c = Cases::new();

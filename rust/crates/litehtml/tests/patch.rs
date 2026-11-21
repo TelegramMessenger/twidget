@@ -66,6 +66,8 @@ struct Run {
     lh: Lh,
     switches: Switches,
     settings: Vec<u8>,
+    /// The containers let texts owe their widths until read (`TW_MEASURES_TEXT_LATER`).
+    later: bool,
     batch: Vec<Case>,
     bytes: usize,
     cases: usize,
@@ -85,6 +87,7 @@ impl Run {
             lh: Lh::new(),
             switches: Switches::default(),
             settings: Vec::new(),
+            later: false,
             batch: Vec::new(),
             bytes: 0,
             cases: 0,
@@ -120,6 +123,7 @@ impl Run {
             "LH_NO_LAYOUT_CACHE" => run.switches.layout_cache = false,
             "LH_LAYOUT_CACHE_CHECK" => run.switches.layout_cache_check = true,
             "LH_NO_STYLE_SHARING" => run.switches.style_sharing = false,
+            "TW_MEASURES_TEXT_LATER" => run.later = true,
             other => panic!("no switch {other}"),
         }
         run
@@ -131,6 +135,7 @@ impl Run {
         let mut tally = PatchTally::default();
         let mut parted: Vec<(usize, String)> = Vec::new();
         let mut tied = false;
+        set_measures_text_later(self.later);
         let rust = patch_answer_with(&self.lh, self.switches, &input, &mut tally, &mut |step, cx, doc, fresh| {
             // Holes whose spans tie are in std::sort's library order in the C++ and in the tree's here (L3's finding):
             // which clone a patch reaches differs, so such a case is not compared.
@@ -1769,6 +1774,7 @@ fn the_patching_switches_are_alike() {
         "LH_NO_LAYOUT_CACHE",
         "LH_LAYOUT_CACHE_CHECK",
         "LH_NO_STYLE_SHARING",
+        "TW_MEASURES_TEXT_LATER",
     ] {
         let name: &'static str = Box::leak(format!("switch {switch}").into_boxed_str());
         let mut run = Run::with_switch(name, switch);

@@ -686,10 +686,14 @@ void clear_switches() {
 
 // ---- Stage L5: the cascade ('l') ----
 
+// Whether the document containers let texts owe their widths until read, as TwidgetCore's does: set by the TW_MEASURES_TEXT_LATER setting.
+bool measure_text_later = false;
+
 // The cascade's container: the renderer's answers where the fork asks (fonts with fixed metrics per description, widths per byte, ASCII text transforms, the trusted switch and its sanitize_declaration), its viewport set by the case, every font, width, image and transform call logged; for layout the viewport, image sizes from the source's bytes and text breakers that break between any two characters, logged too; for painting an image's aspect, what follows a '#' in its source, logged too.
 class CascadeContainer final : public lhdump_paint::Painting<OracleContainer> {
 public:
     float width = 375, height = 667, dpr = 2;
+    bool measures_text_later() const override { return measure_text_later; }
     bool trusted = false;
     // Stage L19: a renderer-like sanitizer of elements (no object or embed, blink as span, no on* attributes or javascript: sources), each call logged.
     bool sanitizing = false;
@@ -2173,6 +2177,7 @@ bool run(int op, std::string_view input) {
 #endif
         // The group cache's switch is read as the process starts: it is set through its function.
         if (text.compare(0, eq, "LH_NO_SVG_GROUP_CACHE") == 0) svg_set_group_cache_enabled(false);
+        if (text.compare(0, eq, "TW_MEASURES_TEXT_LATER") == 0) measure_text_later = text.substr(eq + 1) == "1";
         return true;
     }
     case 'd': { // t_strtod and t_strtof of the text: f64 bits, u32 end, f32 bits

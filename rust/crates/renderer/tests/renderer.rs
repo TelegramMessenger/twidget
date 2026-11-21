@@ -649,6 +649,7 @@ fn every_query_kind_answers() {
 struct NoDocument;
 
 impl Engine for NoDocument {
+    fn measure_words(&mut self) {}
     fn has_viewport_units(&mut self, _html: &[u8]) -> bool {
         false
     }

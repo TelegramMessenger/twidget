@@ -33,6 +33,8 @@ struct Run {
     lh: Lh,
     switches: Switches,
     settings: Vec<u8>,
+    /// The containers let texts owe their widths until read (`TW_MEASURES_TEXT_LATER`).
+    later: bool,
     batch: Vec<Case>,
     bytes: usize,
     cases: usize,
@@ -48,6 +50,7 @@ impl Run {
             lh: Lh::new(),
             switches: Switches::default(),
             settings: Vec::new(),
+            later: false,
             batch: Vec::new(),
             bytes: 0,
             cases: 0,
@@ -67,6 +70,7 @@ impl Run {
             "LH_NO_FIXED_LAYOUT_REUSE" => run.switches.fixed_layout_reuse = false,
             "LH_LAYOUT_CACHE_CHECK" => run.switches.layout_cache_check = true,
             "LH_NO_COLUMN_REUSE" => run.switches.column_reuse = false,
+            "TW_MEASURES_TEXT_LATER" => run.later = true,
             other => panic!("no switch {other}"),
         }
         run
@@ -74,6 +78,7 @@ impl Run {
 
     fn case(&mut self, input: Vec<u8>, what: impl Into<String>) {
         let mut tally = LayoutTally::default();
+        set_measures_text_later(self.later);
         let rust = layout_answer(&self.lh, self.switches, &input, &mut tally);
         self.cases += 1;
         self.tally.documents += 1;
@@ -3245,6 +3250,60 @@ fn the_layout_switches_lay_out_alike() {
 }
 
 /// Layouts past a budget: every box returns at once, the document lays out nothing again.
+/// The corpus, generated documents and the written shapes with a container that lets texts owe their widths until they
+/// are read, as TwidgetCore's does: the same layout, its widths measured when the layout first reads them.
+#[test]
+fn documents_lay_out_alike_measuring_later() {
+    let mut run = Run::with_switch("measuring later", "TW_MEASURES_TEXT_LATER");
+    let light = themed_master(false);
+    let dark = themed_master(true);
+    for (k, (name, text)) in corpus_pages().iter().enumerate() {
+        let snap = snapshot(text);
+        let dark_theme = k % 2 == 1;
+        let (master, vars) = if dark_theme { &dark } else { &light };
+        let html = themed_html(&snap, dark_theme, vars);
+        let mut steps = layout_steps(375.0, 320.0);
+        steps.extend([
+            Step::Media(240.0, 900.0),
+            Step::Layout(240.0, None),
+            Step::Dump,
+            Step::Hover(k as u32 * 7),
+            Step::Layout(240.0, None),
+            Step::Dump,
+        ]);
+        run.case(layout_record(375.0, 667.0, 2.0, master, b"", &html, &steps), format!("{name} measuring later"));
+    }
+    let master = master_css();
+    let mut random = Lcg::new(0x17_0004);
+    for k in 0..1200 {
+        let html = match k % 5 {
+            0 => flex_document(&mut random),
+            1 => table_document(&mut random),
+            2 => grid_document(&mut random),
+            3 => positioned_document(&mut random),
+            _ => layout_document(&mut random),
+        };
+        let width = [320.0, 375.0, 150.0, 600.0][k % 4];
+        let mut steps = layout_steps(width, 240.0);
+        steps.extend([Step::Hover(k as u32), Step::Layout(width, None), Step::Dump]);
+        run.case(
+            layout_record(width, 640.0, 2.0, &master, b"", &html, &steps),
+            format!("generated {k} measuring later: {}", String::from_utf8_lossy(&html)),
+        );
+    }
+    for (what, html) in written_flex_documents()
+        .into_iter()
+        .chain(written_positioned_documents())
+        .chain(written_table_documents())
+        .chain(written_grid_documents())
+    {
+        let mut steps = layout_steps(375.0, 200.0);
+        steps.extend([Step::Hover(2), Step::Layout(375.0, None), Step::Dump]);
+        run.case(layout_record(375.0, 667.0, 2.0, &master, b"", html.as_bytes(), &steps), format!("{what} measuring later"));
+    }
+    run.finish();
+}
+
 #[test]
 fn the_budget_is_crossed_alike() {
     let mut run = Run::new("budget");
@@ -3433,4 +3492,94 @@ fn a_deep_grid_document_lays_out_on_a_small_stack() {
     let passes = thread.expect("a thread").join().expect("the layout ran");
     eprintln!("a deep grid document: {passes} grid passes");
     assert!(passes > 100);
+}
+
+/// What the containers' `text_width` measured since `from`.
+fn measured(container: &CascadeContainer, from: usize) -> Vec<Vec<u8>> {
+    container.calls.borrow()[from..].iter().filter(|c| c.0 == b'W').map(|c| c.1.clone()).collect()
+}
+
+/// The first text of the first `<p>` of a document.
+fn first_text(doc: &twidget_litehtml::document::Document) -> Option<twidget_litehtml::element::ElementId> {
+    let mut pending = doc.root.into_iter().collect::<Vec<_>>();
+    while let Some(el) = pending.pop() {
+        if doc.tag(el) == twidget_litehtml::string_id::_p_ {
+            return doc.children(el).first().copied();
+        }
+        pending.extend(doc.children(el).iter().rev().copied());
+    }
+    None
+}
+
+/// A container that does not opt in measures every text in the style pass, as litehtml always did; one that opts in
+/// measures each when it is read, the same texts at the same widths, and set_text drops what a text owed (ends_tests.cpp's
+/// `containers`, which drives litehtml alone).
+#[test]
+fn containers_measure_texts_when_read() {
+    use twidget_litehtml::document::{Document, StyleCx};
+    let html = b"<html><body><p>alpha beta</p><p style=\"text-transform:uppercase\">gamma</p><pre>a\tb</pre></body></html>";
+    let master = master_css();
+    let lh = Lh::new();
+    let make = |later: bool| {
+        set_measures_text_later(later);
+        let container = CascadeContainer::new(300.0, 600.0, 1.0);
+        let doc = {
+            let cx = StyleCx { names: &lh.names, container: &container, cache: &lh.cache, switches: Switches::default() };
+            let (mut doc, root) = Document::build(html, &cx.env());
+            doc.finalize_from_external_root(&cx, root, &master, b"");
+            doc
+        };
+        (doc, container)
+    };
+    let (mut a, now) = make(false);
+    let (mut b, later) = make(true);
+    let styled: std::collections::BTreeSet<Vec<u8>> = measured(&now, 0).into_iter().collect();
+    assert!(
+        styled.contains(&b"alpha"[..]) && styled.contains(&b"GAMMA"[..]) && styled.contains(&b"    "[..]),
+        "a container that does not opt in measures what the texts show in the style pass"
+    );
+    assert!(measured(&later, 0).is_empty(), "one that opts in measures nothing there");
+    let alpha = first_text(&b).expect("a text");
+    assert!(b.width_owed(alpha) && !a.width_owed(first_text(&a).expect("a text")), "its texts owe their widths, the other's none");
+    let before = measured(&now, 0).len();
+    let layout = |doc: &mut Document, container: &CascadeContainer| {
+        let cx = StyleCx { names: &lh.names, container, cache: &lh.cache, switches: Switches::default() };
+        doc.set_layout_budget(renderer_layout_budget(doc));
+        doc.layout_document(&cx, twidget_litehtml::Px(300.0));
+    };
+    layout(&mut a, &now);
+    layout(&mut b, &later);
+    assert_eq!(measured(&now, 0).len(), before, "the container that does not opt in measures nothing more in the layout");
+    let read: std::collections::BTreeSet<Vec<u8>> = measured(&later, 0).into_iter().collect();
+    assert!(
+        read == styled && measured(&later, 0).len() == before,
+        "the one that opts in measures the same texts once each as the layout reads them"
+    );
+    assert!(
+        a.layout.size.height.value().to_bits() == b.layout.size.height.value().to_bits()
+            && a.layout.size.width.value().to_bits() == b.layout.size.width.value().to_bits()
+            && !b.width_owed(alpha),
+        "both lay out alike, and no width is owed after the layout"
+    );
+
+    let (c, early) = make(true);
+    let text = first_text(&c).expect("a text");
+    let cx = StyleCx { names: &lh.names, container: &early, cache: &lh.cache, switches: Switches::default() };
+    let sz = c.get_content_size(&cx, text, twidget_litehtml::Px(0.0));
+    assert!(
+        measured(&early, 0) == vec![b"alpha".to_vec()] && sz.width.value() == 40.0 && !c.width_owed(text),
+        "a size read before the layout measures that text alone, exactly"
+    );
+    c.get_content_size(&cx, text, twidget_litehtml::Px(0.0));
+    assert_eq!(measured(&early, 0).len(), 1, "and reading it again measures nothing");
+    let (mut d, reset) = make(true);
+    let changed = first_text(&d).expect("a text");
+    let cx = StyleCx { names: &lh.names, container: &reset, cache: &lh.cache, switches: Switches::default() };
+    d.set_text(&cx, changed, b"omega");
+    assert!(!d.width_owed(changed), "set_text drops the width a text owed");
+    assert!(
+        measured(&reset, 0).is_empty() && d.get_content_size(&cx, changed, twidget_litehtml::Px(0.0)).width.value() == 0.0,
+        "and its size reads as nothing until it is styled again"
+    );
+    set_measures_text_later(false);
 }
