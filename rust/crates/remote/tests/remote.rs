@@ -1,7 +1,7 @@
 //! tests/remote_tests.cpp's message checks, ported: the documented bytes, the kinds and their ranges,
 //! pixels answered exactly as asked, the carried values' caps, lengths of carried values, an encoder's
 //! room under the message cap, and cuts and random changes of every sample; the widths messages, the texts
-//! one request holds, and frame deltas rebuilt, their bytes and their bounds. Its platform end's session
+//! one request holds, and frame deltas rebuilt and scanned, their bytes and their bounds. Its platform end's session
 //! is the main process's: the checks of the platform end's own code are in twidget_ends' tests.
 
 mod common;
@@ -420,7 +420,7 @@ fn widths_golden(what: &str, value: &WidthsAnswer, expected: &[u8], asked: &Widt
 }
 
 /// The widths messages' and a frame delta's documented bytes; a Frame encoded with its list's place and decoded with
-/// its list's view; delta_ids.
+/// its list's view; delta_ids and delta_scan.
 #[test]
 fn golden_widths_and_deltas() {
     let two = WidthsRequest { texts: vec![text(1, b"ab"), text(-1, b"")] };
@@ -523,6 +523,33 @@ fn golden_widths_and_deltas() {
     assert_eq!(delta_ids(&delta), Some((u64::MAX, 0x0102030405060708)), "delta_ids reads a FrameDelta's seq and base");
     assert_eq!(delta_ids(&delta[..40]), None, "delta_ids needs both fields whole");
     assert_eq!(delta_ids(&bytes), None, "delta_ids reads no other kind");
+    let no_rects = unhex("02 01 00");
+    let scan = delta_scan(&delta, &Caps::default());
+    assert!(
+        scan.is_some_and(|(seq, length, damage)| seq == u64::MAX
+            && length == 1
+            && damage == no_rects.as_slice()
+            && damage.as_ptr() as usize == delta.as_ptr() as usize + delta.len() - no_rects.len()),
+        "delta_scan reads a FrameDelta's whole seq and its list's length and views its damage value where it lies, at the message's end"
+    );
+    assert!(FrameDelta::decode(&delta, &Caps::default()).is_some_and(|d| d.seq == u64::MAX), "delta_scan's seq is the one decode gives");
+    for n in 0..delta.len() {
+        not_scanned(&format!("delta_scan of a delta cut to {n} bytes"), &delta[..n], &Caps::default());
+    }
+    assert!(delta_ids(&delta[..41]).is_some(), "delta_ids reads a delta cut right after its base, a cut delta_scan refuses");
+    not_scanned("delta_scan of a delta with a byte after it", &[delta.as_slice(), &[0]].concat(), &Caps::default());
+    let mut other = delta.clone();
+    other[0] = Kind::Frame as u8;
+    not_scanned("delta_scan of a delta's bytes under a Frame's header", &other, &Caps::default());
+    other = delta.clone();
+    other[1] = 2;
+    not_scanned("delta_scan of a delta in version 2", &other, &Caps::default());
+    not_scanned("delta_scan of a Frame", &bytes, &Caps::default());
+}
+
+/// `message` refused by delta_scan.
+fn not_scanned(what: &str, message: &[u8], caps: &Caps) {
+    assert!(delta_scan(message, caps).is_none(), "{what}: scanned");
 }
 
 /// The kinds by direction and role, each answer its request's kind less 64.
@@ -1036,6 +1063,23 @@ fn delta_bounds() {
         "a short list on a base as long as delta_base"
     );
     not_rebuilt("a short list on a base a byte past delta_base", &to_tiny, &caps_with(&|c| c.delta_base = base.len() - 1), 1, &base);
+    let tiny_whole =
+        encoded(&Frame { seq: 2, state: State::default(), painted: true, list: vec![twidget_wire::Command::default()], damage: None });
+    assert!(to_tiny.len() > tiny_whole.len(), "the short list's one literal makes a delta longer than the Frame it stands for");
+    let own_size = caps_with(&|c| {
+        c.message = to_tiny.len();
+        c.frame = to_tiny.len();
+    });
+    assert!(
+        delta_scan(&to_tiny, &own_size).is_some_and(|(seq, length, _)| seq == 2 && length as usize == tiny.len()),
+        "delta_scan takes the short list's delta under message and frame caps of its own size"
+    );
+    let tiny_message_below = caps_with(&|c| c.message = to_tiny.len() - 1);
+    let tiny_frame_below = caps_with(&|c| c.frame = to_tiny.len() - 1);
+    not_scanned("delta_scan of a delta a byte past the message cap, its Frame within it", &to_tiny, &tiny_message_below);
+    not_scanned("delta_scan of a delta a byte past the frame cap, its Frame within it", &to_tiny, &tiny_frame_below);
+    assert!(FrameDelta::decode(&to_tiny, &tiny_message_below).is_none(), "the short list's FrameDelta a byte past the message cap");
+    assert!(FrameDelta::decode(&to_tiny, &tiny_frame_below).is_none(), "the short list's FrameDelta a byte past the frame cap");
     assert!(FrameDelta::decode(&bytes, &at).is_some(), "the FrameDelta decodes under the same delta_base");
     assert!(FrameDelta::decode(&bytes, &below).is_none(), "the FrameDelta under a delta_base a byte shorter");
     let mut kept = EARLIER_CPP.to_vec();
@@ -1099,6 +1143,24 @@ fn delta_bounds() {
         "decodes under the same cap"
     );
     assert!(FrameDelta::decode(&damaged_bytes, &damaged_below).is_none(), "refused a byte past it");
+    assert!(
+        [&frame_at, &message_at]
+            .iter()
+            .all(|caps| delta_scan(&bytes, caps).is_some_and(|(seq, length, _)| seq == 2 && length as usize == list.len())),
+        "delta_scan takes the delta under the same caps"
+    );
+    not_scanned("delta_scan of the delta whose Frame is a byte past the frame cap", &bytes, &frame_below);
+    not_scanned("delta_scan of the delta whose Frame is a byte past the message cap", &bytes, &message_below);
+    let mut rects_value = Vec::new();
+    assert!(wire::encode_damage(&damaged.damage, &wire::Caps::default(), &mut rects_value), "64 damage rects encode");
+    assert!(
+        delta_scan(&damaged_bytes, &damaged_at).is_some_and(|(seq, length, viewed)| seq == 2
+            && length as usize == list.len()
+            && viewed == rects_value.as_slice()
+            && viewed.as_ptr() as usize == damaged_bytes.as_ptr() as usize + damaged_bytes.len() - rects_value.len()),
+        "delta_scan takes a delta with a literal and 64 damage rects, making neither, and views the damage value where it lies"
+    );
+    not_scanned("delta_scan of the delta with damage whose Frame is a byte past the frame cap", &damaged_bytes, &damaged_below);
 
     let all = cpp_compact_list();
     let short_list = list_bytes(&all[..3].to_vec());

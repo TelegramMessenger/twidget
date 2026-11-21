@@ -1,7 +1,7 @@
 //! The Rust messages against the C++ ones (`oracle/remote_oracle`, built from core/src/remote.cpp and
 //! wire.cpp): every sample and its cuts, mutated samples, generated messages and pixel answers, under the
 //! default caps and under tight ones, decoded by both and encoded again by both; widths requests and answers, the texts
-//! one request holds, frames with their list placed and viewed, and frame deltas rebuilt. Skipped without
+//! one request holds, frames with their list placed and viewed, and frame deltas rebuilt and scanned. Skipped without
 //! `TWIDGET_ORACLE_DIR`; `tools/gate.py` sets it.
 
 mod common;
@@ -354,4 +354,196 @@ fn mixed_runs(random: &mut Lcg, base: &[u8], list: &[u8]) -> Vec<DeltaRun> {
         runs.push(DeltaRun { offset: 0, length: 0, literal: vec![1] });
     }
     runs
+}
+
+/// delta_scan as `FrameDelta::decode` sees the same message: whatever decode takes the scan takes, with the same seq and
+/// the length of its runs, and what the scan takes decode takes unless the damage it views does not decode, which is the
+/// caller's to check; whether it is such a delta, or what differs.
+fn scan_as_decode(message: &[u8], caps: &Caps) -> Result<bool, &'static str> {
+    let decoded = FrameDelta::decode(message, caps);
+    let Some((seq, length, damage)) = delta_scan(message, caps) else {
+        return if decoded.is_none() { Ok(false) } else { Err("decoded but not scanned") };
+    };
+    let damage_decodes = twidget_wire::decode_damage(damage, &caps.values).is_some();
+    let Some(delta) = decoded else {
+        return if damage_decodes { Err("scanned with a damage that decodes, but not decoded") } else { Ok(true) };
+    };
+    let runs: u64 = delta.runs.iter().map(|r| if r.literal.is_empty() { u64::from(r.length) } else { r.literal.len() as u64 }).sum();
+    if delta.seq == seq && runs == u64::from(length) && damage_decodes { Ok(false) } else { Err("scanned otherwise than decoded") }
+}
+
+/// delta_scan, the checks of a FrameDelta that make nothing: generated deltas between lists that share runs, with no,
+/// empty, small and large damage, each changed three times, one in ten cut at every byte, one in twenty with a byte after
+/// it, under a Frame's header and in version 2, under the default and tight caps, and one in twenty-five under message
+/// and frame caps around its own size and its Frame's; remote_tests' cases. Every answer also against
+/// `FrameDelta::decode` (`scan_as_decode`).
+#[test]
+fn frame_delta_scans_alike() {
+    let Some(oracle) = Oracle::find("remote_oracle") else { return };
+    let mut random = Lcg::new(0x7e35_0002);
+    let mut palette = cpp_compact_list();
+    palette.extend(compact_list());
+    let mut c = Comparison::new();
+    let mut damage_left = 0usize;
+    let mut unlike_decode = Vec::new();
+    let mut scan = |c: &mut Comparison, caps: &Caps, message: &[u8], what: String| {
+        match scan_as_decode(message, caps) {
+            Ok(left) => damage_left += usize::from(left),
+            Err(why) => unlike_decode.push(format!("{what}: {why}")),
+        }
+        c.case(&framed(b's', message), answer_scanned(message, caps), what);
+    };
+    let caps_with = |set: &dyn Fn(&mut Caps)| {
+        let mut caps = Caps::default();
+        set(&mut caps);
+        caps
+    };
+    for (k, caps) in freeze_caps().iter().enumerate() {
+        c.setting(&caps_record(caps));
+        let mut previous = cpp_compact_list();
+        for i in 0..1200 {
+            let list = drawn_list(&mut random, &palette);
+            let damage = match random.below(4) {
+                0 => None,
+                1 => Some(Vec::new()),
+                2 => Some(vec![Rect::new(1.0, 2.0, 3.0, 4.0); 1 + random.below(3)]),
+                _ => Some(vec![Rect::new(random.below(50) as f32, 0.5, 8.0, 2.0); 1 + random.below(80)]),
+            };
+            let (base, now) = (list_bytes(&previous), list_bytes(&list));
+            let runs = if random.chance(3) { ends_alike(&base, &now) } else { mixed_runs(&mut random, &base, &now) };
+            let seq = if random.chance(8) { u64::MAX - random.below(3) as u64 } else { i as u64 + 2 };
+            let delta = FrameDelta { seq, state: any_state_for(&mut random), base: i as u64 + 1, runs, damage };
+            previous = list;
+            let mut message = Vec::new();
+            if !delta.encode(&Caps::default(), &mut message) {
+                continue;
+            }
+            scan(&mut c, caps, &message, format!("delta {i}, caps {k}"));
+            for round in 0..3 {
+                let mut changed = message.clone();
+                let edits = mutate(&mut random, &mut changed);
+                scan(&mut c, caps, &changed, format!("delta {i} changed ({round}), caps {k}:{edits}"));
+            }
+            if i % 10 == 0 {
+                for n in 0..message.len() {
+                    scan(&mut c, caps, &message[..n], format!("delta {i} cut to {n}, caps {k}"));
+                }
+            }
+            if i % 20 == 0 {
+                scan(&mut c, caps, &[message.as_slice(), &[0]].concat(), format!("delta {i} with a byte after it, caps {k}"));
+                let mut other = message.clone();
+                other[0] = Kind::Frame as u8;
+                scan(&mut c, caps, &other, format!("delta {i} under a Frame's header, caps {k}"));
+                other = message.clone();
+                other[1] = 2;
+                scan(&mut c, caps, &other, format!("delta {i} in version 2, caps {k}"));
+            }
+            if k == 0 && i % 25 == 0 {
+                let Some((frame, _)) = rebuild(&message, &Caps::default(), i as u64 + 1, &base) else { continue };
+                let whole = encoded(&frame).len();
+                for n in [message.len() - 1, message.len(), message.len() + 1, whole - 1, whole, whole + 1] {
+                    for (which, at) in [
+                        ("message", caps_with(&|c| c.message = n)),
+                        ("frame", caps_with(&|c| c.frame = n)),
+                        (
+                            "message and frame",
+                            caps_with(&|c| {
+                                c.message = n;
+                                c.frame = n;
+                            }),
+                        ),
+                    ] {
+                        c.setting(&caps_record(&at));
+                        scan(
+                            &mut c,
+                            &at,
+                            &message,
+                            format!("delta {i} under a {which} cap of {n} ({} bytes, its Frame {whole})", message.len()),
+                        );
+                    }
+                }
+                c.setting(&caps_record(caps));
+            }
+        }
+    }
+
+    // remote_tests' cases: the documented delta, its cuts and changes, and delta_bounds' deltas at each cap and a byte past it.
+    let defaults = Caps::default();
+    c.setting(&caps_record(&defaults));
+    let delta = encoded(&FrameDelta {
+        seq: u64::MAX,
+        state: special_state(),
+        base: 0x0102030405060708,
+        runs: vec![DeltaRun { offset: 0, length: 0, literal: b"x".to_vec() }],
+        damage: None,
+    });
+    for n in 0..=delta.len() {
+        scan(&mut c, &defaults, &delta[..n], format!("the documented delta cut to {n}"));
+    }
+    scan(&mut c, &defaults, &[delta.as_slice(), &[0]].concat(), "the documented delta with a byte after it".into());
+    let mut other = delta.clone();
+    other[0] = Kind::Frame as u8;
+    scan(&mut c, &defaults, &other, "the documented delta under a Frame's header".into());
+    other = delta.clone();
+    other[1] = 2;
+    scan(&mut c, &defaults, &other, "the documented delta in version 2".into());
+    let painted = encoded(&Frame { seq: 5, state: ordinary_state(), painted: true, list: compact_list(), damage: None });
+    scan(&mut c, &defaults, &painted, "a Frame".into());
+    let (base, list) = (list_bytes(&cpp_compact_list()), list_bytes(&moved_list()));
+    let bytes = encoded(&FrameDelta { seq: 2, state: State::default(), base: 1, runs: ends_alike(&base, &list), damage: None });
+    let whole = encoded(&Frame { seq: 2, state: State::default(), painted: true, list: moved_list(), damage: None });
+    let tiny = list_bytes(&vec![twidget_wire::Command::default()]);
+    let to_tiny = encoded(&FrameDelta {
+        seq: 2,
+        state: State::default(),
+        base: 1,
+        runs: vec![DeltaRun { offset: 0, length: 0, literal: tiny }],
+        damage: None,
+    });
+    let rects = Some(vec![Rect::new(1.0, 2.0, 3.0, 4.0); 64]);
+    let damaged = encoded(&FrameDelta { seq: 2, state: State::default(), base: 1, runs: ends_alike(&base, &list), damage: rects.clone() });
+    let damaged_whole = encoded(&Frame { seq: 2, state: State::default(), painted: true, list: moved_list(), damage: rects });
+    let longest = base.len().max(list.len());
+    let message_whole = whole.len().max(bytes.len());
+    let cases: [(&str, &[u8], Caps); 15] = [
+        (
+            "the short list's delta under caps of its own size",
+            &to_tiny,
+            caps_with(&|c| {
+                c.message = to_tiny.len();
+                c.frame = to_tiny.len();
+            }),
+        ),
+        ("the short list's delta a byte past the message cap", &to_tiny, caps_with(&|c| c.message = to_tiny.len() - 1)),
+        ("the short list's delta a byte past the frame cap", &to_tiny, caps_with(&|c| c.frame = to_tiny.len() - 1)),
+        ("the delta under a delta_base as long as its list or base", &bytes, caps_with(&|c| c.delta_base = longest)),
+        ("the delta under a delta_base a byte shorter", &bytes, caps_with(&|c| c.delta_base = longest - 1)),
+        ("the delta under a delta_base of 0", &bytes, caps_with(&|c| c.delta_base = 0)),
+        ("the delta whose Frame is as long as the frame cap", &bytes, caps_with(&|c| c.frame = whole.len())),
+        ("the delta whose Frame is a byte past the frame cap", &bytes, caps_with(&|c| c.frame = whole.len() - 1)),
+        ("the delta whose Frame is as long as the message cap", &bytes, caps_with(&|c| c.message = message_whole)),
+        ("the delta whose Frame is a byte past the message cap", &bytes, caps_with(&|c| c.message = message_whole - 1)),
+        ("the delta itself a byte past the frame cap", &bytes, caps_with(&|c| c.frame = bytes.len() - 1)),
+        ("the delta with damage whose Frame is as long as the frame cap", &damaged, caps_with(&|c| c.frame = damaged_whole.len())),
+        ("the delta with damage whose Frame is a byte past the frame cap", &damaged, caps_with(&|c| c.frame = damaged_whole.len() - 1)),
+        ("the delta with damage under a damage cap of 63 rects", &damaged, caps_with(&|c| c.values.rects = 63)),
+        ("the delta with damage under the default caps", &damaged, Caps::default()),
+    ];
+    for (what, message, caps) in &cases {
+        c.setting(&caps_record(caps));
+        scan(&mut c, caps, message, (*what).into());
+    }
+    let cases = c.len();
+    let tally = c.check(&oracle);
+    assert!(
+        unlike_decode.is_empty(),
+        "{} scans unlike decode, the first:\n{}",
+        unlike_decode.len(),
+        unlike_decode.iter().take(10).cloned().collect::<Vec<_>>().join("\n")
+    );
+    eprintln!(
+        "frame delta scans: {cases} cases, {} refused, {} taken, {damage_left} of them with a damage decode refuses",
+        tally[0], tally[1]
+    );
+    assert!(tally[0] > 0 && tally[1] > 0 && damage_left > 0);
 }

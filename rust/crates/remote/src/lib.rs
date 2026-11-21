@@ -1165,6 +1165,20 @@ pub fn delta_ids(message: &[u8]) -> Option<(u64, u64)> {
     Some((seq, base))
 }
 
+/// A FrameDelta past every check `FrameDelta::decode(message, caps)` makes before it makes anything, making nothing:
+/// its seq, the length of the list it stands for and its damage value's bytes, viewed where they lie in `message`,
+/// which are the caller's to check as a damage.
+pub fn delta_scan<'a>(message: &'a [u8], caps: &Caps) -> Option<(u64, u32, &'a [u8])> {
+    if message.len() > caps.message || message.len() > caps.frame {
+        return None;
+    }
+    let mut r = Reader { rest: message };
+    r.head(Kind::FrameDelta)?;
+    let h = read_delta_head(&mut r, caps)?;
+    let damage = scan_delta(&mut r, caps, &h, caps.delta_base)?;
+    Some((h.seq, h.length, damage))
+}
+
 /// The painted Frame a FrameDelta stands for, rebuilt on `base`, the list of painted Frame `base_seq`, with the
 /// rebuilt list's bytes.
 pub fn rebuild(message: &[u8], caps: &Caps, base_seq: u64, base: &[u8]) -> Option<(Frame, Vec<u8>)> {

@@ -169,6 +169,17 @@ pub fn answer_ids(message: &[u8]) -> (u8, Vec<u8>) {
     (1, out)
 }
 
+/// What the oracle answers for 's': the seq, the list's length and the damage view's offset and length.
+pub fn answer_scanned(message: &[u8], caps: &Caps) -> (u8, Vec<u8>) {
+    let Some((seq, length, damage)) = delta_scan(message, caps) else { return (0, Vec::new()) };
+    let mut out = Vec::new();
+    out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(&length.to_le_bytes());
+    out.extend_from_slice(&((damage.as_ptr() as usize - message.as_ptr() as usize) as u64).to_le_bytes());
+    out.extend_from_slice(&(damage.len() as u64).to_le_bytes());
+    (1, out)
+}
+
 pub fn rebuilt_record(base_seq: u64, base: &[u8], message: &[u8]) -> Vec<u8> {
     let mut out = vec![b'r'];
     out.extend_from_slice(&base_seq.to_le_bytes());

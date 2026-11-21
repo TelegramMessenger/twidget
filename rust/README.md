@@ -7,7 +7,7 @@ every stage. `PLAN.md` has the goal, the rules, the stages and where they stand.
 |---|---|
 | `crates/wire` | `twidget_wire`: the paint values and their binary forms, a list's command starts for frame deltas (`core/src/wire.cpp`) |
 | `crates/paint` | `twidget_paint`: heavy boxes, the paint limit and its ledger (`core/src/paint_policy`) |
-| `crates/remote` | `twidget_remote`: the messages between the renderer end and the platform end at version 1 as frozen at twidget f0a070d: 28 kinds, widths requests and their answers, painted frames placed and viewed, frame deltas and their rebuild on the last painted list (`core/src/remote.cpp`) |
+| `crates/remote` | `twidget_remote`: the messages between the renderer end and the platform end at version 1 as frozen at twidget f0a070d, with 7cfa295's `delta_scan`: 28 kinds, widths requests and their answers, painted frames placed and viewed, frame deltas, their checks alone and their rebuild on the last painted list (`core/src/remote.cpp`) |
 
 | `crates/computed_style` | `twidget_computed_style`: the `cs` query's strings, getComputedStyle as Chromium writes it, from what the fork computed for an element (`core/src/computed_style.cpp`), made from the Rust litehtml's cascade and render tree but for the layout boxes |
 | `crates/css` | `twidget_css`: TwidgetCore's small CSS helpers (`core/src/css.cpp`) |

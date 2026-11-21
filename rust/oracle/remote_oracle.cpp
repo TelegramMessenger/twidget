@@ -124,6 +124,24 @@ void ids(std::string_view message) {
     answer(1, out);
 }
 
+// 's': a message's delta_scan under the caps, answering u64 seq, u32 length and the damage view's u64 offset in the message and u64 length; a refusal answers "moved" when it changed an output.
+void scanned(std::string_view message, const remote::Caps& caps) {
+    const std::string_view kept = "kept";
+    uint64_t seq = 7;
+    uint32_t length = UINT32_MAX;
+    std::string_view damage = kept;
+    if (!remote::delta_scan(message, caps, seq, length, damage)) {
+        const bool alone = seq == 7 && length == UINT32_MAX && damage.data() == kept.data() && damage.size() == kept.size();
+        return answer(0, alone ? std::string() : std::string("moved"));
+    }
+    std::string out;
+    put_u64(out, seq);
+    put_u32(out, length);
+    put_u64(out, uint64_t(damage.data() - message.data()));
+    put_u64(out, damage.size());
+    answer(1, out);
+}
+
 // 'r': a u64 base seq and a u32 length and the base before the length; the FrameDelta rebuilt on it, answering u64 seq, the state's fields, the painted flag, the damage's wire bytes after a u32 length and the list's bytes.
 void rebuilt(std::string_view message, const remote::Caps& caps, uint64_t base_seq, std::string_view base) {
     remote::Frame frame;
@@ -260,6 +278,8 @@ int main() {
             viewed(bytes, caps);
         } else if (op == 'i') {
             ids(bytes);
+        } else if (op == 's') {
+            scanned(bytes, caps);
         } else if (op == 'r') {
             rebuilt(bytes, caps, base_seq, base);
         } else if (op == 'k') {
