@@ -3,7 +3,6 @@
 //! through the transforms around it, the padding box and what of a box its clipping ancestors let show, offsetLeft and
 //! offsetTop with the offsetParent, how far content reaches for scrollWidth and scrollHeight, and an outline's bounds.
 
-use twidget_litehtml::Px;
 use twidget_litehtml::css_effects::{TransformMatrix, VectorPath};
 use twidget_litehtml::css_values::*;
 use twidget_litehtml::document::{Document, StyleCx};
@@ -285,9 +284,4 @@ pub fn pointer_events(doc: &Document, cx: &StyleCx, el: ElementId) -> Vec<u8> {
         cur = doc.parent(e);
     }
     b"auto".to_vec()
-}
-
-/// A box's corner `p` as a position.
-pub fn position_of(r: &Rect) -> Position {
-    Position { x: Px(r.x), y: Px(r.y), width: Px(r.w), height: Px(r.h) }
 }

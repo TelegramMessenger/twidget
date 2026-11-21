@@ -445,7 +445,7 @@ impl Take<'_> {
                     let (width, height) = (self.f32()?, self.f32()?);
                     Some(TextContent { width, height, pad: self.four()? })
                 } else {
-                    self.bytes(24)?;
+                    // renderer_probe.h writes the sizes only when the textarea lays out inline content.
                     None
                 };
                 Entry::Textarea { id, content }

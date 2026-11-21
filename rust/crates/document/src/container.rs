@@ -594,9 +594,6 @@ impl<K: Backend> Container<K> {
     pub fn set_tracing(&self, on: bool) {
         self.tracing.set(on);
     }
-    pub fn no_effects(&self) -> bool {
-        self.no_effects.get()
-    }
 
     /// `fonts_.size()`.
     pub fn font_count(&self) -> usize {

@@ -495,3 +495,151 @@ fn generated_widgets() {
     let scripts: Vec<(Script, String)> = (0..600).map(|i| (container_script(&mut r), format!("container widget {i}"))).collect();
     compare_engines(&oracle, &scripts, "generated widgets");
 }
+
+// ---- What the sets above leave: written to reach the container's rarer branches -------------------------------
+
+const REACH_SHEET: &str = "@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}} \
+@keyframes glow{from{background-color:#000}to{background-color:#fff}} \
+@keyframes shimmer{from{background-position:-100% 0}to{background-position:200% 0}} \
+.s{animation:spin 1s linear infinite} .gl{animation:glow 1s infinite} \
+.sk{background-color:#ddd;background-image:linear-gradient(90deg,#ddd,#fff,#ddd);background-size:50% 100%;background-repeat:no-repeat;animation:shimmer 1s linear infinite}";
+
+/// Layers over clip paths, fixed boxes, groups and cached SVGs (the paint trace walks through them), a layer with a
+/// negative z-index child, glowing backgrounds on controls and over backdrops, shimmers that cannot be tiles, hits on
+/// a clip path.
+fn layered_reach() -> Script {
+    let mut html = format!("<style>{REACH_SHEET}</style>");
+    html.push_str("<div class=\"s\" style=\"width:40px;height:40px;background:red;position:relative\"><div style=\"position:absolute;z-index:-1;width:20px;height:20px;background:blue\"></div><div style=\"position:relative;z-index:2\">z</div></div>");
+    html.push_str("<div style=\"clip-path:circle(40%);width:60px;height:60px;background:green\">clipped</div>");
+    html.push_str("<div style=\"overflow:hidden;height:30px\"><div style=\"position:fixed;top:0;left:200px;width:20px;height:20px;background:#00f\"><div style=\"overflow:hidden;width:10px\">in</div></div></div>");
+    html.push_str("<div style=\"opacity:.5;transform:rotate(3deg);background:conic-gradient(red,blue)\">group</div>");
+    html.push_str("<svg width=\"40\" height=\"40\"><g><rect width=\"4\" height=\"4\"/><rect x=\"5\" width=\"4\" height=\"4\"/><rect x=\"10\" width=\"4\" height=\"4\"/><rect x=\"15\" width=\"4\" height=\"4\"/><rect y=\"5\" width=\"4\" height=\"4\"/><rect y=\"10\" width=\"4\" height=\"4\"/><rect y=\"15\" width=\"4\" height=\"4\"/><circle cx=\"30\" cy=\"30\" r=\"5\"/></g></svg>");
+    html.push_str("<button class=\"gl\"><span class=\"s\" style=\"display:inline-block\">x</span></button>");
+    html.push_str(
+        "<div class=\"gl\"><div style=\"backdrop-filter:blur(1px)\">b</div><div class=\"s\" style=\"width:9px;height:9px\"></div></div>",
+    );
+    html.push_str(
+        "<div class=\"gl\"><div style=\"background-color:inherit\">i</div><div class=\"s\" style=\"width:9px;height:9px\"></div></div>",
+    );
+    html.push_str(
+        "<div class=\"gl\" style=\"border:2px dashed red\"><div class=\"s\" style=\"width:9px;height:9px;border:1px solid\"></div></div>",
+    );
+    html.push_str("<svg width=\"0\" height=\"10\"><g><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/><rect width=\"1\" height=\"1\"/></g></svg>");
+    html.push_str("<span style=\"letter-spacing:-8px;text-decoration:underline\">x</span><div id=\"grow\" style=\"height:5px\"></div>");
+    for look in [
+        "background-repeat:repeat",
+        "background-origin:content-box",
+        "background-attachment:fixed",
+        "background-size:0 0",
+        "background-image:url(data:image/png;base64,QUJD)",
+    ] {
+        html.push_str(&format!("<div class=\"sk\" style=\"width:100px;height:10px;{look}\"></div>"));
+    }
+    html.push_str("<div style=\"opacity:.9\"><div class=\"sk\" style=\"width:100px;height:10px\"></div></div>");
+    html.push_str("<div style=\"position:fixed;bottom:0\"><div class=\"sk\" style=\"width:100px;height:10px\"></div></div>");
+    let (ops, last) = html_to_ops(html.as_bytes(), 4);
+    let mut s = Script::new(last as u32);
+    s.after(0.0, Step::Compositing(true));
+    s.after(0.0, Step::Ops(document(&ops).into_bytes()));
+    for _ in 0..3 {
+        s.after(16.0, Step::Tick);
+        s.after(0.0, Step::Paint);
+    }
+    for k in 0..12 {
+        let (x, y) = (8.0 + f64::from(k % 4) * 15.0, 50.0 + f64::from(k / 4) * 15.0);
+        s.after(16.0, Step::Hover { action: 1, x, y, modifiers: 0 });
+        s.after(0.0, Step::Touch { action: 0, x, y, pointer: 1, primary: true, mouse: true, modifiers: 0, button: 0 });
+        s.after(0.0, Step::Touch { action: 2, x, y, pointer: 1, primary: true, mouse: true, modifiers: 0, button: 0 });
+        if k % 3 == 0 {
+            // A layout between paints: the trace is taken again over cached SVG paints.
+            s.after(0.0, batch(&[style_op(last, "height", &format!("{}px", 5 + k))]));
+        }
+        s.after(0.0, Step::Tick);
+        s.after(0.0, Step::Paint);
+    }
+    s
+}
+
+/// More SVG paints than the container keeps: the oldest go.
+fn svg_cache_bound() -> Script {
+    let mut html = String::new();
+    for i in 0..140 {
+        html.push_str(&format!("<svg width=\"12\" height=\"12\"><g fill=\"#{:06x}\">", i * 997 % 0xffffff));
+        for k in 0..8 {
+            html.push_str(&format!("<rect x=\"{k}\" y=\"{}\" width=\"1\" height=\"1\"/>", i % 10));
+        }
+        html.push_str("</g></svg>");
+    }
+    let (mut s, _) = widget(&html, 320.0, 1.0, 0);
+    s.after(16.0, Step::Paint);
+    s.after(16.0, Step::Width(300.0));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+/// One face whose 256-byte words hold the whole width pool: another face measures uncached.
+fn width_pool_one_face() -> Script {
+    // 4095 words and the space: the face's 4096 entries hold 1,048,321 of the 1,048,576 bytes.
+    let mut html = String::from("<p style=\"font-size:12px\">");
+    for i in 0..4095 {
+        html.push_str(&format!("{i:06}{} ", "q".repeat(250)));
+    }
+    html.push_str("</p><p style=\"font-size:15px\">");
+    for i in 0..3 {
+        html.push_str(&format!("{i:06}{} ", "r".repeat(250)));
+    }
+    html.push_str("</p>");
+    let (mut s, _) = widget(&html, 320.0, 1.0, 1);
+    s.after(16.0, Step::Width(310.0));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+/// Sources and units the sets above leave out, focus on controls hidden, right-aligned and clipped twice, a
+/// textarea that is no inline context, percentage heights on the root and the body, pseudo-elements' computed
+/// styles, offsets inside a fixed box.
+fn odds_and_ends() -> Script {
+    let html = r#"<style>html{height:100%} body{min-height:50%} p::before{content:"b";padding:2px} p::after{content:"a"}</style>
+<img src="data:image/png;base64"><img src="tw-canvas: +5/10x10"><img src="tw-canvas:5-10x10"><img src="tw-canvas:5/10y10"><img src="tw-canvas:-1/2x3">
+<div style="width:2in;height:12pt;margin:1pc 1cm 3mm;font-size:10pt">units</div>
+<input id="a" style="visibility:hidden"><input id="b" style="text-align:right" value="right">
+<div style="overflow:hidden;width:50px;height:30px;border-radius:15px"><div style="overflow:hidden;width:100px;height:60px"><input id="c" value="deep"></div></div>
+<textarea style="display:flex">flex text</textarea><p>with pseudo</p>
+<div style="position:fixed;top:10px"><div style="position:relative;left:3px"><span>in fixed</span></div></div>"#;
+    let (mut s, max_id) = widget(html, 320.0, 1.0, 0);
+    for id in 5..=max_id as i64 {
+        // A script's focus takes the keyboard only just after the user's input.
+        s.after(1500.0, Step::Touch { action: 0, x: 1.0, y: 1.0, pointer: 1, primary: true, mouse: true, modifiers: 0, button: 0 });
+        s.after(0.0, Step::Touch { action: 2, x: 1.0, y: 1.0, pointer: 1, primary: true, mouse: true, modifiers: 0, button: 0 });
+        s.after(10.0, batch(&[format!("{{\"op\":\"call\",\"id\":{id},\"method\":\"focus\",\"args\":[]}}")]));
+        query(&mut s, &format!("{{\"q\":\"box\",\"id\":{id}}}"));
+        query(&mut s, &format!("{{\"q\":\"cs\",\"id\":{id},\"pseudo\":\"::before\"}}"));
+        query(&mut s, &format!("{{\"q\":\"cs\",\"id\":{id},\"pseudo\":\":after\"}}"));
+    }
+    s.after(16.0, Step::MaxHeight(1000.0));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+/// Percentage heights on the root or the body: a new viewport height lays the document out again.
+fn percent_heights(css: &str) -> Script {
+    let html = format!("<style>{css}</style><div style=\"height:700px\">tall</div><div style=\"height:10%\">tenth</div>");
+    let (mut s, _) = widget(&html, 320.0, 1.0, 0);
+    s.after(16.0, Step::MaxHeight(1200.0));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+#[test]
+fn written_reach() {
+    let Some(oracle) = oracle() else { return };
+    let scripts = vec![
+        (percent_heights("html{height:100%}"), "the root's percentage height".to_string()),
+        (percent_heights("body{min-height:100%}"), "the body's percentage min-height".to_string()),
+        (layered_reach(), "layers over the paint trace's corners".to_string()),
+        (svg_cache_bound(), "the SVG paints' bound".to_string()),
+        (width_pool_one_face(), "one face holding the width pool".to_string()),
+        (odds_and_ends(), "odds and ends".to_string()),
+    ];
+    compare_engines(&oracle, &scripts, "written reach");
+}
