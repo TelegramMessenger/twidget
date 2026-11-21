@@ -122,5 +122,15 @@ panic's message, then an abnormal exit, and `tw_helper_serve` never returns).
   on the same Nova) and serves every session of the glue comparison through `tw_helper_serve` beside tdesktop's
   `WidgetHelper::Serve`, frame for frame (`tests/oracle.rs`); mutated streams through both; the contract stretched and
   broken. The counts are in rust/PLAN.md's H2 row.
-- Imports: the static library linked into a helper-like executable for `x86_64-win7-windows-msvc` and
-  `i686-win7-windows-msvc` (H3's check, done for H2 by hand; the row has the tables).
+- Imports (H3's check, done by hand for H2): the static library built as tdesktop builds its Rust (release,
+  `-Z build-std=std,panic_abort`, `+crt-static`, `-C control-flow-guard`) for `x86_64-win7-windows-msvc` and
+  `i686-win7-windows-msvc`, linked into a program linked as TelegramWidgetHelper is (a GUI image entered at
+  `mainCRTStartup`, the static CRT, `/GUARD:CF`, `/CETCOMPAT`, bcrypt and bcryptprimitives delay-loaded) whose `main`
+  serves an empty stream: both import `KERNEL32.dll` (90 functions on x64, 94 on x86), `ADVAPI32.dll`
+  (`SystemFunction036`) and `ntdll.dll` (`NtWriteFile`, `RtlNtStatusToDosError`), all KnownDLLs or ntdll, and nothing
+  else: no USERENV, WS2_32, DBGHELP or BCRYPT, so no delay-load is needed for the library. Both programs run.
+- Randomness outside the platform table: `SystemFunction036` (RtlGenRandom) is Rust std's own, the keys of every
+  `std::collections::HashMap` (the renderer, the document, the glue use them), drawn once per thread that makes one. The
+  widget's randomness is the platform's `random`; these keys are not, and reach the OS after the lockdown (each new JS
+  or glue thread): RtlGenRandom on Windows (its cryptbase.dll must be bound before an LPAC lockdown, as the C++
+  helper's WarmUp binds bcrypt), `getrandom` on Linux (the seccomp filter must allow it), `getentropy` on macOS.
