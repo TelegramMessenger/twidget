@@ -15,7 +15,6 @@ twidget_animations = { path = "../animations" }
 twidget_canvas = { path = "../canvas" }
 twidget_computed_style = { path = "../computed_style" }
 twidget_css = { path = "../css" }
-twidget_cstd = { path = "../cstd" }
 twidget_ends = { path = "../ends" }
 twidget_events = { path = "../events" }
 twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
@@ -24,8 +23,5 @@ twidget_renderer = { path = "../renderer" }
 twidget_wire = { path = "../wire" }
 
 [dev-dependencies]
-twidget_compositor = { path = "../compositor" }
-twidget_encode = { path = "../encode" }
-twidget_gesture = { path = "../../../../widget-sandbox/packages/rust/crates/gesture" }
 twidget_shadow = { path = "../shadow" }
 twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }
