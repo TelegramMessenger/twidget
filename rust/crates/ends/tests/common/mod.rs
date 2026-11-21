@@ -135,7 +135,7 @@ pub struct LogBackend {
     pub images_load: bool,
     pub reads: Read,
     /// The Backend that answers in its place, every call logged with what it gave (log_backend.h's `answers`).
-    pub answers: Option<Box<dyn Backend>>,
+    pub answers: Option<Box<dyn Backend + Send>>,
     pub calls: Vec<Call>,
     next_font: i32,
     sizes: BTreeMap<i32, f32>,

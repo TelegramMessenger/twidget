@@ -2,10 +2,8 @@
 //! clock reads, every step compared member by member with what the recorded renderer gave; the C++'s renderer end
 //! constructs TwidgetCore, this one the Rust renderer on `twidget_document`.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use twidget_document::{DocumentEngine, Process};
@@ -27,14 +25,14 @@ const OP_NAMES: [&str; 8] =
 /// past them, gets zeros and is named.
 #[derive(Debug, Default)]
 struct Answers {
-    calls: Rc<Vec<Call>>,
+    calls: Arc<Vec<Call>>,
     next: usize,
     taken: usize,
     mismatch: String,
 }
 
 impl Answers {
-    fn start(&mut self, calls: Rc<Vec<Call>>) {
+    fn start(&mut self, calls: Arc<Vec<Call>>) {
         self.calls = calls;
         self.next = 0;
         self.taken = 0;
@@ -80,24 +78,24 @@ impl Answers {
 }
 
 /// The platform end's answers, shared with the replay that starts each step.
-struct AnswersHandle(Rc<RefCell<Answers>>);
+struct AnswersHandle(Arc<Mutex<Answers>>);
 
 impl twidget_ends::Backend for AnswersHandle {
     fn create_font(&mut self, _: &[u8], _: f32, _: i32, _: bool, _: &[u8], out: &mut FontMetrics) -> i32 {
-        self.0.borrow_mut().font(Op::Font, out)
+        self.0.lock().unwrap().font(Op::Font, out)
     }
     fn create_canvas_font(&mut self, _: &[u8], _: f32, _: i32, _: bool, out: &mut FontMetrics) -> i32 {
-        self.0.borrow_mut().font(Op::CanvasFont, out)
+        self.0.lock().unwrap().font(Op::CanvasFont, out)
     }
     fn delete_font(&mut self, _: i32) {
-        self.0.borrow_mut().take(Op::DeleteFont);
+        self.0.lock().unwrap().take(Op::DeleteFont);
     }
     fn text_width(&mut self, _: i32, _: &[u8]) -> f32 {
-        let mut a = self.0.borrow_mut();
+        let mut a = self.0.lock().unwrap();
         a.take(Op::TextWidth).map_or(0.0, |i| a.calls[i].width)
     }
     fn load_image(&mut self, _: i32, _: &[u8], w: &mut f32, h: &mut f32) -> bool {
-        let mut a = self.0.borrow_mut();
+        let mut a = self.0.lock().unwrap();
         let Some(i) = a.take(Op::Image) else { return false };
         let c = &a.calls[i];
         *w = c.image_w;
@@ -105,17 +103,17 @@ impl twidget_ends::Backend for AnswersHandle {
         c.ok
     }
     fn canvas_run(&mut self, _: i32, _: i32, _: i32, _: &[twidget_wire::CanvasOp]) {
-        self.0.borrow_mut().take(Op::CanvasRun);
+        self.0.lock().unwrap().take(Op::CanvasRun);
     }
     fn canvas_read(&mut self, _: i32, _: i32, _: i32, _: i32, _: i32, rgba: &mut Vec<u8>) -> bool {
-        let mut a = self.0.borrow_mut();
+        let mut a = self.0.lock().unwrap();
         let Some(i) = a.take(Op::CanvasRead) else { return false };
         let c = &a.calls[i];
         rgba.clone_from(&c.rgba);
         c.ok
     }
     fn canvas_release(&mut self, _: i32) {
-        self.0.borrow_mut().take(Op::CanvasRelease);
+        self.0.lock().unwrap().take(Op::CanvasRelease);
     }
 }
 
@@ -230,7 +228,7 @@ impl twidget_ends::Renderer for Replayed {
 /// One recorded renderer replayed: its answers and clock, then the two ends over the in-memory channel, and what the
 /// host was last told.
 struct Session {
-    answers: Rc<RefCell<Answers>>,
+    answers: Arc<Mutex<Answers>>,
     clock: Arc<Mutex<ReplayClock>>,
     lp: Loopback<Replayed>,
     label: Vec<u8>,
@@ -245,9 +243,9 @@ struct Session {
 
 impl Session {
     fn new(caps: Caps) -> Session {
-        let answers = Rc::new(RefCell::new(Answers::default()));
+        let answers = Arc::new(Mutex::new(Answers::default()));
         let lp = Loopback::<Replayed>::made(caps);
-        lp.backend.0.borrow_mut().answers = Some(Box::new(AnswersHandle(Rc::clone(&answers))));
+        lp.backend.0.borrow_mut().answers = Some(Box::new(AnswersHandle(Arc::clone(&answers))));
         Session {
             answers,
             clock: Arc::new(Mutex::new(ReplayClock::default())),
@@ -1092,10 +1090,10 @@ impl Replay {
             let why = format!("{} holds a message that does not read back as it was recorded", self.at(step));
             return Some(self.refuse(why));
         };
-        let calls = Rc::new(std::mem::take(&mut step.calls));
+        let calls = Arc::new(std::mem::take(&mut step.calls));
         let process = Arc::clone(&self.process);
         let session = &mut self.live.get_mut(&step.session).expect("a live session").0;
-        session.answers.borrow_mut().start(Rc::clone(&calls));
+        session.answers.lock().unwrap().start(Arc::clone(&calls));
         session.clock.lock().unwrap().start(&step.clock);
         let n = &step.numbers;
         let lp = &mut session.lp;
@@ -1193,7 +1191,7 @@ impl Replay {
         if let Err(why) = same_calls(&calls, &session.lp.backend.0.borrow().calls) {
             f.0.push(format!("the Backend calls are the direct renderer's, in order {why}"));
         }
-        let answers = session.answers.borrow();
+        let answers = session.answers.lock().unwrap();
         if !answers.mismatch.is_empty() {
             f.0.push(answers.mismatch.clone());
         }
@@ -1212,7 +1210,7 @@ impl Replay {
         }
         drop(clock);
         let failures = f.0;
-        step.calls = Rc::try_unwrap(calls).unwrap_or_else(|shared| (*shared).clone());
+        step.calls = Arc::try_unwrap(calls).unwrap_or_else(|shared| (*shared).clone());
         if !leaf.is_empty() {
             let name = self.o.perturb.name();
             if failures.len() == 1 && failures[0].starts_with(&leaf) {
