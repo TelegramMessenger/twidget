@@ -318,6 +318,8 @@ pub struct Document {
     pub render: crate::render_item::RenderTree,
     /// Slots of `elements` the render tree's anonymous elements left, to be used again by the next ones.
     pub free_elements: Vec<ElementId>,
+    /// The anonymous elements made with an anonymous parent, by the parent: when it ends they have none.
+    pub anon_children: BTreeMap<ElementId, Vec<ElementId>>,
     /// What layout keeps of the document.
     pub layout: crate::layout::DocLayout,
     /// What painting keeps of the document, and what the renderer sets for a paint (stage L13).

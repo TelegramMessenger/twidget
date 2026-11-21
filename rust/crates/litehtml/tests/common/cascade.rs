@@ -28,7 +28,7 @@ use twidget_litehtml::css_effects::{BoxShadow, FilterFunction, GridTrackList};
 use twidget_litehtml::css_properties::{CssBorder, CssMargins, CssProperties};
 use twidget_litehtml::cxx;
 use twidget_litehtml::document::{Document, StyleCx, Switches};
-use twidget_litehtml::element::{ElementKind, ElementState, FormLook};
+use twidget_litehtml::element::{ElementId, ElementKind, ElementState, FormLook};
 use twidget_litehtml::font_description::FontDescription;
 use twidget_litehtml::types::{Position, RenderType, Size};
 use twidget_litehtml::web_color::WebColor;
@@ -82,6 +82,10 @@ pub struct CascadeContainer {
     breakers: RefCell<Vec<(Vec<u8>, f32)>>,
     /// What the paint calls answer (stage L13).
     pub paint: PaintLog,
+    /// Stage L16: the pointer's calls log their elements in this numbering (-1 none, -2 out of it), and the elements
+    /// that take a click (a button or a label, as lhdump's `on_element_click` asks the tag).
+    pub hit_elements: RefCell<BTreeMap<ElementId, i32>>,
+    pub hit_takers: RefCell<std::collections::BTreeSet<ElementId>>,
 }
 
 /// The code points of a text as byte ranges (a lead byte and its continuation bytes).
@@ -112,6 +116,15 @@ impl CascadeContainer {
             next: Cell::new(0),
             breakers: RefCell::new(Vec::new()),
             paint: PaintLog::default(),
+            hit_elements: RefCell::new(BTreeMap::new()),
+            hit_takers: RefCell::new(std::collections::BTreeSet::new()),
+        }
+    }
+
+    fn hit_element(&self, el: Option<ElementId>) -> i32 {
+        match el {
+            None => -1,
+            Some(el) => self.hit_elements.borrow().get(&el).copied().unwrap_or(-2),
         }
     }
 
@@ -361,6 +374,51 @@ impl DocumentContainer for CascadeContainer {
     }
     fn paint_unported(&self, hdc: u64, what: &'static str) {
         self.log(b'Z', what.as_bytes(), Vec::new(), hdc);
+    }
+    fn point_in_clip_path(&self, path: &VectorPath, x: Px, y: Px) -> bool {
+        let p = &path.points;
+        let mut inside = false;
+        if p.len() >= 2 {
+            let (mut min_x, mut min_y) = (p[0], p[1]);
+            let (mut max_x, mut max_y) = (min_x, min_y);
+            let mut i = 0;
+            while i + 1 < p.len() {
+                if p[i] < min_x {
+                    min_x = p[i];
+                }
+                if p[i] > max_x {
+                    max_x = p[i];
+                }
+                if p[i + 1] < min_y {
+                    min_y = p[i + 1];
+                }
+                if p[i + 1] > max_y {
+                    max_y = p[i + 1];
+                }
+                i += 2;
+            }
+            inside = x.value() >= min_x && x.value() < max_x && y.value() >= min_y && y.value() < max_y;
+        }
+        let mut b = PaintLog::path(path);
+        let mut o = Out { s: std::mem::take(&mut b) };
+        super::svg::Answer::a32(&mut o, x.value());
+        super::svg::Answer::a32(&mut o, y.value());
+        self.log(b'J', b"", o.take(), u64::from(inside));
+        inside
+    }
+    fn on_mouse_event(&self, el: Option<ElementId>, event: twidget_litehtml::document_container::MouseEvent) {
+        self.log(b'M', b"", self.hit_element(el).to_le_bytes().to_vec(), event as u64);
+    }
+    fn set_cursor(&self, cursor: &[u8]) {
+        self.log(b'^', cursor, Vec::new(), 0);
+    }
+    fn on_anchor_click(&self, url: &[u8], el: ElementId) {
+        self.log(b'@', url, self.hit_element(Some(el)).to_le_bytes().to_vec(), 0);
+    }
+    fn on_element_click(&self, el: ElementId) -> bool {
+        let taken = self.hit_takers.borrow().contains(&el);
+        self.log(b'!', b"", self.hit_element(Some(el)).to_le_bytes().to_vec(), u64::from(taken));
+        taken
     }
 }
 

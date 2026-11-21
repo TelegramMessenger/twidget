@@ -50,6 +50,7 @@ pub mod font_description;
 pub mod formatting_context;
 pub mod gradient;
 pub mod gumbo;
+pub mod hit;
 pub mod html;
 pub mod html_microsyntaxes;
 pub mod html_tag;

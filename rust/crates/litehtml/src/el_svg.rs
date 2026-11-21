@@ -13,8 +13,9 @@
 //! `<svg>`s drawn as groups, a top-level group drawn through the container's cache under its key), text runs
 //! (`svg_text_runs`, `svg_text_box`), `el_svg::draw` with its clip, its paint key (`cached_paint_key`,
 //! `cacheable_paint_key`, the elements' `paint_signature`), the container's cache or an isolated paint, and the
-//! `<use>` budget its draws share per paint generation, and `el_svg::paint_shapes`. Hit testing (`element_at`,
-//! the painter's hit mode) is stage L16's.
+//! `<use>` budget its draws share per paint generation, and `el_svg::paint_shapes`. Hit testing (stage L16):
+//! `el_svg::element_at` through the painter's hit mode, the same walk with its matrices composed instead of groups
+//! begun and each outline's or text run's box tested instead of drawn.
 //!
 //! What it reads of an element comes through [`SvgElements`]: tests implement it on what svg_oracle writes, and
 //! [`DocSvg`] on the document.
@@ -1256,29 +1257,9 @@ impl SvgElements for DocSvg<'_> {
     fn transform_fill_box(&self, el: ElementId) -> bool {
         self.doc.el(el).css.m_transform_fill_box
     }
-    /// `element::get_placement()`: the first live render item's placement, moved right and down to any later
-    /// one's that starts further right or down.
+    /// `element::get_placement()` (`hit.rs`).
     fn placement(&self, el: ElementId) -> Position {
-        let mut pos = Position::default();
-        let mut is_first = true;
-        for &ri in &self.doc.el(el).renders {
-            if !self.doc.render.alive(ri) {
-                continue;
-            }
-            let ri_pos = self.doc.get_placement(self.cx, ri);
-            if is_first {
-                is_first = false;
-                pos = ri_pos;
-            } else {
-                if pos.x < ri_pos.x {
-                    pos.x = ri_pos.x;
-                }
-                if pos.y < ri_pos.y {
-                    pos.y = ri_pos.y;
-                }
-            }
-        }
-        pos
+        self.doc.element_placement(self.cx, el)
     }
 }
 
@@ -1750,6 +1731,19 @@ impl Document {
         container.del_clip();
     }
 
+    /// `el_svg::element_at(pos, x, y)` (stage L16): what the `<svg>` drawn at `pos` draws last over the point (in the
+    /// coordinates of `pos`): none for an empty box or a point outside it; else the painter's walk in hit mode, its
+    /// view fitted to `pos`, a budget of its own.
+    pub fn el_svg_element_at(&self, cx: &StyleCx, id: ElementId, pos: &Position, x: Px, y: Px) -> Option<ElementId> {
+        if pos.width <= Px(0.0) || pos.height <= Px(0.0) || !pos.is_point_inside(x, y) {
+            return None;
+        }
+        let (view, group) = view_group(&DocSvg { doc: self, cx }, id, pos);
+        let mut painter = SvgPainter::new_hit(self, cx, view, group.matrix, x.value(), y.value());
+        painter.draw_children(id, -1, 0);
+        painter.hit()
+    }
+
     /// `el_svg::paint_shapes(hdc, pos)`: what the `<svg>` draws inside, its view fitted to `pos`, with a budget of
     /// its own and no cache; false for an empty box.
     pub fn el_svg_paint_shapes(&self, cx: &StyleCx, id: ElementId, hdc: u64, pos: &Position) -> bool {
@@ -1832,9 +1826,11 @@ struct ChildLook {
 /// The bounds of the painter's groups: everything near the view.
 const GROUP_BOUNDS: Position = Position { x: Px(-100000.0), y: Px(-100000.0), width: Px(200000.0), height: Px(200000.0) };
 
-/// `svg_painter` drawing (its hit mode is stage L16's): the walk over what an `<svg>` holds in its view, with the
-/// `<use>` budget it was given, the references it looked up, the `<use>`s it is inside, and, when an `<svg>`'s
-/// draw lets it, its top-level groups drawn through the container's cache in `cache_bounds`.
+/// `svg_painter`: the walk over what an `<svg>` holds in its view, with the `<use>` budget it was given, the
+/// references it looked up, the `<use>`s it is inside, and, when an `<svg>`'s draw lets it, its top-level groups drawn
+/// through the container's cache in `cache_bounds`. In hit mode (stage L16) it draws nothing: it composes each group's
+/// and `<use>`'s matrix into `matrix` (from the view's), and the last outline or text run whose box, through it, holds
+/// the point (`px`, `py`) is `hit`.
 pub struct SvgPainter<'a> {
     doc: &'a Document,
     cx: &'a StyleCx<'a>,
@@ -1844,6 +1840,14 @@ pub struct SvgPainter<'a> {
     cache_bounds: Position,
     uses: SvgUses<ElementId>,
     hosts: UseHosts<ElementId>,
+    hit_mode: bool,
+    px: f32,
+    py: f32,
+    matrix: TransformMatrix,
+    /// The matrices to go back to after each child the hit mode composed one for (the C++'s `saved`, kept out of the
+    /// walk's frames).
+    saved: Vec<TransformMatrix>,
+    hit: Option<ElementId>,
 }
 
 impl std::fmt::Debug for SvgPainter<'_> {
@@ -1872,7 +1876,24 @@ impl<'a> SvgPainter<'a> {
             cache_bounds: cache_bounds.unwrap_or_default(),
             uses: SvgUses::new(use_left),
             hosts: UseHosts::new(),
+            hit_mode: false,
+            px: 0.0,
+            py: 0.0,
+            matrix: TransformMatrix::default(),
+            saved: Vec::new(),
+            hit: None,
         }
+    }
+
+    /// `svg_painter(container, view, matrix, x, y)`: a painter in hit mode at the point, the view mapped by `matrix`;
+    /// a full budget, no cache.
+    pub fn new_hit(doc: &'a Document, cx: &'a StyleCx<'a>, view: [f32; 4], matrix: TransformMatrix, x: f32, y: f32) -> SvgPainter<'a> {
+        SvgPainter { hit_mode: true, px: x, py: y, matrix, ..SvgPainter::new(doc, cx, 0, view, None, kMaxUseDrawn) }
+    }
+
+    /// `hit()`: the element hit last.
+    pub fn hit(&self) -> Option<ElementId> {
+        self.hit
     }
 
     /// `use_left()`.
@@ -1924,8 +1945,19 @@ impl<'a> SvgPainter<'a> {
             ChildKind::Use => self.draw_use(child, child_look.visibility, depth),
             ChildKind::Other => self.draw_shape(child),
         }
-        if child_look.grouped {
+        self.close_child(child_look.grouped);
+    }
+
+    /// The end of `draw_child`: the child's group ended, and in hit mode the matrix from before it back.
+    #[inline(never)]
+    fn close_child(&mut self, grouped: bool) {
+        if grouped {
             self.cx.container.end_group(self.hdc);
+        }
+        if self.hit_mode
+            && let Some(saved) = self.saved.pop()
+        {
+            self.matrix = saved;
         }
     }
 
@@ -1960,7 +1992,12 @@ impl<'a> SvgPainter<'a> {
             bounds: GROUP_BOUNDS,
             ..PaintGroup::default()
         };
-        let grouped = opacity < 1.0 || !group.matrix.is_identity();
+        let mut grouped = opacity < 1.0 || !group.matrix.is_identity();
+        if self.hit_mode {
+            self.saved.push(self.matrix);
+            self.matrix = group.matrix.then(&self.matrix);
+            grouped = false;
+        }
         if grouped {
             self.cx.container.begin_group(self.hdc, &group);
         }
@@ -2000,9 +2037,14 @@ impl<'a> SvgPainter<'a> {
     fn draw_use(&mut self, r#use: ElementId, visibility: i32, depth: i32) {
         let tree = self.tree();
         let Ok(placement) = self.uses.use_placement(&tree, r#use, depth, &self.view) else { return };
-        let group = PaintGroup { matrix: placement.matrix, bounds: GROUP_BOUNDS, ..PaintGroup::default() };
         let container = self.cx.container;
-        container.begin_group(self.hdc, &group);
+        let saved = self.matrix;
+        if self.hit_mode {
+            self.matrix = placement.matrix.then(&self.matrix);
+        } else {
+            let group = PaintGroup { matrix: placement.matrix, bounds: GROUP_BOUNDS, ..PaintGroup::default() };
+            container.begin_group(self.hdc, &group);
+        }
         self.hosts.push(placement.target, r#use);
         self.uses.use_depth += 1;
         if placement.symbol {
@@ -2012,7 +2054,10 @@ impl<'a> SvgPainter<'a> {
         }
         self.uses.use_depth -= 1;
         self.hosts.pop();
-        container.end_group(self.hdc);
+        if !self.hit_mode {
+            container.end_group(self.hdc);
+        }
+        self.matrix = saved;
     }
 
     /// A shape's outline in the painter's view (a radius in percent of its diagonal), painted.
@@ -2037,6 +2082,10 @@ impl<'a> SvgPainter<'a> {
             return;
         }
         if self.uses.use_depth > 0 && !self.uses.use_charge(path.points.len() / 256) {
+            return;
+        }
+        if self.hit_mode {
+            self.hit_path(el, path);
             return;
         }
         let (doc, cx, tree) = (self.doc, self.cx, self.tree());
@@ -2105,6 +2154,50 @@ impl<'a> SvgPainter<'a> {
         }
     }
 
+    /// `hits(x0, y0, x1, y1, slop)`: the point is within `slop` of the box the rectangle's corners make through the
+    /// matrix.
+    fn hits(&self, x0: f32, y0: f32, x1: f32, y1: f32, slop: f32) -> bool {
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (1e30f32, 1e30f32, -1e30f32, -1e30f32);
+        let m = &self.matrix;
+        for x in [x0, x1] {
+            for y in [y0, y1] {
+                let tx = m.a * x + m.c * y + m.tx;
+                let ty = m.b * x + m.d * y + m.ty;
+                min_x = cxx::min_f32(min_x, tx);
+                min_y = cxx::min_f32(min_y, ty);
+                max_x = cxx::max_f32(max_x, tx);
+                max_y = cxx::max_f32(max_y, ty);
+            }
+        }
+        self.px >= min_x - slop && self.px <= max_x + slop && self.py >= min_y - slop && self.py <= max_y + slop
+    }
+
+    /// `hit_path(el, path)`: an outline of at least one point hits when the point is within half its stroke's width
+    /// (scaled by the square root of the matrix's determinant) of the box of its points.
+    #[inline(never)]
+    fn hit_path(&mut self, el: ElementId, path: &VectorPath) {
+        let p = &path.points;
+        if p.len() < 2 {
+            return;
+        }
+        let (mut min_x, mut min_y) = (p[0], p[1]);
+        let (mut max_x, mut max_y) = (min_x, min_y);
+        let mut i = 0;
+        while i + 1 < p.len() {
+            min_x = cxx::min_f32(min_x, p[i]);
+            max_x = cxx::max_f32(max_x, p[i]);
+            min_y = cxx::min_f32(min_y, p[i + 1]);
+            max_y = cxx::max_f32(max_y, p[i + 1]);
+            i += 2;
+        }
+        let m = &self.matrix;
+        let scale = (m.a * m.d - m.b * m.c).abs().sqrt();
+        let slop = cxx::max_f32(0.0, self.doc.svg_number_in(self.cx, &self.hosts, el, _stroke_width_, 1.0, true)) * scale / 2.0;
+        if self.hits(min_x, min_y, max_x, max_y, slop) {
+            self.hit = Some(el);
+        }
+    }
+
     /// `draw_text(el)`: each run of a `<text>` (inside a `<use>` costing one unit for every 256 bytes) in its fill
     /// at its fill opacity, unless its fill is none.
     #[inline(never)]
@@ -2114,6 +2207,13 @@ impl<'a> SvgPainter<'a> {
         for run in &runs {
             if self.uses.use_depth > 0 && !self.uses.use_charge(run.text.len() / 256) {
                 return;
+            }
+            if self.hit_mode {
+                let b = &run.r#box;
+                if self.hits(b.left().value(), b.top().value(), b.right().value(), b.bottom().value(), 0.0) {
+                    self.hit = Some(el);
+                }
+                continue;
             }
             let mut color = WebColor::default();
             if !doc.svg_paint_in(cx, &self.hosts, run.style, _fill_, WebColor::BLACK, true, &mut color, None) {

@@ -220,6 +220,34 @@ pub trait DocumentContainer: ResolveColor {
     /// No call in the C++: painting reached what a later stage ports (`"image"`, L15: an `<img>`'s image after its
     /// box) and drew nothing there.
     fn paint_unported(&self, _hdc: u64, _what: &'static str) {}
+
+    // ---- The pointer (stage L16) ---------------------------------------------------------------------------------
+
+    /// `on_anchor_click(url, el)`: an anchor with an `href` was clicked (the url up to its first NUL). Pure in the
+    /// C++; the renderer's does nothing.
+    fn on_anchor_click(&self, _url: &[u8], _el: ElementId) {}
+
+    /// `on_element_click(el)`: an element was clicked; true when the container took the click, which then goes no
+    /// further up the tree.
+    fn on_element_click(&self, _el: ElementId) -> bool {
+        false
+    }
+
+    /// `on_mouse_event(el, event)`: the pointer entered or left the element (none when the hovered element went and
+    /// none came). Pure in the C++; the renderer's does nothing.
+    fn on_mouse_event(&self, _el: Option<ElementId>, _event: MouseEvent) {}
+
+    /// `set_cursor(cursor)`: the hovered element's `cursor`, empty when none is hovered (up to its first NUL). Pure
+    /// in the C++; the renderer keeps it.
+    fn set_cursor(&self, _cursor: &[u8]) {}
+}
+
+/// `mouse_event`: what `on_mouse_event` tells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MouseEvent {
+    mouse_event_enter,
+    mouse_event_leave,
 }
 
 /// `list_marker`: a list item's marker as `draw_list_marker` gets it: its image (none when empty) and base url (a

@@ -11,8 +11,9 @@
 //! references (`get_render_item` answers nothing when the first has gone) and so is an item's parent. An id says
 //! which use of a slot it names, so a reference to a gone item stays gone when the slot is used again.
 //! An item made and not yet given to an owner is alive, as a C++ local holds it. The anonymous elements the tree
-//! makes (`html_tag`'s anonymous wrapper constructor) live as long as an item of theirs or an anonymous element
-//! whose parent they are, and their slots in the document's elements are used again after.
+//! makes (`html_tag`'s anonymous wrapper constructor) live as long as an item of theirs (or the document's hovered or
+//! active element) holds them, and their slots in the document's elements are used again after; an anonymous child
+//! of one that ends has no parent after, as the C++'s weak `m_parent` expires.
 
 use crate::Px;
 use crate::css_values::*;
@@ -209,6 +210,55 @@ impl ScrollView {
         self.scroll_size = scroll_size;
         self.left = clamp_px(self.left, Px(0.0), self.get_max_h_scroll());
         self.top = clamp_px(self.top, Px(0.0), self.get_max_v_scroll());
+    }
+
+    /// `scroll_to(left, top)` (stage L16): the scroll position, kept inside the range.
+    pub fn scroll_to(&mut self, left: Px, top: Px) {
+        self.left = clamp_px(left, Px(0.0), self.get_max_h_scroll());
+        self.top = clamp_px(top, Px(0.0), self.get_max_v_scroll());
+    }
+
+    /// `is_h_scrollable(dx)`: scrolling by `dx` would move the view (never when nothing is as wide as 0).
+    pub fn is_h_scrollable(&self, dx: Px) -> bool {
+        if self.scroll_size.width == Px(0.0) {
+            return false;
+        }
+        self.left != clamp_px(self.left + dx, Px(0.0), self.get_max_h_scroll())
+    }
+
+    /// `h_scroll(dx)`: the view moved by `dx` inside the range; how far it moved.
+    pub fn h_scroll(&mut self, dx: Px) -> Px {
+        if self.scroll_size.width == Px(0.0) {
+            return Px(0.0);
+        }
+        let new_left = clamp_px(self.left + dx, Px(0.0), self.get_max_h_scroll());
+        let ret = new_left - self.left;
+        self.left = new_left;
+        ret
+    }
+
+    /// `is_v_scrollable(dy)`.
+    pub fn is_v_scrollable(&self, dy: Px) -> bool {
+        if self.scroll_size.height == Px(0.0) {
+            return false;
+        }
+        self.top != clamp_px(self.top + dy, Px(0.0), self.get_max_v_scroll())
+    }
+
+    /// `v_scroll(dy)`.
+    pub fn v_scroll(&mut self, dy: Px) -> Px {
+        if self.scroll_size.height == Px(0.0) {
+            return Px(0.0);
+        }
+        let new_top = clamp_px(self.top + dy, Px(0.0), self.get_max_v_scroll());
+        let ret = new_top - self.top;
+        self.top = new_top;
+        ret
+    }
+
+    /// `is_point_inside(x, y)`: the point is in the viewport.
+    pub fn is_point_inside(&self, x: Px, y: Px) -> bool {
+        self.viewport.is_point_inside(x, y)
     }
 }
 
@@ -555,20 +605,22 @@ impl Document {
         self.release_anonymous(element);
     }
 
-    /// An anonymous element loses what kept it: with nothing left it is freed, and its slot used again.
+    /// An anonymous element loses what kept it: with nothing left it is freed, and its slot used again; its anonymous
+    /// children that are still alive have no parent after.
     pub(crate) fn release_anonymous(&mut self, element: ElementId) {
-        let mut next = Some(element);
-        while let Some(id) = next.take() {
-            let el = self.el_mut(id);
-            if !el.anonymous_style || el.box_holds == 0 {
-                return;
-            }
-            el.box_holds -= 1;
-            if el.box_holds == 0 {
-                let parent = el.parent;
-                *el = crate::element::Element::new(ElementKind::html_tag);
-                self.free_elements.push(id);
-                next = parent;
+        let el = self.el_mut(element);
+        if !el.anonymous_style || el.box_holds == 0 {
+            return;
+        }
+        el.box_holds -= 1;
+        if el.box_holds == 0 {
+            *el = crate::element::Element::new(ElementKind::html_tag);
+            self.free_elements.push(element);
+            for child in self.anon_children.remove(&element).unwrap_or_default() {
+                let c = self.el_mut(child);
+                if c.anonymous_style && c.box_holds > 0 && c.parent == Some(element) {
+                    c.parent = None;
+                }
             }
         }
     }

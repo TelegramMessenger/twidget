@@ -717,13 +717,19 @@ impl Document {
         ret
     }
 
-    /// `on_mouse_over()`: `:hover` up the chain.
+    /// `on_mouse_over()`: `:hover` up the chain from a tag (`element`'s answers false and sets nothing).
     pub fn on_mouse_over(&mut self, id: ElementId) -> bool {
+        if !self.kind(id).is_html_tag() {
+            return false;
+        }
         self.set_pseudo_class_up(id, _hover_, true)
     }
 
-    /// `on_mouse_leave()`: `:hover` and `:active` off up the chain, element by element.
+    /// `on_mouse_leave()`: `:hover` and `:active` off up the chain from a tag, element by element.
     pub fn on_mouse_leave(&mut self, id: ElementId) -> bool {
+        if !self.kind(id).is_html_tag() {
+            return false;
+        }
         let mut ret = false;
         let mut el = Some(id);
         while let Some(e) = el {
@@ -738,9 +744,46 @@ impl Document {
         ret
     }
 
-    /// `on_lbutton_down()`: `:active` up the chain.
+    /// `on_lbutton_down()`: `:active` up the chain from a tag.
     pub fn on_lbutton_down(&mut self, id: ElementId) -> bool {
+        if !self.kind(id).is_html_tag() {
+            return false;
+        }
         self.set_pseudo_class_up(id, _active_, true)
+    }
+
+    /// `on_lbutton_up(is_click)` (stage L16): `:active` off up the chain from a tag, then, for a click, the click.
+    pub fn on_lbutton_up(&mut self, cx: &StyleCx, id: ElementId, is_click: bool) -> bool {
+        if !self.kind(id).is_html_tag() {
+            return false;
+        }
+        let ret = self.set_pseudo_class_up(id, _active_, false);
+        if is_click {
+            self.on_click(cx, id);
+        }
+        ret
+    }
+
+    /// `on_click()` of the element's class: an anchor's own (`el_anchor.rs`); a tag but the root offers the click to
+    /// the container and, when it does not take it, to its parent (as the parent's class takes it); nothing for the
+    /// rest. The C++'s recursion up the parents is a loop here.
+    pub fn on_click(&self, cx: &StyleCx, id: ElementId) {
+        let mut cur = id;
+        loop {
+            match self.kind(cur) {
+                ElementKind::el_anchor => return self.el_anchor_on_click(cx, cur),
+                kind if kind.is_html_tag() => {
+                    if self.el_is_root(cur) || cx.container.on_element_click(cur) {
+                        return;
+                    }
+                    match self.parent(cur) {
+                        Some(parent) => cur = parent,
+                        None => return,
+                    }
+                }
+                _ => return,
+            }
+        }
     }
 
     /// `m_style.add_property(name, value, "", false, container)` as `parse_attributes` makes it.
@@ -1106,7 +1149,9 @@ impl Document {
 
     /// `html_tag(parent, style)`, the constructor of the render tree's anonymous boxes: an `html_tag` with no tag and
     /// no attributes, the style text added (no container, no base url), anonymous, its parent `parent` (which does
-    /// not list it among its children), and its style computed. It takes a slot an earlier one left when there is one.
+    /// not list it among its children, nor keeps it: an anonymous parent is noted in `anon_children` so that its end
+    /// leaves the child none, as the C++'s weak pointer expires), and its style computed. It takes a slot an earlier
+    /// one left when there is one.
     #[inline(never)]
     pub fn new_anonymous_tag(&mut self, cx: &StyleCx, parent: ElementId, style: &[u8]) -> ElementId {
         let id = match self.free_elements.pop() {
@@ -1119,7 +1164,7 @@ impl Document {
         self.el_mut(id).anonymous_style = true;
         self.el_mut(id).parent = Some(parent);
         if self.el(parent).anonymous_style {
-            self.el_mut(parent).box_holds += 1;
+            self.anon_children.entry(parent).or_default().push(id);
         }
         self.compute_styles(cx, id, true);
         id

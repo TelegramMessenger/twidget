@@ -833,6 +833,52 @@ public:
         return true;
     }
     void sanitizer_limit(const char* what) override { calls.push_back({'L', what ? what : "", {}, 0}); }
+    // Stage L16: the pointer's calls, each logged with its elements in this numbering (-1 none, -2 out of it).
+    const std::map<const element*, int32_t>* hit_elements = nullptr;
+    int32_t hit_element(const element* el) const {
+        if (!el) return -1;
+        if (hit_elements)
+            if (auto it = hit_elements->find(el); it != hit_elements->end()) return it->second;
+        return -2;
+    }
+    // A clip path holds a point inside the box of its points, left and top edges in.
+    bool point_in_clip_path(const vector_path& path, pixel_t x, pixel_t y) override {
+        bool inside = false;
+        if (path.points.size() >= 2) {
+            float min_x = path.points[0], min_y = path.points[1], max_x = min_x, max_y = min_y;
+            for (size_t i = 0; i + 1 < path.points.size(); i += 2) {
+                if (path.points[i] < min_x) min_x = path.points[i];
+                if (path.points[i] > max_x) max_x = path.points[i];
+                if (path.points[i + 1] < min_y) min_y = path.points[i + 1];
+                if (path.points[i + 1] > max_y) max_y = path.points[i + 1];
+            }
+            inside = x.value() >= min_x && x.value() < max_x && y.value() >= min_y && y.value() < max_y;
+        }
+        lhdump_paint::Bytes b;
+        b.path(path).f32(x.value()).f32(y.value());
+        calls.push_back({'J', {}, b.s, inside ? 1 : 0});
+        return inside;
+    }
+    void on_mouse_event(const element::ptr& el, mouse_event event) override {
+        Out b;
+        b.i32(hit_element(el.get()));
+        calls.push_back({'M', {}, b.s, int64_t(event)});
+    }
+    void set_cursor(const char* cursor) override { calls.push_back({'^', cursor ? cursor : "", {}, 0}); }
+    void on_anchor_click(const char* url, const element::ptr& el) override {
+        Out b;
+        b.i32(hit_element(el.get()));
+        calls.push_back({'@', url ? url : "", b.s, 0});
+    }
+    // A button or a label takes its click.
+    bool on_element_click(const element::ptr& el) override {
+        const std::string tag = el && el->get_tagName() ? lowcase(el->get_tagName()) : std::string();
+        const bool taken = tag == "button" || tag == "label";
+        Out b;
+        b.i32(hit_element(el.get()));
+        calls.push_back({'!', {}, b.s, taken ? 1 : 0});
+        return taken;
+    }
     bool sanitize_declaration(const std::string& name, const css_token_vector& value) override {
         if (trusted || value.size() != 1 || (name != "position" && name != "display")) return true;
         const std::string keyword = value[0].ident();
@@ -2097,6 +2143,14 @@ void patching(In& in, Out& o) {
     o.s = std::move(all.s);
 }
 
+// ---- Stage L16: hit testing and the mouse state ('W') ----
+
+} // namespace
+
+#include "lhdump_hit.h"
+
+namespace {
+
 bool run(int op, std::string_view input) {
     In in{input};
     Out o;
@@ -2737,6 +2791,11 @@ bool run(int op, std::string_view input) {
     }
     case 'b': { // document patching: a document as createUpdatableFromString makes it, then patches, media changes, flips, layouts, dumps and fresh comparisons: patching() above
         patching(in, o);
+        answer(1, o.s);
+        return true;
+    }
+    case 'W': { // hit testing and the mouse state: a document as 'b' makes it, then pointer steps between patches, layouts and paints: lhdump_hit.h
+        pointing(in, o);
         answer(1, o.s);
         return true;
     }

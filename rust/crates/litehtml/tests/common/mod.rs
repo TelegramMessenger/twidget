@@ -114,6 +114,14 @@
 //! - `b` f32 width, height, dpr, u8 flags, master, html, steps: `update_from_string`, `update_styles` and
 //!   `update_holes` with their answers, media changes, flips, layouts with their dirty regions, dumps of the
 //!   cascade, the render tree, the layout and what patching keeps, and layouts against a fresh document (see `patch`).
+//!
+//! The pointer's record (stage L16) builds a document as `b` does and points at it:
+//!
+//! - `W` f32 width, height, dpr, u8 flags, master, html, steps: patches, layouts and paints as `b` and `Q` make them,
+//!   `get_element_by_point` from the root, an element (as the renderer's `element_at_within`) or an item with and
+//!   without checks, `on_mouse_over`, the button's down, up and cancel, `on_mouse_leave` with their redraw boxes and
+//!   the hovered and active elements, `on_scroll` with its values, the render items' scrolling and `is_point_inside`,
+//!   an `<svg>`'s `element_at`, and dumps of the cascade, the layout and what painting keeps (see `hit`).
 
 #![allow(dead_code, unused_imports)]
 
@@ -198,6 +206,7 @@ macro_rules! paints_nothing {
 pub mod cascade;
 pub mod dom;
 pub mod gumbo;
+pub mod hit;
 pub mod layout;
 pub mod paint;
 pub mod patch;

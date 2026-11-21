@@ -2978,6 +2978,11 @@ impl Document {
         };
         let over_chain = chain(self, self.patch.over_element);
         let active_chain = chain(self, self.patch.active_element);
+        // The C++'s vectors of shared_ptrs keep the chains' elements (anonymous ones the tree lets go among them) until
+        // it returns.
+        for &el in over_chain.iter().chain(&active_chain) {
+            self.hold_anonymous(Some(el));
+        }
 
         let mut remapped: BTreeMap<NodeId, Vec<ElementId>> = BTreeMap::new();
         for (node, el) in kept {
@@ -3101,14 +3106,19 @@ impl Document {
                 }
                 None
             };
-            self.patch.over_element = nearest_attached(self, &over_chain);
-            self.patch.active_element = nearest_attached(self, &active_chain);
+            let over = nearest_attached(self, &over_chain);
+            self.set_over_element(over);
+            let active = nearest_attached(self, &active_chain);
+            self.set_active_element(active);
         }
 
         drop(old);
         self.gumbo = Some(output);
         self.build_template();
         *changed = any;
+        for &el in active_chain.iter().chain(&over_chain) {
+            self.release_anonymous(el);
+        }
         true
     }
 }

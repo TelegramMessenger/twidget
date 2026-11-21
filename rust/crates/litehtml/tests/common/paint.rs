@@ -349,14 +349,14 @@ impl PaintLog {
 // ---- The record ---------------------------------------------------------------------------------------------
 
 /// The render tree's numbering of items, and the DOM elements of the cascade's walk.
-struct PaintIndex {
-    items: Vec<RenderId>,
-    item_index: BTreeMap<RenderId, i32>,
-    nodes: Vec<ElementId>,
+pub struct PaintIndex {
+    pub items: Vec<RenderId>,
+    pub item_index: BTreeMap<RenderId, i32>,
+    pub nodes: Vec<ElementId>,
 }
 
 impl PaintIndex {
-    fn new(doc: &Document) -> PaintIndex {
+    pub fn new(doc: &Document) -> PaintIndex {
         let mut nodes = Vec::new();
         if let Some(root) = doc.root {
             cascade_walk(doc, root, -1, &mut nodes);
@@ -383,7 +383,7 @@ impl PaintIndex {
         }
     }
 
-    fn of(&self, doc: &Document, item: RenderId) -> i32 {
+    pub fn of(&self, doc: &Document, item: RenderId) -> i32 {
         if !doc.render.alive(item) {
             return -1;
         }

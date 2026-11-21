@@ -142,7 +142,7 @@ fn sides_out(o: &mut Out, m: &Margins) {
 }
 
 /// lhdump's `write_patch_answer`.
-fn patch_answer_out(o: &mut Out, doc: &Document, ok: bool, changed: bool) {
+pub fn patch_answer_out(o: &mut Out, doc: &Document, ok: bool, changed: bool) {
     let w = ElementIndex::new(doc);
     mark(o, "patch answer", -2);
     o.u8(u8::from(ok)).u8(u8::from(changed)).u8(u8::from(doc.last_patch_paint_only()));
