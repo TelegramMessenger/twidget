@@ -614,6 +614,9 @@ pub fn compare_engines(oracle: &Oracle, scripts: &[(Script, String)], name: &str
                 }
             };
             let ids = document_ids(&entries);
+            let reused = ids.windows(2).filter(|w| w[0] != 0 && w[0] == w[1]).count();
+            out.checked.add_n("documents made where the last one was", reused);
+            out.checked.add_n("documents made", ids.len());
             // Checked: both engines asked, the C++'s answers followed.
             let shared = Rc::new(RefCell::new(Shared { entries: VecDeque::from(entries), ..Shared::default() }));
             let checks = Rc::new(RefCell::new(Checks { what: what.clone(), ..Checks::default() }));
@@ -645,7 +648,7 @@ pub fn compare_engines(oracle: &Oracle, scripts: &[(Script, String)], name: &str
     }
     let mut s = String::new();
     for (k, v) in &out.checked.0 {
-        if k.starts_with("compared ") || k.starts_with("DIFFER ") {
+        if k.starts_with("compared ") || k.starts_with("DIFFER ") || k.starts_with("documents made") {
             let _ = write!(s, " {k}={v}");
         }
     }

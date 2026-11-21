@@ -395,10 +395,11 @@ impl Fonts {
     }
 }
 
-/// The images: by source, the next id, the table's bounds.
+/// The images: by source (in the sources' order, where the C++'s `unordered_map` has its hash order: what
+/// `image_ready` meets first when ids repeat), the next id, the table's bounds.
 #[derive(Debug, Default)]
 pub(crate) struct Images {
-    pub map: HashMap<Vec<u8>, Image>,
+    pub map: BTreeMap<Vec<u8>, Image>,
     pub next_image: i32,
     pub sources: usize,
     pub bytes: usize,
