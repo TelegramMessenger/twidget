@@ -136,3 +136,5 @@ endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/events_oracle.cmake")
 # renderer_oracle: the renderer with probes at its calls into the document and stage 4.5's code (renderer_oracle.cmake).
 include("${CMAKE_CURRENT_SOURCE_DIR}/renderer_oracle.cmake")
+# The widget helper's tdesktop glue, from a tdesktop checkout next to twidget when there is one (helper_oracles.cmake).
+include("${CMAKE_CURRENT_SOURCE_DIR}/helper_oracles.cmake")

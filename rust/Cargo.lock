@@ -131,6 +131,17 @@ name = "twidget_gesture"
 version = "0.1.0"
 
 [[package]]
+name = "twidget_helper"
+version = "0.1.0"
+dependencies = [
+ "twidget_gesture",
+ "twidget_json",
+ "twidget_remote",
+ "twidget_renderer",
+ "twidget_testkit",
+]
+
+[[package]]
 name = "twidget_json"
 version = "0.1.0"
 
