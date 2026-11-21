@@ -51,7 +51,7 @@ private:
     void finish(const std::vector<twidget::Json>& messages, const Pointer* pointer = nullptr, Frame* frame = nullptr, const ClaimAnswer* claim = nullptr);
     bool send_frame(const Frame& frame);
     /// Copies of what `list`, whose units hash to `hashes`, shares byte for byte with `base`, no more than the base holds in all, and literals for the rest, in as few bytes as such runs take; none when nothing is worth copying.
-    static std::vector<DeltaRun> runs_for(const Painted& base, const Painted& list, const std::vector<size_t>& hashes);
+    static std::vector<DeltaRun> runs_for(const Painted& base, const Painted& list, const std::vector<uint64_t>& hashes);
     State current_state() const;
 
     RendererChannel& channel_;

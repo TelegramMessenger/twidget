@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <utility>
 
 namespace twlite::remote {
@@ -33,8 +32,15 @@ constexpr size_t COPY_RUN_BYTES = 1 + 4 + 4, LITERAL_RUN_BYTES = 1 + 4;
 constexpr size_t PROBES = 4;
 constexpr uint32_t NONE = UINT32_MAX;
 
+/// FNV-1a over a command's bytes, written out: std::hash differs between standard libraries and with size_t, and which commands a probe meets follows the index's order.
+uint64_t command_hash(std::string_view bytes) {
+    uint64_t h = 14695981039346656037ull;
+    for (const unsigned char c : bytes) h = (h ^ c) * 1099511628211ull;
+    return h;
+}
+
 struct Entry {
-    size_t hash = 0;
+    uint64_t hash = 0;
     uint32_t unit = 0;
 };
 
@@ -324,8 +330,8 @@ bool RendererEnd::send_frame(const Frame& frame) {
         next->bounds.reserve(written.starts.size() + 1);
         next->bounds.push_back(0);
         for (size_t at : written.starts) next->bounds.push_back(uint32_t(at));
-        std::vector<size_t> hashes(next->units());
-        for (size_t u = 0; u < hashes.size(); u++) hashes[u] = std::hash<std::string_view>()(next->unit(u));
+        std::vector<uint64_t> hashes(next->units());
+        for (size_t u = 0; u < hashes.size(); u++) hashes[u] = command_hash(next->unit(u));
         if (base_) {
             FrameDelta delta{frame.seq, frame.state, base_->seq, runs_for(*base_, *next, hashes), frame.damage};
             std::string smaller;
@@ -340,7 +346,7 @@ bool RendererEnd::send_frame(const Frame& frame) {
     return true;
 }
 
-std::vector<DeltaRun> RendererEnd::runs_for(const Painted& base, const Painted& list, const std::vector<size_t>& hashes) {
+std::vector<DeltaRun> RendererEnd::runs_for(const Painted& base, const Painted& list, const std::vector<uint64_t>& hashes) {
     const size_t units = list.units();
     const auto same_as = [&](size_t u, uint32_t b) { return b < base.units() && base.unit(b) == list.unit(u); };
     std::vector<uint32_t> from(units, NONE);
