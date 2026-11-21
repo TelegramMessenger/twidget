@@ -629,15 +629,33 @@ void Compare(const std::vector<std::string> &cpp, const std::vector<std::string>
 
 std::unique_ptr<Arm> Arms[2];
 
-// The engine's heap in a Stats frame (its third field), which the two engines count apart: nova_embed_ffi's allocator meters the C++ end's Nova, the Rust end reads Nova's own estimate.
+// The engine's heap in a Stats frame (its third field). Both ends count it on nova_meter's accounts, the same blocks for the same work, but it is left out of the comparison: Nova keys its hash tables at random (per process and per table), so when a table that lost entries grows depends on the keys, and the count varies from run to run by multiples of 32 bytes, C++ against C++ as much as against Rust. With the keys pinned every Stats of the sessions is alike but one at a session's end, which varies with time (rust/PLAN.md, H2). TW_HELPER_ORACLE_MEMLOG=<file> appends every pair there: the step, then each arm's runtime and bytes.
 constexpr auto kStatsMemoryAt = size_t(9 + 2 * 8);
 
-void MaskMemory(std::vector<std::string> &frames) {
-    for (auto &f : frames) {
-        if (KindOf(f) == Stats && f.size() >= kStatsMemoryAt + 8) {
-            std::fill_n(f.begin() + kStatsMemoryAt, 8, '\0');
+void MaskMemory(std::vector<std::vector<std::string>> &taken) {
+    static FILE *const log = [] {
+        const auto path = std::getenv("TW_HELPER_ORACLE_MEMLOG");
+        return path ? std::fopen(path, "ab") : nullptr;
+    }();
+    static auto step = uint64_t();
+    ++step;
+    std::vector<std::pair<uint32_t, double>> seen[2];
+    for (auto i = 0; i != 2; ++i) {
+        for (auto &f : taken[i]) {
+            if (KindOf(f) == Stats && f.size() >= kStatsMemoryAt + 8) {
+                seen[i].emplace_back(RuntimeOf(f), std::bit_cast<double>(Little(f, kStatsMemoryAt, 8)));
+                std::fill_n(f.begin() + kStatsMemoryAt, 8, '\0');
+            }
         }
     }
+    if (!log) return;
+    for (size_t k = 0; k != std::max(seen[0].size(), seen[1].size()); ++k) {
+        const auto none = std::pair<uint32_t, double>(0, -1);
+        const auto a = k < seen[0].size() ? seen[0][k] : none;
+        const auto b = k < seen[1].size() ? seen[1][k] : none;
+        std::fprintf(log, "%llu %u %.0f %u %.0f %s\n", (unsigned long long)step, a.first, a.second, b.first, b.second, a.second == b.second ? "same" : "DIFF");
+    }
+    std::fflush(log);
 }
 
 // Runs `step` on each arm in turn, the C++ one first, and compares what each sent.
@@ -650,8 +668,8 @@ void Both(const std::function<bool(Arm &)> &step) {
             failure += std::string(i ? "Rust" : "C++") + ": the barrier's wait ran out or the serving ended\n";
         }
         taken[i] = Arms[i]->take();
-        MaskMemory(taken[i]);
     }
+    MaskMemory(taken);
     Compare(taken[0], taken[1], failure);
 }
 

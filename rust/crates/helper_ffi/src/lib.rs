@@ -23,6 +23,13 @@ use twidget_helper::SteadyMicros;
 use twidget_js::Platform;
 use twidget_stream::Stream;
 
+/// The helper's allocator: nova-safe's metering allocator, on which `twidget_js` counts each widget engine's bytes
+/// for its memory limit, as nova_embed_ffi's counts the C++ helper's Nova. Its `unsafe` is nova_meter's (audited in
+/// nova-safe). With `nova-c-api` nova_embed_ffi installs the same allocator, which then serves both servings.
+#[cfg(not(feature = "nova-c-api"))]
+#[global_allocator]
+static METERED: nova_meter::Metered = nova_meter::Metered;
+
 /// `read(context, out, size)`: blocks until at least one byte came, copies at most `size` to `out`, returns how many.
 pub type ReadFn = unsafe extern "C" fn(context: *mut c_void, out: *mut u8, size: usize) -> usize;
 /// `write(context, bytes, size)`: blocks until all `size` bytes at `bytes` are written; false once the stream broke.

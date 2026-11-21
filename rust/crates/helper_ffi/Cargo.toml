@@ -27,6 +27,7 @@ missing_safety_doc = "deny"
 
 [dependencies]
 nova_embed_ffi = { path = "../../../../nova-safe/nova_embed_ffi", optional = true }
+nova_meter = { path = "../../../../nova-safe/nova_meter" }
 twidget_helper = { path = "../helper" }
 twidget_js = { path = "../../../../widget-sandbox/packages/rust/crates/js" }
 twidget_stream = { path = "../../../../widget-sandbox/packages/rust/crates/stream" }

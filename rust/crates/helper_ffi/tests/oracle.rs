@@ -2,7 +2,8 @@
 //! helper's stream served by tdesktop's `WidgetHelper::Serve` (`_other/widget_helper_renderer.cpp` on widget-sandbox's
 //! engine end, the hosted glue and the tap) and by `tw_helper_serve` from the same C++ program, each over an in-memory
 //! stream the program drives as Telegram would, on one step clock; every frame either sends is compared byte for byte
-//! (but the engine's heap in `Stats`, which the two Novas count apart). The sessions are the glue comparison's
+//! (but the engine's heap in `Stats`: both ends count it on nova_meter's accounts, and Nova's random hash keys make it
+//! vary from run to run; `TW_HELPER_ORACLE_MEMLOG` logs it). The sessions are the glue comparison's
 //! (`twidget_helper`'s `glue_oracle.rs`): widget-sandbox's corpus widgets and the generated documents, now as hosted
 //! widgets, with Telegram's platform traffic as it is, the theme, safe area, visibility and stop as frames, and the
 //! widget's own batches, listeners, queries and canvases made by its script through probes. Then mutated streams

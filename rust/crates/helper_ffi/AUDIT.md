@@ -3,7 +3,8 @@
 The one crate of the widget helper with `unsafe` (rust/PLAN.md, "The one `unsafe` layer"; `tools/unsafe_report.py`'s
 `ALLOWED`). It is the C ABI the C++ OS glue calls instead of `_other/widget_helper_renderer.cpp`'s `WidgetHelper::Serve`:
 `tw_helper_serve` and `tw_helper_free` in `include/twidget_helper.h`. Everything under it is `twidget_helper::serve` and
-the crates it links, all `#![forbid(unsafe_code)]`.
+the crates it links, all `#![forbid(unsafe_code)]` but the helper's allocator, nova-safe's `nova_meter` (below, "The
+global allocator").
 
 What crosses: byte buffers (the stream's bytes both ways, the build, the lockdown's text, the reason, the CSPRNG's bytes)
 and numbers (sizes, clocks, a time-zone offset, a bool). The glue's two context pointers cross back to it unread. Rust
@@ -37,6 +38,25 @@ and impl has a `// SAFETY:` note (`clippy::undocumented_unsafe_blocks` is `deny`
 
 The integration tests (`tests/abi.rs`, the C caller written in Rust) have `unsafe` of their own, as a C caller would: the
 callbacks they hand over and their calls of the two entries; `unsafe_report.py` counts them with the crate.
+
+## The global allocator
+
+`src/lib.rs` declares nova-safe's metering allocator, `nova_meter::Metered`, the helper's `#[global_allocator]` (not
+under `nova-c-api`: there `nova_embed_ffi` declares the same one, which then serves the oracle's C++ serving and this
+one alike). Every Rust allocation of the helper goes through it: the system's block with a header in front (16 bytes; a
+whole alignment for a block aligned past 16) that names the account of the engine running when it was made, and an
+atomic add on that account (sub when it is freed, on any thread). `twidget_js` gives each widget engine an account and
+enters it where `nova_embed_ffi`'s C interface enters the C++ helper's (around each call into the engine, the host's
+part of a host function call on the uncounted account), so the 8 MiB limit and `Stats`' engine heap count the bytes
+the engine's allocations hold, as in the C++ helper; everything else is on account 0, which nobody reads.
+
+The declaration is safe code and adds no `unsafe` here. The allocator's 15 `unsafe` (the header written and read, the
+`GlobalAlloc` impl forwarding to `System`) are in `nova-safe/nova_meter/src/lib.rs`, audited there: each block's
+invariant in nova-safe's commit "Test the metering allocator at its edges, and under Miri", tests at the edges
+(alignments past 16, sizes no layout can hold, zero sizes, blocks freed on another thread and after their account was
+given up, all accounts taken, allocations while a thread's locals are destroyed) and Miri over them. `unsafe_report.py`
+allows `nova_meter` beside this crate and nothing else. Cost: 16 bytes more per block and one relaxed atomic per
+allocation and free, on the renderer's allocations too.
 
 ## The guard: no callback after `tw_helper_serve` returned
 
