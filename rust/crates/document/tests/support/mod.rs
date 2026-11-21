@@ -8,15 +8,15 @@
 
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::common::cases::report;
-use crate::common::tape::{self, Entry, Shared, TapeEngine};
-use crate::common::{FontStub, Run, Script, Tally, run_on, split};
+use crate::common::tape::{self, Entry, Shared, Tape, TapeEngine};
+use crate::common::{FontStub, Run, Script, SharedLog, Tally, run_on, split};
 use twidget_animations::{Declared, StyleValues};
 use twidget_document::{DocumentEngine, Process};
 use twidget_events::{EditorStyle, TextRun};
@@ -117,6 +117,11 @@ pub struct Checked {
     pub tape: TapeEngine,
     pub port: DocumentEngine<FontStub>,
     pub checks: Rc<RefCell<Checks>>,
+    /// The port's container's batches, as its stub writes them down.
+    pub batches: SharedLog,
+    /// The names this thread had added when the C++'s and the port's first answers of the chunk came: the C++
+    /// process's thread and the test's are counted from different starts.
+    pub names_offset: Rc<Cell<Option<(i64, i64)>>>,
 }
 
 impl std::fmt::Debug for Checked {
@@ -128,6 +133,36 @@ impl std::fmt::Debug for Checked {
 impl Checked {
     fn step(&self) -> usize {
         self.tape.tape.borrow().step
+    }
+
+    /// The batches the C++ container handed its stub during the call, as the tape had them, against the port's.
+    fn same_batches(&self, call: &str) {
+        let theirs: Vec<u8> = std::mem::take(&mut self.tape.tape.borrow_mut().batches).concat();
+        let mine = std::mem::take(&mut self.batches.borrow_mut().0);
+        if theirs.is_empty() && mine.is_empty() {
+            return;
+        }
+        let count = |b: &[u8]| {
+            let mut n = 0;
+            let mut at = 0;
+            while at + 5 <= b.len() && b[at] == b'T' {
+                n += 1;
+                let mut i = at + 5;
+                for _ in 0..u32::from_le_bytes([b[at + 1], b[at + 2], b[at + 3], b[at + 4]]) {
+                    let len = u32::from_le_bytes([b[i + 4], b[i + 5], b[i + 6], b[i + 7]]) as usize;
+                    i += 8 + len;
+                }
+                at = i;
+            }
+            n
+        };
+        let (n, m) = (count(&theirs), count(&mine));
+        let mut c = self.checks.borrow_mut();
+        c.tally.add_n("compared text_widths batches", n);
+        drop(c);
+        self.check(&format!("text_widths batches in {call}"), theirs == mine, || {
+            format!("{n} batches of {} bytes in C++, {m} of {} in Rust", theirs.len(), mine.len())
+        });
     }
 
     fn check(&self, method: &str, alike: bool, what: impl FnOnce() -> String) {
@@ -195,9 +230,15 @@ impl Engine for Checked {
     fn element_count(&mut self) -> u64 {
         same!(self, "element_count", element_count())
     }
+    fn measure_words(&mut self) {
+        self.tape.measure_words();
+        self.port.measure_words();
+        self.same_batches("measure_words");
+    }
     fn render(&mut self, width: f32, budget: u64) {
         self.tape.render(width, budget);
         self.port.render(width, budget);
+        self.same_batches("render");
     }
     fn layout_exhausted(&mut self) -> bool {
         same!(self, "layout_exhausted", layout_exhausted())
@@ -235,7 +276,13 @@ impl Engine for Checked {
         same!(self, "update_styles", update_styles(patches))
     }
     fn name_usage(&mut self) -> (u64, u64) {
-        same!(self, "name_usage", name_usage())
+        let a = self.tape.name_usage();
+        let b = self.port.name_usage();
+        let offset = (a.0 as i64 - b.0 as i64, a.1 as i64 - b.1 as i64);
+        let first = self.names_offset.get().unwrap_or(offset);
+        self.names_offset.set(Some(first));
+        self.check("name_usage", offset == first, || format!("C++ {a:?} / Rust {b:?}, the chunk's offset {first:?}"));
+        a
     }
     fn trim(&mut self) {
         self.tape.trim();
@@ -443,11 +490,7 @@ impl Engine for Checked {
         a
     }
     fn selectable_key(&mut self) -> [u64; 2] {
-        let a = self.tape.selectable_key();
-        let b = self.port.selectable_key();
-        let doc = self.checks.borrow_mut().same_doc(b[0], a[0]);
-        self.check("selectable_key", doc && a[1] == b[1], || format!("C++ {a:?} / Rust {b:?}"));
-        a
+        same!(self, "selectable_key", selectable_key())
     }
     fn any_selectable(&mut self) -> bool {
         same!(self, "any_selectable", any_selectable())
@@ -546,7 +589,8 @@ impl Engine for Checked {
     }
 }
 
-/// The C++ documents' addresses in creation order, as the tape shows them in the keys (0 where no key showed one).
+/// The C++ documents' addresses in creation order, as the tape shows them in the paint and text runs' keys (0 where no
+/// key showed one); the selectable text's key holds the document's serial.
 pub fn document_ids(entries: &[Entry]) -> Vec<u64> {
     let mut ids: Vec<u64> = Vec::new();
     let mut current: Option<usize> = None;
@@ -559,7 +603,6 @@ pub fn document_ids(entries: &[Entry]) -> Vec<u64> {
             }
             Entry::PaintKey(doc, _, _) => Some(*doc),
             Entry::RunsKey(k) => Some(k[0]),
-            Entry::SelectableKey(k) => Some(k[0]),
             _ => None,
         };
         if let (Some(p), Some(c)) = (seen, current)
@@ -603,7 +646,9 @@ pub fn compare_engines(oracle: &Oracle, scripts: &[(Script, String)], name: &str
         // One C++ process ran the chunk: one name table and declaration cache for each of the port's runs.
         let checked_process = Arc::new(Process::default());
         let whole_process = Arc::new(Process::default());
-        for ((script, what), (status, answer)) in chunk.iter().zip(&answers) {
+        let names_offset = Rc::new(Cell::new(None));
+        let mut whole: Vec<(usize, Vec<u64>)> = Vec::new();
+        for (index, ((script, what), (status, answer))) in chunk.iter().zip(&answers).enumerate() {
             let (tape_bytes, cpp) = split(answer);
             let entries = match tape::parse(tape_bytes) {
                 Ok(e) => e,
@@ -614,16 +659,16 @@ pub fn compare_engines(oracle: &Oracle, scripts: &[(Script, String)], name: &str
                 }
             };
             let ids = document_ids(&entries);
-            let reused = ids.windows(2).filter(|w| w[0] != 0 && w[0] == w[1]).count();
-            out.checked.add_n("documents made where the last one was", reused);
-            out.checked.add_n("documents made", ids.len());
             // Checked: both engines asked, the C++'s answers followed.
             let shared = Rc::new(RefCell::new(Shared { entries: VecDeque::from(entries), ..Shared::default() }));
             let checks = Rc::new(RefCell::new(Checks { what: what.clone(), ..Checks::default() }));
+            let batches = SharedLog::default();
             let engine = Checked {
                 tape: TapeEngine { tape: shared.clone() },
-                port: DocumentEngine::new(checked_process.clone(), FontStub::default()),
+                port: DocumentEngine::new(checked_process.clone(), FontStub::logging(batches.clone())),
                 checks: checks.clone(),
+                batches,
+                names_offset: names_offset.clone(),
             };
             let r = run_on(script, Some(shared), engine, &mut out.checked);
             if *status != 1 || !r.errors.is_empty() || cpp != r.transcript.as_slice() {
@@ -632,10 +677,18 @@ pub fn compare_engines(oracle: &Oracle, scripts: &[(Script, String)], name: &str
             let c = std::mem::take(&mut *checks.borrow_mut());
             out.checked.merge(c.tally);
             out.differences.extend(c.differences);
-            // End to end: the port's engine alone.
-            let mut engine = DocumentEngine::new(whole_process.clone(), FontStub::default());
+            whole.push((index, ids));
+        }
+        // End to end, after the chunk's checked runs (the names a thread adds are counted per thread, as the C++
+        // process's one thread counts them): the port's engine alone, its batches in the step's log.
+        for (index, ids) in whole {
+            let ((script, what), (_, answer)) = (&chunk[index], &answers[index]);
+            let (_, cpp) = split(answer);
+            let shared: Tape = Rc::default();
+            let log = shared.borrow().log.clone();
+            let mut engine = DocumentEngine::new(whole_process.clone(), FontStub::logging(log));
             engine.give_document_ids(ids);
-            let r: Run = run_on(script, None, engine, &mut out.whole);
+            let r: Run = run_on(script, Some(shared), engine, &mut out.whole);
             if cpp == r.transcript.as_slice() {
                 out.alike += 1;
             } else {
@@ -648,7 +701,7 @@ pub fn compare_engines(oracle: &Oracle, scripts: &[(Script, String)], name: &str
     }
     let mut s = String::new();
     for (k, v) in &out.checked.0 {
-        if k.starts_with("compared ") || k.starts_with("DIFFER ") || k.starts_with("documents made") {
+        if k.starts_with("compared ") || k.starts_with("DIFFER ") || k.starts_with("compared text_widths") {
             let _ = write!(s, " {k}={v}");
         }
     }

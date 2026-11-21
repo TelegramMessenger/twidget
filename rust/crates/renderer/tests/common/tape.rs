@@ -41,6 +41,8 @@ use super::{Tally, fnv64};
 pub enum Entry {
     Step(u32),
     Violation(Vec<u8>),
+    // a batch the container handed the stub, as the stub's log line ('T')
+    Widths(Vec<u8>),
     // the input's
     Hit { x: f64, y: f64, placement: bool, id: i64, rect: Rect },
     Box { id: i64, rect: Rect },
@@ -123,6 +125,7 @@ impl Entry {
         match self {
             Entry::Step(_) => "a step",
             Entry::Violation(_) => "a violation",
+            Entry::Widths(_) => "a widths batch",
             Entry::Hit { .. } => "hit",
             Entry::Box { .. } => "box_of",
             Entry::Exists { .. } => "has_element",
@@ -287,6 +290,15 @@ impl Take<'_> {
         Ok(match tag {
             b'S' => Entry::Step(self.u32()?),
             b'V' => Entry::Violation(self.str()?),
+            b'T' => {
+                let start = self.at - 1;
+                let n = self.count()?;
+                for _ in 0..n {
+                    self.i32()?;
+                    self.str()?;
+                }
+                Entry::Widths(self.s[start..self.at].to_vec())
+            }
             b'h' => {
                 let (x, y, placement, id) = (self.f64()?, self.f64()?, self.flag()?, self.i64()?);
                 let rect = if placement { self.rect()? } else { Rect::default() };
@@ -560,6 +572,10 @@ pub struct Shared {
     pub violations: Vec<Vec<u8>>,
     /// The step running, for the errors.
     pub step: usize,
+    /// The step's Backend log, into which the batches the C++ container made go where the tape has them.
+    pub log: super::SharedLog,
+    /// Those batches since a comparison last took them.
+    pub batches: Vec<Vec<u8>>,
 }
 
 pub type Tape = Rc<RefCell<Shared>>;
@@ -580,6 +596,11 @@ impl Shared {
                     self.tally.add("container violations");
                     self.violations.push(v);
                 }
+                Some(Entry::Widths(line)) => {
+                    self.tally.add("container batches");
+                    self.log.borrow_mut().0.extend_from_slice(&line);
+                    self.batches.push(line);
+                }
                 Some(e @ Entry::Step(_)) => {
                     self.error(format!("the port asked {asked} where the C++ asked nothing more"));
                     self.entries.push_front(e);
@@ -599,10 +620,18 @@ impl Shared {
 
     /// The next entry, without taking it (the violations before it are taken in).
     pub fn peek(&mut self) -> Option<&Entry> {
-        while let Some(Entry::Violation(_)) = self.entries.front() {
-            if let Some(Entry::Violation(v)) = self.entries.pop_front() {
-                self.tally.add("container violations");
-                self.violations.push(v);
+        while let Some(Entry::Violation(_) | Entry::Widths(_)) = self.entries.front() {
+            match self.entries.pop_front() {
+                Some(Entry::Violation(v)) => {
+                    self.tally.add("container violations");
+                    self.violations.push(v);
+                }
+                Some(Entry::Widths(line)) => {
+                    self.tally.add("container batches");
+                    self.log.borrow_mut().0.extend_from_slice(&line);
+                    self.batches.push(line);
+                }
+                _ => {}
             }
         }
         self.entries.front()

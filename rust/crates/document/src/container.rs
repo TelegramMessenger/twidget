@@ -12,10 +12,10 @@
 //! ([`Container::prepare_paint`]), since the document is drawing while the container is asked.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use twidget_ends::Backend;
+use twidget_ends::{Backend, TextInFont};
 use twidget_litehtml::Px;
 use twidget_litehtml::background::{BackgroundLayer, ConicGradient, GradientBase, LinearGradient, RadialGradient};
 use twidget_litehtml::borders::{BorderRadiuses, Borders};
@@ -349,29 +349,58 @@ impl Fonts {
         }
     }
 
-    /// `Face::width`.
+    /// `FaceWidths::width`.
     fn face_width(&mut self, backend: &mut dyn Backend, face: u64, text: &[u8]) -> f32 {
         let Some(f) = self.face_data.get(&face) else { return 0.0 };
         if let Some(&w) = f.widths.get(text) {
             return w;
         }
         let w = backend.text_width(f.handle, text);
+        self.remember(face, text, w);
+        w
+    }
+
+    /// `FaceWidths::remember`: a width kept under its text, within the face's entries and the bytes every face's
+    /// keys share; a text it holds already keeps its width.
+    fn remember(&mut self, face: u64, text: &[u8], w: f32) {
         // Words repeat across documents, but a widget that types a counter would grow this forever.
         if text.len() > MAX_WIDTH_KEY {
-            return w;
+            return;
         }
+        let Some(f) = self.face_data.get(&face) else { return };
         if f.widths.len() >= MAX_WIDTH_ENTRIES || self.width_bytes + text.len() > MAX_WIDTH_BYTES {
             self.forget(face);
         }
         if self.width_bytes + text.len() > MAX_WIDTH_BYTES {
-            return w; // other faces hold the budget
+            return; // other faces hold the budget
         }
-        if let Some(f) = self.face_data.get_mut(&face) {
-            f.widths.insert(text.to_vec(), w);
-            f.bytes += text.len();
+        let Some(f) = self.face_data.get_mut(&face) else { return };
+        if f.widths.contains_key(text) {
+            return;
         }
+        f.widths.insert(text.to_vec(), w);
+        f.bytes += text.len();
         self.width_bytes += text.len();
-        w
+    }
+
+    /// `face(font)` of `LayoutWidths::Fonts`: the face of a litehtml font, None for one the container does not know.
+    fn face_of(&self, font: u64) -> Option<u64> {
+        self.fonts.get(&font).map(|f| f.face)
+    }
+
+    /// Whether face `face` holds a width for `text`.
+    fn cached(&self, face: u64, text: &[u8]) -> bool {
+        self.face_data.get(&face).is_some_and(|f| f.widths.contains_key(text))
+    }
+
+    /// `painted_units(font, text)` of `LayoutWidths::Fonts`: the units a run in the font is painted in, none when it
+    /// adds no spacing.
+    fn painted_units<'t>(&self, font: u64, text: &'t [u8]) -> Vec<&'t [u8]> {
+        match self.fonts.get(&font) {
+            Some(f) if f.letter_spacing != 0.0 => spacing_units(text),
+            Some(f) if f.word_spacing != 0.0 && spacing_spaces(text) != 0 => spacing_words(text),
+            _ => Vec::new(),
+        }
     }
 
     /// `Font::width`.
@@ -395,8 +424,51 @@ impl Fonts {
     }
 }
 
-/// The images: by source (in the sources' order, where the C++'s `unordered_map` has its hash order: what
-/// `image_ready` meets first when ids repeat), the next id, the table's bounds.
+/// text_widths.cpp's `Asking`: one Backend call for widths no face has, in the order asked, each face within what its
+/// cache keeps.
+#[derive(Debug, Default)]
+struct Asking {
+    texts: Vec<TextInFont>,
+    faces: Vec<u64>,
+    asked: HashSet<(u64, Vec<u8>)>,
+    room: HashMap<u64, usize>,
+    pool: usize,
+}
+
+impl Asking {
+    fn add(&mut self, fonts: &Fonts, face: Option<u64>, text: &[u8]) {
+        let text = c_str(text); // every reader measures the text as a C string
+        let Some(face) = face else { return };
+        if text.len() > MAX_WIDTH_KEY || fonts.cached(face, text) || self.asked.contains(&(face, text.to_vec())) {
+            return;
+        }
+        // Past what the caches keep, a batch would forget its first answers before they are read.
+        let held = fonts.face_data.get(&face).map_or(0, |f| f.widths.len());
+        let left = self.room.entry(face).or_insert(MAX_WIDTH_ENTRIES - held.min(MAX_WIDTH_ENTRIES));
+        if *left == 0 || text.len() > MAX_WIDTH_BYTES - self.pool {
+            return;
+        }
+        *left -= 1;
+        self.pool += text.len();
+        self.asked.insert((face, text.to_vec()));
+        let handle = fonts.face_data.get(&face).map_or(0, |f| f.handle);
+        self.texts.push(TextInFont { font: handle, text: text.to_vec() });
+        self.faces.push(face);
+    }
+
+    fn send(self, fonts: &mut Fonts, backend: &mut dyn Backend) {
+        if self.texts.is_empty() {
+            return;
+        }
+        let widths = backend.text_widths(&self.texts);
+        for i in 0..self.texts.len().min(widths.len()) {
+            fonts.remember(self.faces[i], &self.texts[i].text, widths[i]);
+        }
+    }
+}
+
+/// The images: by source, in the sources' order (`image_ready` takes the first image of an id, and id 0 repeats), the
+/// next id, the table's bounds.
 #[derive(Debug, Default)]
 pub(crate) struct Images {
     pub map: BTreeMap<Vec<u8>, Image>,
@@ -431,13 +503,18 @@ struct Breaker {
 
 impl Breaker {
     fn new(text: &[u8], font: u64) -> Breaker {
+        Breaker { text: text.to_vec(), font, boundaries: Breaker::points(text), minimum: -1.0 }
+    }
+
+    /// `TextBreaker::points`: where the text may break, from 0 to its end.
+    pub(crate) fn points(text: &[u8]) -> Vec<usize> {
         let mut boundaries = vec![0usize];
         let ascii = text.iter().all(|&c| (0x20..0x7f).contains(&c));
         if ascii {
             for i in 1..=text.len() {
                 boundaries.push(i);
             }
-            return Breaker { text: text.to_vec(), font, boundaries, minimum: -1.0 };
+            return boundaries;
         }
         let decode = |at: usize| -> (usize, u32) {
             let c = text[at];
@@ -502,7 +579,7 @@ impl Breaker {
             at += n;
         }
         boundaries.push(text.len());
-        Breaker { text: text.to_vec(), font, boundaries, minimum: -1.0 }
+        boundaries
     }
 }
 
@@ -526,6 +603,8 @@ pub struct Container<K: Backend> {
     paint: RefCell<Paint>,
     breakers: RefCell<HashMap<u64, Breaker>>,
     next_breaker: Cell<u64>,
+    /// `LayoutWidths::breakable_`: during a layout, the shown texts it may break, as their font and text.
+    breakable: RefCell<Vec<(u64, Vec<u8>)>>,
     no_effects: Cell<bool>,
     /// `litehtml::g_paint_trace` is set: the paint callbacks return at once.
     tracing: Cell<bool>,
@@ -550,6 +629,7 @@ impl<K: Backend> Container<K> {
             paint: RefCell::new(Paint::default()),
             breakers: RefCell::new(HashMap::new()),
             next_breaker: Cell::new(0),
+            breakable: RefCell::new(Vec::new()),
             no_effects: Cell::new(false),
             tracing: Cell::new(false),
             owner_colors: RefCell::new(HashMap::new()),
@@ -753,6 +833,93 @@ impl<K: Backend> Container<K> {
             f.used = clock;
         }
         Some(id)
+    }
+
+    // ── a layout's widths in bulk (text_widths.cpp's `LayoutWidths`) ──
+
+    /// `LayoutWidths::before`'s asking: the words the `owed` texts owe (their measured font and text) and the units the
+    /// `shown` texts are painted in (their font, text and whether the layout may break them), measured in one
+    /// `Backend::text_widths` call; the shown texts the layout may break kept for its first unmeasured break.
+    pub fn widths_before(&self, owed: &[(u64, &[u8])], shown: &[(u64, &[u8], bool)]) {
+        let mut breakable = self.breakable.borrow_mut();
+        breakable.clear();
+        let mut fonts = self.fonts.borrow_mut();
+        let mut asking = Asking { pool: fonts.width_bytes, ..Asking::default() };
+        for &(font, text) in owed {
+            asking.add(&fonts, fonts.face_of(font), text);
+        }
+        for &(font, text, breaks) in shown {
+            let Some(face) = fonts.face_of(font) else { continue };
+            for unit in fonts.painted_units(font, text) {
+                asking.add(&fonts, Some(face), unit);
+            }
+            if breaks {
+                breakable.push((font, text.to_vec()));
+            }
+        }
+        drop(breakable);
+        asking.send(&mut fonts, &mut *self.backend.borrow_mut());
+    }
+
+    /// Whether the face of litehtml font `font` holds a width for `text` (an owed width it can pay at once).
+    pub fn has_width(&self, font: u64, text: &[u8]) -> bool {
+        let fonts = self.fonts.borrow();
+        fonts.face_of(font).is_some_and(|face| fonts.cached(face, text))
+    }
+
+    /// `LayoutWidths::after`: no text is kept past the layout.
+    pub fn widths_after(&self) {
+        self.breakable.borrow_mut().clear();
+    }
+
+    /// `TextBreaker::measure`: the width of `[from, to)` of the breaker's text, one character when `character`.
+    fn breaker_measure(&self, b: &Breaker, from: usize, to: usize, character: bool) -> f32 {
+        let piece = c_str(&b.text[from..to]);
+        if character { self.break_width(piece, b.font) } else { self.measure(piece, b.font) }
+    }
+
+    /// `break_width`: a character's width where a text breaks, as text_width gives it.
+    fn break_width(&self, text: &[u8], font: u64) -> f32 {
+        self.character(font, text);
+        self.measure(text, font)
+    }
+
+    /// `LayoutWidths::character`: the first character of a breaking text its face lacks asks for the characters of
+    /// every text kept, at most once a layout.
+    fn character(&self, font: u64, text: &[u8]) {
+        if self.breakable.borrow().is_empty() || text.len() > MAX_WIDTH_KEY {
+            return;
+        }
+        let missing = {
+            let fonts = self.fonts.borrow();
+            fonts.face_of(font).is_some_and(|face| !fonts.cached(face, text))
+        };
+        if missing {
+            self.measure_breaks();
+        }
+    }
+
+    /// `LayoutWidths::measure_breaks`: the break points of every text kept, in one request.
+    fn measure_breaks(&self) {
+        let texts = std::mem::take(&mut *self.breakable.borrow_mut());
+        let mut fonts = self.fonts.borrow_mut();
+        let mut asking = Asking { pool: fonts.width_bytes, ..Asking::default() };
+        for (font, t) in &texts {
+            let face = fonts.face_of(*font);
+            if face.is_none() || t.is_empty() {
+                continue;
+            }
+            // Every character of a run of spaces, as a preserved tab shows, is the one space.
+            if t.iter().all(|&c| c == b' ') {
+                asking.add(&fonts, face, b" ");
+                continue;
+            }
+            let points = Breaker::points(t);
+            for i in 1..points.len() {
+                asking.add(&fonts, face, &t[points[i - 1]..points[i]]);
+            }
+        }
+        asking.send(&mut fonts, &mut *self.backend.borrow_mut());
     }
 
     /// `text_width` of a litehtml font, through the width cache.
@@ -1630,6 +1797,10 @@ impl<K: Backend> DocumentContainer for Container<K> {
         }
     }
 
+    fn measures_text_later(&self) -> bool {
+        true
+    }
+
     fn create_text_breaker(&self, text: &[u8], font: u64) -> u64 {
         if !self.fonts.borrow().fonts.contains_key(&font) {
             return 0;
@@ -1641,8 +1812,9 @@ impl<K: Backend> DocumentContainer for Container<K> {
     }
 
     fn text_breaker_fit(&self, breaker: u64, start: usize, width: Px) -> usize {
-        let Some(b) = self.breakers.borrow().get(&breaker).cloned() else { return start };
-        let measure = |from: usize, to: usize| self.measure(c_str(&b.text[from..to]), b.font);
+        let breakers = self.breakers.borrow();
+        let Some(b) = breakers.get(&breaker) else { return start };
+        let measure = |from: usize, to: usize, character: bool| self.breaker_measure(b, from, to, character);
         let bounds = &b.boundaries;
         let first = bounds.partition_point(|&v| v < start);
         if first == bounds.len() || first + 1 == bounds.len() {
@@ -1652,14 +1824,14 @@ impl<K: Backend> DocumentContainer for Container<K> {
         let mut lo = first + 1;
         let mut hi = bounds.len() - 1;
         let width = width.value();
-        if width <= 0.0 || measure(start, bounds[lo]) > width {
+        if width <= 0.0 || measure(start, bounds[lo], bounds[first] == start) > width {
             return bounds[lo];
         }
         // The end of the line is near its start: halving the whole rest of the text measures it for every line.
         let mut step: usize = 1;
         while lo < hi {
             let probe = hi.min(lo + step);
-            if measure(start, bounds[probe]) > width {
+            if measure(start, bounds[probe], false) > width {
                 hi = probe - 1;
                 break;
             }
@@ -1668,7 +1840,7 @@ impl<K: Backend> DocumentContainer for Container<K> {
         }
         while lo < hi {
             let mid = (lo + hi).div_ceil(2);
-            if measure(start, bounds[mid]) <= width {
+            if measure(start, bounds[mid], false) <= width {
                 lo = mid;
             } else {
                 hi = mid - 1;
@@ -1678,12 +1850,14 @@ impl<K: Backend> DocumentContainer for Container<K> {
     }
 
     fn text_breaker_minimum_width(&self, breaker: u64) -> Px {
-        let Some(b) = self.breakers.borrow().get(&breaker).cloned() else { return Px(0.0) };
+        let breakers = self.breakers.borrow();
+        let Some(b) = breakers.get(&breaker) else { return Px(0.0) };
         if b.minimum < 0.0 {
             let mut minimum = 0.0f32;
             for i in 1..b.boundaries.len() {
-                minimum = cmax(minimum, self.measure(c_str(&b.text[b.boundaries[i - 1]..b.boundaries[i]]), b.font));
+                minimum = cmax(minimum, self.breaker_measure(b, b.boundaries[i - 1], b.boundaries[i], true));
             }
+            drop(breakers);
             if let Some(kept) = self.breakers.borrow_mut().get_mut(&breaker) {
                 kept.minimum = minimum;
             }

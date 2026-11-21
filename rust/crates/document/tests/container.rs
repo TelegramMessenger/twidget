@@ -377,6 +377,7 @@ fn container_page(r: &mut Lcg) -> String {
         "white-space:nowrap",
         "white-space:pre-wrap",
         "text-overflow:ellipsis;overflow:hidden;white-space:nowrap",
+        "overflow-wrap:anywhere",
     ];
     let sides = ["solid", "dashed", "dotted", "double", "none", "groove"];
     let backs = [
@@ -465,7 +466,8 @@ fn container_script(r: &mut Lcg) -> Script {
     s.dark = r.chance(3);
     for _ in 0..(3 + r.below(6)) {
         let id = 5 + r.below(max_id.max(6) as usize - 4) as i64;
-        match r.below(9) {
+        match r.below(10) {
+            9 => s.after(16.0, batch(&[style_op(id, "display", pick(r, &["none", "block", "flex", "inline-block"]))])),
             0 => s.after(16.0, batch(&[style_op(id, "font-size", &format!("{}px", 8 + r.below(20)))])),
             1 => s.after(16.0, batch(&[style_op(id, "letter-spacing", &format!("{}px", r.below(4)))])),
             2 => s.after(16.0, batch(&[style_op(id, "border", &format!("{}px {} red", r.below(7), pick(r, &sides_all())))])),
@@ -494,6 +496,154 @@ fn generated_widgets() {
     let mut r = Lcg::new(0x4207);
     let scripts: Vec<(Script, String)> = (0..600).map(|i| (container_script(&mut r), format!("container widget {i}"))).collect();
     compare_engines(&oracle, &scripts, "generated widgets");
+}
+
+// ---- A layout's words in batches (text_widths.cpp's `LayoutWidths`) ---------------------------------------------
+
+/// Ops that put `<tag style>text</tag>` (ids `id` and `id + 1`) at the end of `parent`.
+fn insert(parent: i64, id: i64, tag: &str, style: &str, text: &str) -> Vec<String> {
+    vec![
+        format!("{{\"op\":\"el\",\"id\":{id},\"tag\":{},\"attrs\":[[\"style\",{}]]}}", quote(tag), quote(style)),
+        format!("{{\"op\":\"text\",\"id\":{},\"data\":{}}}", id + 1, quote(text)),
+        format!("{{\"op\":\"ins\",\"parent\":{id},\"id\":{},\"before\":null}}", id + 1),
+        format!("{{\"op\":\"ins\",\"parent\":{parent},\"id\":{id},\"before\":null}}"),
+    ]
+}
+
+fn data_op(id: i64, text: &str) -> String {
+    format!("{{\"op\":\"data\",\"id\":{id},\"data\":{}}}", quote(text))
+}
+
+/// `n` different words from `from`, each `pad` letters longer than its number.
+fn words(prefix: &str, from: usize, n: usize, pad: usize) -> String {
+    (from..from + n).map(|i| format!("{prefix}{i:05}{} ", "z".repeat(pad))).collect()
+}
+
+/// Owed words past what a face's cache keeps: a face asked more words than it has room for, one asked again with part
+/// of its room taken, one whose words take the bytes every face shares, words longer than a key, a face the trim
+/// emptied.
+fn owed_past_room(measuring: u8) -> Script {
+    let html = format!(
+        "<p style=\"font-size:12px\">{}</p><p style=\"font-size:13px\">{}</p><p style=\"font-size:14px\">{}</p><p style=\"font-size:15px\">{} {} short words</p>",
+        words("a", 0, 4200, 0),
+        words("b", 0, 3000, 0),
+        words("c", 0, 4200, 245),
+        "L".repeat(300),
+        "M".repeat(257)
+    );
+    let (mut s, _) = widget(&html, 320.0, 1.0, measuring);
+    s.after(16.0, batch(&insert(4, 900, "p", "font-size:13px", &words("b", 3000, 2000, 0))));
+    s.after(16.0, Step::Paint);
+    s.after(16.0, Step::Width(250.0));
+    s.after(16.0, Step::Trim);
+    s.after(16.0, batch(&insert(4, 902, "p", "font-size:12px", &words("a", 100, 50, 0))));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+/// Runs painted with letter or word spacing, unit by unit: a no-break space, runs of spaces, transforms, a negative
+/// spacing, spacing of 0, marks and emoji, a spaced run that breaks, one under a display:none box; then the box shown
+/// and the spacings changed.
+fn spaced_runs(measuring: u8) -> Script {
+    let html = "<p style=\"letter-spacing:2px\">Spaced CAPS</p>\
+<p style=\"word-spacing:4px\">10\u{a0}000 apart  and   more</p>\
+<div style=\"display:none\"><p style=\"letter-spacing:3px\">QXZ hidden</p></div>\
+<p style=\"letter-spacing:1px;text-transform:uppercase\">shout it</p>\
+<p style=\"letter-spacing:-0.5px;word-spacing:2px\">tight words</p>\
+<pre style=\"word-spacing:3px\">a\tb  c\nd</pre>\
+<p style=\"letter-spacing:2px;width:30px;overflow-wrap:anywhere\">spacedbreaking</p>\
+<p style=\"word-spacing:0\">no units</p>\
+<span style=\"letter-spacing:1px\">e\u{301}e\u{301}\u{1f600}x</span>";
+    let (mut s, _) = widget(html, 320.0, 1.0, measuring);
+    s.after(16.0, batch(&[style_op(9, "display", "block")]));
+    s.after(16.0, Step::Paint);
+    s.after(16.0, batch(&[style_op(5, "letter-spacing", "5px"), style_op(7, "word-spacing", "0")]));
+    s.after(16.0, Step::Paint);
+    s.after(16.0, batch(&insert(4, 900, "p", "letter-spacing:1px;word-spacing:1px", "fresh spaced letters")));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+/// Texts a layout may break at their narrowest or in their line: flex items, table cells, a shrink-to-fit box, a
+/// float, preserved tabs and line breaks broken anywhere, spaces alone, a word that may not wrap, break-all, a flex row
+/// under a display:none box; then new items, a narrower view, the trim, new letters and the hidden row shown.
+fn narrowest_breaks(measuring: u8) -> Script {
+    let html = "<div style=\"display:flex\"><div>breakable</div><div>pieces</div></div>\
+<p>plain fits</p>\
+<div style=\"display:none\"><div style=\"display:flex\"><div>VWK</div></div></div>\
+<table><tr><td>cellword</td><td>other cell</td></tr></table>\
+<div style=\"display:inline-block\">shrink to fit</div>\
+<div style=\"float:left\">floated words</div>\
+<div style=\"display:flex\"><div style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:17px serif\">ab\tcd</div></div>\
+<div style=\"width:20px;overflow-wrap:anywhere;font:13px monospace\">abcdefgh</div>\
+<div style=\"width:300px;white-space:pre-wrap;overflow-wrap:anywhere;font:19px serif\">ab\ncd</div>\
+<div style=\"width:300px;white-space:pre-wrap;overflow-wrap:anywhere;font:17px serif\">a\t\t\t\tb</div>\
+<div style=\"white-space:pre-wrap;overflow-wrap:anywhere;width:10px\">     </div>\
+<div style=\"display:flex\"><div style=\"white-space:nowrap\">no wrap here</div></div>\
+<div style=\"width:30px;word-break:break-all\">breakallwords</div>";
+    let (mut s, _) = widget(html, 320.0, 1.0, measuring);
+    s.after(16.0, batch(&insert(5, 900, "div", "", "QXZ")));
+    s.after(16.0, Step::Paint);
+    s.after(16.0, Step::Width(200.0));
+    let mut row = vec![
+        "{\"op\":\"el\",\"id\":910,\"tag\":\"div\",\"attrs\":[[\"style\",\"display:flex\"]]}".to_string(),
+        "{\"op\":\"ins\",\"parent\":4,\"id\":910,\"before\":null}".to_string(),
+    ];
+    row.extend(insert(910, 911, "div", "", "JJ"));
+    row.extend(insert(5, 913, "div", "", "YY"));
+    s.after(16.0, batch(&row));
+    s.after(16.0, Step::Trim);
+    s.after(16.0, batch(&insert(4, 920, "div", "width:20px;overflow-wrap:anywhere;font:13px monospace", "mnopqrst")));
+    s.after(16.0, batch(&[style_op(12, "display", "block")]));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+/// Texts no box shows: under display:none boxes, nested ones, a list, a title, styles; a hidden text beside a shown
+/// one; the boxes shown and hidden again.
+fn hidden_texts(measuring: u8) -> Script {
+    let html = "<div style=\"display:none\">hidden words here<span>nested hidden</span><p style=\"display:block\">still hidden</p></div>\
+<p style=\"visibility:hidden\">invisible but shown</p>\
+<style>.x{color:red}</style><title>a title of words</title>\
+<div style=\"display:none\"><div style=\"display:none\">doubly hidden</div></div>\
+<p>shown words</p>\
+<ul style=\"display:none\"><li style=\"letter-spacing:2px\">hidden item</li></ul>";
+    let (mut s, _) = widget(html, 320.0, 1.0, measuring);
+    s.after(16.0, Step::Paint);
+    s.after(16.0, batch(&[style_op(5, "display", "block")]));
+    s.after(16.0, Step::Paint);
+    s.after(16.0, batch(&[style_op(5, "display", "none"), style_op(12, "visibility", "visible")]));
+    s.after(16.0, batch(&insert(5, 900, "p", "letter-spacing:1px", "new hidden words")));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+/// A sole text patched in place, whose new words the document reads before any layout until a size differs, and a text
+/// beside another.
+fn patched_texts(measuring: u8) -> Script {
+    let (mut s, _) = widget("<p>alpha beta</p><p>left <b>bold</b> right</p>", 320.0, 1.0, measuring);
+    for text in ["gamma zeta", "epsilons iota", "one two three", "   ", "", "alpha beta"] {
+        s.after(16.0, batch(&[data_op(6, text)]));
+        s.after(16.0, Step::Paint);
+    }
+    s.after(16.0, batch(&[data_op(8, "far left "), data_op(11, " far right")]));
+    s.after(16.0, Step::Paint);
+    s
+}
+
+#[test]
+fn written_batches() {
+    let Some(oracle) = oracle() else { return };
+    let mut scripts = Vec::new();
+    for measuring in [0, 1] {
+        scripts.push((owed_past_room(measuring), format!("owed words past the caches' room measuring {measuring}")));
+        scripts.push((spaced_runs(measuring), format!("spaced runs measuring {measuring}")));
+        scripts.push((narrowest_breaks(measuring), format!("narrowest breaks measuring {measuring}")));
+        scripts.push((hidden_texts(measuring), format!("hidden texts measuring {measuring}")));
+        scripts.push((patched_texts(measuring), format!("patched texts measuring {measuring}")));
+    }
+    let out = compare_engines(&oracle, &scripts, "written batches");
+    assert!(out.checked.count("compared text_widths batches") > 0, "the container's batches are compared");
 }
 
 // ---- What the sets above leave: written to reach the container's rarer branches -------------------------------

@@ -96,6 +96,12 @@ pub struct DocumentEngine<K: Backend> {
     next_doc: u64,
     /// Identities to give the next documents, in order, before counting: what a comparison sets to the C++'s.
     given_ids: std::collections::VecDeque<u64>,
+    /// `documents_`: the documents made, which `document_serial` counts by.
+    documents: u64,
+    /// What the last walk took for `measure_words`, in document order: the texts that owe their widths, and the texts
+    /// no `display: none` box hides.
+    owed: Vec<ElementId>,
+    shown: Vec<ElementId>,
     elements: BTreeMap<i64, ElementId>,
     scans: Vec<Scan>,
     scan_generation: u64,
@@ -131,6 +137,9 @@ impl<K: Backend> DocumentEngine<K> {
             doc_id: 0,
             next_doc: 0,
             given_ids: std::collections::VecDeque::new(),
+            documents: 0,
+            owed: Vec::new(),
+            shown: Vec::new(),
             elements: BTreeMap::new(),
             scans: Vec::new(),
             scan_generation: 0,
@@ -445,6 +454,7 @@ impl<K: Backend> Engine for DocumentEngine<K> {
         self.container.drop_cached();
         let doc = Document::create_updatable(html, master, &self.cx());
         self.doc = Some(doc);
+        self.documents += 1;
         self.next_doc += 1;
         self.doc_id = self.given_ids.pop_front().unwrap_or(self.next_doc);
         true
@@ -455,14 +465,46 @@ impl<K: Backend> Engine for DocumentEngine<K> {
     }
 
     fn element_count(&mut self) -> u64 {
+        self.owed.clear();
+        self.shown.clear();
         let Some(doc) = self.doc.as_ref() else { return 0 };
         let mut elements = 0u64;
-        let mut pending: Vec<ElementId> = doc.root.into_iter().collect();
-        while let Some(el) = pending.pop() {
+        let mut pending: Vec<(ElementId, bool)> = doc.root.into_iter().map(|r| (r, false)).collect();
+        while let Some((el, hidden)) = pending.pop() {
             elements += 1;
-            pending.extend_from_slice(doc.children(el));
+            let hidden = hidden || doc.el(el).css.m_display == StyleDisplay::display_none.index();
+            if doc.is_text(el) {
+                if doc.width_owed(el) {
+                    self.owed.push(el);
+                }
+                if !hidden {
+                    self.shown.push(el);
+                }
+            }
+            pending.extend(doc.children(el).iter().rev().map(|&c| (c, hidden)));
         }
         elements
+    }
+
+    fn measure_words(&mut self) {
+        let Some(doc) = self.doc.as_ref() else { return };
+        let owed: Vec<(u64, &[u8])> = self.owed.iter().map(|&t| (doc.measured_font(t), doc.display_text(t))).collect();
+        let shown: Vec<(u64, &[u8], bool)> = self
+            .shown
+            .iter()
+            .map(|&t| (doc.el(t).css.m_font, doc.display_text(t), doc.breaks_in_line(t) || doc.breaks_at_narrowest(t)))
+            .collect();
+        self.container.widths_before(&owed, &shown);
+        let cx =
+            StyleCx { names: &self.process.names, container: &self.container, cache: &self.process.cache, switches: self.process.switches };
+        for &t in &self.owed {
+            if self.container.has_width(doc.measured_font(t), doc.display_text(t)) {
+                doc.measure_width(&cx, t);
+            }
+        }
+        for &t in &self.owed {
+            doc.measure_width(&cx, t);
+        }
     }
 
     fn render(&mut self, width: f32, budget: u64) {
@@ -472,6 +514,7 @@ impl<K: Backend> Engine for DocumentEngine<K> {
             doc.set_layout_budget(budget);
             doc.layout_document(&cx, Px(width));
         }
+        self.container.widths_after();
         self.layouts += 1;
     }
 
@@ -570,7 +613,7 @@ impl<K: Backend> Engine for DocumentEngine<K> {
     }
 
     fn name_usage(&mut self) -> (u64, u64) {
-        let u = self.process.names.usage();
+        let u = Names::thread_usage();
         (u.names as u64, u.bytes as u64)
     }
 
@@ -1009,7 +1052,9 @@ impl<K: Backend> Engine for DocumentEngine<K> {
     }
 
     fn selectable_key(&mut self) -> [u64; 2] {
-        [self.doc_id, self.doc.as_ref().map_or(0, |d| d.layout.style_epoch)]
+        // `document_serial()`: which document, counted from 1; 0 for none.
+        let serial = if self.doc.is_some() { self.documents } else { 0 };
+        [serial, self.doc.as_ref().map_or(0, |d| d.layout.style_epoch)]
     }
 
     fn any_selectable(&mut self) -> bool {

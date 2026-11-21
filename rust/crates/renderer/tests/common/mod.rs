@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
 use std::rc::Rc;
 
+use twidget_ends::TextInFont;
 use twidget_json::Json;
 use twidget_renderer::{Backend, Clock, Composition, Engine, LayerTrack, Renderer};
 pub use twidget_testkit::Fields;
@@ -433,7 +434,8 @@ fn canonical(ops: &[CanvasOp]) -> Vec<CanvasOp> {
 #[derive(Debug, Default)]
 pub struct Stub {
     next_canvas_font: i32,
-    pub log: Out,
+    /// The step's log, which the replayed tape (the container's batches) writes into too.
+    pub log: SharedLog,
     /// Each canvas run's ops, for the tests.
     pub runs: Vec<(i32, Vec<CanvasOp>)>,
     pub released: Vec<i32>,
@@ -445,6 +447,10 @@ pub struct Stub {
 impl Stub {
     pub fn new() -> Stub {
         Stub { next_canvas_font: CANVAS_FONTS, ..Stub::default() }
+    }
+    /// A stub writing into `log`.
+    pub fn with_log(log: SharedLog) -> Stub {
+        Stub { next_canvas_font: CANVAS_FONTS, log, ..Stub::default() }
     }
     fn metrics(size: f32, out: &mut FontMetrics) {
         out.ascent = size * 0.8;
@@ -465,27 +471,27 @@ impl Backend for Stub {
         self.next_canvas_font += 1;
         let handle = self.next_canvas_font;
         self.made.push(handle);
-        self.log.u8(b'F');
-        self.log.str(families);
-        self.log.f32(size_px);
-        self.log.i32(weight);
-        self.log.flag(italic);
-        self.log.i32(handle);
+        self.log.borrow_mut().u8(b'F');
+        self.log.borrow_mut().str(families);
+        self.log.borrow_mut().f32(size_px);
+        self.log.borrow_mut().i32(weight);
+        self.log.borrow_mut().flag(italic);
+        self.log.borrow_mut().i32(handle);
         handle
     }
     fn delete_font(&mut self, font: i32) {
         if font > CANVAS_FONTS {
             self.deleted.push(font);
-            self.log.u8(b'D');
-            self.log.i32(font);
+            self.log.borrow_mut().u8(b'D');
+            self.log.borrow_mut().i32(font);
         }
     }
     fn text_width(&mut self, font: i32, text: &[u8]) -> f32 {
         if font > CANVAS_FONTS {
             self.measured_in.push(font);
-            self.log.u8(b'W');
-            self.log.i32(font);
-            self.log.str(text);
+            self.log.borrow_mut().u8(b'W');
+            self.log.borrow_mut().i32(font);
+            self.log.borrow_mut().str(text);
         }
         8.0 * text.len() as f32
     }
@@ -495,26 +501,26 @@ impl Backend for Stub {
     fn canvas_run(&mut self, id: i32, w: i32, h: i32, ops: &[CanvasOp]) {
         let mut bytes = Vec::new();
         let encoded = encode_batch(&canonical(ops), &Caps::default(), &mut bytes);
-        self.log.u8(b'R');
-        self.log.i32(id);
-        self.log.i32(w);
-        self.log.i32(h);
-        self.log.u32(ops.len() as u32);
-        self.log.flag(encoded);
-        self.log.u64(fnv64(&bytes));
+        self.log.borrow_mut().u8(b'R');
+        self.log.borrow_mut().i32(id);
+        self.log.borrow_mut().i32(w);
+        self.log.borrow_mut().i32(h);
+        self.log.borrow_mut().u32(ops.len() as u32);
+        self.log.borrow_mut().flag(encoded);
+        self.log.borrow_mut().u64(fnv64(&bytes));
         self.runs.push((id, ops.to_vec()));
     }
     fn canvas_read(&mut self, id: i32, x: i32, y: i32, w: i32, h: i32, _rgba: &mut Vec<u8>) -> bool {
-        self.log.u8(b'G');
+        self.log.borrow_mut().u8(b'G');
         for v in [id, x, y, w, h] {
-            self.log.i32(v);
+            self.log.borrow_mut().i32(v);
         }
         false
     }
     fn canvas_release(&mut self, id: i32) {
         self.released.push(id);
-        self.log.u8(b'X');
-        self.log.i32(id);
+        self.log.borrow_mut().u8(b'X');
+        self.log.borrow_mut().i32(id);
     }
 }
 
@@ -524,12 +530,36 @@ thread_local! {
     pub static MEASURING: Cell<(u8, u64)> = const { Cell::new((0, 0)) };
 }
 
+/// The log of a step's Backend calls, which more than one writer shares: the renderer's stub, the replayed tape and the
+/// container's stub.
+pub type SharedLog = Rc<RefCell<Out>>;
+
+/// A container's batch as the oracle's stub writes it down: 'T', u32 texts, each i32 font and str text.
+pub fn widths_line(texts: &[TextInFont]) -> Vec<u8> {
+    let mut o = Out::default();
+    o.u8(b'T');
+    o.u32(texts.len() as u32);
+    for t in texts {
+        o.i32(t.font);
+        o.str(&t.text);
+    }
+    o.0
+}
+
 /// The oracle's stub backend as the container meets it (the C++ `Stub`'s calls the renderer does not log): document
 /// fonts numbered from 1, 8 px a byte of text, images that decode as their URL says ("fail" never, "async" later with
 /// no size, any other at 24 x 16).
 #[derive(Debug, Default)]
 pub struct FontStub {
     next: i32,
+    /// Where its batches are written down, as the oracle's stub writes them in the step's log.
+    pub log: Option<SharedLog>,
+}
+
+impl FontStub {
+    pub fn logging(log: SharedLog) -> FontStub {
+        FontStub { next: 0, log: Some(log) }
+    }
 }
 
 impl Backend for FontStub {
@@ -546,6 +576,12 @@ impl Backend for FontStub {
             return 8.0 * text.len() as f32 + (measured % 5) as f32 * 0.25;
         }
         8.0 * text.len() as f32
+    }
+    fn text_widths(&mut self, texts: &[TextInFont]) -> Vec<f32> {
+        if let Some(log) = &self.log {
+            log.borrow_mut().0.extend_from_slice(&widths_line(texts));
+        }
+        texts.iter().map(|t| self.text_width(t.font, &t.text)).collect()
     }
     fn load_image(&mut self, _id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool {
         let has = |needle: &[u8]| url.windows(needle.len()).any(|w| w == needle);
@@ -1113,11 +1149,18 @@ pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: 
     let replaying = !shared.borrow().entries.is_empty();
     MEASURING.with(|m| m.set((0, 0)));
     let clock = Rc::new(Cell::new(script.t0));
-    let mut r: Renderer<E, Stub> =
-        Renderer::new(script.width, script.dpr, script.dark, engine, Stub::new(), Some(Box::new(StepClock(clock.clone()))));
+    let step_log = shared.borrow().log.clone();
+    let mut r: Renderer<E, Stub> = Renderer::new(
+        script.width,
+        script.dpr,
+        script.dark,
+        engine,
+        Stub::with_log(step_log.clone()),
+        Some(Box::new(StepClock(clock.clone()))),
+    );
     let mut run = Run::default();
     let mut o = Out::default();
-    let log = std::mem::take(&mut r.core_mut().backend.log);
+    let log = std::mem::take(&mut *step_log.borrow_mut());
     o.str(&log.0);
     build_state(&mut r, &mut o);
     layers_state(&r, &mut o);
@@ -1236,7 +1279,7 @@ pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: 
         }
         messages(&out, &mut o, tally);
         o.0.extend_from_slice(&extra.0);
-        let log = std::mem::take(&mut r.core_mut().backend.log);
+        let log = std::mem::take(&mut *step_log.borrow_mut());
         o.str(&log.0);
         input_state(&mut r, &mut o);
         build_state(&mut r, &mut o);

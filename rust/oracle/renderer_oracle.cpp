@@ -168,6 +168,22 @@ struct Stub : Backend {
         if (mode == 1 && font <= CANVAS_FONTS) return 8.0f * float(text.size()) + float(measured++ % 5) * 0.25f;
         return 8.0f * float(text.size());
     }
+    // The container's batches, written down where they are made: in the step's log, and on the tape, which the port's replay writes into its log at the same place.
+    std::vector<float> text_widths(const std::vector<twlite::TextInFont>& texts) override {
+        Out line;
+        line.u8('T');
+        line.raw(uint32_t(texts.size()));
+        for (const twlite::TextInFont& t : texts) {
+            line.raw(int32_t(t.font));
+            line.str(t.text);
+        }
+        if (log) log->s += line.s;
+        if (twp::recording()) twp::tape.bytes += line.s;
+        std::vector<float> widths;
+        widths.reserve(texts.size());
+        for (const twlite::TextInFont& t : texts) widths.push_back(text_width(t.font, t.text));
+        return widths;
+    }
     bool load_image(int, const std::string& url, float& w, float& h) override {
         if (url.find("fail") != std::string::npos) return false;
         if (url.find("async") != std::string::npos) {
