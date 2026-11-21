@@ -30,7 +30,7 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use twidget_json::Json;
-use twidget_renderer::{Backend, Clock, Composition, LayerTrack, Renderer};
+use twidget_renderer::{Backend, Clock, Composition, Engine, LayerTrack, Renderer};
 pub use twidget_testkit::Fields;
 use twidget_wire::{CanvasOp, Caps, DisplayList, FontMetrics, Radii, Rect, encode_batch, encode_list};
 
@@ -510,6 +510,40 @@ impl Backend for Stub {
     }
 }
 
+/// The oracle's stub backend as the container meets it (the C++ `Stub`'s calls the renderer does not log): document
+/// fonts numbered from 1, 8 px a byte of text, images that decode as their URL says ("fail" never, "async" later with
+/// no size, any other at 24 x 16).
+#[derive(Debug, Default)]
+pub struct FontStub {
+    next: i32,
+}
+
+impl Backend for FontStub {
+    fn create_font(&mut self, _families: &[u8], size_px: f32, _weight: i32, _italic: bool, _features: &[u8], out: &mut FontMetrics) -> i32 {
+        Stub::metrics(size_px, out);
+        self.next += 1;
+        self.next
+    }
+    fn delete_font(&mut self, _font: i32) {}
+    fn text_width(&mut self, _font: i32, text: &[u8]) -> f32 {
+        8.0 * text.len() as f32
+    }
+    fn load_image(&mut self, _id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool {
+        let has = |needle: &[u8]| url.windows(needle.len()).any(|w| w == needle);
+        if has(b"fail") {
+            return false;
+        }
+        if has(b"async") {
+            *w = 0.0;
+            *h = 0.0;
+            return true;
+        }
+        *w = 24.0;
+        *h = 16.0;
+        true
+    }
+}
+
 /// The script's clock: each step's time.
 #[derive(Debug)]
 pub struct StepClock(pub Rc<Cell<f64>>);
@@ -525,7 +559,7 @@ pub type Port = Renderer<TapeEngine, Stub>;
 // ---- The transcript -----------------------------------------------------------------------------------------
 
 /// The input's state, as the oracle's RendererOracle::input writes the C++'s.
-pub fn input_state(r: &mut Port, o: &mut Out) {
+pub fn input_state<E: Engine>(r: &mut Renderer<E, Stub>, o: &mut Out) {
     let events = r.events();
     let doc = r.document();
     o.u32(events.touches().len() as u32);
@@ -620,7 +654,7 @@ pub fn input_state(r: &mut Port, o: &mut Out) {
 }
 
 /// What the builds, the reports, the animations and the canvas fonts left, as RendererOracle::build writes it.
-pub fn build_state(r: &mut Port, o: &mut Out) {
+pub fn build_state<E: Engine>(r: &mut Renderer<E, Stub>, o: &mut Out) {
     let theme = r.theme_variables_json();
     let master = fnv64(r.master_css());
     let (width, dpr, vp) = (r.width(), r.dpr(), r.viewport_height());
@@ -827,7 +861,7 @@ fn sorted_ids(ids: impl Iterator<Item = i64>, o: &mut Out) {
 }
 
 /// What stage 4.5 left, as RendererOracle::layers writes it.
-pub fn layers_state(r: &Port, o: &mut Out) {
+pub fn layers_state<E: Engine>(r: &Renderer<E, Stub>, o: &mut Out) {
     let l = &r.core().layers;
     o.flag(l.compositing);
     o.u32(l.promoted.len() as u32);
@@ -1045,15 +1079,22 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
         Err(e) => return Run { errors: vec![format!("the tape does not parse: {e}")], ..Run::default() },
     };
     let shared = Rc::new(RefCell::new(Shared { entries: VecDeque::from(entries), ..Shared::default() }));
+    run_on(script, Some(shared.clone()), TapeEngine { tape: shared }, tally)
+}
+
+/// The script through the port on `engine`; with `shared`, the tape the engine replays, whose steps it follows and
+/// whose errors and tallies it reports.
+pub fn run_on<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: E, tally: &mut Tally) -> Run {
+    run_with(script, shared, engine, tally, |_| ())
+}
+
+/// [`run_on`], `after` shown the engine once the script ran.
+pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: E, tally: &mut Tally, after: impl FnOnce(&mut E)) -> Run {
+    let shared = shared.unwrap_or_default();
+    let replaying = !shared.borrow().entries.is_empty();
     let clock = Rc::new(Cell::new(script.t0));
-    let mut r: Port = Renderer::new(
-        script.width,
-        script.dpr,
-        script.dark,
-        TapeEngine { tape: shared.clone() },
-        Stub::new(),
-        Some(Box::new(StepClock(clock.clone()))),
-    );
+    let mut r: Renderer<E, Stub> =
+        Renderer::new(script.width, script.dpr, script.dark, engine, Stub::new(), Some(Box::new(StepClock(clock.clone()))));
     let mut run = Run::default();
     let mut o = Out::default();
     let log = std::mem::take(&mut r.core_mut().backend.log);
@@ -1063,11 +1104,13 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
     for (i, (t, step)) in script.steps.iter().enumerate() {
         clock.set(*t);
         shared.borrow_mut().step = i;
-        match shared.borrow_mut().entries.pop_front() {
-            Some(Entry::Step(n)) if n as usize == i => {}
-            other => {
-                shared.borrow_mut().error(format!("step {i} ({}): expected its start, got {other:?}", step.name()));
-                break;
+        if replaying {
+            match shared.borrow_mut().entries.pop_front() {
+                Some(Entry::Step(n)) if n as usize == i => {}
+                other => {
+                    shared.borrow_mut().error(format!("step {i} ({}): expected its start, got {other:?}", step.name()));
+                    break;
+                }
             }
         }
         tally.add(format!("step {}", step.name()));
@@ -1209,11 +1252,12 @@ pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
     run.transcript = o.0;
     let stub = std::mem::replace(&mut r.core_mut().backend, Stub::new());
     run.stub = stub;
+    after(&mut r.core_mut().engine);
     run
 }
 
 /// What a paint shows of stage 4.5, for the tallies: its layers by kind, its damage.
-fn tally_paint(r: &Port, valid: bool, rects: &[Rect], tally: &mut Tally) {
+fn tally_paint<E: Engine>(r: &Renderer<E, Stub>, valid: bool, rects: &[Rect], tally: &mut Tally) {
     let l = &r.core().layers;
     for layer in &r.composition().layers {
         let kind = match l.promoted.get(&layer.id) {

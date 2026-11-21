@@ -44,10 +44,21 @@ pub struct TextContent {
 ///
 /// The document's life is ported in this crate (`Container::build`, `layout` with the layout budget, `patch`,
 /// `restyle`, `depends_on_viewport_height`); these are the fork's calls it makes. The container's parts of stage
-/// 4.2 (fonts, images, the declaration scans, the caches a new document drops) answer here too. What the C++
-/// container reads of the renderer while it parses or lays out (the width and the scale for media features, the
-/// canvases a `tw-canvas:` source names) comes with that stage.
+/// 4.2 (fonts, images, the declaration scans, the caches a new document drops) answer here too, and what the C++
+/// container reads of the renderer while it parses, lays out or paints is told to it as it changes (`viewport`,
+/// `viewport_height`, `canvases`). `twidget_document::DocumentEngine` is the one on the Rust litehtml.
 pub trait Engine {
+    // ── what the C++ container reads of the renderer, told as it changes ──
+
+    /// The renderer's width and scale (`r_.width_`, `r_.dpr_`): the media features, the viewport and the paint's clip
+    /// read them.
+    fn viewport(&mut self, _width: f64, _dpr: f64) {}
+    /// The container's viewport height (`vp_height_`), set by a build or a resize without a layout.
+    fn viewport_height(&mut self, _vp_height: i32) {}
+    /// The canvases the renderer holds (`r_.canvases_`): each one's id, width and height, which a `tw-canvas:` source
+    /// names. Told before what may load an image.
+    fn canvases(&mut self, _held: &[(i32, i32, i32)]) {}
+
     // ── the document's life ──
 
     /// `litehtml::has_viewport_units`: the HTML has a viewport length the fork folds to px as it parses.
@@ -159,7 +170,9 @@ pub trait Engine {
     fn mouse(&mut self, action: i32, x: f64, y: f64, hovers: bool) -> bool;
     fn leave(&mut self) -> bool;
     fn cursor(&mut self) -> Vec<u8>;
-    fn editor_style(&mut self, id: i64) -> Option<EditorStyle>;
+    /// `Container::editor_style(id, spec)`: `clip` is the spec's clip as it is, which the C++ leaves there when no
+    /// ancestor clips.
+    fn editor_style(&mut self, id: i64, clip: Rect) -> Option<EditorStyle>;
     fn image_of(&mut self, src: &[u8]) -> Option<(i32, f32, f32)>;
     fn image_ready(&mut self, id: i32, w: f32, h: f32) -> bool;
     fn content_size(&mut self, id: i64) -> (f32, f32);

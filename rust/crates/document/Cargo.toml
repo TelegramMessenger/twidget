@@ -1,0 +1,31 @@
+[package]
+name = "twidget_document"
+description = "The renderer's litehtml document and container: TwidgetCore's Container on the Rust litehtml (fonts and the width cache, the text breaker, images, the display list), and the render-tree reads behind twidget_renderer's Engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_animations = { path = "../animations" }
+twidget_canvas = { path = "../canvas" }
+twidget_computed_style = { path = "../computed_style" }
+twidget_css = { path = "../css" }
+twidget_cstd = { path = "../cstd" }
+twidget_ends = { path = "../ends" }
+twidget_events = { path = "../events" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_litehtml = { path = "../litehtml" }
+twidget_renderer = { path = "../renderer" }
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_compositor = { path = "../compositor" }
+twidget_encode = { path = "../encode" }
+twidget_gesture = { path = "../../../../widget-sandbox/packages/rust/crates/gesture" }
+twidget_shadow = { path = "../shadow" }
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

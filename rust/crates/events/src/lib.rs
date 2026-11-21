@@ -312,8 +312,9 @@ pub trait EventHost {
     fn leave(&mut self) -> bool;
     /// The CSS cursor where the mouse last was, as the document computes it; empty for none.
     fn cursor(&mut self) -> Vec<u8>;
-    /// Where and in what font element `id` shows its text; None when it is not laid out and visible.
-    fn editor_style(&mut self, id: i64) -> Option<EditorStyle>;
+    /// Where and in what font element `id` shows its text; None when it is not laid out and visible. `clip` is the
+    /// editor's clip as it is: the C++ fills the spec in place and leaves the clip when no ancestor clips.
+    fn editor_style(&mut self, id: i64, clip: Rect) -> Option<EditorStyle>;
     /// The container's image for an `<img>` source: (image id, width, height), None when it fails.
     fn image_of(&mut self, src: &[u8]) -> Option<(i32, f32, f32)>;
     /// An asynchronously decoded image got its size; true when a known image changed.
@@ -1652,7 +1653,7 @@ impl Events {
         if !self.editing.multiline && self.editing.input_type.is_empty() {
             self.editing.input_type = b"text".to_vec();
         }
-        if let Some(style) = host.editor_style(id) {
+        if let Some(style) = host.editor_style(id, self.editing.clip) {
             Events::take_style(&mut self.editing, style);
         }
         // The control's text goes transparent in the document: its style attribute changes.
@@ -1692,7 +1693,7 @@ impl Events {
             return;
         }
         let before = self.editing.clone();
-        if let Some(style) = host.editor_style(self.editing.id) {
+        if let Some(style) = host.editor_style(self.editing.id, self.editing.clip) {
             Events::take_style(&mut self.editing, style);
         }
         // The document draws the edited text transparent: the editor keeps the colour it had.

@@ -773,7 +773,7 @@ impl Engine for NoDocument {
     fn cursor(&mut self) -> Vec<u8> {
         Vec::new()
     }
-    fn editor_style(&mut self, _id: i64) -> Option<EditorStyle> {
+    fn editor_style(&mut self, _id: i64, _clip: Rect) -> Option<EditorStyle> {
         None
     }
     fn image_of(&mut self, _src: &[u8]) -> Option<(i32, f32, f32)> {

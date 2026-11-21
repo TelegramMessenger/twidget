@@ -837,7 +837,7 @@ impl Engine for TapeEngine {
     fn cursor(&mut self) -> Vec<u8> {
         answer!(self.tape, "cursor", Entry::Cursor(c) => c, Vec::new())
     }
-    fn editor_style(&mut self, id: i64) -> Option<EditorStyle> {
+    fn editor_style(&mut self, id: i64, _clip: Rect) -> Option<EditorStyle> {
         answer!(self.tape, "editor_style", Entry::EditorStyle { id: i, style } => { self.check(i == id, || format!("editor_style({i}) in C++, ({id}) in Rust")); style }, None)
     }
     fn image_of(&mut self, src: &[u8]) -> Option<(i32, f32, f32)> {

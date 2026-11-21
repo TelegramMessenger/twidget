@@ -568,7 +568,7 @@ impl EventHost for TapeHost {
         }
     }
 
-    fn editor_style(&mut self, id: i64) -> Option<EditorStyle> {
+    fn editor_style(&mut self, id: i64, _clip: Rect) -> Option<EditorStyle> {
         match self.question("editor_style") {
             Some(Q::EditorStyle { id: cid, style }) => {
                 if cid != id {

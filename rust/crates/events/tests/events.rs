@@ -776,7 +776,7 @@ impl EventHost for Nothing {
     fn cursor(&mut self) -> Vec<u8> {
         b" POINTER ".to_vec()
     }
-    fn editor_style(&mut self, _id: i64) -> Option<twidget_events::EditorStyle> {
+    fn editor_style(&mut self, _id: i64, _clip: twidget_wire::Rect) -> Option<twidget_events::EditorStyle> {
         None
     }
     fn image_of(&mut self, _src: &[u8]) -> Option<(i32, f32, f32)> {

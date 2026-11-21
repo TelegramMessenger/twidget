@@ -81,8 +81,9 @@ impl Container {
     }
 
     /// The viewport is now `vp_height` tall, without a layout: the document does not depend on it.
-    pub fn viewport_resized(&mut self, vp_height: i32) {
+    pub fn viewport_resized(&mut self, engine: &mut dyn Engine, vp_height: i32) {
         self.vp_height = vp_height;
+        engine.viewport_height(vp_height);
     }
 
     /// The master CSS of the next document. A change drops the current one: a patch keeps the master it was
@@ -112,6 +113,7 @@ impl Container {
     ) -> bool {
         let viewport_changed = vp_height != self.vp_height;
         self.vp_height = vp_height;
+        engine.viewport_height(vp_height);
         self.patched = false;
         // The fork folds viewport lengths to px as it parses, so a resize needs a fresh parse of a document that
         // has one. Media queries need no such care: a patched document re-evaluates them.

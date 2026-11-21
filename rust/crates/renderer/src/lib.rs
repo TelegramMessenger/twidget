@@ -587,7 +587,14 @@ impl<E: Engine, B: Backend> Core<E, B> {
         self.meter_end(meter);
     }
 
+    /// The canvases the tree holds, for the container's `tw-canvas:` sources (the C++ container reads `r_.canvases_`).
+    fn hold_canvases(&mut self, doc: &Document) {
+        let held: Vec<(i32, i32, i32)> = doc.canvases().values().map(|c| (c.id(), c.width(), c.height())).collect();
+        self.engine.canvases(&held);
+    }
+
     fn build_document(&mut self, doc: &mut Document, patch: bool) {
+        self.hold_canvases(doc);
         self.scripted_pending = false;
         let log = doc.take_patch_log();
         if patch && self.patching && !doc.layout_stopped() {
@@ -632,7 +639,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
             self.vp_height = h;
             if !again {
                 // Nothing lays out against the viewport's height: the new one only needs recording.
-                self.container.viewport_resized(self.vp_height);
+                self.container.viewport_resized(&mut self.engine, self.vp_height);
                 break;
             }
         }
@@ -647,7 +654,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
             }
             self.pushed(doc);
             self.vp_height = viewport_for(self.container.height(&mut self.engine), self.max_height);
-            self.container.viewport_resized(self.vp_height);
+            self.container.viewport_resized(&mut self.engine, self.vp_height);
             changed = true;
         }
         self.doc_height = self.container.height(&mut self.engine).ceil();
@@ -736,7 +743,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
                 return false;
             }
             self.vp_height = h;
-            self.container.viewport_resized(h);
+            self.container.viewport_resized(&mut self.engine, h);
         }
         self.doc_height = self.container.height(&mut self.engine).ceil();
         self.stats.parse_ms = self.now_ms() - t0;
@@ -883,6 +890,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
         }
         let t0 = self.now_ms();
         if ok {
+            self.hold_canvases(doc);
             let restyled = {
                 let Core { container, engine, width, .. } = self;
                 container.restyle(engine, &patches, *width, &mut |e| Core::<E, B>::stop_layout(doc, e.0))
@@ -1402,8 +1410,8 @@ impl<E: Engine, B: Backend> EventHost for Core<E, B> {
     fn cursor(&mut self) -> Vec<u8> {
         self.engine.cursor()
     }
-    fn editor_style(&mut self, id: i64) -> Option<EditorStyle> {
-        self.engine.editor_style(id)
+    fn editor_style(&mut self, id: i64, clip: Rect) -> Option<EditorStyle> {
+        self.engine.editor_style(id, clip)
     }
     fn image_of(&mut self, src: &[u8]) -> Option<(i32, f32, f32)> {
         self.engine.image_of(src)
@@ -1515,6 +1523,7 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
             binary: String::new(),
         };
         let mut r = Renderer { doc: Document::new(dark), events: Events::new(), core };
+        r.core.engine.viewport(r.core.width, r.core.dpr);
         r.core.set_master(&r.doc);
         r.rebuild(false);
         r
@@ -1610,6 +1619,7 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
                     let mut bridge = Bridge { core: &mut self.core, events: &mut self.events };
                     self.doc.apply_ops(ops, &mut bridge, &mut out);
                 }
+                self.core.hold_canvases(&self.doc);
                 self.events.load_images(&mut self.doc, &mut self.core, &mut out);
                 let mut applied = false;
                 if let Some(ids) = &scripted {
@@ -1704,6 +1714,7 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
                     let mut bridge = Bridge { core: &mut self.core, events: &mut self.events };
                     self.doc.freeze(msg.get("reason").as_str(), msg.get("fatal").as_bool(false), &mut bridge);
                 }
+                self.core.hold_canvases(&self.doc);
                 self.rebuild(false);
             }
             b"policy" => {
@@ -1725,6 +1736,7 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
             return;
         }
         self.core.width = width;
+        self.core.engine.viewport(width, self.core.dpr);
         self.rebuild(false);
         self.core.report_size(Some(out));
     }
