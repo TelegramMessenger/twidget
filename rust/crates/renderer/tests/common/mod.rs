@@ -599,9 +599,25 @@ impl Backend for FontStub {
     }
 }
 
+/// A time the script moves, which the renderer's clock reads from its own handle (a renderer's clock is `Send`).
+#[derive(Debug, Default)]
+pub struct Time(std::sync::atomic::AtomicU64);
+
+impl Time {
+    pub fn new(ms: f64) -> Time {
+        Time(std::sync::atomic::AtomicU64::new(ms.to_bits()))
+    }
+    pub fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    pub fn set(&self, ms: f64) {
+        self.0.store(ms.to_bits(), std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// The script's clock: each step's time.
 #[derive(Debug)]
-pub struct StepClock(pub Rc<Cell<f64>>);
+pub struct StepClock(pub std::sync::Arc<Time>);
 
 impl Clock for StepClock {
     fn now_ms(&mut self) -> f64 {
@@ -1148,7 +1164,7 @@ pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: 
     let shared = shared.unwrap_or_default();
     let replaying = !shared.borrow().entries.is_empty();
     MEASURING.with(|m| m.set((0, 0)));
-    let clock = Rc::new(Cell::new(script.t0));
+    let clock = std::sync::Arc::new(Time::new(script.t0));
     let step_log = shared.borrow().log.clone();
     let mut r: Renderer<E, Stub> = Renderer::new(
         script.width,

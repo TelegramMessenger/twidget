@@ -193,8 +193,9 @@ pub struct Edges {
 pub type CanvasFonts = HashMap<Vec<u8>, (i32, FontMetrics)>;
 
 /// An embedder's own canvas fonts: given the renderer's Backend and the CSS `font` unparsed, it fills `metrics`, the
-/// em box included, and returns a handle, or 0 for none.
-pub type CanvasFontHook = Box<dyn FnMut(&mut dyn Backend, &[u8], &mut FontMetrics) -> i32>;
+/// em box included, and returns a handle, or 0 for none. `Send`, as the clock, so that a renderer can move between the
+/// helper's threads.
+pub type CanvasFontHook = Box<dyn FnMut(&mut dyn Backend, &[u8], &mut FontMetrics) -> i32 + Send>;
 
 fn bounded(v: f64, lo: f64, hi: f64) -> f64 {
     if v.is_nan() { lo } else { clamp(v, lo, hi) }
@@ -329,7 +330,7 @@ pub struct Core<E: Engine, B: Backend> {
     pub backend: B,
     /// Stage 4.5's state: heavy boxes, layers, the last paint.
     pub layers: Layers,
-    clock: Option<Box<dyn Clock>>,
+    clock: Option<Box<dyn Clock + Send>>,
     container: Container,
     width: f64,
     dpr: f64,
@@ -1469,7 +1470,7 @@ impl<E: Engine, B: Backend> std::fmt::Debug for Renderer<E, B> {
 
 impl<E: Engine, B: Backend> Renderer<E, B> {
     /// `clock`, when given (else the steady clock), is what the renderer reads the time from.
-    pub fn new(width: f64, dpr: f64, dark: bool, engine: E, backend: B, clock: Option<Box<dyn Clock>>) -> Renderer<E, B> {
+    pub fn new(width: f64, dpr: f64, dark: bool, engine: E, backend: B, clock: Option<Box<dyn Clock + Send>>) -> Renderer<E, B> {
         let core = Core {
             engine,
             backend,

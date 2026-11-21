@@ -23,8 +23,21 @@ use twidget_wire::{DisplayList, FontMetrics, Rect};
 
 // ---- the renderer the ends drive -------------------------------------------------------------------------------
 
+/// A time only the test moves, which the renderer's clock reads from its own handle (a renderer's clock is `Send`).
+#[derive(Debug, Default)]
+struct Time(std::sync::atomic::AtomicU64);
+
+impl Time {
+    fn new(ms: f64) -> Time {
+        Time(std::sync::atomic::AtomicU64::new(ms.to_bits()))
+    }
+    fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
 /// ends_tests.cpp's `VirtualClock`: a time only the test moves, from 1000 ms.
-struct VirtualClock(Rc<Cell<f64>>);
+struct VirtualClock(Arc<Time>);
 
 impl twidget_renderer::Clock for VirtualClock {
     fn now_ms(&mut self) -> f64 {
@@ -37,9 +50,9 @@ impl twidget_renderer::Clock for VirtualClock {
 struct Real<B: Backend + Clone>(twidget_renderer::Renderer<DocumentEngine<B>, B>);
 
 impl<B: Backend + Clone> Real<B> {
-    fn new(width: f64, dpr: f64, dark: bool, backend: B, process: &Arc<Process>, clock: &Rc<Cell<f64>>) -> Real<B> {
+    fn new(width: f64, dpr: f64, dark: bool, backend: B, process: &Arc<Process>, clock: &Arc<Time>) -> Real<B> {
         let engine = DocumentEngine::new(Arc::clone(process), backend.clone());
-        Real(twidget_renderer::Renderer::new(width, dpr, dark, engine, backend, Some(Box::new(VirtualClock(Rc::clone(clock))))))
+        Real(twidget_renderer::Renderer::new(width, dpr, dark, engine, backend, Some(Box::new(VirtualClock(Arc::clone(clock))))))
     }
 }
 
@@ -118,7 +131,7 @@ impl<B: Backend + Clone> HelperCalls for Real<B> {
 type Looped = Real<Proxy<Wire>>;
 
 /// A loop whose end runs the real renderer at 300 px, the given scale, light, on `process`.
-fn looped(caps: Caps, dpr: f64, process: &Arc<Process>, clock: &Rc<Cell<f64>>) -> Loopback<Looped> {
+fn looped(caps: Caps, dpr: f64, process: &Arc<Process>, clock: &Arc<Time>) -> Loopback<Looped> {
     let mut lp = Loopback::<Looped>::made(caps);
     lp.open_with(300.0, dpr, false, |w, d, k, proxy| Real::new(w, d, k, proxy, process, clock));
     lp
@@ -165,7 +178,7 @@ struct Arms {
 impl Arms {
     fn new(name: &str) -> Arms {
         let process = Arc::new(Process::default());
-        let (direct_clock, clock) = (Rc::new(Cell::new(1000.0)), Rc::new(Cell::new(1000.0)));
+        let (direct_clock, clock) = (Arc::new(Time::new(1000.0)), Arc::new(Time::new(1000.0)));
         let direct_backend = LogHandle::new();
         let direct = Real::new(300.0, 2.0, false, direct_backend.clone(), &process, &direct_clock);
         let lp = looped(Caps::default(), 2.0, &process, &clock);
@@ -913,7 +926,7 @@ struct Straightened {
 /// A direct renderer at scale 1 and a renderer end on `Straight` under `caps`, both given `page`.
 fn straight(caps: Caps, page: &str) -> Straightened {
     let process = Arc::new(Process::default());
-    let (direct_clock, clock) = (Rc::new(Cell::new(1000.0)), Rc::new(Cell::new(1000.0)));
+    let (direct_clock, clock) = (Arc::new(Time::new(1000.0)), Arc::new(Time::new(1000.0)));
     let direct_backend = LogHandle::new();
     let mut direct = Real::new(300.0, 1.0, false, direct_backend.clone(), &process, &direct_clock);
     let backend = BatchLog::default();
@@ -1125,7 +1138,7 @@ fn inert(lp: &mut Loopback<Looped>, what: &str) {
 /// A loop at scale 1 on the real renderer, given `page`, then a fault on the second request after.
 fn failing(caps: Caps, page: &str, how: Spoil) -> (Loopback<Looped>, usize, usize) {
     let process = Arc::new(Process::default());
-    let clock = Rc::new(Cell::new(1000.0));
+    let clock = Arc::new(Time::new(1000.0));
     let mut lp = looped(caps, 1.0, &process, &clock);
     lp.receive(&parse(page));
     let batches = lp.count_kind(Kind::WidthsRequest);
@@ -1358,7 +1371,7 @@ fn asked_in(backend: &LogHandle, batch: (usize, usize), font: i32, text: &str) -
 fn discovery(tabs: usize) -> Vec<Vec<u8>> {
     let what = format!("{tabs} preserved tabs: ");
     let process = Arc::new(Process::default());
-    let clock = Rc::new(Cell::new(1000.0));
+    let clock = Arc::new(Time::new(1000.0));
     let backend = Marking::default();
     let mut direct = Real::new(300.0, 2.0, false, backend.clone(), &process, &clock);
     twidget_ends::Renderer::receive(&mut direct, &parse(&tabs_page(tabs)));
