@@ -55,7 +55,7 @@ tw_probe(EVENTS_CPP 1 [=[    walk(doc->root(), 0, 0);]=] [=[    walk(doc->root()
 tw_probe(EVENTS_CPP 1 [=[float w = float(container_->text_width(run.text.substr(0, bytes).c_str(), litehtml::uint_ptr(run.font)));]=] [=[float w = twp::width(run.text.substr(0, bytes).c_str(), run.font, float(container_->text_width(run.text.substr(0, bytes).c_str(), litehtml::uint_ptr(run.font))));]=])
 tw_probe(EVENTS_CPP 1 [=[!container_->font_info(r.font, font, descent, letter, word)]=] [=[!twp::font_info(r.font, font, descent, letter, word, container_->font_info(r.font, font, descent, letter, word))]=])
 tw_probe(EVENTS_CPP 1 [=[layer_shown(r.layer, now, shown, opacity) ?]=] [=[twp::layer(r.layer, now, shown, opacity, layer_shown(r.layer, now, shown, opacity)) ?]=])
-tw_probe(EVENTS_CPP 1 [=[    std::pair<const void*, uint64_t> key{doc, doc ? doc->style_epoch() : 0};]=] [=[    std::pair<const void*, uint64_t> key{doc, doc ? doc->style_epoch() : 0};
+tw_probe(EVENTS_CPP 1 [=[    std::pair<uint64_t, uint64_t> key{container_->document_serial(), doc ? doc->style_epoch() : 0};]=] [=[    std::pair<uint64_t, uint64_t> key{container_->document_serial(), doc ? doc->style_epoch() : 0};
     twp::selectable_key(key);]=])
 tw_probe(EVENTS_CPP 1 [=[    if (doc && doc->root()) visit(doc->root());
     return selectable_;]=] [=[    if (doc && doc->root()) visit(doc->root());

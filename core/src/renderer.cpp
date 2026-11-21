@@ -854,6 +854,7 @@ public:
 #else
         doc_ = litehtml::document::createFromString(litehtml::estring(html), this, master_css_);
 #endif
+        documents_++;
         if (!doc_) return true;
         rendered_width_ = float(r_.width_);
         layout(rendered_width_);
@@ -1295,6 +1296,8 @@ public:
         return false;
     }
     litehtml::document* doc() const { return doc_.get(); }
+    /// Which document this is, counted from 1; 0 for none. A new document may have the last one's address.
+    uint64_t document_serial() const { return doc_ ? documents_ : 0; }
     /// What a litehtml font handle is for the backend: its font, its descent and its spacings.
     bool font_info(uintptr_t h, int& handle, float& descent, float& letter, float& word) const {
         auto it = fonts_.find(litehtml::uint_ptr(h));
@@ -2507,6 +2510,7 @@ private:
     Backend& backend_;
     bool trusted_styles_ = false;
     litehtml::document::ptr doc_;
+    uint64_t documents_ = 0;
 #ifdef TW_LITEHTML_TWIDGET
     std::vector<litehtml::transform_matrix> groups_;  // accumulated, during draw()
 #endif
@@ -6139,7 +6143,7 @@ void Renderer::restyled_by_input() {
 bool Renderer::selectable_text() const {
 #ifdef TW_LITEHTML_TWIDGET
     litehtml::document* doc = container_->doc();
-    std::pair<const void*, uint64_t> key{doc, doc ? doc->style_epoch() : 0};
+    std::pair<uint64_t, uint64_t> key{container_->document_serial(), doc ? doc->style_epoch() : 0};
     if (key == selectable_key_) return selectable_;
     selectable_key_ = key;
     selectable_ = false;

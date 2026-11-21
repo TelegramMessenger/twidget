@@ -333,7 +333,8 @@ pub trait EventHost {
     /// Where promoted layer `id`'s track shows it at `now` (seconds), over its parents', and with what
     /// opacity; None when it is not shown.
     fn layer_shown(&mut self, id: i64, now: f64) -> Option<(Affine, f32)>;
-    /// What the selectable text is known from: the document and its style epoch.
+    /// What the selectable text is known from: which document (a serial, not its address, which a new one may reuse)
+    /// and its style epoch.
     fn selectable_key(&mut self) -> [u64; 2];
     /// Whether any displayed element says `user-select: text`.
     fn any_selectable(&mut self) -> bool;

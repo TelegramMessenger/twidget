@@ -615,7 +615,7 @@ private:
     } selection_;
     mutable std::tuple<const void*, uint32_t, uint64_t, uint64_t> runs_key_{};
     mutable std::vector<TextRun> runs_;
-    mutable std::pair<const void*, uint64_t> selectable_key_{};
+    mutable std::pair<uint64_t, uint64_t> selectable_key_{};
     mutable bool selectable_ = false;
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
