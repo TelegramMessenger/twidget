@@ -836,6 +836,16 @@ ctest:
   tables, libc++'s in the recording. `parity.cmake` fails it when it is missing or larger than 398615
   bytes (`-DMAX_BYTES`), the recording's 318892 plus a quarter; re-recordings vary in size with
   timing.
+- `twidget_parity_corpus_stub`: `tests/recordings/corpus-stub.twrec`, committed, which `tools/record`
+  recorded on its stub Backend on Windows x64 (`record_corpus.py --curated`), seven corpus widgets in
+  one process: `safe-area/4-script/06-canvas-chart.html` (canvas batches and fonts, the safe area),
+  `gestures/1-pairs/01-joystick-xy.html` (a claim that holds, the engine's frame requests, animation),
+  `compat/dark-mode.html` (the theme), `htmlbubbles-ported/03-stress-test/13-fuzz.html` (the image,
+  gradients), `common/heavy/04-long-article.html` (a long text), `attacks/render-svg-path-closepath.html`
+  (keyed SVG paints) and `attacks/render-nested-flex.html` (the layout budget's violation). Its answers
+  are fixed functions of the calls and it was recorded after stage 0.3 ordered the releases and turned
+  contraction off, so it is checked on every platform. `parity.cmake` fails it when it is missing or
+  larger than 271565 bytes, its 217252 plus a quarter.
 
 ## Building
 
@@ -955,13 +965,14 @@ bytes and kept troubles of each corpus folder, writes them with every widget's o
 python -I tools/record/record_corpus.py --recorder build-record/twidget-record [--jobs 4] [folder or file ...]
 ```
 
-The committed recording holds what the renderer gave when it was made, so it is made again whenever
-that changes: a change to the recording's format, which takes a new version in `tests/recording.h`
-(the replay refuses any other), and a change to the binary forms or to the renderer that changes what
-it gives these widgets, the Backend calls it makes for them or the clock reads it takes. The new
-recording keeps the four widgets and passes the Debug and the sanitizer replay, and `TW_CORPUS_BYTES`
-in `CMakeLists.txt`, the cap `parity.cmake` checks, becomes its measured size plus a quarter, which
-stays within 512 KiB.
+The committed recordings hold what the renderer gave when they were made, so they are made again
+whenever that changes: a change to the recording's format, which takes a new version in
+`tests/recording.h` (the replay refuses any other), and a change to the binary forms or to the
+renderer that changes what it gives these widgets, the Backend calls it makes for them or the clock
+reads it takes. A new `corpus.twrec` keeps the four widgets, a new `corpus-stub.twrec` the seven of
+`record_corpus.py`'s `CURATED` (`--curated`); each passes the Debug and the sanitizer replay, and its
+cap in `CMakeLists.txt` (`TW_CORPUS_BYTES`, `TW_CORPUS_STUB_BYTES`), which `parity.cmake` checks,
+becomes its measured size plus a quarter, which stays within 512 KiB.
 
 ## Portability check, 2026-10-14
 

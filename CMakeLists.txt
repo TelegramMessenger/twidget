@@ -314,6 +314,14 @@ if(TWIDGET_BUILD_TESTS)
                 "-DNEEDS=sessions,steps,lists,batches,calls,pointers,claims,holds,ticks,engine,resizes,themes,images" -DSESSIONS=4
                 -DMAX_BYTES=${TW_CORPUS_BYTES} -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
     endif()
+    # Corpus widgets recorded by tools/record on its stub Backend (record_corpus.py --curated) and committed: every answer a fixed function of the calls, and the 0.3 orders, so it replays everywhere.
+    set(TW_CORPUS_STUB_RECORDING "${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/corpus-stub.twrec")
+    # The recording's 217252 bytes plus a quarter.
+    set(TW_CORPUS_STUB_BYTES 271565)
+    add_test(NAME twidget_parity_corpus_stub
+        COMMAND "${CMAKE_COMMAND}" "-DREPLAY=$<TARGET_FILE:twidget_replay>" "-DRECORDING=${TW_CORPUS_STUB_RECORDING}" -DSOURCE=corpus-stub
+            "-DNEEDS=sessions,steps,lists,batches,calls,pointers,claims,holds,ticks,engine,resizes,themes,images,keys" -DSESSIONS=7
+            -DMAX_BYTES=${TW_CORPUS_STUB_BYTES} -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
     if(TWIDGET_QT)
         add_executable(twidget_qt_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/qt_tests.cpp")
         target_link_libraries(twidget_qt_tests PRIVATE twidget::qt)

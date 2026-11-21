@@ -6,6 +6,9 @@ removed and its log kept. Prints the counts by corpus folder and writes them wit
 <out>/summary.json; exits 1 when a recording failed.
 
   python -I tools/record/record_corpus.py --recorder build-record/Release/twidget-record.exe [--out DIR] [--jobs N] [folder or file ...]
+  python -I tools/record/record_corpus.py --recorder ... --curated tests/recordings/corpus-stub.twrec
+
+--curated records CURATED, the committed set, in one recorder process into one recording instead.
 """
 
 import argparse
@@ -18,6 +21,17 @@ import sys
 import time
 
 TWIDGET = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# The committed set (tests/recordings/corpus-stub.twrec, twidget_parity_corpus_stub): canvas, gestures, theme, an image, text, two attacks.
+CURATED = [
+    "safe-area/4-script/06-canvas-chart.html",  # canvas batches and fonts, the safe area
+    "gestures/1-pairs/01-joystick-xy.html",  # a claim that holds, the engine's frame requests, animation
+    "compat/dark-mode.html",  # the theme
+    "htmlbubbles-ported/03-stress-test/13-fuzz.html",  # the corpus's image, gradients
+    "common/heavy/04-long-article.html",  # a long text
+    "attacks/render-svg-path-closepath.html",  # SVG paths of a closepath repeated, keyed SVG paints
+    "attacks/render-nested-flex.html",  # nested flex boxes past the layout budget: a violation
+]
 
 TROUBLES = [
     ("died loading", "the widget died before it loaded"),
@@ -115,9 +129,12 @@ def main():
     parser.add_argument("--out", default=os.path.join(TWIDGET, "build-record", "recordings"))
     parser.add_argument("--jobs", type=int, default=1, help="recorders at once; each waits on real time, so a loaded machine records fewer frames")
     parser.add_argument("--timeout", type=int, default=300, help="seconds a recorder may take")
+    parser.add_argument("--curated", metavar="RECORDING", help="record CURATED in one recorder process into RECORDING instead")
     parser.add_argument("widgets", nargs="*", help="corpus folders or files, relative to <sandbox>/corpus; all by default")
     args = parser.parse_args()
     recorder = os.path.abspath(args.recorder)
+    if args.curated:
+        return subprocess.run([recorder, "--keep", "--out", args.curated] + CURATED).returncode
     widgets = widgets_of(os.path.abspath(args.sandbox), args.widgets)
     out = os.path.abspath(args.out)
     print(f"recording {len(widgets)} widgets into {out}, {args.jobs} at once", flush=True)
