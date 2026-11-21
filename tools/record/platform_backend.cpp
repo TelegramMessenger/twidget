@@ -6,3 +6,7 @@
 std::unique_ptr<twlite::Backend> platform_backend() {
     return std::make_unique<twlite::CGBackend>();
 }
+
+const char* platform_backend_name() {
+    return "CoreGraphics";
+}

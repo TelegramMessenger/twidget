@@ -1,4 +1,4 @@
-// twidget-record: widget-sandbox corpus widgets run for real (WidgetHost, QuickJS, the validator) on a recorded TwidgetCore over CoreGraphics with one fixed input script, into one recording for twidget_replay.
+// twidget-record: widget-sandbox corpus widgets run for real (WidgetHost, Nova, the validator) on a recorded TwidgetCore over the build's Backend with one fixed input script, into one recording for twidget_replay.
 #include "recording_renderer.h"
 
 #include "twidget/intl.h"
@@ -6,8 +6,6 @@
 #include "twidget/renderer.h"
 #include "twidget/resources.h"
 #include "twidget/widget_host.h"
-
-#include <sys/sysctl.h>
 
 #include <algorithm>
 #include <chrono>
@@ -30,6 +28,8 @@
 #include <vector>
 
 std::unique_ptr<twlite::Backend> platform_backend();
+const char* platform_backend_name();
+std::string system_version();
 
 namespace {
 
@@ -88,14 +88,30 @@ Json array_of(const std::vector<Json>& items) {
     return out;
 }
 
-std::string system_version() {
-    char version[64] = {};
-    size_t size = sizeof version - 1;
-    if (sysctlbyname("kern.osproductversion", version, &size, nullptr, 0) != 0) return "macOS, version unknown";
-    return "macOS " + std::string(version);
+std::string compiler() {
+#if defined(__VERSION__)
+    return __VERSION__;
+#elif defined(_MSC_FULL_VER)
+    return "MSVC " + std::to_string(_MSC_FULL_VER);
+#else
+    return "unknown compiler";
+#endif
 }
 
-Json origin(const std::vector<std::string>& paths) {
+std::string standard_library() {
+#if defined(_LIBCPP_VERSION)
+    return "libc++ " + std::to_string(_LIBCPP_VERSION) + ", ABI " + std::to_string(_LIBCPP_ABI_VERSION);
+#elif defined(_MSVC_STL_VERSION)
+    return "MSVC STL " + std::to_string(_MSVC_STL_VERSION) + ", update " + std::to_string(_MSVC_STL_UPDATE);
+#elif defined(__GLIBCXX__)
+    return "libstdc++ " + std::to_string(__GLIBCXX__);
+#else
+    return "not libc++";
+#endif
+}
+
+/// With --keep, a widget's trouble is printed and its session kept: the recording ends with the recorder's own errors alone.
+Json origin(const std::vector<std::string>& paths, bool keep) {
     const twidget::WidgetHostOptions options = host_options();
     Json host = Json::object();
     host.set("width", SCRIPT.width);
@@ -105,12 +121,8 @@ Json origin(const std::vector<std::string>& paths) {
     host.set("locale", options.locale);
     host.set("colorScheme", "light");
     Json toolchain = Json::object();
-    toolchain.set("compiler", __VERSION__);
-#if defined(_LIBCPP_VERSION)
-    toolchain.set("standard library", "libc++ " + std::to_string(_LIBCPP_VERSION) + ", ABI " + std::to_string(_LIBCPP_ABI_VERSION));
-#else
-    toolchain.set("standard library", "not libc++");
-#endif
+    toolchain.set("compiler", compiler());
+    toolchain.set("standard library", standard_library());
     toolchain.set("system", system_version());
     const Script& s = SCRIPT;
     Json script = Json::object();
@@ -141,11 +153,12 @@ Json origin(const std::vector<std::string>& paths) {
     o.set("recorded by", "tools/record (twidget-record)");
     o.set("twidget", TW_COMMIT);
     o.set("widget-sandbox", TW_FRAMEWORK);
-    o.set("backend", "CoreGraphics");
+    o.set("backend", platform_backend_name());
     o.set("host", std::move(host));
     o.set("toolchain", std::move(toolchain));
     o.set("script", std::move(script));
     o.set("widgets", array_of(widgets));
+    if (keep) o.set("troubles", "kept: a widget that does not load, render or paint, throws or dies is printed, its session recorded as it went");
     return o;
 }
 
@@ -377,8 +390,12 @@ std::string record_widget(const Widget& widget, const std::shared_ptr<twidget::S
         d = host.diagnostics();
         if (!adapter) throw std::runtime_error("WidgetHost made no renderer");
         paints_before = adapter->paints();
-        if (!loaded || !d.loaded) {
+        if ((!loaded || !d.loaded) && d.dead) {
+            why = "the widget died before it loaded: " + *d.dead;
+        } else if (!loaded || !d.loaded) {
             why = "the widget did not load in " + Json::number(SCRIPT.load_s) + " s";
+        } else if ((!rendered || !d.rendered) && d.dead) {
+            why = "the widget died before it rendered: " + *d.dead;
         } else if (!rendered || !d.rendered) {
             why = "the widget did not render in " + Json::number(SCRIPT.render_s) + " s";
         } else {
@@ -445,6 +462,7 @@ std::string record_widget(const Widget& widget, const std::shared_ptr<twidget::S
                 claim_text(press).c_str(), d.logs.size(), errors);
     for (const auto& [name, after] : milestones) std::printf("  %s begins after step %llu\n", name.c_str(), static_cast<unsigned long long>(after));
     for (const auto& [kind, entry] : d.diags) std::printf("  diagnostic %s: %d\n", kind.c_str(), entry.first);
+    std::fflush(stdout);
     return why.empty() ? std::string() : widget.path + ": " + why;
 }
 
@@ -458,8 +476,9 @@ std::optional<std::string> read_file(const fs::path& path) {
 }
 
 int usage() {
-    std::fprintf(stderr, "usage: twidget-record --out <recording> <corpus path>...\n"
-                         "corpus paths are read from %s/corpus, the widget-sandbox this build was configured with (TWIDGET_WIDGET_SANDBOX)\n",
+    std::fprintf(stderr, "usage: twidget-record [--keep] --out <recording> <corpus path>...\n"
+                         "corpus paths are read from %s/corpus, the widget-sandbox this build was configured with (TWIDGET_WIDGET_SANDBOX)\n"
+                         "--keep: a widget's trouble is printed as \"trouble <path>: <why>\" and the recording goes on with the next widget\n",
                  TW_SANDBOX);
     return 2;
 }
@@ -481,11 +500,14 @@ int main(int argc, char** argv) {
     const std::string sandbox = TW_SANDBOX;
     std::string out;
     std::vector<std::string> paths;
+    bool keep = false;
     for (int i = 1; i < argc; i++) {
         const std::string arg = argv[i];
         if (arg == "--out") {
             if (i + 1 == argc) return usage();
             out = argv[++i];
+        } else if (arg == "--keep") {
+            keep = true;
         } else if (!corpus_path(arg) || arg[0] == '-') {
             return usage();
         } else {
@@ -503,7 +525,7 @@ int main(int argc, char** argv) {
     for (const std::string& path : paths) {
         const fs::path file = fs::canonical(corpus / path, missing);
         if (!missing && !below(corpus, file)) {
-            std::fprintf(stderr, "twidget-record: %s/corpus/%s resolves to %s, which is not inside the corpus\n", sandbox.c_str(), path.c_str(), file.c_str());
+            std::fprintf(stderr, "twidget-record: %s/corpus/%s resolves to %s, which is not inside the corpus\n", sandbox.c_str(), path.c_str(), file.string().c_str());
             return 2;
         }
         std::optional<std::string> html;
@@ -521,7 +543,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "twidget-record: %s\n", e.what());
         return 2;
     }
-    const std::string from = origin(paths).dump();
+    const std::string from = origin(paths, keep).dump();
     std::printf("origin %s\n", from.c_str());
     if (!record::open(out, from)) return 2;
     std::string error;
@@ -531,7 +553,11 @@ int main(int argc, char** argv) {
         } catch (const std::exception& e) {
             error = widget.path + ": " + e.what();
         }
-        if (!error.empty()) break;
+        if (error.empty()) continue;
+        if (!keep) break;
+        std::printf("trouble %s\n", error.c_str());
+        std::fflush(stdout);
+        error.clear();
     }
     if (!error.empty()) std::fprintf(stderr, "twidget-record: %s\n", error.c_str());
     const bool closed = record::close(error);

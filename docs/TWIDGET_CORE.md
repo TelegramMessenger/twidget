@@ -913,10 +913,18 @@ build-stress/twidget-stress <out> --pass measure|production [--filter <load>]
 node ../widget-sandbox/packages/stress/tools/report.mjs --out <out>/report <out>/*.run.json
 ```
 
-`tools/record` makes the corpus recording of `twidget_parity_corpus`, macOS only. Each widget runs
-for real: widget-sandbox's desktop `WidgetHost` with QuickJS, the validator, its `WidgetJS` bundles
-and `BasicIntl`, strict with `webAnimations`, at width 320, DPR 2, locale `en` and light, over a
-`RecordingRenderer` on `CGBackend`. The adapter between them is shaped as `tools/conformance`'s: one
+`tools/record` makes the corpus recordings of the parity checks. Each widget runs for real:
+widget-sandbox's desktop `WidgetHost` with Nova, the validator, its `WidgetJS` bundles and `BasicIntl`,
+strict with `webAnimations`, at width 320, DPR 2, locale `en` and light, over a `RecordingRenderer` on
+the Backend `TW_RECORD_BACKEND` names, which the origin names too: `coregraphics`, `CGBackend`, the
+default on macOS and only there, or `stub` (`tools/record/stub_backend.cpp`), the default elsewhere,
+whose every answer is a fixed function of the calls, so that what it records is the same on every
+system: `renderer_oracle`'s stub fonts (ascent, descent, height and x-height 0.8, 0.2, 1.2 and 0.5 of
+the size, `ch` 8 px, no em box) with 8 px for each byte of text; a `data:` image read as `CGBackend`
+reads it (base64 or percent-encoded, an SVG refused) and sized as its PNG, GIF, JPEG or WebP header
+declares, anything else refused; and canvas pixels made from a hash of the ops drawn on the bitmap
+since it was made at its size or reset, transparent where nothing was drawn and outside it. The
+adapter between them is shaped as `tools/conformance`'s: one
 lock around every core call, messages to the host after it is released, and a 16 ms frame loop that
 ticks when the engine asked, the renderer wants a tick or its wake is due, and paints when dirty.
 The script is fixed, and the origin carries its numbers: load, 300 ms of frames, `claim_at` over a
@@ -924,13 +932,27 @@ grid, a press at the first point that claims with six moves and a release, six h
 width 240 then 320, theme dark then light, destruction. A widget that does not load, render or paint,
 or that throws or dies other than by the recorder's own shutdown, ends the recording with that error,
 which the replay refuses; that is decided once the host is destroyed, which delivers the engine's
-last reports. The project builds widget-sandbox's `packages/desktop`, found as twidget's own build
-finds it, with its QuickJS submodule.
+last reports. With `--keep` such a widget is printed as `trouble <path>: <why>` instead, its session
+kept as it went without the input script, and the recording goes on (the origin says so). The project
+builds widget-sandbox's `packages/desktop`, found as twidget's own build finds it, with Nova built
+from the nova-safe checkout in `TW_NOVA_ROOT` (or linked from `TW_NOVA_LIBRARY`, as its
+`CMakeLists.txt` says).
 
 ```sh
-cmake -S tools/record -B build-record -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build-record
+cmake -S tools/record -B build-record -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTW_NOVA_ROOT=<nova-safe> && cmake --build build-record
 build-record/twidget-record --out tests/recordings/corpus.twrec compat/canvas-line-chart.html \
     gestures/1-pairs/01-joystick-xy.html compat/dark-mode.html htmlbubbles-ported/03-stress-test/13-fuzz.html
+```
+
+`tools/record/record_corpus.py`, also the `record-corpus` target, records the whole corpus: every
+widget through a recorder process of its own, with `--keep`, into a recording of its own,
+`build-record/recordings/<folder>/<file>.twrec` beside its log, so that each replays alone in a fresh
+process. It removes a recording the recorder could not finish, prints the widgets, recordings, steps,
+bytes and kept troubles of each corpus folder, writes them with every widget's outcome to
+`summary.json`, and fails when a recording failed. The recordings stay out of git.
+
+```sh
+python -I tools/record/record_corpus.py --recorder build-record/twidget-record [--jobs 4] [folder or file ...]
 ```
 
 The committed recording holds what the renderer gave when it was made, so it is made again whenever
