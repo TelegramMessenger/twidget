@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use twidget_document::{DocumentEngine, Process};
 use twidget_ends::{Output, Proxy};
@@ -137,47 +137,16 @@ impl ReplayClock {
     }
 }
 
-struct ClockHandle(Rc<RefCell<ReplayClock>>);
+struct ClockHandle(Arc<Mutex<ReplayClock>>);
 
 impl twidget_renderer::Clock for ClockHandle {
     fn now_ms(&mut self) -> f64 {
-        let mut c = self.0.borrow_mut();
+        let mut c = self.0.lock().unwrap();
         if c.next < c.reads.len() {
             c.last = c.reads[c.next];
             c.next += 1;
         } else {
             c.over = true;
-        }
-        if std::env::var_os("CLOCK_TRACE").is_some() {
-            let bt = std::backtrace::Backtrace::force_capture().to_string();
-            let strip = |l: &str| {
-                let mut depth = 0;
-                let mut o = String::new();
-                for ch in l.trim().chars() {
-                    if ch == '<' {
-                        depth += 1;
-                    } else if ch == '>' {
-                        depth -= 1;
-                    } else if depth == 0 {
-                        o.push(ch);
-                    }
-                }
-                o
-            };
-            let frames: Vec<String> = bt
-                .lines()
-                .filter(|l| {
-                    l.contains("::")
-                        && !l.contains(" at ")
-                        && !l.contains("backtrace")
-                        && !l.contains("std::")
-                        && !l.contains("core::")
-                        && !l.contains("ClockHandle")
-                })
-                .take(9)
-                .map(strip)
-                .collect();
-            eprintln!("clock read {} of {}: {}", c.next, c.reads.len(), frames.join(" | "));
         }
         c.last as f64 / 1000.0
     }
@@ -262,7 +231,7 @@ impl twidget_ends::Renderer for Replayed {
 /// host was last told.
 struct Session {
     answers: Rc<RefCell<Answers>>,
-    clock: Rc<RefCell<ReplayClock>>,
+    clock: Arc<Mutex<ReplayClock>>,
     lp: Loopback<Replayed>,
     label: Vec<u8>,
     selection: Vec<u8>,
@@ -281,7 +250,7 @@ impl Session {
         lp.backend.0.borrow_mut().answers = Some(Box::new(AnswersHandle(Rc::clone(&answers))));
         Session {
             answers,
-            clock: Rc::new(RefCell::new(ReplayClock::default())),
+            clock: Arc::new(Mutex::new(ReplayClock::default())),
             lp,
             label: Vec::new(),
             selection: Vec::new(),
@@ -1127,7 +1096,7 @@ impl Replay {
         let process = Arc::clone(&self.process);
         let session = &mut self.live.get_mut(&step.session).expect("a live session").0;
         session.answers.borrow_mut().start(Rc::clone(&calls));
-        session.clock.borrow_mut().start(&step.clock);
+        session.clock.lock().unwrap().start(&step.clock);
         let n = &step.numbers;
         let lp = &mut session.lp;
         let mut returned: Vec<Json> = Vec::new();
@@ -1135,7 +1104,7 @@ impl Replay {
         let mut input = false;
         match kind {
             Kind::Construct => {
-                let clock = Rc::clone(&session.clock);
+                let clock = Arc::clone(&session.clock);
                 lp.open_with(n[0], n[1], n[2] != 0.0, |w, d, k, proxy| {
                     let engine = DocumentEngine::new(process, proxy.clone());
                     Replayed(twidget_renderer::Renderer::new(w, d, k, engine, proxy, Some(Box::new(ClockHandle(clock)))))
@@ -1233,7 +1202,7 @@ impl Replay {
             f.0.push(format!("{left} recorded Backend calls are never made"));
         }
         drop(answers);
-        let clock = session.clock.borrow();
+        let clock = session.clock.lock().unwrap();
         if clock.over || clock.next != step.clock.len() {
             f.0.push(format!(
                 "the renderer reads the clock {}{} recorded times",
