@@ -1100,6 +1100,25 @@ template <class T> void golden(const std::string& what, const T& value, const st
     check(decoded(expected, {}, out, asked) && equal(value, out, why), what + ": the documented bytes decode to it " + why);
 }
 
+/// delta_scan in the allocation scope, which it leaves untouched whatever it is given: it never throws and asks the allocator for nothing.
+bool scanned(std::string_view message, const remote::Caps& caps, uint64_t& seq, uint32_t& length, std::string_view& damage) {
+    const Measured m = measure(message.size(), [&] { return remote::delta_scan(message, caps, seq, length, damage); });
+    verify(!m.threw && m.scope.count == 0, [&] {
+        return context + ": a scan of " + std::to_string(message.size()) + " bytes " + (m.threw ? "threw" : "asked the allocator " + std::to_string(m.scope.count) + " times for " + std::to_string(m.scope.asked) + " bytes");
+    });
+    return m.ok && !m.threw;
+}
+
+/// `message` refused by delta_scan, the seq, the length and the view it was given as they were, the view still on its own bytes.
+void not_scanned(const std::string& what, std::string_view message, const remote::Caps& caps) {
+    const std::string_view kept = "a view the refusal leaves alone";
+    uint64_t seq = 7;
+    uint32_t length = UINT32_MAX;
+    std::string_view damage = kept;
+    const bool taken = scanned(message, caps, seq, length, damage);
+    verify(!taken && seq == 7 && length == UINT32_MAX && damage.data() == kept.data() && damage.size() == kept.size(), [&] { return what + (taken ? ": scanned" : ": the outputs changed"); });
+}
+
 void golden_bytes() {
     context = "documented bytes";
     golden("a forced tick", remote::FrameRequest{0x0102030405060708, true, remote::Paint::Force}, unhex("01 01  08 07 06 05 04 03 02 01  01  02"));
@@ -1176,6 +1195,23 @@ void golden_bytes() {
     seq = base = 7;
     check(!remote::delta_ids(delta.substr(0, 40), seq, base) && seq == 7 && base == 7, "delta_ids needs both fields whole");
     check(!remote::delta_ids(bytes, seq, base) && seq == 7 && base == 7, "delta_ids reads no other kind");
+    uint32_t length = 0;
+    std::string_view damage = "kept";
+    const std::string no_rects = unhex("02 01 00");
+    check(scanned(delta, {}, seq, length, damage) && seq == UINT64_MAX && length == 1 && damage == no_rects && damage.data() == delta.data() + delta.size() - no_rects.size(),
+        "delta_scan reads a FrameDelta's whole seq and its list's length and views its damage value where it lies, at the message's end");
+    remote::FrameDelta decoded_delta;
+    check(decoded(delta, {}, decoded_delta) && decoded_delta.seq == seq, "delta_scan's seq is the one decode gives");
+    for (size_t n = 0; n < delta.size(); n++) not_scanned("delta_scan of a delta cut to " + std::to_string(n) + " bytes", std::string_view(delta).substr(0, n), {});
+    check(remote::delta_ids(delta.substr(0, 41), seq, base), "delta_ids reads a delta cut right after its base, a cut delta_scan refuses");
+    not_scanned("delta_scan of a delta with a byte after it", delta + '\0', {});
+    std::string other = delta;
+    other[0] = char(Kind::Frame);
+    not_scanned("delta_scan of a delta's bytes under a Frame's header", other, {});
+    other = delta;
+    other[1] = 2;
+    not_scanned("delta_scan of a delta in version 2", other, {});
+    not_scanned("delta_scan of a Frame", bytes, {});
 }
 
 /// The kinds: 28 of them in four ranges by direction and role, kind_of naming exactly those of version 1 and looking at the header alone.
@@ -2604,6 +2640,17 @@ void delta_bounds() {
     const std::string to_tiny = encoded(remote::FrameDelta{2, {}, 1, {{0, 0, tiny}}, std::nullopt});
     check(rebuilt(to_tiny, remote::Caps{.delta_base = base.size()}, 1, base, out, again) && again == tiny, "a short list on a base as long as delta_base is taken");
     not_rebuilt("a short list on a base a byte past delta_base", to_tiny, remote::Caps{.delta_base = base.size() - 1}, 1, base, true);
+    const std::string tiny_whole = encoded(remote::Frame{2, {}, true, DisplayList(1), std::nullopt});
+    check(to_tiny.size() > tiny_whole.size(), "the short list's one literal makes a delta longer than the Frame it stands for");
+    uint64_t seq = 0;
+    uint32_t length = 0;
+    std::string_view viewed;
+    check(scanned(to_tiny, remote::Caps{.message = to_tiny.size(), .frame = to_tiny.size()}, seq, length, viewed) && seq == 2 && length == tiny.size(),
+        "delta_scan takes the short list's delta under message and frame caps of its own size");
+    not_scanned("delta_scan of a delta a byte past the message cap, its Frame within it", to_tiny, remote::Caps{.message = to_tiny.size() - 1});
+    not_scanned("delta_scan of a delta a byte past the frame cap, its Frame within it", to_tiny, remote::Caps{.frame = to_tiny.size() - 1});
+    refused<remote::FrameDelta>("the short list's FrameDelta a byte past the message cap", to_tiny, remote::Caps{.message = to_tiny.size() - 1});
+    refused<remote::FrameDelta>("the short list's FrameDelta a byte past the frame cap", to_tiny, remote::Caps{.frame = to_tiny.size() - 1});
     remote::FrameDelta struct_out;
     check(decoded(bytes, at, struct_out), "the FrameDelta decodes under the same delta_base");
     refused<remote::FrameDelta>("the FrameDelta under a delta_base a byte shorter", bytes, below);
@@ -2643,6 +2690,16 @@ void delta_bounds() {
     check(decoded(damaged_bytes, damaged_at, struct_out) && struct_out.damage && struct_out.damage->size() == 64, "the FrameDelta with damage decodes under the same cap");
     refused<remote::FrameDelta>("the FrameDelta with damage whose Frame is a byte past the frame cap", damaged_bytes, damaged_below);
     check(last_decode.scope.asked == 0, "its refusal asks for nothing: neither the runs, the literal nor the damage are made first");
+    length = 0;
+    check(scanned(bytes, frame_at, seq, length, viewed) && scanned(bytes, message_at, seq, length, viewed) && seq == 2 && length == list.size(), "delta_scan takes the delta under the same caps");
+    not_scanned("delta_scan of the delta whose Frame is a byte past the frame cap", bytes, frame_below);
+    not_scanned("delta_scan of the delta whose Frame is a byte past the message cap", bytes, message_below);
+    std::string rects_value;
+    check(wire::encode(rects, {}, rects_value), "64 damage rects encode");
+    length = 0;
+    check(scanned(damaged_bytes, damaged_at, seq, length, viewed) && seq == 2 && length == list.size() && viewed == rects_value && viewed.data() == damaged_bytes.data() + damaged_bytes.size() - rects_value.size(),
+        "delta_scan takes a delta with a literal and 64 damage rects, making neither, and views the damage value where it lies");
+    not_scanned("delta_scan of the delta with damage whose Frame is a byte past the frame cap", damaged_bytes, damaged_below);
 
     const DisplayList all = compact_list();
     const DisplayList three(all.begin(), all.begin() + 3);

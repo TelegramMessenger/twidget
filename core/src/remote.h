@@ -267,6 +267,8 @@ bool decode(std::string_view message, const Caps& caps, FrameDelta& out);
 bool decode(std::string_view message, const Caps& caps, Frame& out, std::string_view& list);
 /// A FrameDelta's seq and base, read from the fields after its header alone; it never stands in for decoding.
 bool delta_ids(std::string_view message, uint64_t& seq, uint64_t& base);
+/// A FrameDelta past every check decode(message, caps, out) makes before it makes anything, making nothing: its seq, `length` the length of the list it stands for, and `damage` viewing its damage value's bytes in `message`, which are the caller's to check as a damage; all three untouched on false.
+bool delta_scan(std::string_view message, const Caps& caps, uint64_t& seq, uint32_t& length, std::string_view& damage);
 /// The painted Frame a FrameDelta stands for, rebuilt on `base`, the list of painted Frame `base_seq`, with the rebuilt list's bytes in `list`; both untouched on false.
 bool rebuild(std::string_view message, const Caps& caps, uint64_t base_seq, std::string_view base, Frame& out, std::string& list);
 

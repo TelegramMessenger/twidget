@@ -581,7 +581,13 @@ decode the damage, copy the runs into a list of exactly that length and decode t
 Frame's, under `values`. `decode(message, caps, out)` takes a FrameDelta's fields as they are, its
 copies checked against a base of `delta_base` bytes, with the same checks before it makes the runs,
 their literals or the damage, and `delta_ids(message, seq, base)` reads its seq and its base alone,
-which never stands in for decoding. Beside what decoding the Frame takes, the platform end
+which never stands in for decoding. `delta_scan(message, caps, seq, length, damage)` makes those
+same checks, the message within `frame` and `message` first, and makes nothing: it gives the seq and
+the length of the list the delta stands for and views the damage value's bytes where they lie in the
+message, whose content it leaves to the caller to check as a damage, for an embedder that only pairs
+a FrameDelta with its request on a thread that must not allocate; its outputs stay as they were on a
+refusal.
+Beside what decoding the Frame takes, the platform end
 then holds the message, the kept list and the rebuilt one, which becomes the next kept list: at most
 two `delta_base` beyond the message, as when a whole Frame replaces the kept list with a copy of its
 own.
@@ -734,7 +740,11 @@ leaving the output as it was and asking the allocator for no more than a bound l
 FrameDeltas between lists that share payloads, gain and lose their users, start or end empty, rebuild their
 Frames member by member and their lists' bytes; every cut, another base and each check of `rebuild`
 at its bound and one past refuse, the outputs left alone and, for each check of the runs and for a
-delta with a literal and damage whose Frame passes the frame cap, nothing asked of the allocator. A
+delta with a literal and damage whose Frame passes the frame cap, nothing asked of the allocator.
+`delta_scan` gives a delta's whole seq and its list's length and views its damage where it lies,
+asking the allocator for nothing, and refuses every cut, another kind or version, a delta a byte
+past the message or the frame cap while its Frame is within them, and a Frame a byte past either,
+its outputs left alone. A
 painted Frame written with its list's place is the Frame's own bytes, and every prefix
 `widths_in_request` gives is what `encode` takes, under counts, text and message caps at every
 size. A platform-end session against a recording Backend makes every input, request, widths batch,

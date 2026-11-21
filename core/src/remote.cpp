@@ -660,6 +660,18 @@ bool delta_ids(std::string_view message, uint64_t& seq, uint64_t& base) {
     return true;
 }
 
+bool delta_scan(std::string_view message, const Caps& caps, uint64_t& seq, uint32_t& length, std::string_view& damage) {
+    if (message.size() > caps.message || message.size() > caps.frame) return false;
+    Reader r(message);
+    DeltaHead h;
+    std::string_view value;
+    if (!r.head(Kind::FrameDelta) || !read_delta_head(r, caps, h) || !scan_delta(r, caps, h, caps.delta_base, value)) return false;
+    seq = h.seq;
+    length = h.length;
+    damage = value;
+    return true;
+}
+
 bool rebuild(std::string_view message, const Caps& caps, uint64_t base_seq, std::string_view base, Frame& out, std::string& list) {
     if (message.size() > caps.message || message.size() > caps.frame || base.size() > caps.delta_base) return false;
     Reader r(message);
