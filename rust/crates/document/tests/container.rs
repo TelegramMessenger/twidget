@@ -565,8 +565,9 @@ fn spaced_runs(measuring: u8) -> Script {
 }
 
 /// Texts a layout may break at their narrowest or in their line: flex items, table cells, a shrink-to-fit box, a
-/// float, preserved tabs and line breaks broken anywhere, spaces alone, a word that may not wrap, break-all, a flex row
-/// under a display:none box; then new items, a narrower view, the trim, new letters and the hidden row shown.
+/// float, preserved tabs and line breaks broken anywhere, spaces alone, a word that may not wrap, break-all, a character
+/// past a key's bytes, a flex row under a display:none box; then new items, a narrower view, the trim, new letters and
+/// the hidden row shown.
 fn narrowest_breaks(measuring: u8) -> Script {
     let html = "<div style=\"display:flex\"><div>breakable</div><div>pieces</div></div>\
 <p>plain fits</p>\
@@ -581,7 +582,9 @@ fn narrowest_breaks(measuring: u8) -> Script {
 <div style=\"white-space:pre-wrap;overflow-wrap:anywhere;width:10px\">     </div>\
 <div style=\"display:flex\"><div style=\"white-space:nowrap\">no wrap here</div></div>\
 <div style=\"width:30px;word-break:break-all\">breakallwords</div>";
-    let (mut s, _) = widget(html, 320.0, 1.0, measuring);
+    // A character of more bytes than a width's key: a base and 150 combining marks.
+    let html = format!("{html}<div style=\"width:10px;overflow-wrap:anywhere\">ae{}b</div>", "\u{301}".repeat(150));
+    let (mut s, _) = widget(&html, 320.0, 1.0, measuring);
     s.after(16.0, batch(&insert(5, 900, "div", "", "QXZ")));
     s.after(16.0, Step::Paint);
     s.after(16.0, Step::Width(200.0));
