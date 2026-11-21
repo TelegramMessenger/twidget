@@ -8,6 +8,7 @@
 //! In the C++ the table is one per process behind a mutex; here it is a [`Names`], which the helper makes
 //! once and shares (it is `Sync`), and a test can make fresh.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -433,6 +434,12 @@ pub struct StringIdUsage {
     pub bytes: usize,
 }
 
+thread_local! {
+    /// string_id.cpp's `thread_names` and `thread_bytes`: the names the calling thread added to a table and their
+    /// bytes, since the thread began (one count for every table, as the C++ has one table).
+    static THREAD_USAGE: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
 #[derive(Debug, Default)]
 struct Table {
     map: BTreeMap<Vec<u8>, StringId>,
@@ -448,6 +455,10 @@ impl Table {
         // str not found: add it to the array and the map
         self.array.push(Arc::from(str));
         self.array_bytes += str.len();
+        THREAD_USAGE.with(|u| {
+            let (names, bytes) = u.get();
+            u.set((names + 1, bytes + str.len()));
+        });
         let id = StringId((self.array.len() - 1) as u32);
         self.map.insert(str.to_vec(), id);
         id
@@ -509,6 +520,12 @@ impl Names {
     pub fn usage(&self) -> StringIdUsage {
         let table = self.lock();
         StringIdUsage { names: table.array.len(), bytes: table.array_bytes }
+    }
+
+    /// `_id_thread_usage()`: the names the calling thread added and their bytes, since the thread began.
+    pub fn thread_usage() -> StringIdUsage {
+        let (names, bytes) = THREAD_USAGE.with(Cell::get);
+        StringIdUsage { names, bytes }
     }
 
     /// The names whose declarations the renderer keeps raw, with their `-lh-raw-` twins (style.cpp's

@@ -492,7 +492,8 @@ impl<E: Engine, B: Backend> Core<E, B> {
         }
     }
 
-    /// Charges the names the outermost call it spans left in litehtml's name table, which never gives one back.
+    /// Charges the names the outermost call it spans left in litehtml's name table, which never gives one back, counted
+    /// on its own thread: a renderer that runs on another thread meanwhile pays for the names it adds itself.
     fn names_begin(&mut self) -> (u64, u64) {
         let depth = self.name_meter_depth;
         self.name_meter_depth += 1;

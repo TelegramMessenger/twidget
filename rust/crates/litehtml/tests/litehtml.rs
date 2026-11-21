@@ -306,3 +306,29 @@ fn colours_are_read_from_their_text() {
     assert_eq!(parse_color(&names, &accent, Some(&Theme)), Some(WebColor::rgba(0x11, 0x22, 0x33, 255)));
     assert_eq!(parse_color(&names, &accent, None), None);
 }
+
+/// The table counts, per thread, the names that thread added and their bytes: a name another thread adds meanwhile is
+/// not this thread's, a name the table had is no one's (string_id.cpp's `_id_thread_usage`, which the renderer charges
+/// a widget for; core_tests.cpp checks it through two renderers, one adding a class on a second thread).
+#[test]
+fn names_are_counted_on_the_thread_that_adds_them() {
+    let names = std::sync::Arc::new(Names::new());
+    let start = Names::thread_usage();
+    names.id(b"tw-fresh-class-1");
+    let one = Names::thread_usage();
+    assert_eq!((one.names - start.names, one.bytes - start.bytes), (1, 16), "this thread's name and bytes");
+    let other = std::sync::Arc::clone(&names);
+    let theirs = std::thread::spawn(move || {
+        let before = Names::thread_usage();
+        other.id(b"tw-fresh-class-2");
+        other.id(b"tw-fresh-class-1");
+        let after = Names::thread_usage();
+        (after.names - before.names, after.bytes - before.bytes)
+    })
+    .join()
+    .expect("the other thread");
+    assert_eq!(theirs, (1, 16), "the other thread is charged its new name alone, not the one the table had");
+    let now = Names::thread_usage();
+    assert_eq!((now.names, now.bytes), (one.names, one.bytes), "and this thread is charged nothing for it");
+    assert_eq!(names.usage().names - INITIAL_COUNT as usize - 2, 2, "the process total counts both");
+}

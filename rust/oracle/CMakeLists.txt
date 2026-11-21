@@ -111,7 +111,7 @@ file(WRITE "${TW_GENERATED}/tw_ua_stylesheet.h.tmp"
 configure_file("${TW_GENERATED}/tw_ua_stylesheet.h.tmp" "${TW_GENERATED}/tw_ua_stylesheet.h" COPYONLY)
 add_library(oracle_core STATIC
     "${TW_CORE}/renderer.cpp" "${TW_CORE}/computed_style.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/animations.cpp" "${TW_CORE}/canvas.cpp"
-    "${TW_CORE}/compositor.cpp" "${TW_CORE}/encode.cpp" "${TW_CORE}/filters.cpp" "${TW_CORE}/paint_policy.cpp" "${TW_CORE}/png.cpp"
+    "${TW_CORE}/compositor.cpp" "${TW_CORE}/encode.cpp" "${TW_CORE}/filters.cpp" "${TW_CORE}/paint_policy.cpp" "${TW_CORE}/png.cpp" "${TW_CORE}/text_widths.cpp"
     "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/src/gesture_policy.cpp")
 target_include_directories(oracle_core PUBLIC "${TW_CORE}" "${TW_ROOT}/core/include" "${TW_SANDBOX_INCLUDE}" PRIVATE "${TW_GENERATED}")
 target_link_libraries(oracle_core PUBLIC lhdump_litehtml)

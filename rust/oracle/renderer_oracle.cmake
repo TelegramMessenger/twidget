@@ -10,10 +10,14 @@ string(REPLACE "\r\n" "\n" RENDERER_H "${RENDERER_H}")
 tw_input_probes(RENDERER_CPP RENDERER_H renderer_probe.h RendererOracle)
 
 # The driver reads the container's state too.
-tw_probe(RENDERER_CPP 1 [=[class Container : public litehtml::document_container {
-public:]=] [=[class Container : public litehtml::document_container {
+tw_probe(RENDERER_CPP 1 [=[#endif
+{
+public:
+    Container(Renderer& r, Backend& backend)]=] [=[#endif
+{
     friend struct RendererOracle;
-public:]=])
+public:
+    Container(Renderer& r, Backend& backend)]=])
 
 # The document's life in Container: the layout budget, patches, a new document, its height and what a new viewport height asks.
 tw_probe(RENDERER_CPP 1 [=[        doc_->set_layout_budget(kLayoutBudgetBase + kLayoutBudgetPerElement * elements);
@@ -63,7 +67,7 @@ tw_probe(RENDERER_CPP 3 [=[r_.pending_violations_.push_back(]=] [=[twp::push(r_.
 tw_probe(RENDERER_CPP 1 [=[return container_->image_of(v, image, w, h);]=] [=[return twp::image_of(v, image, w, h, container_->image_of(v, image, w, h));]=])
 
 # The name table, the declaration scans, the elements' edges.
-tw_probe(RENDERER_CPP 2 [=[const auto usage = litehtml::_id_usage();]=] [=[const auto usage = twp::usage(litehtml::_id_usage());]=])
+tw_probe(RENDERER_CPP 2 [=[const auto usage = litehtml::_id_thread_usage();]=] [=[const auto usage = twp::usage(litehtml::_id_thread_usage());]=])
 tw_probe(RENDERER_CPP 1 [=[const auto& found = container_->declarations(Animator::watched(), Animator::entry_properties(), {}, &generation);]=] [=[const auto& found = twp::declared(container_->declarations(Animator::watched(), Animator::entry_properties(), {}, &generation), Animator::watched(), Animator::entry_properties(), {}, generation);]=])
 tw_probe(RENDERER_CPP 1 [=[for (auto& [id, values] : container_->declarations(names, {}, targets)) {]=] [=[for (auto& [id, values] : twp::declared(container_->declarations(names, {}, targets), names, {}, targets, twp::no_generation)) {]=])
 tw_probe(RENDERER_CPP 1 [=[    for (const auto& [id, el] : container_->elements()) {

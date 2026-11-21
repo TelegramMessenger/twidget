@@ -16,7 +16,7 @@ configure_file("${EVENTS_SEAM}/renderer.cpp.tmp" "${EVENTS_SEAM}/renderer.cpp" C
 configure_file("${EVENTS_SEAM}/renderer.h.tmp" "${EVENTS_SEAM}/renderer.h" COPYONLY)
 add_library(events_core STATIC
     "${TW_CORE}/computed_style.cpp" "${TW_CORE}/css.cpp" "${TW_CORE}/animations.cpp" "${TW_CORE}/canvas.cpp" "${TW_CORE}/compositor.cpp"
-    "${TW_CORE}/encode.cpp" "${TW_CORE}/filters.cpp" "${TW_CORE}/paint_policy.cpp" "${TW_CORE}/png.cpp" "${TW_CORE}/wire.cpp"
+    "${TW_CORE}/encode.cpp" "${TW_CORE}/filters.cpp" "${TW_CORE}/paint_policy.cpp" "${TW_CORE}/png.cpp" "${TW_CORE}/text_widths.cpp" "${TW_CORE}/wire.cpp"
     "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/src/gesture_policy.cpp")
 target_include_directories(events_core PUBLIC "${TW_CORE}" "${TW_ROOT}/core/include" "${TW_SANDBOX_INCLUDE}")
 target_link_libraries(events_core PUBLIC lhdump_litehtml)

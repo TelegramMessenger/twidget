@@ -89,7 +89,8 @@ pub trait Engine {
     /// `document::update_styles` with the style attributes of elements by widget id: None when the document
     /// cannot patch them, else whether anything changed.
     fn update_styles(&mut self, patches: &[(i64, Vec<u8>)]) -> Option<bool>;
-    /// `litehtml::_id_usage`: the names in the process's name table and their bytes.
+    /// `litehtml::_id_thread_usage`: the names this thread added to the process's name table and their bytes, so that a
+    /// renderer is charged only the names it adds itself while others run on other threads.
     fn name_usage(&mut self) -> (u64, u64);
     /// `Container::trim`: fonts no document holds, measured widths, the paint trace, the declaration scans.
     fn trim(&mut self);
