@@ -5,6 +5,12 @@
 
 use std::path::PathBuf;
 
+pub mod docs;
+#[path = "../../../ends/tests/common/mod.rs"]
+pub mod ends;
+#[path = "../../../events/tests/common/mod.rs"]
+pub mod events;
+pub mod glue;
 pub mod tap;
 
 pub use twidget_testkit::{Comparison, Lcg, Oracle, framed, mutate};

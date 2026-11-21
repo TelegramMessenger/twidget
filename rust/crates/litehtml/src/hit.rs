@@ -493,7 +493,7 @@ impl Document {
     }
 
     /// A `shared_ptr` to the element taken: an anonymous one is kept (`release_anonymous` lets it go).
-    pub(crate) fn hold_anonymous(&mut self, el: Option<ElementId>) {
+    pub fn hold_anonymous(&mut self, el: Option<ElementId>) {
         if let Some(el) = el
             && self.el(el).anonymous_style
         {

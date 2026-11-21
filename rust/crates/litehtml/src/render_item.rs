@@ -607,7 +607,7 @@ impl Document {
 
     /// An anonymous element loses what kept it: with nothing left it is freed, and its slot used again; its anonymous
     /// children that are still alive have no parent after.
-    pub(crate) fn release_anonymous(&mut self, element: ElementId) {
+    pub fn release_anonymous(&mut self, element: ElementId) {
         let el = self.el_mut(element);
         if !el.anonymous_style || el.box_holds == 0 {
             return;

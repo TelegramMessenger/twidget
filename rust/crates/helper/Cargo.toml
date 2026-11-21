@@ -1,6 +1,6 @@
 [package]
 name = "twidget_helper"
-description = "The widget helper's tdesktop glue: the hosted wire's 0xFF controls, the renderer rules, the Debug tap and its forwarding renderer"
+description = "The widget helper's tdesktop glue: the hosted wire's 0xFF controls, the renderer rules, the Debug tap, the cursor styles and the hosted glue"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,10 +11,18 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+twidget_canvas = { path = "../canvas" }
+twidget_css = { path = "../css" }
+twidget_document = { path = "../document" }
+twidget_ends = { path = "../ends" }
 twidget_gesture = { path = "../../../../widget-sandbox/packages/rust/crates/gesture" }
 twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_litehtml = { path = "../litehtml" }
 twidget_remote = { path = "../remote" }
 twidget_renderer = { path = "../renderer" }
+twidget_wire = { path = "../wire" }
 
 [dev-dependencies]
+twidget_events = { path = "../events" }
+twidget_shadow = { path = "../shadow" }
 twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

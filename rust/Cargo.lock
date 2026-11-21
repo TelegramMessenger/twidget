@@ -134,11 +134,19 @@ version = "0.1.0"
 name = "twidget_helper"
 version = "0.1.0"
 dependencies = [
+ "twidget_canvas",
+ "twidget_css",
+ "twidget_document",
+ "twidget_ends",
+ "twidget_events",
  "twidget_gesture",
  "twidget_json",
+ "twidget_litehtml",
  "twidget_remote",
  "twidget_renderer",
+ "twidget_shadow",
  "twidget_testkit",
+ "twidget_wire",
 ]
 
 [[package]]

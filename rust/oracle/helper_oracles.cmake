@@ -47,3 +47,57 @@ target_include_directories(helper_tap_oracle PRIVATE
 if (MSVC)
     target_compile_definitions(helper_tap_oracle PRIVATE NOMINMAX)
 endif()
+
+# tgw_cursor.cpp over helper_seam's renderer.h, its header copied with the members public for the oracle to read them.
+set(TW_PROBE_WHAT cursor_oracle)
+set(CURSOR_SEAM "${CMAKE_CURRENT_BINARY_DIR}/cursor_seam")
+file(READ "${TW_TDESKTOP_FILES}/tgw/tgw_cursor.h" CURSOR_H)
+string(REPLACE "\r\n" "\n" CURSOR_H "${CURSOR_H}")
+tw_probe(CURSOR_H 1 [=[private:]=] [=[public:]=])
+file(WRITE "${CURSOR_SEAM}/tgw/tgw_cursor.h.tmp" "${CURSOR_H}")
+configure_file("${CURSOR_SEAM}/tgw/tgw_cursor.h.tmp" "${CURSOR_SEAM}/tgw/tgw_cursor.h" COPYONLY)
+add_executable(cursor_oracle cursor_oracle.cpp "${TW_TDESKTOP_FILES}/tgw/tgw_cursor.cpp")
+target_include_directories(cursor_oracle PRIVATE
+    "${CURSOR_SEAM}" "${CMAKE_CURRENT_SOURCE_DIR}/helper_seam" "${TW_TDESKTOP_FILES}" "${TW_ROOT}" "${TW_ORACLE_IO}")
+target_link_libraries(cursor_oracle PRIVATE lhdump_litehtml)
+
+# The hosted glue on the real renderer end and renderer, copied with the renderer's clock and the frame message's on the session's step clock.
+set(TW_PROBE_WHAT hosted_glue_oracle)
+set(GLUE_SEAM "${CMAKE_CURRENT_BINARY_DIR}/glue_seam")
+file(READ "${TW_TDESKTOP_FILES}/tgw/tgw_hosted_glue.cpp" GLUE_CPP)
+string(REPLACE "\r\n" "\n" GLUE_CPP "${GLUE_CPP}")
+tw_probe(GLUE_CPP 1 [=[		channel,
+		_caps);]=] [=[		channel,
+		_caps,
+		OracleClock());]=])
+tw_probe(GLUE_CPP 1 [=[
+namespace Tgw {
+]=] [=[
+twlite::Clock *OracleClock();
+
+namespace Tgw {
+]=])
+file(WRITE "${GLUE_SEAM}/tgw/tgw_hosted_glue.cpp.tmp" "${GLUE_CPP}")
+configure_file("${GLUE_SEAM}/tgw/tgw_hosted_glue.cpp.tmp" "${GLUE_SEAM}/tgw/tgw_hosted_glue.cpp" COPYONLY)
+file(READ "${TW_TDESKTOP_FILES}/tgw/tgw_renderer_rules.h" GLUE_RULES)
+string(REPLACE "\r\n" "\n" GLUE_RULES "${GLUE_RULES}")
+tw_probe(GLUE_RULES 1 [=[twlite::Renderer::clock() * 1000.]=] [=[OracleClockMs() / 1000. * 1000.]=])
+tw_probe(GLUE_RULES 1 [=[
+namespace Tgw::RendererRules {
+]=] [=[
+double OracleClockMs();
+
+namespace Tgw::RendererRules {
+]=])
+file(WRITE "${GLUE_SEAM}/tgw/tgw_renderer_rules.h.tmp" "${GLUE_RULES}")
+configure_file("${GLUE_SEAM}/tgw/tgw_renderer_rules.h.tmp" "${GLUE_SEAM}/tgw/tgw_renderer_rules.h" COPYONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${TW_TDESKTOP_FILES}/tgw/tgw_cursor.h" "${TW_TDESKTOP_FILES}/tgw/tgw_hosted_glue.cpp" "${TW_TDESKTOP_FILES}/tgw/tgw_renderer_rules.h")
+add_executable(hosted_glue_oracle hosted_glue_oracle.cpp "${GLUE_SEAM}/tgw/tgw_hosted_glue.cpp" "${TW_TDESKTOP_FILES}/tgw/tgw_cursor.cpp"
+    "${TW_CORE}/renderer_end.cpp" "${TW_CORE}/platform_end.cpp" "${TW_CORE}/remote.cpp" "${TW_CORE}/wire.cpp")
+target_include_directories(hosted_glue_oracle PRIVATE
+    "${GLUE_SEAM}" "${TW_TDESKTOP_FILES}" "${TW_ROOT}" "${TW_CORE}" "${TW_ROOT}/tests" "${TW_SANDBOX_INCLUDE}" "${TW_ORACLE_IO}")
+target_link_libraries(hosted_glue_oracle PRIVATE oracle_core)
+if (MSVC)
+    target_compile_definitions(hosted_glue_oracle PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
