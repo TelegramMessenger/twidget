@@ -74,6 +74,7 @@ dependencies = [
  "twidget_events",
  "twidget_json",
  "twidget_litehtml",
+ "twidget_remote",
  "twidget_renderer",
  "twidget_shadow",
  "twidget_testkit",

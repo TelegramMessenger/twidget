@@ -323,6 +323,14 @@ impl<C> fmt::Debug for Proxy<C> {
     }
 }
 
+/// Another handle on the same channel: the renderer and its document's container share one Backend, as renderer.h's
+/// `Container` holds the renderer's `Backend&`.
+impl<C> Clone for Proxy<C> {
+    fn clone(&self) -> Self {
+        Proxy { link: Arc::clone(&self.link) }
+    }
+}
+
 impl<C: RendererChannel> Proxy<C> {
     fn answered<A: Message>(&mut self, request: &impl Message) -> Option<A> {
         lock(&self.link).ask(|caps, bytes| request.encode(caps, bytes), |bytes, caps| A::decode(bytes, caps))

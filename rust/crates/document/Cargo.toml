@@ -23,5 +23,6 @@ twidget_renderer = { path = "../renderer" }
 twidget_wire = { path = "../wire" }
 
 [dev-dependencies]
+twidget_remote = { path = "../remote" }
 twidget_shadow = { path = "../shadow" }
 twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

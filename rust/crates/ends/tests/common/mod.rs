@@ -1,6 +1,7 @@
 //! What the ends' tests share, as tests/log_backend.h, loopback.h and reports.h have it: a Backend that
 //! answers every call the same way each run and logs it, both ends in one process over an in-memory channel
-//! that can spoil an answer, and the reports a step must make. The renderer is the scripted one.
+//! that can spoil an answer, and the reports a step must make. The renderer is the scripted one, or another a test
+//! opens the loop on.
 
 #![allow(dead_code)]
 
@@ -12,7 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use scripted::{Log, ScriptedRenderer, f32s, hex, metrics_line};
-use twidget_ends::{Backend, Channel, Host, Output, PlatformEnd, Proxy, RendererChannel, RendererEnd};
+use twidget_ends::{Backend, Channel, Host, Output, PlatformEnd, Proxy, Renderer, RendererChannel, RendererEnd};
 use twidget_json::Json;
 use twidget_json::quote;
 use twidget_remote::*;
@@ -550,15 +551,15 @@ impl RendererChannel for Wire {
 pub type End = RendererEnd<Wire, ScriptedRenderer<Proxy<Wire>>>;
 
 /// The backend, the host, the queue, the platform end, the channel and then the renderer end, made and
-/// dropped in that order.
-pub struct Loopback {
+/// dropped in that order. The renderer is the scripted one unless a test opens the end on another.
+pub struct Loopback<R: Renderer = ScriptedRenderer<Proxy<Wire>>> {
     pub caps: Caps,
     pub backend: LogHandle,
     pub host: Rc<RefCell<Heard>>,
     pub queue: Queue,
     pub platform: Rc<RefCell<Platform>>,
     pub wire: Rc<RefCell<WireState>>,
-    pub end: Option<End>,
+    pub end: Option<RendererEnd<Wire, R>>,
     pub out: Output,
     pub delivered: Vec<bool>,
     pub outputs: Vec<Output>,
@@ -567,6 +568,18 @@ pub struct Loopback {
 
 impl Loopback {
     pub fn new(caps: Caps) -> Loopback {
+        Loopback::made(caps)
+    }
+
+    pub fn open(&mut self, width: f64, dpr: f64, dark: bool, script: &Json) {
+        let log = Rc::clone(&self.log);
+        self.open_with(width, dpr, dark, |w, d, k, proxy| ScriptedRenderer::new(w, d, k, proxy, script, log));
+    }
+}
+
+impl<R: Renderer> Loopback<R> {
+    /// The loop before its end opens, on renderers of type `R`.
+    pub fn made(caps: Caps) -> Loopback<R> {
         let backend = LogHandle::new();
         let host = Rc::new(RefCell::new(Heard::default()));
         let queue = Queue::default();
@@ -599,15 +612,13 @@ impl Loopback {
         self.channel().flush();
     }
 
-    pub fn open(&mut self, width: f64, dpr: f64, dark: bool, script: &Json) {
-        let log = Rc::clone(&self.log);
-        self.end = Some(RendererEnd::new(width, dpr, dark, self.channel(), self.caps, |w, d, k, proxy| {
-            ScriptedRenderer::new(w, d, k, proxy, script, log)
-        }));
+    /// Opens the end on the renderer `make` builds on its proxy.
+    pub fn open_with(&mut self, width: f64, dpr: f64, dark: bool, make: impl FnOnce(f64, f64, bool, Proxy<Wire>) -> R) {
+        self.end = Some(RendererEnd::new(width, dpr, dark, self.channel(), self.caps, make));
         self.flush();
     }
 
-    pub fn end(&mut self) -> &mut End {
+    pub fn end(&mut self) -> &mut RendererEnd<Wire, R> {
         self.end.as_mut().expect("an open end")
     }
 
