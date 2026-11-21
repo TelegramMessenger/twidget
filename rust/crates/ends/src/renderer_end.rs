@@ -11,13 +11,176 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use twidget_json::Json;
 use twidget_remote::{
-    CanvasRelease, Caps, ClaimAnswer, ClaimQuery, ClearSelection, FontAnswer, FontRelease, FontRequest, Frame, FrameRequest, GestureClaim,
-    Hover, ImageAnswer, ImageRequest, Kind, Message, Messages, Paint, PixelsAnswer, PixelsRequest, Pointer, Selection, SetMaxHeight,
-    SetTheme, SetWidth, State, Touch, WidthAnswer, WidthRequest, encode_canvas_run, is_platform_message, kind_of,
+    CanvasRelease, Caps, ClaimAnswer, ClaimQuery, ClearSelection, DeltaRun, FontAnswer, FontRelease, FontRequest, Frame, FrameDelta,
+    FrameRequest, GestureClaim, Hover, ImageAnswer, ImageRequest, Kind, Message, Messages, Paint, PixelsAnswer, PixelsRequest, Pointer,
+    Selection, SetMaxHeight, SetTheme, SetWidth, State, TextInFont, Touch, WidthAnswer, WidthRequest, WidthsAnswer, WidthsRequest,
+    WrittenList, encode_canvas_run, encode_frame_placed, is_platform_message, kind_of, widths_in_request,
 };
 use twidget_wire::{CanvasOp, FontMetrics};
 
 use crate::{Backend, Renderer, RendererChannel};
+
+/// What a FrameDelta run costs before its bytes: a copy's tag, offset and length, a literal's tag and length.
+const COPY_RUN_BYTES: usize = 1 + 4 + 4;
+const LITERAL_RUN_BYTES: usize = 1 + 4;
+/// How many commands of the base with a command's hash are compared with it when it does not continue the last copy.
+const PROBES: usize = 4;
+const NONE: u32 = u32::MAX;
+
+/// The hash a painted list's index keys its commands by: 64-bit FNV-1a over the command's bytes.
+pub fn command_hash(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 14695981039346656037;
+    for &c in bytes {
+        h ^= u64::from(c);
+        h = h.wrapping_mul(1099511628211);
+    }
+    h
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Entry {
+    hash: u64,
+    unit: u32,
+}
+
+fn before(a: &Entry, b: &Entry) -> bool {
+    a.hash < b.hash || (a.hash == b.hash && a.unit < b.unit)
+}
+
+/// A painted list as encoded once: unit 0 is its head, unit k from 1 its command k - 1, each bytes
+/// [bounds[k], bounds[k + 1]); its commands by hash for the next list to find.
+struct Painted {
+    seq: u64,
+    bytes: Vec<u8>,
+    bounds: Vec<u32>,
+    index: Vec<Entry>,
+}
+
+impl Painted {
+    fn units(&self) -> usize {
+        self.bounds.len() - 1
+    }
+
+    fn unit(&self, u: usize) -> &[u8] {
+        &self.bytes[self.bounds[u] as usize..self.bounds[u + 1] as usize]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Back {
+    Joins,
+    AfterLiteral,
+    AfterCopy,
+}
+
+/// Copies of what `list`, whose units hash to `hashes`, shares byte for byte with `base`, no more than the base holds
+/// in all, and literals for the rest, in as few bytes as such runs take; none when nothing is worth copying.
+fn runs_for(base: &Painted, list: &Painted, hashes: &[u64]) -> Vec<DeltaRun> {
+    let units = list.units();
+    let same_as = |u: usize, b: u32| (b as usize) < base.units() && base.unit(b as usize) == list.unit(u);
+    let mut from = vec![NONE; units];
+    let mut budget = base.bytes.len();
+    for u in 0..units {
+        let length = list.unit(u).len();
+        if length > budget {
+            continue;
+        }
+        let mut found = NONE;
+        if u == 0 {
+            if same_as(0, 0) {
+                found = 0;
+            }
+        } else if from[u - 1] != NONE && same_as(u, from[u - 1].wrapping_add(1)) {
+            found = from[u - 1].wrapping_add(1);
+        } else {
+            let key = Entry { hash: hashes[u], unit: 0 };
+            let mut it = base.index.partition_point(|e| before(e, &key));
+            let mut probe = 0;
+            while probe < PROBES && it < base.index.len() && base.index[it].hash == hashes[u] {
+                if same_as(u, base.index[it].unit) {
+                    found = base.index[it].unit;
+                    break;
+                }
+                probe += 1;
+                it += 1;
+            }
+        }
+        if found == NONE {
+            continue;
+        }
+        from[u] = found;
+        budget -= length;
+    }
+    const FAR: usize = usize::MAX / 4;
+    let mut literal_back = vec![Back::AfterLiteral; units];
+    let mut copy_back = vec![Back::AfterLiteral; units];
+    let mut literal = LITERAL_RUN_BYTES + list.unit(0).len();
+    let mut copy = if from[0] != NONE { COPY_RUN_BYTES } else { FAR };
+    for u in 1..units {
+        let length = list.unit(u).len();
+        let joined = literal + length;
+        let opened = copy + LITERAL_RUN_BYTES + length;
+        literal_back[u] = if joined <= opened { Back::Joins } else { Back::AfterCopy };
+        let next_literal = joined.min(opened);
+        let mut next_copy = FAR;
+        if from[u] != NONE {
+            let after_literal = literal + COPY_RUN_BYTES;
+            let after_copy = copy + COPY_RUN_BYTES;
+            let continued = if from[u - 1] != NONE && from[u] == from[u - 1].wrapping_add(1) { copy } else { FAR };
+            // std::min of a list: the first of the smallest.
+            next_copy = continued;
+            if after_literal < next_copy {
+                next_copy = after_literal;
+            }
+            if after_copy < next_copy {
+                next_copy = after_copy;
+            }
+            copy_back[u] = if next_copy == continued {
+                Back::Joins
+            } else if next_copy == after_literal {
+                Back::AfterLiteral
+            } else {
+                Back::AfterCopy
+            };
+        }
+        literal = next_literal;
+        copy = next_copy;
+    }
+    let mut copies = vec![false; units];
+    let mut opens = vec![false; units];
+    let mut copying = copy < literal;
+    let mut any = false;
+    for u in (0..units).rev() {
+        let back = if copying { copy_back[u] } else { literal_back[u] };
+        copies[u] = copying;
+        any = any || copying;
+        opens[u] = u == 0 || back != Back::Joins;
+        if back != Back::Joins {
+            copying = back == Back::AfterCopy;
+        }
+    }
+    let mut runs: Vec<DeltaRun> = Vec::new();
+    if !any {
+        return runs;
+    }
+    for u in 0..units {
+        let bytes = list.unit(u);
+        if opens[u] {
+            runs.push(if copies[u] {
+                DeltaRun { offset: base.bounds[from[u] as usize], length: 0, literal: Vec::new() }
+            } else {
+                DeltaRun::default()
+            });
+        }
+        let last = runs.last_mut().expect("the first unit opens a run");
+        if copies[u] {
+            last.length = last.length.wrapping_add(bytes.len() as u32);
+        } else {
+            last.literal.extend_from_slice(bytes);
+        }
+    }
+    runs
+}
 
 /// Every renderer message of one `deliver()`, and whether the engine's frame message is due after them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -26,12 +189,14 @@ pub struct Output {
     pub frame: bool,
 }
 
-/// What the end and its proxy share: the embedder's channel, the caps, and why the end stopped (empty
-/// while it runs).
+/// What the end and its proxy share: the embedder's channel, the caps, why the end stopped (empty while it
+/// runs), and the list of the last painted Frame sent while it is within `delta_base`, for the next one to copy
+/// from, which a stop drops.
 struct Link<C> {
     channel: C,
     caps: Caps,
     reason: String,
+    base: Option<Painted>,
 }
 
 fn lock<C>(link: &Mutex<Link<C>>) -> MutexGuard<'_, Link<C>> {
@@ -48,7 +213,60 @@ impl<C: RendererChannel> Link<C> {
         if self.reason.is_empty() {
             self.reason = reason.to_string();
         }
+        self.base = None;
         false
+    }
+
+    /// A Frame, painted ones as a FrameDelta on the last painted list when that is shorter.
+    fn send_frame(&mut self, frame: &Frame) -> bool {
+        if self.stopped() {
+            return false;
+        }
+        if !frame.painted {
+            return self.send(frame);
+        }
+        let caps = self.caps;
+        let mut bytes = Vec::new();
+        let mut written = WrittenList::default();
+        if !encode_frame_placed(frame, &caps, &mut bytes, caps.delta_base.min(u32::MAX as usize), &mut written) {
+            return self.stop("a message past the caps");
+        }
+        let mut next = None;
+        if !written.starts.is_empty() {
+            let mut painted = Painted {
+                seq: frame.seq,
+                bytes: bytes[written.at..written.at + written.size].to_vec(),
+                bounds: Vec::with_capacity(written.starts.len() + 1),
+                index: Vec::new(),
+            };
+            painted.bounds.push(0);
+            for &at in &written.starts {
+                painted.bounds.push(at as u32);
+            }
+            let hashes: Vec<u64> = (0..painted.units()).map(|u| command_hash(painted.unit(u))).collect();
+            if let Some(base) = &self.base {
+                let delta = FrameDelta {
+                    seq: frame.seq,
+                    state: frame.state,
+                    base: base.seq,
+                    runs: runs_for(base, &painted, &hashes),
+                    damage: frame.damage.clone(),
+                };
+                let mut smaller = Vec::new();
+                if !delta.runs.is_empty() && delta.encode(&caps, &mut smaller) && smaller.len() < bytes.len() {
+                    bytes = smaller;
+                }
+            }
+            painted.index.reserve(painted.units() - 1);
+            for (u, &hash) in hashes.iter().enumerate().skip(1) {
+                painted.index.push(Entry { hash, unit: u as u32 });
+            }
+            painted.index.sort_by(|a, b| a.hash.cmp(&b.hash).then(a.unit.cmp(&b.unit)));
+            next = Some(painted);
+        }
+        self.channel.send(bytes);
+        self.base = next;
+        true
     }
 
     fn post(&mut self, encode_message: impl FnOnce(&Caps, &mut Vec<u8>) -> bool) -> bool {
@@ -137,6 +355,28 @@ impl<C: RendererChannel> Backend for Proxy<C> {
         self.answered::<WidthAnswer>(&WidthRequest { font, text: text.to_vec() }).map_or(0.0, |answer| answer.width)
     }
 
+    /// As many texts in each WidthsRequest as it holds within the caps, in order; a text that fits in no request goes
+    /// as a WidthRequest. 0 for the texts not measured once the end stops.
+    fn text_widths(&mut self, texts: &[TextInFont]) -> Vec<f32> {
+        let mut widths = vec![0.0f32; texts.len()];
+        let mut i = 0;
+        while i < texts.len() && !lock(&self.link).stopped() {
+            let n = widths_in_request(texts, i, &lock(&self.link).caps);
+            if n == 0 {
+                widths[i] = self.text_width(texts[i].font, &texts[i].text);
+                i += 1;
+                continue;
+            }
+            let request = WidthsRequest { texts: texts[i..i + n].to_vec() };
+            let answer =
+                lock(&self.link).ask(|caps, bytes| request.encode(caps, bytes), |bytes, caps| WidthsAnswer::decode(bytes, caps, &request));
+            let Some(answer) = answer else { break };
+            widths[i..i + answer.widths.len()].copy_from_slice(&answer.widths);
+            i += request.texts.len();
+        }
+        widths
+    }
+
     fn load_image(&mut self, id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool {
         if url.len() > lock(&self.link).caps.url {
             return false;
@@ -217,7 +457,7 @@ impl<C: RendererChannel, R: Renderer> RendererEnd<C, R> {
         caps: Caps,
         make: impl FnOnce(f64, f64, bool, Proxy<C>) -> R,
     ) -> RendererEnd<C, R> {
-        let link = Arc::new(Mutex::new(Link { channel, caps, reason: String::new() }));
+        let link = Arc::new(Mutex::new(Link { channel, caps, reason: String::new(), base: None }));
         let renderer = make(width, dpr, dark, Proxy { link: Arc::clone(&link) });
         let mut end = RendererEnd { link, sent_state: None, sent_selection: Vec::new(), frame_asked: false, renderer };
         end.finish(&[], None, None, None);
@@ -415,7 +655,7 @@ impl<C: RendererChannel, R: Renderer> RendererEnd<C, R> {
         let state = self.current_state();
         if let Some(frame) = frame {
             frame.state = state;
-            if self.send(&*frame) {
+            if lock(&self.link).send_frame(frame) {
                 self.sent_state = Some(state);
             }
             return;

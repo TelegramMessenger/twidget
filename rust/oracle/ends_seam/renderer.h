@@ -374,6 +374,13 @@ private:
             const int font = font_at(c[size_t(1)].asInt(0));
             const float w = backend_.text_width(font, c[size_t(2)].asString());
             line("  width " + std::to_string(font) + " " + twidget::Json::quote(c[size_t(2)].asString()) + " -> " + scripted::f32s(w));
+        } else if (name == "widths") {
+            std::vector<TextInFont> texts;
+            for (const twidget::Json& t : c[size_t(1)].arr()) texts.push_back(TextInFont{font_at(t[size_t(0)].asInt(0)), t[size_t(1)].asString()});
+            const std::vector<float> widths = backend_.text_widths(texts);
+            std::string all;
+            for (float w : widths) all += " " + scripted::f32s(w);
+            line("  widths " + std::to_string(texts.size()) + " ->" + all);
         } else if (name == "image") {
             float w = 0, h = 0;
             const int id = c[size_t(1)].asInt(0);

@@ -189,6 +189,10 @@ remote::Caps caps_of(const Json& j) {
     c.values.rects = cap(j, "rects", c.values.rects);
     c.values.clips = cap(j, "clips", c.values.clips);
     c.values.floats = cap(j, "floats", c.values.floats);
+    c.widths = cap(j, "widths", c.widths);
+    c.widths_text = cap(j, "widths_text", c.widths_text);
+    c.frame = cap(j, "frame", c.frame);
+    c.delta_base = cap(j, "delta_base", c.delta_base);
     return c;
 }
 
@@ -295,6 +299,8 @@ std::string run(const Json& session) {
             backend.reads = LogBackend::Read(std::clamp(step[size_t(2)].asInt(0), 0, 2));
         } else if (what == "platform_receive") {
             result += " " + flag(platform.receive(unhex(step[size_t(1)].asString())));
+        } else if (what == "platform_close") {
+            platform.close();
         } else if (what == "platform_answer") {
             std::string reply;
             const bool ok = platform.answer(unhex(step[size_t(1)].asString()), reply);

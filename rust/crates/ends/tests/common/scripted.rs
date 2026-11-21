@@ -6,7 +6,8 @@
 //! A script is `{"ctor": reaction, "drop": reaction, "on": {"method": [reaction, …]}}`; a reaction
 //! `{"calls": [call, …], "out": [message, …], "set": {…}, "list": [command, …], "damage": [[x, y, w, h], …]}`,
 //! a call one of `["font", families, size, weight, italic, features]`, `["cfont", families, size, weight,
-//! italic]`, `["del", k]`, `["width", k, text]` (k: the k-th font made, or the handle k past them),
+//! italic]`, `["del", k]`, `["width", k, text]` (k: the k-th font made, or the handle k past them), `["widths",
+//! [[k, text], …]]` (one `text_widths` call),
 //! `["image", id, url]`, `["run", id, w, h, [op, …]]`, `["read", id, x, y, w, h]`, `["release", id]`. Without
 //! a "drop" reaction the renderer releases its canvases, then its fonts, as the real one does.
 
@@ -15,7 +16,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use twidget_ends::{Backend, Renderer};
+use twidget_ends::{Backend, Renderer, TextInFont};
 use twidget_json::{Json, quote};
 use twidget_remote::GestureClaim;
 use twidget_wire::*;
@@ -300,6 +301,17 @@ impl<B: Backend> ScriptedRenderer<B> {
                 let font = self.font_at(call.at(1).as_int(0));
                 let w = self.backend.text_width(font, call.at(2).as_str());
                 self.line(format!("  width {font} {} -> {}", quoted(call.at(2).as_str()), f32s(w)));
+            }
+            b"widths" => {
+                let texts: Vec<TextInFont> = call
+                    .at(1)
+                    .arr()
+                    .iter()
+                    .map(|t| TextInFont { font: self.font_at(t.at(0).as_int(0)), text: t.at(1).as_str().to_vec() })
+                    .collect();
+                let widths = self.backend.text_widths(&texts);
+                let all: String = widths.iter().map(|w| format!(" {}", f32s(*w))).collect();
+                self.line(format!("  widths {} ->{all}", texts.len()));
             }
             b"image" => {
                 let (mut w, mut h) = (0.0f32, 0.0f32);

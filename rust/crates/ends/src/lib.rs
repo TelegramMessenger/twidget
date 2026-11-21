@@ -15,7 +15,8 @@ mod platform_end;
 mod renderer_end;
 
 pub use platform_end::{Host, PlatformEnd};
-pub use renderer_end::{Output, Proxy, RendererEnd};
+pub use renderer_end::{Output, Proxy, RendererEnd, command_hash};
+pub use twidget_remote::TextInFont;
 
 use twidget_json::Json;
 use twidget_remote::GestureClaim;
@@ -36,6 +37,14 @@ pub trait Backend {
     fn delete_font(&mut self, font: i32);
     /// Advance width of `text` in CSS px.
     fn text_width(&mut self, font: i32, text: &[u8]) -> f32;
+    /// The widths of many texts at once, in their order: by default `text_width` of each, in order.
+    fn text_widths(&mut self, texts: &[TextInFont]) -> Vec<f32> {
+        let mut widths = Vec::with_capacity(texts.len());
+        for t in texts {
+            widths.push(self.text_width(t.font, &t.text));
+        }
+        widths
+    }
     /// Decodes a `data:` image and keeps it under `id` for the painter; `w`/`h` get the intrinsic size in CSS
     /// px. False when undecodable.
     fn load_image(&mut self, id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool;

@@ -14,7 +14,7 @@
 //! pointer, primary, mouse, modifiers, button]`, `["hover", action, x, y, modifiers]`, `["clear"]`,
 //! `["claim", x, y]`, `["pump", steps]`, `["deliver", hex]`, `["fault", spoil, at, kind, hex reply]`,
 //! `["backend", images load, reads]`, `["push", method, reaction]`, `["helper", message]`,
-//! `["platform_receive", hex]`, `["platform_answer", hex]`, `["close"]`. Skipped without
+//! `["platform_receive", hex]`, `["platform_answer", hex]`, `["platform_close"]`, `["close"]`. Skipped without
 //! `TWIDGET_ORACLE_DIR`; `tools/gate.py` sets it.
 
 mod common;
@@ -49,6 +49,10 @@ fn caps_of(j: &Json) -> Caps {
     c.values.rects = cap(j, "rects", c.values.rects);
     c.values.clips = cap(j, "clips", c.values.clips);
     c.values.floats = cap(j, "floats", c.values.floats);
+    c.widths = cap(j, "widths", c.widths);
+    c.widths_text = cap(j, "widths_text", c.widths_text);
+    c.frame = cap(j, "frame", c.frame);
+    c.delta_base = cap(j, "delta_base", c.delta_base);
     c
 }
 
@@ -206,6 +210,7 @@ fn run_session(session: &Json) -> Vec<u8> {
                 let ok = lp.platform.borrow_mut().receive(&unhex(&String::from_utf8_lossy(step.at(1).as_str())));
                 let _ = write!(result, " {}", flag(ok));
             }
+            "platform_close" => lp.platform.borrow_mut().close(),
             "platform_answer" => {
                 let mut reply = Vec::new();
                 let ok = lp.platform.borrow_mut().answer(&unhex(&String::from_utf8_lossy(step.at(1).as_str())), &mut reply);
@@ -256,6 +261,13 @@ impl Seen {
             if let Some(reason) = line.strip_prefix("H refused ") {
                 *self.0.entry(format!("refused {reason}")).or_default() += 1;
             }
+            for (prefix, what) in
+                [("> 4901", "traffic: frame deltas"), ("> 4001", "traffic: frames whole"), ("? 6401", "traffic: widths requests")]
+            {
+                if line.starts_with(prefix) {
+                    *self.0.entry(what.to_string()).or_default() += 1;
+                }
+            }
         }
         if !last_stop.is_empty() {
             *self.0.entry(last_stop).or_default() += 1;
@@ -277,7 +289,7 @@ fn session(caps: &str, script: &str, steps: &str) -> Json {
     parse(&format!(r#"{{"caps":{caps},"script":{script},"steps":{steps}}}"#))
 }
 
-const PAGE: &str = r#"{"type":"ops","ops":[],"react":{"calls":[["font","sans-serif",16,400,false,""],["width",0,"two"],["width",1,"ends"],["image",12,"data:image/png;base64,iVBORw0KGgo="],["cfont","serif",12,700,false],["width",2,"hi"],["run",13,40,20,[{"k":0},{"k":4,"r":[0,10,0,0],"t":"hi","f":3},{"k":1,"r":[0,0,5,5],"c":4281558681,"cl":0},{"k":1,"r":[6,0,5,5],"cl":0},{"k":6,"r":[1,1,0,0],"px":[2,1,0]}]]],"out":[{"type":"size","width":300,"height":40},{"type":"event","ev":{"type":"load"}}],"set":{"height":40,"dirty":true}}}"#;
+const PAGE: &str = r#"{"type":"ops","ops":[],"react":{"calls":[["font","sans-serif",16,400,false,""],["widths",[[0,"two"],[0," "],[1,"ends"]]],["image",12,"data:image/png;base64,iVBORw0KGgo="],["cfont","serif",12,700,false],["width",2,"hi"],["run",13,40,20,[{"k":0},{"k":4,"r":[0,10,0,0],"t":"hi","f":3},{"k":1,"r":[0,0,5,5],"c":4281558681,"cl":0},{"k":1,"r":[6,0,5,5],"cl":0},{"k":6,"r":[1,1,0,0],"px":[2,1,0]}]]],"out":[{"type":"size","width":300,"height":40},{"type":"event","ev":{"type":"load"}}],"set":{"height":40,"dirty":true}}}"#;
 
 const SCRIPT: &str = r#"{"ctor":{"calls":[["font","sans-serif",16,400,false,""]]},"on":{"paint":[{"list":[{"k":0,"r":[0,0,300,40],"c":4294967295},{"k":4,"t":"two ends","f":1},{"k":11,"p":0},{"k":15,"fl":2},{"k":11,"p":0},{"k":16}]}],"damage":[{"damage":[[0,0,300,40]]}],"tick":[{"out":[{"type":"event","ev":{"type":"frame"}}]}],"touch":[{"out":[{"type":"gesture","wants":true,"x":true,"y":false,"hold":true}],"set":{"selection":"Hello"}}],"selected_text":[{"calls":[["width",0,"Hello"]]}]}}"#;
 
@@ -289,6 +301,20 @@ fn written_sessions() -> Vec<(String, Json)> {
         r#"[["open",300,2,false],["receive",{PAGE}],["receive",{pixels}],["want_frame"],["frame",true,1],["pump",64],["frame",false,1],["pump",64],["clear"],["pump",64],["touch",0,5,5,1,true,false,0,0],["pump",64],["hover",0,5,5,0],["claim",5,5],["pump",64],["width",200],["max",100],["theme",true],["pump",64],["helper",{{"type":"trim"}}],["report",[{{"type":"size"}},{{"type":"event"}},{{"type":"bubble","action":"menu"}}]],["close"]]"#
     );
     out.push(("a healthy session".to_string(), session("{}", SCRIPT, &healthy)));
+    let moved = |x: i32| {
+        format!(
+            r#"{{"list":[{{"k":12,"r":[{x},0,20,20]}},{{"k":0,"r":[0,0,300,40],"c":4294967295}},{{"k":4,"t":"two ends","f":1}},{{"k":11,"p":0}},{{"k":15,"fl":2}},{{"k":11,"p":0}},{{"k":16}},{{"k":13}}]}}"#
+        )
+    };
+    let paints: Vec<String> = (0..6).map(moved).collect();
+    let deltas = format!(r#"{{"ctor":{{"calls":[["font","sans-serif",16,400,false,""]]}},"on":{{"paint":[{}]}}}}"#, paints.join(","));
+    let frames = r#"[["open",300,2,false],["frame",true,2],["pump",64],["frame",true,2],["pump",64],["frame",false,0],["pump",64],["frame",true,2],["pump",64],["frame",true,2],["pump",64],["platform_close"],["frame",true,2],["pump",64],["close"]]"#;
+    out.push(("frames as deltas, an unpainted one between, and a platform end closed".to_string(), session("{}", &deltas, frames)));
+    for (caps, name) in
+        [(r#"{"delta_base":0}"#, "no deltas"), (r#"{"delta_base":40}"#, "a base too small"), (r#"{"frame":120}"#, "a frame cap")]
+    {
+        out.push((format!("frames under {name}"), session(caps, &deltas, frames)));
+    }
     for how in 1..=6 {
         out.push((
             format!("request 1 spoiled {how}"),
@@ -393,8 +419,24 @@ fn rect(random: &mut Lcg) -> Json {
     Json::from((0..4).map(|_| number(random)).collect::<Vec<_>>())
 }
 
+/// A widths call of up to 300 texts in the fonts made so far, some long, some repeated, some empty.
+fn widths_call(random: &mut Lcg) -> Json {
+    let mut texts = Json::array();
+    let n = if random.chance(4) { random.below(300) } else { random.below(12) };
+    for _ in 0..n {
+        let t = if random.chance(10) { Json::from("x".repeat(random.below(70))) } else { text(random) };
+        texts.push(Json::from(vec![Json::from(random.below(8) as i32), t]));
+    }
+    let mut c = Json::array();
+    c.push("widths").push(texts);
+    c
+}
+
 fn call(random: &mut Lcg) -> Json {
     let mut c = Json::array();
+    if random.chance(6) {
+        return widths_call(random);
+    }
     match random.below(12) {
         0..=2 => {
             c.push("font")
@@ -457,6 +499,23 @@ fn call(random: &mut Lcg) -> Json {
     c
 }
 
+/// A command of a few, or one drawn at random.
+fn painted_command(random: &mut Lcg) -> Json {
+    let palette = [
+        r#"{"k":0,"r":[0,0,300,40],"c":4294967295}"#,
+        r#"{"k":4,"t":"two ends","f":1}"#,
+        r#"{"k":11,"p":0}"#,
+        r#"{"k":15,"fl":2}"#,
+        r#"{"k":16}"#,
+        r#"{"k":2,"r":[10,10,20,20],"c":4281558681}"#,
+    ];
+    let mut c = parse(palette[random.below(palette.len())]);
+    if random.chance(4) {
+        c.set("r", rect(random)).set("t", text(random));
+    }
+    c
+}
+
 fn reaction(random: &mut Lcg, paint: bool) -> Json {
     let mut r = Json::object();
     if random.chance(2) {
@@ -484,7 +543,26 @@ fn reaction(random: &mut Lcg, paint: bool) -> Json {
         }
         r.set("set", set);
     }
-    if paint {
+    if paint && random.chance(2) {
+        // Commands from a few, so that one painted list shares runs with the last: what a FrameDelta copies.
+        let palette = [
+            r#"{"k":0,"r":[0,0,300,40],"c":4294967295}"#,
+            r#"{"k":4,"t":"two ends","f":1}"#,
+            r#"{"k":11,"p":0}"#,
+            r#"{"k":15,"fl":2}"#,
+            r#"{"k":16}"#,
+            r#"{"k":2,"r":[10,10,20,20],"c":4281558681}"#,
+        ];
+        let mut list = Json::array();
+        for _ in 0..random.below(24) {
+            let mut c = parse(palette[random.below(palette.len())]);
+            if random.chance(8) {
+                c.set("r", rect(random));
+            }
+            list.push(c);
+        }
+        r.set("list", list);
+    } else if paint {
         let mut list = Json::array();
         for _ in 0..random.below(6) {
             let mut c = Json::object();
@@ -553,6 +631,34 @@ fn script(random: &mut Lcg) -> Json {
         let method = METHODS[random.below(METHODS.len())];
         let list = Json::from((0..1 + random.below(3)).map(|_| reaction(random, method == "paint")).collect::<Vec<_>>());
         on.set(method, list);
+    }
+    if !random.chance(3) {
+        // Several paints in a row, each the last list with a command changed, added or removed, now and then another:
+        // frames as deltas.
+        let mut base: Vec<Json> = (0..4 + random.below(20)).map(|_| painted_command(random)).collect();
+        let mut paints = Vec::new();
+        for _ in 0..3 + random.below(10) {
+            match random.below(5) {
+                0 if !base.is_empty() => {
+                    let at = random.below(base.len());
+                    base.remove(at);
+                }
+                1 => {
+                    let at = random.below(base.len() + 1);
+                    base.insert(at, painted_command(random));
+                }
+                2 if !base.is_empty() => {
+                    let at = random.below(base.len());
+                    base[at] = painted_command(random);
+                }
+                3 if random.chance(4) => base = (0..random.below(20)).map(|_| painted_command(random)).collect(),
+                _ => {}
+            }
+            let mut r = if random.chance(3) { reaction(random, false) } else { Json::object() };
+            r.set("list", Json::from(base.clone()));
+            paints.push(r);
+        }
+        on.set("paint", Json::from(paints));
     }
     s.set("on", on);
     s
@@ -624,7 +730,7 @@ fn platform_bytes(random: &mut Lcg) -> Vec<u8> {
 /// and then.
 fn renderer_bytes(random: &mut Lcg, seq: u64) -> Vec<u8> {
     let state = State { width: 300.0, height: 40, dirty: random.chance(2), ..State::default() };
-    let mut bytes = match random.below(18) {
+    let mut bytes = match random.below(19) {
         0 => encoded_message(&Frame { seq, state, painted: false, ..Frame::default() }),
         1 => encoded_message(&Frame {
             seq,
@@ -669,6 +775,18 @@ fn renderer_bytes(random: &mut Lcg, seq: u64) -> Vec<u8> {
         }
         15 => encoded_message(&FrameRequest { seq, tick: true, paint: Paint::Force }),
         16 => (0..random.below(6)).map(|_| random.next() as u8).collect(),
+        17 if random.chance(2) => {
+            let texts = (0..random.below(5)).map(|k| TextInFont { font: k as i32, text: b"word".to_vec() }).collect();
+            encoded_message(&WidthsRequest { texts })
+        }
+        17 => {
+            let base = random.below(4) as u64;
+            let runs = vec![
+                DeltaRun { offset: 0, length: 1 + random.below(8) as u32, literal: Vec::new() },
+                DeltaRun { offset: 0, length: 0, literal: vec![1, 1, 0, 0, 0, 0] },
+            ];
+            encoded_message(&FrameDelta { seq, state, base, runs, damage: None })
+        }
         _ => encoded_message(&WidthAnswer { width: 3.0 }),
     };
     if random.chance(3) {
@@ -678,7 +796,7 @@ fn renderer_bytes(random: &mut Lcg, seq: u64) -> Vec<u8> {
 }
 
 fn answer_bytes(random: &mut Lcg) -> Vec<u8> {
-    let mut bytes = match random.below(6) {
+    let mut bytes = match random.below(7) {
         0 => encoded_message(&FontAnswer { font: 7, metrics: Default::default() }),
         1 => encoded_message(&WidthAnswer { width: 8.0 }),
         2 => encoded_message(&ImageAnswer { ok: true, w: 3.0, h: 4.0 }),
@@ -688,6 +806,11 @@ fn answer_bytes(random: &mut Lcg) -> Vec<u8> {
             out
         }
         4 => Vec::new(),
+        5 => {
+            let mut out = Vec::new();
+            WidthsAnswer { widths: (0..random.below(4)).map(|k| k as f32 + 0.5).collect() }.encode(&Caps::default(), &mut out);
+            out
+        }
         _ => (0..random.below(9)).map(|_| random.next() as u8).collect(),
     };
     if random.chance(3) {
@@ -698,6 +821,14 @@ fn answer_bytes(random: &mut Lcg) -> Vec<u8> {
 
 fn any_caps(random: &mut Lcg) -> Json {
     let mut caps = Json::object();
+    if random.chance(4) {
+        match random.below(4) {
+            0 => caps.set("widths", [0, 1, 4][random.below(3)]),
+            1 => caps.set("widths_text", [0, 3, 16][random.below(3)]),
+            2 => caps.set("frame", [60, 200, 4096][random.below(3)]),
+            _ => caps.set("delta_base", [0, 1, 64, 4096][random.below(4)]),
+        };
+    }
     if random.chance(3) {
         match random.below(8) {
             0 => caps.set("message", [40, 64, 200, 4096, 65536][random.below(5)]),
@@ -772,7 +903,7 @@ fn step(random: &mut Lcg) -> Json {
             s.push("deliver").push(hex(&platform_bytes(random)));
         }
         22 => {
-            let kind = if random.chance(2) { 0 } else { 96 + random.below(4) as i32 };
+            let kind = if random.chance(2) { 0 } else { 96 + random.below(5) as i32 };
             let reply = if random.chance(3) { hex(&answer_bytes(random)) } else { String::new() };
             s.push("fault").push(random.below(8) as i32).push(if kind == 0 { random.below(8) as i32 } else { 0 }).push(kind).push(reply);
         }
@@ -791,6 +922,9 @@ fn step(random: &mut Lcg) -> Json {
         27 => {
             let seq = random.below(4) as u64;
             s.push("platform_receive").push(hex(&renderer_bytes(random, seq)));
+        }
+        28 if random.chance(8) => {
+            s.push("platform_close");
         }
         28 => {
             let seq = random.below(4) as u64;
@@ -857,4 +991,117 @@ fn generated_sessions_alike() {
     }
     let stops: Vec<&String> = seen.0.keys().filter(|k| k.starts_with("stop")).collect();
     assert!(stops.len() >= 6, "the sessions stop the end every way ({stops:?})");
+}
+
+/// Sessions that paint many frames of lists sharing runs, under delta_base and frame caps of every size, with widths
+/// batches, a delta changed on its way now and then, and a platform end closed by its embedder: frames whole and as
+/// deltas, rebuilt by the platform end, through both ends.
+#[test]
+fn delta_sessions_alike() {
+    let Some(oracle) = Oracle::find("ends_oracle") else { return };
+    let mut random = Lcg::new(0xe0d5_0002);
+    let mut c = Comparison::new();
+    let mut seen = Seen::default();
+    for i in 0..1500 {
+        let mut caps = Json::object();
+        match random.below(6) {
+            0 => {
+                caps.set("delta_base", [0, 1, 6, 64, 256, 4096][random.below(6)]);
+            }
+            1 => {
+                caps.set("frame", [100, 200, 400, 4096][random.below(4)]);
+            }
+            2 => {
+                caps.set("commands", [4, 16][random.below(2)]);
+            }
+            3 => {
+                caps.set("widths", [1, 4][random.below(2)]).set("widths_text", [8, 64][random.below(2)]);
+            }
+            _ => {}
+        }
+        let frames = 4 + random.below(24);
+        let mut base: Vec<Json> = (0..2 + random.below(30)).map(|_| painted_command(&mut random)).collect();
+        let mut paints = Vec::new();
+        for _ in 0..frames {
+            for _ in 0..1 + random.below(2) {
+                match random.below(6) {
+                    0 if !base.is_empty() => {
+                        let at = random.below(base.len());
+                        base.remove(at);
+                    }
+                    1 | 2 => {
+                        let at = random.below(base.len() + 1);
+                        base.insert(at, painted_command(&mut random));
+                    }
+                    3 if !base.is_empty() => {
+                        let at = random.below(base.len());
+                        base[at] = painted_command(&mut random);
+                    }
+                    _ => {}
+                }
+            }
+            let mut r = Json::object();
+            r.set("list", Json::from(base.clone()));
+            if random.chance(4) {
+                r.set("calls", Json::from(vec![widths_call(&mut random)]));
+            }
+            paints.push(r);
+        }
+        let mut on = Json::object();
+        on.set("paint", Json::from(paints));
+        let mut script = Json::object();
+        script.set("ctor", parse(r#"{"calls":[["font","sans-serif",16,400,false,""],["font","serif",12,700,false,""]]}"#));
+        script.set("on", on);
+        let mut steps = Json::array();
+        steps.push(parse(r#"["open",300,2,false]"#));
+        for k in 0..frames {
+            match random.below(12) {
+                0 => {
+                    let mut m = parse(r#"{"type":"ops","ops":[]}"#);
+                    let mut react = Json::object();
+                    react.set("calls", Json::from(vec![widths_call(&mut random)])).set("set", parse(r#"{"dirty":true}"#));
+                    m.set("react", react);
+                    steps.push(Json::from(vec![Json::from("receive"), m]));
+                }
+                1 => {
+                    let seq = (k + 1) as u64;
+                    let mut bytes = renderer_bytes(&mut random, seq);
+                    if random.chance(2) {
+                        bytes = encoded_message(&FrameDelta {
+                            seq,
+                            state: State::default(),
+                            base: seq.saturating_sub(1),
+                            runs: vec![DeltaRun {
+                                offset: random.below(40) as u32,
+                                length: 1 + random.below(30) as u32,
+                                literal: Vec::new(),
+                            }],
+                            damage: None,
+                        });
+                        mutate(&mut random, &mut bytes);
+                    }
+                    steps.push(Json::from(vec![Json::from("platform_receive"), Json::from(hex(&bytes))]));
+                }
+                2 if random.chance(10) => {
+                    steps.push(parse(r#"["platform_close"]"#));
+                }
+                3 => {
+                    steps.push(parse(r#"["frame",false,1]"#));
+                }
+                _ => {}
+            }
+            steps.push(Json::from(vec![Json::from("frame"), Json::from(random.chance(2)), Json::from([1, 2, 2][random.below(3)])]));
+            steps.push(parse(r#"["pump",64]"#));
+        }
+        steps.push(parse(r#"["close"]"#));
+        let mut session = Json::object();
+        session.set("caps", caps).set("script", script).set("steps", steps);
+        case(&mut c, &session, format!("delta session {i}"), &mut seen);
+    }
+    let tally = c.check(&oracle);
+    eprintln!("delta sessions: {} transcripts alike", tally[1]);
+    for (what, n) in &seen.0 {
+        eprintln!("  {n}: {what}");
+    }
+    assert!(seen.0.get("traffic: frame deltas").is_some_and(|n| *n > 1000), "frames cross as deltas");
 }

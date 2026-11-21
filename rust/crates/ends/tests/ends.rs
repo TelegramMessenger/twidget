@@ -1,6 +1,8 @@
 //! tests/ends_tests.cpp's renderer-end tests, by name: the renderer end against a platform end over an
-//! in-memory channel. Focused sequences match a renderer called directly step by step, and a missing or bad
-//! answer, bad platform input or a value past the caps stops the end for good with nothing sent after.
+//! in-memory channel. Focused sequences match a renderer called directly step by step, widths go in bounded
+//! batches, painted frames cross as deltas the platform end rebuilds, and a missing or bad answer, bad platform
+//! input, a value past the caps or a delta changed on its way stops an end for good with nothing sent after.
+//! remote_tests.cpp's checks of the platform end's widths, deltas and close are here too.
 //!
 //! The renderer is the scripted one (tests/common/scripted.rs) until stage 4 brings the Rust renderer: each
 //! session scripts the Backend calls, messages and state the C++ session's real renderer makes at that step,
@@ -14,14 +16,15 @@ use std::rc::Rc;
 
 use common::scripted::{Log, ScriptedRenderer};
 use common::*;
-use twidget_ends::{Output, Renderer};
+use twidget_ends::{Output, PlatformEnd, Renderer, RendererEnd, TextInFont};
 use twidget_json::Json;
 use twidget_remote::*;
+use twidget_wire::Rect;
 
-/// What the C++ suite's PAGE makes the renderer do: a document font and its widths, a PNG, a canvas with a
-/// font of its own and a batch; the size, a load event and a dirty document.
+/// What the C++ suite's PAGE makes the renderer do: a document font and its words' widths in one batch, a PNG, a
+/// canvas with a font of its own and a batch; the size, a load event and a dirty document.
 const PAGE: &str = r#"{"type":"ops","ops":[],"react":{"calls":[
- ["font","sans-serif",16,400,false,""],["width",0,"two"],["width",0,"ends"],
+ ["font","sans-serif",16,400,false,""],["widths",[[0,"two"],[0," "],[0,"ends"]]],
  ["image",12,"data:image/png;base64,iVBORw0KGgo="],
  ["cfont","serif",12,700,false],["width",1,"hi"],
  ["run",13,40,20,[{"k":4,"r":[0,10,0,0],"t":"hi","f":2},{"k":1,"r":[0,0,5,5],"c":4281558681,"cl":0},{"k":1,"r":[6,0,5,5],"cl":0}]]],
@@ -311,6 +314,7 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::FontRequest => "a font request",
         Kind::WidthRequest => "a width request",
         Kind::ImageRequest => "an image request",
+        Kind::WidthsRequest => "a widths request",
         _ => "a pixels request",
     }
 }
@@ -318,7 +322,7 @@ fn kind_name(kind: Kind) -> &'static str {
 /// A later request of each kind fails every way inside an engine message, which then gets nothing back.
 #[test]
 fn later_failures() {
-    let kinds = [Kind::FontRequest, Kind::WidthRequest, Kind::ImageRequest, Kind::PixelsRequest];
+    let kinds = [Kind::FontRequest, Kind::WidthRequest, Kind::ImageRequest, Kind::PixelsRequest, Kind::WidthsRequest];
     let mut faults = Vec::new();
     for kind in kinds {
         for how in SPOILS {
@@ -338,6 +342,15 @@ fn later_failures() {
         Fault { how: Spoil::Replaced, at: 0, kind: Some(Kind::FontRequest), reply: encoded(&WidthAnswer { width: 8.0 }) },
         "a font request answered with a width".to_string(),
     ));
+    let replaced =
+        |reply: Vec<u8>, what: &str| (Fault { how: Spoil::Replaced, at: 0, kind: Some(Kind::WidthsRequest), reply }, what.to_string());
+    let mut one = Vec::new();
+    assert!(WidthsAnswer { widths: vec![8.0] }.encode(&Caps::default(), &mut one));
+    let mut none = Vec::new();
+    assert!(WidthsAnswer::default().encode(&Caps::default(), &mut none));
+    faults.push(replaced(one, "a widths request answered with one width for several texts"));
+    faults.push(replaced(none, "a widths request answered with no widths"));
+    faults.push(replaced(encoded(&WidthAnswer { width: 8.0 }), "a widths request answered with a single width"));
     for (fault, what) in faults {
         let mut lp = Loopback::new(Caps::default());
         lp.open(300.0, 1.0, false, &script());
@@ -365,27 +378,27 @@ fn encoded_pixels(answer: &PixelsAnswer) -> Vec<u8> {
     bytes
 }
 
-/// A frame, a touch, a hover and a hold query each settle a batch that waited for the frame, whose first
-/// width request goes unanswered.
+/// A frame, a touch, a hover and a hold query each settle a batch that waited for the frame, whose widths request
+/// goes unanswered.
 #[test]
 fn mid_call_failures() {
     let names = ["a ticking frame", "a touch", "a hover", "a hold query"];
-    let settle = r#"{"calls":[["width",1,"words measured at the next frame"],["width",1,"more"]],"set":{"tick":false,"next":null}}"#;
+    let settle = r#"{"calls":[["widths",[[1,"words"],[1," "],[1,"measured"],[1,"at"],[1,"the"],[1,"next"],[1,"frame"]]]],"set":{"tick":false,"next":null}}"#;
     for (call, name) in names.iter().enumerate() {
         let what = format!("{name} whose build loses its answer");
         let mut lp = Loopback::new(Caps::default());
         lp.open(300.0, 1.0, false, &script());
         lp.receive(&parse(SPINNING));
-        let widths = lp.count_kind(Kind::WidthRequest);
+        let widths = lp.count_kind(Kind::WidthsRequest);
         lp.receive(&parse(r#"{"type":"ops","ops":[],"react":{"set":{"dirty":true}}}"#));
         assert!(
-            lp.count_kind(Kind::WidthRequest) == widths && lp.end().renderer().wants_tick() && !lp.end().stopped(),
+            lp.count_kind(Kind::WidthsRequest) == widths && lp.end().renderer().wants_tick() && !lp.end().stopped(),
             "{what}: the batch waits for the frame"
         );
         lp.want_frame();
         let method = ["tick", "touch", "hover", "claim_at"][call];
         lp.end().renderer().push(method, parse(settle));
-        lp.wire.borrow_mut().fault = Fault { how: Spoil::Unanswered, at: 0, kind: Some(Kind::WidthRequest), reply: Vec::new() };
+        lp.wire.borrow_mut().fault = Fault { how: Spoil::Unanswered, at: 0, kind: Some(Kind::WidthsRequest), reply: Vec::new() };
         {
             let mut p = lp.platform.borrow_mut();
             match call {
@@ -406,7 +419,7 @@ fn mid_call_failures() {
             lp.pump() && lp.delivered == vec![false] && empty(&lp.outputs[0]) && empty(&lp.out),
             "{what}: the delivery gets false and an empty output, the engine's frame not due"
         );
-        stopped_at_spoil(&mut lp, Kind::WidthRequest, "a request got no answer", &what);
+        stopped_at_spoil(&mut lp, Kind::WidthsRequest, "a request got no answer", &what);
         {
             let host = lp.host.borrow();
             assert!(
@@ -1487,4 +1500,870 @@ fn clocks() {
     lp.flush();
     assert_eq!(lp.platform_state().next_tick_in, 0.25, "what the renderer reads of its clock goes out in State as it says");
     drop(end);
+}
+
+// ---- A layout's words in batches, frames as deltas (twidget f0a070d) --------------------------------------------
+
+/// MANY_WORDS' 21 texts as the real renderer's batch holds them, in document order: twenty words of many lengths, one
+/// of 30 bytes, and the space between them, 122 bytes in all.
+fn many_words() -> String {
+    let words = [
+        "a",
+        "bb",
+        "ccc",
+        "dddd",
+        "eeeee",
+        "ffffff",
+        "ggggggg",
+        "hhhhhhhh",
+        "iiiiiiiii",
+        "jjjjjjjjjj",
+        "kk",
+        "lll",
+        "mmmm",
+        "nnnnn",
+        "oooooo",
+        "ppppppp",
+        "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+        "rr",
+        "sss",
+        "tttt",
+    ];
+    let mut texts = vec![r#"[1,"a"]"#.to_string(), r#"[1," "]"#.to_string()];
+    for w in &words[1..] {
+        texts.push(format!(r#"[1,"{w}"]"#));
+    }
+    format!(
+        r#"{{"type":"ops","ops":[],"react":{{"calls":[["font","sans-serif",16,400,false,""],["widths",[{}]]],"set":{{"height":40,"dirty":true}}}}}}"#,
+        texts.join(",")
+    )
+}
+
+/// A Backend that notes each widths batch it is handed.
+#[derive(Clone, Default)]
+struct BatchLog {
+    log: LogHandle,
+    batches: Rc<RefCell<Vec<usize>>>,
+}
+
+impl twidget_ends::Backend for BatchLog {
+    fn create_font(
+        &mut self,
+        families: &[u8],
+        size: f32,
+        weight: i32,
+        italic: bool,
+        features: &[u8],
+        out: &mut twidget_wire::FontMetrics,
+    ) -> i32 {
+        self.log.create_font(families, size, weight, italic, features, out)
+    }
+    fn create_canvas_font(&mut self, families: &[u8], size: f32, weight: i32, italic: bool, out: &mut twidget_wire::FontMetrics) -> i32 {
+        self.log.create_canvas_font(families, size, weight, italic, out)
+    }
+    fn delete_font(&mut self, font: i32) {
+        self.log.delete_font(font)
+    }
+    fn text_width(&mut self, font: i32, text: &[u8]) -> f32 {
+        self.log.text_width(font, text)
+    }
+    fn text_widths(&mut self, texts: &[TextInFont]) -> Vec<f32> {
+        self.batches.borrow_mut().push(texts.len());
+        self.log.text_widths(texts)
+    }
+    fn load_image(&mut self, id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool {
+        self.log.load_image(id, url, w, h)
+    }
+}
+
+/// Each request and its answer.
+type Exchanges = Rc<RefCell<Vec<(Vec<u8>, Vec<u8>)>>>;
+
+/// A renderer end's channel straight into a platform end on a Backend that notes each batch, keeping every request and
+/// answer (ends_tests.cpp's `Straight`).
+struct Straight {
+    platform: Rc<RefCell<PlatformEnd<BatchLog, HeardHandle, Queue>>>,
+    requests: Exchanges,
+    refused: Rc<RefCell<usize>>,
+}
+
+impl twidget_ends::Channel for Straight {
+    fn send(&mut self, message: Vec<u8>) {
+        if !self.platform.borrow_mut().receive(&message) {
+            *self.refused.borrow_mut() += 1;
+        }
+    }
+}
+
+impl twidget_ends::RendererChannel for Straight {
+    fn request(&mut self, message: Vec<u8>, answer: &mut Vec<u8>) -> bool {
+        let mut reply = Vec::new();
+        if !self.platform.borrow_mut().answer(&message, &mut reply) {
+            *self.refused.borrow_mut() += 1;
+            return false;
+        }
+        self.requests.borrow_mut().push((message, reply.clone()));
+        *answer = reply;
+        true
+    }
+}
+
+/// Under caps of each kind, the words go in requests and answers within every cap, a text no batch can hold alone goes
+/// as a single width request, and the platform end makes the direct renderer's Backend calls, each request in one
+/// Backend call.
+#[test]
+fn bounded_batches() {
+    let d = Caps::default();
+    let cases: [(&str, usize, usize, usize, usize, usize); 13] = [
+        ("the default caps", d.widths, d.widths_text, d.message, 1, 0),
+        ("4 texts", 4, d.widths_text, d.message, 6, 0),
+        ("1 text", 1, d.widths_text, d.message, 21, 0),
+        ("0 texts", 0, d.widths_text, d.message, 0, 21),
+        ("16 bytes of texts, less than the long word's", d.widths, 16, d.message, 8, 1),
+        ("a message of 96 bytes", d.widths, d.widths_text, 96, 4, 0),
+        ("40 bytes of texts", d.widths, 40, d.message, 4, 0),
+        ("21 texts, all of them", 21, d.widths_text, d.message, 1, 0),
+        ("20 texts, one fewer", 20, d.widths_text, d.message, 2, 0),
+        ("122 bytes of texts, theirs exactly", d.widths, 122, d.message, 1, 0),
+        ("121 bytes of texts, a byte short", d.widths, 121, d.message, 2, 0),
+        ("a message of 296 bytes, the request of all 21 exactly", d.widths, d.widths_text, 296, 1, 0),
+        ("a message of 295 bytes, a byte short", d.widths, d.widths_text, 295, 2, 0),
+    ];
+    let page = parse(&many_words());
+    for (name, widths, widths_text, message, want_requests, want_singles) in cases {
+        let what = format!("under a cap of {name}");
+        let mut caps = Caps::default();
+        caps.widths = widths;
+        caps.widths_text = widths_text;
+        caps.message = message;
+        let (mut direct, direct_backend, _) = direct_renderer(&script());
+        let backend = BatchLog::default();
+        let host = Rc::new(RefCell::new(Heard::default()));
+        let platform = Rc::new(RefCell::new(PlatformEnd::new(
+            backend.clone(),
+            HeardHandle { heard: Rc::clone(&host), backend: backend.log.clone() },
+            Queue::default(),
+            caps,
+        )));
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let refused = Rc::new(RefCell::new(0));
+        let channel = Straight { platform: Rc::clone(&platform), requests: Rc::clone(&requests), refused: Rc::clone(&refused) };
+        let script = script();
+        let mut end = RendererEnd::new(300.0, 2.0, false, channel, caps, |w, dpr, dark, proxy| {
+            ScriptedRenderer::new(w, dpr, dark, proxy, &script, Log::default())
+        });
+        let want = twidget_ends::Renderer::receive(&mut direct, &page);
+        let got = end.receive(&page);
+        assert!(
+            !end.stopped() && *refused.borrow() == 0 && dumps(&got) == dumps(&want),
+            "{what}: both ends stay healthy and give the direct renderer's messages"
+        );
+        let calls = same_calls(&direct_backend.calls(), &backend.log.calls());
+        assert!(calls.is_ok(), "{what}: the platform end makes the direct renderer's Backend calls {calls:?}");
+        let (mut batches, mut singles, mut within, mut items) = (0, 0, 0, 0);
+        let mut sizes = Vec::new();
+        for (request, answer) in requests.borrow().iter() {
+            let kind = kind_of(request);
+            if kind == Some(Kind::WidthRequest) {
+                singles += 1;
+            }
+            if kind != Some(Kind::WidthsRequest) {
+                continue;
+            }
+            batches += 1;
+            let decoded = WidthsRequest::decode(request, &caps).expect("a request within the caps");
+            let text: usize = decoded.texts.iter().map(|t| t.text.len()).sum();
+            if WidthsAnswer::decode(answer, &caps, &decoded).is_some() {
+                within += usize::from(
+                    decoded.texts.len() <= widths && text <= widths_text && request.len() <= message && answer.len() <= message,
+                );
+            }
+            items += decoded.texts.len();
+            sizes.push(decoded.texts.len());
+        }
+        assert_eq!(within, batches, "{what}: every request and answer is within the caps");
+        assert_eq!(sizes, *backend.batches.borrow(), "{what}: each request reaches the Backend in one call of its texts");
+        assert_eq!(items + singles, backend.log.count(Op::TextWidth), "{what}: every word goes in a batch or alone, once");
+        assert!(
+            batches == want_requests && singles == want_singles && items + singles == 21,
+            "{what}: the 21 texts go in {want_requests} requests and {want_singles} single widths, not {batches} and {singles}"
+        );
+    }
+}
+
+/// With batches of 4, a build's second widths request fails every way: the first was answered, nothing goes out after
+/// the second, and the end stops.
+#[test]
+fn batch_failures() {
+    let words = r#"{"type":"ops","ops":[],"react":{"calls":[["widths",[[0,"one"],[0," "],[0,"two"],[0,"three"],[0,"four"],[0,"five"],[0,"six"],[0,"seven"],[0,"eight"],[0,"nine"],[0,"ten"]]]],"set":{"dirty":true}}}"#;
+    for how in SPOILS {
+        let what = format!("the second of three widths requests {}", spoil_name(how));
+        let mut caps = Caps::default();
+        caps.widths = 4;
+        let mut lp = Loopback::new(caps);
+        lp.open(300.0, 1.0, false, &script());
+        lp.receive(&parse(PAGE));
+        let batches = lp.count_kind(Kind::WidthsRequest);
+        let states = lp.host.borrow().states.len();
+        let at = lp.wire.borrow().requests + 2;
+        lp.wire.borrow_mut().fault = Fault { how, at, kind: None, reply: Vec::new() };
+        assert!(lp.receive(&parse(words)).is_empty(), "{what}: the engine message gets nothing back");
+        stopped_at_spoil(&mut lp, Kind::WidthsRequest, reason_for(how), &what);
+        assert!(
+            lp.count_kind(Kind::WidthsRequest) == batches + 2 && lp.host.borrow().states.len() == states,
+            "{what}: the first request went, no third and no report"
+        );
+        inert(&mut lp, &what);
+    }
+}
+
+/// The kind of the last frame the renderer end sent, whole or as a delta.
+fn last_frame(lp: &Loopback) -> Option<Kind> {
+    lp.kinds().iter().rev().find(|k| **k == Kind::Frame as u8 || **k == Kind::FrameDelta as u8).and_then(|k| Kind::from_u8(*k))
+}
+
+/// `n` commands of a few kinds, one of them moved by `moved` px: a still page beside a spinner.
+fn still_list(n: usize, moved: i32) -> String {
+    let mut items = vec![
+        format!(r#"{{"k":12,"r":[{moved},0,20,20]}}"#),
+        r#"{"k":0,"r":[0,0,20,20],"c":4278190335}"#.to_string(),
+        r#"{"k":13}"#.to_string(),
+    ];
+    for i in 0..n {
+        items.push(format!(r#"{{"k":4,"r":[0,{},0,0],"t":"word {i}","f":1}}"#, 30 + 18 * i));
+    }
+    format!(r#"{{"list":[{}],"damage":[[0,0,20,20]]}}"#, items.join(","))
+}
+
+fn crossed_as(a: &mut Arms, what: &str, list: &str, kind: Kind) {
+    a.react("paint", list);
+    let f = a.frame(what, true, Paint::Force);
+    ok!(a, f.frame.as_ref().is_some_and(|f| f.painted), &format!("{what}: it is painted"));
+    let last = last_frame(&a.lp);
+    ok!(a, last == Some(kind), &format!("{what}: it crossed as {kind:?}, not {last:?}"));
+}
+
+/// An animation's painted frames cross as deltas that rebuild the direct renderer's lists and damage, the first whole,
+/// an unpainted frame keeping the base; a list past delta_base goes whole and drops it, and 0 sends every frame whole.
+#[test]
+fn deltas() {
+    {
+        let mut a = Arms::new("deltas", Caps::default());
+        crossed_as(&mut a, "the first frame", &still_list(10, 0), Kind::Frame);
+        for i in 1..=8 {
+            crossed_as(&mut a, &format!("a spinner frame at +{} ms", 16 * i), &still_list(10, i), Kind::FrameDelta);
+        }
+        let f = a.frame("a ticking frame that skips the paint", true, Paint::Skip);
+        ok!(a, f.frame.as_ref().is_some_and(|f| !f.painted), "it is unpainted");
+        crossed_as(&mut a, "the frame after it", &still_list(10, 9), Kind::FrameDelta);
+        crossed_as(&mut a, "a forced frame of the same list", &still_list(10, 9), Kind::FrameDelta);
+        crossed_as(&mut a, "the frame with a text added", &still_list(11, 10), Kind::FrameDelta);
+        a.react("paint", &still_list(70, 11));
+        a.frame("the frame with 60 more, which copies no more than the last list holds", true, Paint::Force);
+        crossed_as(&mut a, "the frame after it", &still_list(70, 12), Kind::FrameDelta);
+        a.close();
+        assert!(a.lp.count_kind(Kind::FrameDelta) >= 12, "frames as deltas");
+    }
+    {
+        let mut a = Arms::new("nothing worth copying", Caps::default());
+        let moving = |i: i32| {
+            format!(r#"{{"list":[{{"k":12,"r":[{i},0,20,20]}},{{"k":0,"r":[{i},0,20,20],"c":4278190335}},{{"k":2,"r":[{i},{i},4,4]}}]}}"#)
+        };
+        crossed_as(&mut a, "the first frame", &moving(0), Kind::Frame);
+        for i in 1..=3 {
+            crossed_as(&mut a, "a frame with nothing worth copying", &moving(i), Kind::Frame);
+        }
+        a.close();
+    }
+    let mut spinner = Vec::new();
+    assert!(twidget_wire::encode_list(&scripted_list(&still_list(10, 0)), &twidget_wire::Caps::default(), &mut spinner));
+    {
+        let mut caps = Caps::default();
+        caps.delta_base = spinner.len() + 64;
+        let mut a = Arms::new("deltas past delta_base", caps);
+        crossed_as(&mut a, "the first frame", &still_list(10, 0), Kind::Frame);
+        crossed_as(&mut a, "a spinner frame", &still_list(10, 1), Kind::FrameDelta);
+        crossed_as(&mut a, "the first frame past delta_base", &still_list(50, 2), Kind::Frame);
+        crossed_as(&mut a, "the next frame past it", &still_list(50, 3), Kind::Frame);
+        crossed_as(&mut a, "the first frame back within delta_base, with no list kept", &still_list(10, 4), Kind::Frame);
+        crossed_as(&mut a, "the next", &still_list(10, 5), Kind::FrameDelta);
+        a.close();
+    }
+    for base in [0usize, 1] {
+        let mut caps = Caps::default();
+        caps.delta_base = base;
+        let mut a = Arms::new(&format!("deltas under a delta_base of {base}"), caps);
+        for i in 0..4 {
+            crossed_as(&mut a, "a spinner frame", &still_list(10, i), Kind::Frame);
+        }
+        a.close();
+        assert_eq!(a.lp.count_kind(Kind::FrameDelta), 0, "no frame crossed as a delta");
+    }
+}
+
+/// The list a scripted renderer paints for a reaction.
+fn scripted_list(reaction: &str) -> twidget_wire::DisplayList {
+    let mut r = ScriptedRenderer::new(300.0, 1.0, false, LogHandle::new(), &parse(r#"{}"#), Log::default());
+    r.push("paint", parse(reaction));
+    twidget_ends::Renderer::paint(&mut r)
+}
+
+/// A spinner whose renderer end has painted twice, so that its next painted frame is a delta, asked for and held in the
+/// outbox (ends_tests.cpp's `spinning_held`).
+fn spinning_held(lp: &mut Loopback, words: usize) {
+    lp.open(300.0, 2.0, false, &script());
+    for i in 0..3 {
+        lp.end().renderer().push("paint", parse(&still_list(words, i)));
+    }
+    for _ in 0..2 {
+        lp.platform.borrow_mut().request_frame(true, Paint::Force);
+        lp.pump();
+    }
+    lp.platform.borrow_mut().request_frame(true, Paint::Force);
+    lp.flush();
+    let message = lp.queue.0.borrow_mut().pop_front().expect("the frame request");
+    let mut out = Output::default();
+    assert!(lp.end().deliver(&message, &mut out));
+}
+
+fn held_delta(lp: &Loopback) -> Option<usize> {
+    lp.wire.borrow().outbox.iter().position(|m| kind_of(m) == Some(Kind::FrameDelta))
+}
+
+fn put_u64(bytes: &mut [u8], at: usize, v: u64) {
+    bytes[at..at + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+/// A delta changed on its way stops the platform end with its reason before the host or the Backend hears of it, and a
+/// delta of one route is refused by another, whose base it is not.
+#[test]
+fn tampered_deltas() {
+    type Change = fn(&mut Vec<u8>);
+    let changes: [(&str, Change, &str); 7] = [
+        ("a run of tag 2", |m| m[49] = 2, "a message of kind 73 did not rebuild a frame"),
+        (
+            "a byte cut",
+            |m| {
+                m.pop();
+            },
+            "a message of kind 73 did not rebuild a frame",
+        ),
+        ("a byte after it", |m| m.push(0), "a message of kind 73 did not rebuild a frame"),
+        ("a declared length one longer", |m| m[41] = m[41].wrapping_add(1), "a message of kind 73 did not rebuild a frame"),
+        ("the next request's seq", |m| put_u64(m, 2, 4), "a message of kind 73 for request 4 where 3 was due"),
+        ("the first frame as its base", |m| put_u64(m, 33, 1), "a message of kind 73 copying from frame 1 where 2 was painted last"),
+        ("cut before its base", |m| m.truncate(40), "a message of kind 73 did not decode"),
+    ];
+    for (name, change, reason) in changes {
+        let what = format!("a delta with {name}");
+        let mut lp = Loopback::new(Caps::default());
+        spinning_held(&mut lp, 10);
+        let at = held_delta(&lp);
+        assert!(at.is_some() && !lp.end().stopped(), "{what}: the third painted frame is a delta");
+        change(&mut lp.wire.borrow_mut().outbox[at.unwrap()]);
+        let frames = lp.host.borrow().frames.len();
+        let calls = lp.backend.len();
+        lp.flush();
+        let refusals = lp.host.borrow().refusals.clone();
+        assert!(
+            lp.refusing() && refusals == vec![reason.to_string()],
+            "{what}: stops the platform end with \"{reason}\", not {refusals:?}"
+        );
+        assert!(
+            lp.host.borrow().frames.len() == frames && lp.backend.len() == calls,
+            "{what}: no frame reaches the host and no Backend call is made"
+        );
+        assert_eq!(lp.wire.borrow().refused, 1, "{what}: the platform end refused that message alone");
+    }
+    let (mut spin, mut fade) = (Loopback::new(Caps::default()), Loopback::new(Caps::default()));
+    spinning_held(&mut spin, 10);
+    spinning_held(&mut fade, 3);
+    let (from_spin, from_fade) = (held_delta(&spin).expect("a delta"), held_delta(&fade).expect("a delta"));
+    let own_fade = fade.wire.borrow().outbox[from_fade].clone();
+    let spun = spin.wire.borrow().outbox[from_spin].clone();
+    fade.wire.borrow_mut().outbox[from_fade] = spun;
+    let (frames, calls) = (fade.host.borrow().frames.len(), fade.backend.len());
+    fade.flush();
+    assert!(
+        fade.refusing()
+            && fade.host.borrow().refusals.len() == 1
+            && fade.host.borrow().frames.len() == frames
+            && fade.backend.len() == calls,
+        "a delta of one route reaching another is refused there, nothing heard: {:?}",
+        fade.host.borrow().refusals
+    );
+    spin.flush();
+    assert!(
+        !spin.refusing() && spin.host.borrow().frames.len() == 3 && spin.host.borrow().frames[2].painted,
+        "the route it came from takes it"
+    );
+    let mut again = Loopback::new(Caps::default());
+    spinning_held(&mut again, 3);
+    let own = held_delta(&again).map(|at| again.wire.borrow().outbox[at].clone());
+    assert_eq!(own, Some(own_fade), "the other route's own delta is the same each time");
+    again.flush();
+    assert!(!again.refusing() && again.host.borrow().frames.len() == 3, "and its own route takes it");
+}
+
+/// A spinner's first painted frame, held whole in the outbox before it reaches the platform end.
+fn first_frame_held(lp: &mut Loopback) {
+    lp.open(300.0, 2.0, false, &script());
+    lp.end().renderer().push("paint", parse(&still_list(40, 0)));
+    lp.end().renderer().push("paint", parse(&still_list(40, 1)));
+    lp.platform.borrow_mut().request_frame(true, Paint::Force);
+    lp.flush();
+    let message = lp.queue.0.borrow_mut().pop_front().expect("the frame request");
+    let mut out = Output::default();
+    assert!(lp.end().deliver(&message, &mut out));
+    let held = lp.wire.borrow().outbox.back().cloned().expect("a frame");
+    assert!(
+        decode_frame_viewed(&held, &Caps::default()).is_some_and(|(f, v)| f.painted && !v.is_empty()),
+        "the first painted frame waits whole in the outbox"
+    );
+}
+
+/// A platform end its embedder closes, with a painted list kept and a reply due, stops without a word to its host,
+/// and closing again changes nothing; what the renderer end sends for the frame it asked for is refused quietly.
+#[test]
+fn closed_platform() {
+    let mut lp = Loopback::new(Caps::default());
+    first_frame_held(&mut lp);
+    lp.flush();
+    assert!(lp.host.borrow().frames.len() == 1 && !lp.refusing(), "the platform end takes it and keeps its list");
+    assert!(
+        lp.platform.borrow_mut().request_frame(true, Paint::Force) == 2 && lp.queue.0.borrow().len() == 1,
+        "and asks for the next frame"
+    );
+    let events = lp.events().len();
+    lp.platform.borrow_mut().close();
+    assert!(lp.refusing() && lp.host.borrow().refusals.is_empty() && lp.events().len() == events, "the host hears nothing of it");
+    lp.platform.borrow_mut().close();
+    assert!(lp.host.borrow().refusals.is_empty() && lp.events().len() == events, "closing again changes nothing");
+    let (sent, refused) = (lp.kinds().len(), lp.wire.borrow().refused);
+    assert!(
+        lp.pump() && lp.kinds().len() > sent && lp.wire.borrow().refused - refused == lp.kinds().len() - sent,
+        "the platform end refuses all the renderer end sends for the frame it asked for"
+    );
+    assert!(lp.host.borrow().refusals.is_empty() && lp.events().len() == events, "which reaches no host");
+    assert!(
+        lp.platform.borrow_mut().request_frame(true, Paint::IfDirty) == 0 && lp.host.borrow().refusals.is_empty(),
+        "a closed end asks for no frame"
+    );
+    lp.close();
+    assert!(lp.host.borrow().refusals.is_empty() && lp.events().len() == events, "and the renderer end's last messages reach no host");
+}
+
+/// A message that does not decode stops a platform end with a painted list kept and a reply due: its host hears the
+/// reason once, whatever comes after.
+#[test]
+fn malformed_platform() {
+    let mut lp = Loopback::new(Caps::default());
+    first_frame_held(&mut lp);
+    lp.flush();
+    assert!(
+        lp.host.borrow().frames.len() == 1 && lp.platform.borrow_mut().request_frame(true, Paint::Force) == 2,
+        "the platform end keeps the list and asks for the next frame"
+    );
+    let events = lp.events().len();
+    let cut = [Kind::Frame as u8, VERSION];
+    assert!(!lp.platform.borrow_mut().receive(&cut) && lp.refusing(), "a frame cut after its version stops the platform end");
+    assert!(
+        lp.host.borrow().refusals == vec!["a message of kind 64 did not decode".to_string()] && lp.events().len() == events,
+        "the host hears the reason once and nothing else"
+    );
+    let (sent, refused) = (lp.kinds().len(), lp.wire.borrow().refused);
+    assert!(
+        !lp.platform.borrow_mut().receive(&cut)
+            && lp.pump()
+            && lp.kinds().len() > sent
+            && lp.wire.borrow().refused - refused == lp.kinds().len() - sent,
+        "the same message again and all the renderer end sends for the frame asked for are refused"
+    );
+    assert!(lp.host.borrow().refusals.len() == 1 && lp.events().len() == events, "quietly");
+    lp.close();
+    assert!(lp.host.borrow().refusals.len() == 1 && lp.events().len() == events, "and the renderer end's last messages reach no host");
+}
+
+/// With deltas off or past delta_base, every painted frame goes out as the ordinary Frame's bytes, written once
+/// (ends_tests.cpp's `ordinary_frames`, its count of the heap's blocks left to the C++).
+#[test]
+fn ordinary_frames() {
+    for base in [0usize, 64] {
+        let what = format!("frames under a delta_base of {base}");
+        let mut caps = Caps::default();
+        caps.delta_base = base;
+        let (mut direct, _, _) = direct_renderer(&script());
+        let mut lp = Loopback::new(caps);
+        lp.open(300.0, 2.0, false, &script());
+        let mut list = 0;
+        for seq in 1..=4u64 {
+            let reaction = parse(&still_list(1500, seq as i32));
+            direct.push("paint", reaction.clone());
+            lp.end().renderer().push("paint", reaction);
+            let mut frame = Frame { seq, ..Frame::default() };
+            twidget_ends::Renderer::tick(&mut direct);
+            frame.list = twidget_ends::Renderer::paint(&mut direct);
+            let mut damage = Vec::new();
+            if twidget_ends::Renderer::damage(&mut direct, &mut damage) {
+                frame.damage = Some(damage);
+            }
+            frame.painted = true;
+            frame.state = state_of(&mut direct, false);
+            let _ = twidget_ends::Renderer::may_have_selection(&mut direct);
+            let mut ordinary = Vec::new();
+            assert!(frame.encode(&caps, &mut ordinary));
+            let mut out = Output::default();
+            assert!(lp.end().deliver(&encoded(&FrameRequest { seq, tick: true, paint: Paint::Force }), &mut out) || lp.end().stopped());
+            let sent = lp.wire.borrow().outbox.back().cloned().unwrap_or_default();
+            lp.wire.borrow_mut().outbox.clear();
+            assert!(!lp.end().stopped() && sent == ordinary, "{what}, frame {seq}: the end sends the ordinary Frame's bytes");
+            let mut bytes = Vec::new();
+            twidget_wire::encode_list(&frame.list, &twidget_wire::Caps::default(), &mut bytes);
+            list = bytes.len();
+        }
+        assert!(list > 16384, "{what}: the list is {list} bytes");
+    }
+}
+
+// ---- remote_tests.cpp's platform end sessions of widths and deltas ---------------------------------------------
+
+/// A platform end alone, on a logging Backend, with a host that hears everything.
+struct Session {
+    platform: PlatformEnd<LogHandle, HeardHandle, Queue>,
+    backend: LogHandle,
+    host: Rc<RefCell<Heard>>,
+    queue: Queue,
+}
+
+impl Session {
+    fn new(caps: Caps) -> Session {
+        let backend = LogHandle::new();
+        let host = Rc::new(RefCell::new(Heard::default()));
+        let queue = Queue::default();
+        let platform =
+            PlatformEnd::new(backend.clone(), HeardHandle { heard: Rc::clone(&host), backend: backend.clone() }, queue.clone(), caps);
+        Session { platform, backend, host, queue }
+    }
+
+    fn answered(&mut self, request: &[u8]) -> Option<Vec<u8>> {
+        let mut reply = b"a reply the answer replaces".to_vec();
+        self.platform.answer(request, &mut reply).then_some(reply)
+    }
+}
+
+fn texts_of(n: usize, bytes: usize) -> WidthsRequest {
+    WidthsRequest { texts: (0..n).map(|i| TextInFont { font: (i % 3) as i32 + 1, text: vec![b'a' + (i % 26) as u8; bytes] }).collect() }
+}
+
+/// A Backend that gives one width too few or too many.
+#[derive(Clone)]
+struct Miscounting {
+    log: LogHandle,
+    fewer: bool,
+}
+
+impl twidget_ends::Backend for Miscounting {
+    fn create_font(
+        &mut self,
+        families: &[u8],
+        size: f32,
+        weight: i32,
+        italic: bool,
+        features: &[u8],
+        out: &mut twidget_wire::FontMetrics,
+    ) -> i32 {
+        self.log.create_font(families, size, weight, italic, features, out)
+    }
+    fn delete_font(&mut self, font: i32) {
+        self.log.delete_font(font)
+    }
+    fn text_width(&mut self, font: i32, text: &[u8]) -> f32 {
+        self.log.text_width(font, text)
+    }
+    fn text_widths(&mut self, texts: &[TextInFont]) -> Vec<f32> {
+        let mut widths = self.log.text_widths(texts);
+        if self.fewer {
+            widths.pop();
+        } else {
+            widths.push(1.0);
+        }
+        widths
+    }
+    fn load_image(&mut self, id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool {
+        self.log.load_image(id, url, w, h)
+    }
+}
+
+/// A WidthsRequest reaches the Backend's text_widths once with every text in order, its answer carries the widths in
+/// that order; an empty one asks nothing; a Backend that gives another number of widths stops the end, the reply
+/// untouched; a request past the caps stops it before the Backend measures any.
+#[test]
+fn session_widths() {
+    {
+        let mut s = Session::new(Caps::default());
+        let font = FontAnswer::decode(
+            &s.answered(&encoded(&FontRequest { families: b"serif".to_vec(), size: 12.0, weight: 400, ..Default::default() })).unwrap(),
+            &Caps::default(),
+        )
+        .expect("a font answer");
+        let bold = FontAnswer::decode(
+            &s.answered(&encoded(&FontRequest { families: b"serif".to_vec(), size: 12.0, weight: 700, ..Default::default() })).unwrap(),
+            &Caps::default(),
+        )
+        .expect("a font answer");
+        let t = |f: i32, text: &str| TextInFont { font: f, text: text.as_bytes().to_vec() };
+        let request = WidthsRequest {
+            texts: vec![t(font.font, "hello"), t(bold.font, "world"), t(font.font, ""), t(font.font, "hello"), t(99, "no such font")],
+        };
+        let reply = s.answered(&encoded(&request)).expect("a widths request is answered");
+        let widths = WidthsAnswer::decode(&reply, &Caps::default(), &request).expect("its answer decodes");
+        let calls = s.backend.calls();
+        let measured = calls.len() == 2 + request.texts.len()
+            && widths.widths.len() == request.texts.len()
+            && (0..request.texts.len()).all(|i| {
+                let c = &calls[2 + i];
+                c.op == Op::TextWidth
+                    && c.font == request.texts[i].font
+                    && c.text == request.texts[i].text
+                    && c.width.to_bits() == widths.widths[i].to_bits()
+            });
+        assert!(measured, "each text is measured in its font, in order, and the answer holds the Backend's widths in that order");
+        let none = s.answered(&encoded(&WidthsRequest::default())).expect("an empty widths request is answered");
+        assert!(
+            WidthsAnswer::decode(&none, &Caps::default(), &WidthsRequest::default()).is_some_and(|a| a.widths.is_empty())
+                && s.backend.len() == 2 + request.texts.len(),
+            "with none and no Backend call"
+        );
+        assert!(s.host.borrow().events.is_empty() && !s.platform.refusing(), "widths reach no host callback");
+    }
+    for fewer in [true, false] {
+        let what = format!("a Backend that gives one width too {}", if fewer { "few" } else { "many" });
+        let log = LogHandle::new();
+        let host = Rc::new(RefCell::new(Heard::default()));
+        let queue = Queue::default();
+        let mut end = PlatformEnd::new(
+            Miscounting { log: log.clone(), fewer },
+            HeardHandle { heard: Rc::clone(&host), backend: log.clone() },
+            queue.clone(),
+            Caps::default(),
+        );
+        let mut reply = b"kept".to_vec();
+        assert!(
+            !end.answer(&encoded(&texts_of(3, 1)), &mut reply) && reply == b"kept" && end.refusing() && host.borrow().refusals.len() == 1,
+            "{what}: the end stops with a reason, the reply untouched"
+        );
+        assert!(queue.0.borrow().is_empty() && host.borrow().events.is_empty(), "{what}: nothing is sent and the host hears nothing else");
+    }
+    {
+        let mut caps = Caps::default();
+        caps.widths = 2;
+        caps.widths_text = 5;
+        let mut s = Session::new(caps);
+        let fits =
+            WidthsRequest { texts: vec![TextInFont { font: 1, text: b"abc".to_vec() }, TextInFont { font: 1, text: b"de".to_vec() }] };
+        let mut bytes = Vec::new();
+        assert!(fits.encode(&caps, &mut bytes));
+        assert!(
+            s.answered(&bytes).is_some() && s.backend.len() == 2,
+            "two texts of 5 bytes are answered under caps of 2 texts and 5 bytes"
+        );
+        let mut wide = caps;
+        wide.widths = 3;
+        wide.widths_text = 6;
+        let mut three = Vec::new();
+        assert!(texts_of(3, 1).encode(&wide, &mut three));
+        let mut reply = b"kept".to_vec();
+        assert!(
+            !s.platform.answer(&three, &mut reply) && reply == b"kept" && s.platform.refusing() && s.backend.len() == 2,
+            "three texts under a cap of two stop the end before the Backend measures any"
+        );
+    }
+}
+
+fn whole_frame(seq: u64, list: &twidget_wire::DisplayList) -> Vec<u8> {
+    encoded(&Frame { seq, state: State::default(), painted: true, list: list.clone(), damage: None })
+}
+
+fn list_of(n: usize, x: f32) -> twidget_wire::DisplayList {
+    (0..n).map(|i| twidget_wire::Command { rect: Rect::new(x, i as f32, 3.0, 4.0), ..Default::default() }).collect()
+}
+
+/// A FrameDelta from `from` to `to` that copies from painted frame `base`: the bytes they begin with alike copied, the
+/// rest literal.
+fn delta_frame(seq: u64, base: u64, from: &twidget_wire::DisplayList, to: &twidget_wire::DisplayList) -> Vec<u8> {
+    let (a, b) = (encoded_list(from), encoded_list(to));
+    let mut head = 0;
+    while head < a.len() && head < b.len() && a[head] == b[head] {
+        head += 1;
+    }
+    let mut runs = Vec::new();
+    if head > 0 {
+        runs.push(DeltaRun { offset: 0, length: head as u32, literal: Vec::new() });
+    }
+    if b.len() > head {
+        runs.push(DeltaRun { offset: 0, length: 0, literal: b[head..].to_vec() });
+    }
+    encoded(&FrameDelta { seq, state: State::default(), base, runs, damage: Some(vec![Rect::new(1.0, 1.0, 2.0, 2.0)]) })
+}
+
+fn encoded_list(list: &twidget_wire::DisplayList) -> Vec<u8> {
+    let mut out = Vec::new();
+    assert!(twidget_wire::encode_list(list, &twidget_wire::Caps::default(), &mut out));
+    out
+}
+
+/// Painted frames whole and as deltas reach the host alike, each delta copying from the last painted list, which an
+/// unpainted frame keeps, a list past delta_base drops and a refusal clears (remote_tests.cpp's `session_deltas`).
+#[test]
+fn session_deltas() {
+    let (a, b, c) = (list_of(5, 1.0), list_of(5, 2.0), list_of(6, 2.0));
+    {
+        let mut s = Session::new(Caps::default());
+        let first = s.platform.request_frame(true, Paint::IfDirty);
+        assert!(s.platform.receive(&whole_frame(first, &a)), "a whole painted frame is taken");
+        let second = s.platform.request_frame(true, Paint::IfDirty);
+        assert!(s.platform.receive(&delta_frame(second, first, &a, &b)), "a delta that copies from it is taken");
+        {
+            let host = s.host.borrow();
+            assert!(
+                host.frames.len() == 2 && host.frames[1].seq == second && host.frames[1].list == b && host.frames[1].damage.is_some(),
+                "the host gets the Frame the delta stands for"
+            );
+        }
+        let third = s.platform.request_frame(false, Paint::IfDirty);
+        assert!(s.platform.receive(&encoded(&Frame { seq: third, ..Frame::default() })), "an unpainted frame is taken");
+        let fourth = s.platform.request_frame(true, Paint::Force);
+        assert!(
+            s.platform.receive(&delta_frame(fourth, second, &b, &c)),
+            "the next delta copies from the last painted frame, across the unpainted one"
+        );
+        assert!(s.host.borrow().frames[3].list == c, "its list is the delta's");
+        let fifth = s.platform.request_frame(true, Paint::Force);
+        assert!(s.platform.receive(&whole_frame(fifth, &a)), "a whole frame after deltas is taken");
+        let sixth = s.platform.request_frame(true, Paint::Force);
+        assert!(
+            s.platform.receive(&delta_frame(sixth, fifth, &a, &a)) && s.host.borrow().frames[5].list == a,
+            "a delta that copies all of the whole frame is taken"
+        );
+        assert!(s.backend.count(Op::Frame) == 6 && !s.platform.refusing(), "the host hears each frame once");
+    }
+    {
+        let mut small = Caps::default();
+        small.delta_base = encoded_list(&a).len() - 1;
+        let mut s = Session::new(small);
+        let first = s.platform.request_frame(true, Paint::IfDirty);
+        assert!(s.platform.receive(&whole_frame(first, &list_of(1, 0.0))), "a short whole frame is taken");
+        let second = s.platform.request_frame(true, Paint::IfDirty);
+        assert!(s.platform.receive(&whole_frame(second, &a)), "a whole frame past delta_base is taken");
+        let third = s.platform.request_frame(true, Paint::IfDirty);
+        assert!(
+            !s.platform.receive(&delta_frame(third, first, &list_of(1, 0.0), &list_of(2, 0.0)))
+                && s.host.borrow().refusals == vec!["a message of kind 73 with no painted list kept to copy from".to_string()],
+            "a frame past delta_base drops the list kept before it, and a delta on either is refused"
+        );
+    }
+    let refused_with = |setup: &dyn Fn(&mut Session), bad: Vec<u8>, reason: &str| {
+        let mut s = Session::new(Caps::default());
+        setup(&mut s);
+        assert!(
+            !s.platform.receive(&bad) && s.host.borrow().refusals == vec![reason.to_string()],
+            "refused with \"{reason}\", not {:?}",
+            s.host.borrow().refusals
+        );
+    };
+    let painted_once = |s: &mut Session| {
+        s.platform.request_frame(true, Paint::IfDirty);
+        s.platform.receive(&whole_frame(1, &a));
+        s.platform.request_frame(true, Paint::IfDirty);
+    };
+    refused_with(
+        &|s| {
+            s.platform.request_frame(true, Paint::IfDirty);
+        },
+        delta_frame(1, 0, &Vec::new(), &a),
+        "a message of kind 73 with no painted list kept to copy from",
+    );
+    refused_with(
+        &|s| {
+            s.platform.request_frame(true, Paint::IfDirty);
+            s.platform.receive(&encoded(&Frame { seq: 1, ..Frame::default() }));
+            s.platform.request_frame(true, Paint::IfDirty);
+        },
+        delta_frame(2, 1, &a, &b),
+        "a message of kind 73 with no painted list kept to copy from",
+    );
+    refused_with(
+        &|s| {
+            painted_once(s);
+            s.platform.receive(&whole_frame(2, &b));
+            s.platform.request_frame(true, Paint::IfDirty);
+        },
+        delta_frame(3, 1, &a, &c),
+        "a message of kind 73 copying from frame 1 where 2 was painted last",
+    );
+    refused_with(&painted_once, delta_frame(3, 1, &a, &b), "a message of kind 73 for request 3 where 2 was due");
+    refused_with(&painted_once, delta_frame(2, 0, &a, &b), "a message of kind 73 copying from frame 0 where 1 was painted last");
+    refused_with(
+        &|s| {
+            s.platform.request_frame(true, Paint::IfDirty);
+            s.platform.receive(&whole_frame(1, &a));
+            s.platform.touch(1, 1.0, 1.0, 1, true, false, 0, 0);
+            s.platform.request_frame(true, Paint::IfDirty);
+        },
+        delta_frame(2, 1, &a, &b),
+        "a message of kind 73 where kind 67 was due",
+    );
+    refused_with(
+        &|s| {
+            s.platform.request_frame(true, Paint::IfDirty);
+            s.platform.receive(&whole_frame(1, &a));
+        },
+        delta_frame(2, 1, &a, &b),
+        "an unsolicited message of kind 73",
+    );
+    let good = delta_frame(2, 1, &a, &b);
+    for n in [2usize, 40, 41, 60, good.len() - 1] {
+        refused_with(
+            &painted_once,
+            good[..n].to_vec(),
+            if n < 41 { "a message of kind 73 did not decode" } else { "a message of kind 73 did not rebuild a frame" },
+        );
+    }
+    refused_with(&painted_once, [good.clone(), vec![0]].concat(), "a message of kind 73 did not rebuild a frame");
+}
+
+/// An end its embedder closes stops for good without a word to the host: the frame it asked for and a delta on the
+/// list it kept are refused quietly, every later call does nothing, and closing again changes nothing.
+#[test]
+fn session_close() {
+    let mut s = Session::new(Caps::default());
+    let first = s.platform.request_frame(true, Paint::IfDirty);
+    assert!(s.platform.receive(&whole_frame(first, &list_of(5, 1.0))), "a whole painted frame is taken");
+    let second = s.platform.request_frame(true, Paint::IfDirty);
+    let (sent, events) = (s.queue.0.borrow().len(), s.host.borrow().events.len());
+    s.platform.close();
+    assert!(
+        s.platform.refusing()
+            && s.host.borrow().refusals.is_empty()
+            && s.host.borrow().events.len() == events
+            && s.queue.0.borrow().len() == sent,
+        "closing says nothing and sends nothing"
+    );
+    assert!(
+        !s.platform.receive(&delta_frame(second, first, &list_of(5, 1.0), &list_of(5, 2.0)))
+            && !s.platform.receive(&whole_frame(second, &list_of(5, 2.0)))
+            && s.host.borrow().frames.len() == 1
+            && s.host.borrow().refusals.is_empty(),
+        "neither a delta on the kept list nor the frame it asked for is taken, and the host hears of neither"
+    );
+    s.platform.close();
+    let calls = s.backend.len();
+    assert!(s.platform.request_frame(true, Paint::Force) == 0 && s.platform.ask_claim(1.0, 2.0) == 0, "every later call does nothing");
+    s.platform.set_width(5.0);
+    let mut reply = b"kept".to_vec();
+    assert!(!s.platform.answer(&encoded(&texts_of(1, 1)), &mut reply) && reply == b"kept", "and answers nothing");
+    assert!(
+        s.queue.0.borrow().len() == sent && s.backend.len() == calls && s.host.borrow().refusals.is_empty(),
+        "the host never hears of it"
+    );
 }

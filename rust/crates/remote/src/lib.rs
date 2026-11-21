@@ -1,5 +1,5 @@
 //! The messages between TwidgetCore's renderer end and its platform end (`core/src/remote.h`,
-//! `remote.cpp`): 25 kinds in four ranges, each a kind byte, a version byte and its fields, little-endian,
+//! `remote.cpp`): 28 kinds in four ranges, each a kind byte, a version byte and its fields, little-endian,
 //! the paint values inside in their wire forms. `docs/TWIDGET_CORE.md`, "Two ends over a byte channel",
 //! lays them out. Decoders take hostile bytes; encoders refuse what the decoder would.
 
@@ -31,6 +31,7 @@ pub enum Kind {
     WidthAnswer = 33,
     ImageAnswer = 34,
     PixelsAnswer = 35,
+    WidthsAnswer = 36,
     Frame = 64,
     State = 65,
     Messages = 66,
@@ -40,14 +41,16 @@ pub enum Kind {
     FontRelease = 70,
     CanvasRun = 71,
     CanvasRelease = 72,
+    FrameDelta = 73,
     FontRequest = 96,
     WidthRequest = 97,
     ImageRequest = 98,
     PixelsRequest = 99,
+    WidthsRequest = 100,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 25] = [
+    pub const ALL: [Kind; 28] = [
         Kind::FrameRequest,
         Kind::SetWidth,
         Kind::SetMaxHeight,
@@ -60,6 +63,7 @@ impl Kind {
         Kind::WidthAnswer,
         Kind::ImageAnswer,
         Kind::PixelsAnswer,
+        Kind::WidthsAnswer,
         Kind::Frame,
         Kind::State,
         Kind::Messages,
@@ -69,10 +73,12 @@ impl Kind {
         Kind::FontRelease,
         Kind::CanvasRun,
         Kind::CanvasRelease,
+        Kind::FrameDelta,
         Kind::FontRequest,
         Kind::WidthRequest,
         Kind::ImageRequest,
         Kind::PixelsRequest,
+        Kind::WidthsRequest,
     ];
 
     pub fn from_u8(value: u8) -> Option<Kind> {
@@ -89,11 +95,30 @@ pub struct Caps {
     pub text: usize,
     pub url: usize,
     pub messages: usize,
+    /// Texts of one WidthsRequest, and bytes of their texts together.
+    pub widths: usize,
+    pub widths_text: usize,
+    /// Bytes of one Frame, and of the Frame a FrameDelta stands for once rebuilt; `usize::MAX` leaves Frames to
+    /// `message` alone.
+    pub frame: usize,
+    /// Bytes of the painted list each end keeps for a FrameDelta to copy from, and of a list a FrameDelta rebuilds;
+    /// both ends take the same, and 0 sends every painted Frame whole.
+    pub delta_base: usize,
 }
 
 impl Default for Caps {
     fn default() -> Caps {
-        Caps { values: wire::Caps::default(), message: 32 << 20, text: 4 << 20, url: 8 << 20, messages: 1024 }
+        Caps {
+            values: wire::Caps::default(),
+            message: 32 << 20,
+            text: 4 << 20,
+            url: 8 << 20,
+            messages: 1024,
+            widths: 256,
+            widths_text: 16 << 10,
+            frame: usize::MAX,
+            delta_base: 256 << 10,
+        }
     }
 }
 
@@ -193,6 +218,12 @@ pub struct PixelsAnswer {
     pub rgba: Vec<u8>,
 }
 
+/// The widths of a WidthsRequest's texts, in their order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WidthsAnswer {
+    pub widths: Vec<f32>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct State {
     pub width: f64,
@@ -215,6 +246,36 @@ pub struct Frame {
     pub state: State,
     pub painted: bool,
     pub list: DisplayList,
+    pub damage: wire::Damage,
+}
+
+/// Where [`encode_frame_placed`] wrote a painted Frame's list: `size` bytes from byte `at` of its output, and, while the
+/// list kept within the bytes it was given, where each command starts and, last, where the list ends, counted from the
+/// list's first byte; no starts for a longer list or an unpainted Frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrittenList {
+    pub at: usize,
+    pub size: usize,
+    pub starts: Vec<usize>,
+}
+
+/// `length` bytes of a FrameDelta's base from `offset`, or, when `literal` is not empty, those bytes, `offset` and
+/// `length` then 0.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeltaRun {
+    pub offset: u32,
+    pub length: u32,
+    pub literal: Vec<u8>,
+}
+
+/// A painted Frame whose list is rebuilt from the list of the last painted Frame, its base, by copies and bytes of
+/// its own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameDelta {
+    pub seq: u64,
+    pub state: State,
+    pub base: u64,
+    pub runs: Vec<DeltaRun>,
     pub damage: wire::Damage,
 }
 
@@ -289,11 +350,34 @@ pub struct PixelsRequest {
     pub h: i32,
 }
 
+/// One text in one backend font (backend.h's `TextInFont`), as a WidthsRequest carries it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextInFont {
+    pub font: i32,
+    pub text: Vec<u8>,
+}
+
+/// Texts a renderer asks the widths of in one request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WidthsRequest {
+    pub texts: Vec<TextInFont>,
+}
+
 /// The JSON message types a renderer end reports to the platform (in `Messages`).
 const PLATFORM_TYPES: [&[u8]; 5] = [b"size", b"gesture", b"limit", b"violation", b"bubble"];
 
 /// The fewest bytes a str takes: its length.
 const STR_BYTES: usize = 4;
+/// A WidthsRequest's header and count, and the fewest bytes one of its texts takes: its font and its length.
+const WIDTHS_HEAD: usize = 2 + 4;
+const WIDTHS_ITEM_BYTES: usize = 4 + STR_BYTES;
+/// A painted Frame's bytes before its list: header, seq, state and the flag.
+const STATE_BYTES: usize = 8 + 4 + 1 + 1 + 8 + 1;
+const FRAME_HEAD: usize = 2 + 8 + STATE_BYTES + 1;
+/// A FrameDelta run's tag, and the fewest bytes a run takes: a literal of one byte.
+const COPY_RUN: u8 = 0;
+const LITERAL_RUN: u8 = 1;
+const RUN_BYTES: usize = 1 + 4 + 1;
 
 /// The kind of a message of version 1, from its header alone.
 pub fn kind_of(message: &[u8]) -> Option<Kind> {
@@ -305,6 +389,39 @@ pub fn kind_of(message: &[u8]) -> Option<Kind> {
 
 pub fn is_platform_message(kind: &[u8]) -> bool {
     PLATFORM_TYPES.contains(&kind)
+}
+
+/// How many of `texts`, from `from` on, keep within the widths caps in order: their count, each text and all of them,
+/// and, when `sized`, the message cap as a WidthsRequest's, which bounds its WidthsAnswer too.
+fn widths_within(texts: &[TextInFont], from: usize, caps: &Caps, sized: bool) -> usize {
+    let most = caps.widths.min(u32::MAX as usize);
+    let longest = caps.text.min(u32::MAX as usize);
+    let (mut bytes, mut text, mut n) = (WIDTHS_HEAD, 0usize, 0usize);
+    let mut i = from;
+    while i < texts.len() && n < most {
+        let size = texts[i].text.len();
+        if size > longest || size > caps.widths_text - text {
+            break;
+        }
+        if sized && (caps.message < bytes || caps.message - bytes < WIDTHS_ITEM_BYTES || size > caps.message - bytes - WIDTHS_ITEM_BYTES) {
+            break;
+        }
+        bytes += WIDTHS_ITEM_BYTES + size;
+        text += size;
+        i += 1;
+        n += 1;
+    }
+    n
+}
+
+fn widths_fit(request: &WidthsRequest, caps: &Caps) -> bool {
+    widths_within(&request.texts, 0, caps, false) == request.texts.len()
+}
+
+/// How many of `texts`, from `from` on, one WidthsRequest holds within `caps`, together with its WidthsAnswer: as
+/// many as encode takes in order, 0 when even the first is past them.
+pub fn widths_in_request(texts: &[TextInFont], from: usize, caps: &Caps) -> usize {
+    widths_within(texts, from, caps, true)
 }
 
 /// The bytes of a w × h RGBA region a canvas can hold, or None.
@@ -379,6 +496,16 @@ impl Writer<'_> {
         true
     }
 
+    fn floats(&mut self, v: &[f32], cap: usize) -> bool {
+        if v.len() > usize::MAX / 4 || !self.room(v.len() * 4) || !self.count(v.len(), cap) {
+            return false;
+        }
+        for f in v {
+            self.f32(*f);
+        }
+        true
+    }
+
     /// A value of another codec after its u32 length.
     fn value(&mut self, write: impl FnOnce(&mut Vec<u8>) -> bool) -> bool {
         let at = self.out.len();
@@ -409,11 +536,31 @@ impl Writer<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Reader<'a> {
     rest: &'a [u8],
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    fn done(&self) -> bool {
+        self.rest.is_empty()
+    }
+
+    fn view(&mut self, n: usize) -> Option<&'a [u8]> {
+        if n > self.rest.len() {
+            return None;
+        }
+        let (head, tail) = self.rest.split_at(n);
+        self.rest = tail;
+        Some(head)
+    }
+
+    /// The bytes of a value of another codec after its u32 length.
+    fn value_view(&mut self) -> Option<&'a [u8]> {
+        let n = self.u32()? as usize;
+        self.view(n)
+    }
+
     fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
         let (head, tail) = self.rest.split_first_chunk::<N>()?;
         self.rest = tail;
@@ -518,7 +665,7 @@ fn appended(out: &mut Vec<u8>, caps: &Caps, kind: Kind, write: impl FnOnce(&mut 
 }
 
 /// What `read` takes from all of `message` after its header.
-fn taken<T>(message: &[u8], caps: &Caps, kind: Kind, read: impl FnOnce(&mut Reader) -> Option<T>) -> Option<T> {
+fn taken<'a, T>(message: &'a [u8], caps: &Caps, kind: Kind, read: impl FnOnce(&mut Reader<'a>) -> Option<T>) -> Option<T> {
     if message.len() > caps.message {
         return None;
     }
@@ -770,35 +917,279 @@ impl PixelsAnswer {
     }
 }
 
+/// Whether the painted Frame of a list and a damage of these lengths keeps within the frame and the message caps.
+fn fits_frame(caps: &Caps, list: u64, damage: u64) -> bool {
+    let bytes = (FRAME_HEAD as u64 + 4).wrapping_add(list).wrapping_add(4).wrapping_add(damage);
+    bytes <= caps.frame as u64 && bytes <= caps.message as u64
+}
+
+/// A Frame after its header; for a painted one, `list` where its list went, starts noted within `most` bytes, when
+/// given.
+fn put_frame(w: &mut Writer, message: &Frame, caps: &Caps, most: usize, list: Option<&mut WrittenList>) -> bool {
+    w.u64(message.seq);
+    w.state(&message.state);
+    w.flag(message.painted);
+    if !message.painted {
+        return message.list.is_empty() && message.damage.is_none() && w.written() <= caps.frame;
+    }
+    let placed = list.is_some();
+    let mut written = WrittenList::default();
+    let mut damage = 0;
+    let put = w.value(|s| {
+        written.at = s.len();
+        let ok = if placed {
+            wire::encode_list_with_starts(&message.list, &caps.values, s, &mut written.starts, most)
+        } else {
+            wire::encode_list(&message.list, &caps.values, s)
+        };
+        if !ok {
+            return false;
+        }
+        written.size = s.len() - written.at;
+        true
+    }) && w.value(|s| {
+        let at = s.len();
+        if !wire::encode_damage(&message.damage, &caps.values, s) {
+            return false;
+        }
+        damage = s.len() - at;
+        true
+    }) && fits_frame(caps, written.size as u64, damage as u64);
+    if put && let Some(list) = list {
+        *list = written;
+    }
+    put
+}
+
 impl Message for Frame {
     const KIND: Kind = Kind::Frame;
 
-    /// An unpainted frame carries no list and no damage.
+    /// An unpainted frame carries no list and no damage; the whole Frame keeps within the frame cap.
+    fn encode(&self, caps: &Caps, out: &mut Vec<u8>) -> bool {
+        appended(out, caps, Self::KIND, |w| put_frame(w, self, caps, 0, None))
+    }
+
+    fn decode(message: &[u8], caps: &Caps) -> Option<Self> {
+        decode_frame_viewed(message, caps).map(|(frame, _)| frame)
+    }
+}
+
+/// As `Frame::encode`, and where it wrote the list, its starts noted while the list keeps within `most` bytes; `list`
+/// untouched on false.
+pub fn encode_frame_placed(message: &Frame, caps: &Caps, out: &mut Vec<u8>, most: usize, list: &mut WrittenList) -> bool {
+    let mut written = WrittenList::default();
+    if !appended(out, caps, Kind::Frame, |w| put_frame(w, message, caps, most, Some(&mut written))) {
+        return false;
+    }
+    *list = written;
+    true
+}
+
+/// As `Frame::decode`, and the bytes of a painted Frame's list where they lie in `message`, empty for an unpainted one.
+pub fn decode_frame_viewed<'a>(message: &'a [u8], caps: &Caps) -> Option<(Frame, &'a [u8])> {
+    if message.len() > caps.frame {
+        return None;
+    }
+    let mut painted_list: &[u8] = &[];
+    let frame = taken(message, caps, Kind::Frame, |r| {
+        let seq = r.u64()?;
+        let state = r.state()?;
+        let painted = r.flag()?;
+        if !painted {
+            return Some(Frame { seq, state, painted, list: Vec::new(), damage: None });
+        }
+        let bytes = r.value_view()?;
+        let list = wire::decode_list(bytes, &caps.values)?;
+        painted_list = bytes;
+        let damage = r.value(|b| wire::decode_damage(b, &caps.values))?;
+        Some(Frame { seq, state, painted, list, damage })
+    })?;
+    Some((frame, painted_list))
+}
+
+/// One run for the list's head and one for each command: what an encoder that copies whole commands may need.
+fn most_runs(caps: &Caps) -> usize {
+    caps.values.commands.min(u32::MAX as usize - 1) + 1
+}
+
+/// A FrameDelta's fields before its runs.
+struct DeltaHead {
+    seq: u64,
+    state: State,
+    base: u64,
+    length: u32,
+    runs: usize,
+}
+
+fn read_delta_head(r: &mut Reader, caps: &Caps) -> Option<DeltaHead> {
+    let seq = r.u64()?;
+    let state = r.state()?;
+    let base = r.u64()?;
+    let length = r.u32()?;
+    if length == 0 || length as usize > caps.delta_base {
+        return None;
+    }
+    let runs = r.count(most_runs(caps).min(length as usize), RUN_BYTES)?;
+    Some(DeltaHead { seq, state, base, length, runs })
+}
+
+/// Takes runs that rebuild exactly `length` bytes, each copy within a base of `base` bytes and all of them copying no
+/// more than it holds, and gives each to `run(offset, length, literal)`, the literal empty for a copy.
+fn read_runs<'a>(r: &mut Reader<'a>, count: usize, length: u32, base: usize, mut run: impl FnMut(u32, u32, &'a [u8])) -> bool {
+    let (mut built, mut copied) = (0usize, 0usize);
+    for _ in 0..count {
+        let Some(tag) = r.u8() else { return false };
+        let mut offset = 0u32;
+        let mut literal: &'a [u8] = &[];
+        let n: u32;
+        if tag == COPY_RUN {
+            let (Some(o), Some(m)) = (r.u32(), r.u32()) else { return false };
+            if o as usize > base || m as usize > base - o as usize || m as usize > base - copied {
+                return false;
+            }
+            offset = o;
+            n = m;
+            copied += n as usize;
+        } else {
+            if tag != LITERAL_RUN {
+                return false;
+            }
+            let Some(m) = r.u32() else { return false };
+            let Some(bytes) = r.view(m as usize) else { return false };
+            literal = bytes;
+            n = m;
+        }
+        if n == 0 || n as usize > length as usize - built {
+            return false;
+        }
+        built += n as usize;
+        run(offset, n, literal);
+    }
+    built == length as usize
+}
+
+/// A FrameDelta's runs on a base of `base` bytes and its damage, read as views up to its last byte, and the Frame it
+/// stands for within the caps; nothing made yet, the damage's bytes given back.
+fn scan_delta<'a>(r: &mut Reader<'a>, caps: &Caps, h: &DeltaHead, base: usize) -> Option<&'a [u8]> {
+    if !read_runs(r, h.runs, h.length, base, |_, _, _| {}) {
+        return None;
+    }
+    let damage = r.value_view()?;
+    (r.done() && fits_frame(caps, u64::from(h.length), damage.len() as u64)).then_some(damage)
+}
+
+impl Message for FrameDelta {
+    const KIND: Kind = Kind::FrameDelta;
+
     fn encode(&self, caps: &Caps, out: &mut Vec<u8>) -> bool {
         appended(out, caps, Self::KIND, |w| {
+            let (mut length, mut copied) = (0u64, 0u64);
+            for run in &self.runs {
+                if !run.literal.is_empty() {
+                    if run.offset != 0 || run.length != 0 {
+                        return false;
+                    }
+                    length += run.literal.len() as u64;
+                } else {
+                    if run.length == 0
+                        || run.offset as usize > caps.delta_base
+                        || run.length as usize > caps.delta_base - run.offset as usize
+                    {
+                        return false;
+                    }
+                    copied += u64::from(run.length);
+                    length += u64::from(run.length);
+                }
+            }
+            if self.runs.is_empty()
+                || self.runs.len() > most_runs(caps)
+                || length > caps.delta_base as u64
+                || length > u64::from(u32::MAX)
+                || copied > caps.delta_base as u64
+            {
+                return false;
+            }
             w.u64(self.seq);
             w.state(&self.state);
-            w.flag(self.painted);
-            if !self.painted {
-                return self.list.is_empty() && self.damage.is_none();
+            w.u64(self.base);
+            w.u32(length as u32);
+            w.u32(self.runs.len() as u32);
+            for run in &self.runs {
+                if !run.literal.is_empty() {
+                    w.u8(LITERAL_RUN);
+                    if !w.bytes(&run.literal, caps.delta_base) {
+                        return false;
+                    }
+                    continue;
+                }
+                w.u8(COPY_RUN);
+                w.u32(run.offset);
+                w.u32(run.length);
             }
-            w.value(|s| wire::encode_list(&self.list, &caps.values, s)) && w.value(|s| wire::encode_damage(&self.damage, &caps.values, s))
+            let before = w.written();
+            w.value(|s| wire::encode_damage(&self.damage, &caps.values, s))
+                && w.written() <= caps.frame
+                && fits_frame(caps, length, (w.written() - before - 4) as u64)
         })
     }
 
     fn decode(message: &[u8], caps: &Caps) -> Option<Self> {
+        if message.len() > caps.frame {
+            return None;
+        }
         taken(message, caps, Self::KIND, |r| {
-            let seq = r.u64()?;
-            let state = r.state()?;
-            let painted = r.flag()?;
-            if !painted {
-                return Some(Frame { seq, state, painted, list: Vec::new(), damage: None });
-            }
-            let list = r.value(|b| wire::decode_list(b, &caps.values))?;
-            let damage = r.value(|b| wire::decode_damage(b, &caps.values))?;
-            Some(Frame { seq, state, painted, list, damage })
+            let h = read_delta_head(r, caps)?;
+            let mut runs = *r;
+            let damage = scan_delta(r, caps, &h, caps.delta_base)?;
+            let mut delta = FrameDelta { seq: h.seq, state: h.state, base: h.base, runs: Vec::with_capacity(h.runs), damage: None };
+            read_runs(&mut runs, h.runs, h.length, caps.delta_base, |offset, n, literal| {
+                if literal.is_empty() {
+                    delta.runs.push(DeltaRun { offset, length: n, literal: Vec::new() });
+                } else {
+                    delta.runs.push(DeltaRun { offset: 0, length: 0, literal: literal.to_vec() });
+                }
+            });
+            delta.damage = wire::decode_damage(damage, &caps.values)?;
+            Some(delta)
         })
     }
+}
+
+/// A FrameDelta's seq and base, read from the fields after its header alone; it never stands in for decoding.
+pub fn delta_ids(message: &[u8]) -> Option<(u64, u64)> {
+    let mut r = Reader { rest: message };
+    r.head(Kind::FrameDelta)?;
+    let seq = r.u64()?;
+    r.state()?;
+    let base = r.u64()?;
+    Some((seq, base))
+}
+
+/// The painted Frame a FrameDelta stands for, rebuilt on `base`, the list of painted Frame `base_seq`, with the
+/// rebuilt list's bytes.
+pub fn rebuild(message: &[u8], caps: &Caps, base_seq: u64, base: &[u8]) -> Option<(Frame, Vec<u8>)> {
+    if message.len() > caps.message || message.len() > caps.frame || base.len() > caps.delta_base {
+        return None;
+    }
+    let mut r = Reader { rest: message };
+    r.head(Kind::FrameDelta)?;
+    let h = read_delta_head(&mut r, caps)?;
+    if h.base != base_seq {
+        return None;
+    }
+    let mut runs = r;
+    let damage = scan_delta(&mut r, caps, &h, base.len())?;
+    let damage = wire::decode_damage(damage, &caps.values)?;
+    let mut bytes = Vec::with_capacity(h.length as usize);
+    read_runs(&mut runs, h.runs, h.length, base.len(), |offset, n, literal| {
+        if literal.is_empty() {
+            bytes.extend_from_slice(&base[offset as usize..offset as usize + n as usize]);
+        } else {
+            bytes.extend_from_slice(literal);
+        }
+    });
+    let list = wire::decode_list(&bytes, &caps.values)?;
+    Some((Frame { seq: h.seq, state: h.state, painted: true, list, damage }, bytes))
 }
 
 impl Message for State {
@@ -999,6 +1390,69 @@ impl Message for ImageRequest {
 
     fn decode(message: &[u8], caps: &Caps) -> Option<Self> {
         taken(message, caps, Self::KIND, |r| Some(ImageRequest { id: r.i32()?, url: r.str(caps.url)? }))
+    }
+}
+
+impl WidthsAnswer {
+    pub const KIND: Kind = Kind::WidthsAnswer;
+
+    /// At most the widths cap of widths, within the message cap.
+    pub fn encode(&self, caps: &Caps, out: &mut Vec<u8>) -> bool {
+        appended(out, caps, Self::KIND, |w| w.floats(&self.widths, caps.widths))
+    }
+
+    /// The answer to `asked`, which keeps within the widths caps: exactly one width for each of its texts.
+    pub fn decode(message: &[u8], caps: &Caps, asked: &WidthsRequest) -> Option<WidthsAnswer> {
+        let fits = widths_fit(asked, caps);
+        taken(message, caps, Self::KIND, |r| {
+            if !fits {
+                return None;
+            }
+            let n = r.count(caps.widths, 4)?;
+            if n != asked.texts.len() {
+                return None;
+            }
+            let mut widths = Vec::with_capacity(n);
+            for _ in 0..n {
+                widths.push(r.f32()?);
+            }
+            Some(WidthsAnswer { widths })
+        })
+    }
+}
+
+impl Message for WidthsRequest {
+    const KIND: Kind = Kind::WidthsRequest;
+
+    /// The texts keep within the widths caps and, as one request, the message cap.
+    fn encode(&self, caps: &Caps, out: &mut Vec<u8>) -> bool {
+        appended(out, caps, Self::KIND, |w| {
+            if widths_in_request(&self.texts, 0, caps) != self.texts.len() || !w.count(self.texts.len(), caps.widths) {
+                return false;
+            }
+            for t in &self.texts {
+                w.i32(t.font);
+                if !w.bytes(&t.text, caps.text) {
+                    return false;
+                }
+            }
+            true
+        })
+    }
+
+    fn decode(message: &[u8], caps: &Caps) -> Option<Self> {
+        taken(message, caps, Self::KIND, |r| {
+            let n = r.count(caps.widths, WIDTHS_ITEM_BYTES)?;
+            let mut texts = Vec::with_capacity(n);
+            let mut left = caps.widths_text;
+            for _ in 0..n {
+                let font = r.i32()?;
+                let text = r.str(caps.text.min(left))?;
+                left -= text.len();
+                texts.push(TextInFont { font, text });
+            }
+            Some(WidthsRequest { texts })
+        })
     }
 }
 

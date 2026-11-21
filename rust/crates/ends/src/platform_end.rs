@@ -8,7 +8,8 @@ use twidget_json::{Json, Surrogates};
 use twidget_remote::{
     CanvasRelease, CanvasRun, Caps, ClaimAnswer, ClaimQuery, ClearSelection, FontAnswer, FontRelease, FontRequest, Frame, FrameRequest,
     Hover, ImageAnswer, ImageRequest, Kind, Message, Messages, Paint, PixelsAnswer, PixelsRequest, Pointer, Selection, SetMaxHeight,
-    SetTheme, SetWidth, State, Touch, WidthAnswer, WidthRequest, is_platform_message, kind_of,
+    SetTheme, SetWidth, State, Touch, WidthAnswer, WidthRequest, WidthsAnswer, WidthsRequest, decode_frame_viewed, delta_ids,
+    is_platform_message, kind_of, rebuild,
 };
 use twidget_wire::FontMetrics;
 
@@ -58,6 +59,9 @@ pub struct PlatformEnd<B: Backend, H: Host, C: Channel> {
     frames: u64,
     claims: u64,
     refused: bool,
+    /// The list of the last painted Frame while it is within `delta_base`, for a FrameDelta to copy from.
+    base: Option<Vec<u8>>,
+    base_seq: u64,
 }
 
 impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
@@ -72,6 +76,8 @@ impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
             frames: 0,
             claims: 0,
             refused: false,
+            base: None,
+            base_seq: 0,
         }
     }
 
@@ -131,16 +137,24 @@ impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
     }
 
     fn solicited(&mut self, kind: Kind, seq: u64) -> bool {
+        if !self.due(kind, kind, seq) {
+            return false;
+        }
+        self.expected.pop_front();
+        true
+    }
+
+    /// Whether a message of `kind` for request `seq` is the next reply due, a reply of kind `answers`.
+    fn due(&mut self, kind: Kind, answers: Kind, seq: u64) -> bool {
         let Some(front) = self.expected.front().copied() else {
             return self.refuse(&format!("an unsolicited message of {}", named(kind)));
         };
-        if front.kind != kind {
+        if front.kind != answers {
             return self.refuse(&format!("a message of {} where {} was due", named(kind), named(front.kind)));
         }
         if front.seq != seq {
             return self.refuse(&format!("a message of {} for request {seq} where {} was due", named(kind), front.seq));
         }
-        self.expected.pop_front();
         true
     }
 
@@ -148,10 +162,17 @@ impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
         if self.refused {
             return false;
         }
-        self.refused = true;
-        self.expected.clear();
+        self.close();
         self.host.refused(reason);
         false
+    }
+
+    /// Stops the end for good without a word to the host, as when the embedder ends the route itself: no reply is
+    /// due any more and no painted list is kept. It allocates nothing.
+    pub fn close(&mut self) {
+        self.refused = true;
+        self.expected = VecDeque::new();
+        self.base = None;
     }
 
     /// Asks the renderer end for a frame; its seq, or 0 once the end refuses.
@@ -207,12 +228,20 @@ impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
         let Some(kind) = kind_of(message) else { return self.refuse("a message of no known kind or version") };
         match kind {
             Kind::Frame => {
-                let Some(frame) = self.take::<Frame>(message, kind) else { return false };
-                if !self.solicited(kind, frame.seq) {
+                let Some((frame, list)) = decode_frame_viewed(message, &self.caps) else {
+                    return self.refuse(&format!("a message of {} did not decode", named(kind)));
+                };
+                if !self.due(kind, kind, frame.seq) {
                     return false;
                 }
-                self.state = frame.state;
-                self.host.frame(frame);
+                let kept = (frame.painted && list.len() <= self.caps.delta_base).then(|| list.to_vec());
+                self.expected.pop_front();
+                self.framed(frame, kept);
+            }
+            Kind::FrameDelta => {
+                if !self.take_delta(message) {
+                    return false;
+                }
             }
             Kind::State => {
                 let Some(state) = self.take::<State>(message, kind) else { return false };
@@ -254,12 +283,47 @@ impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
                 let Some(release) = self.take::<CanvasRelease>(message, kind) else { return false };
                 self.backend.canvas_release(release.id);
             }
-            Kind::FontRequest | Kind::WidthRequest | Kind::ImageRequest | Kind::PixelsRequest => {
+            Kind::FontRequest | Kind::WidthRequest | Kind::ImageRequest | Kind::PixelsRequest | Kind::WidthsRequest => {
                 return self.refuse(&format!("a request of {} where a one-way message belongs", named(kind)));
             }
             _ => return self.refuse(&format!("a message of {}, which only the platform end sends", named(kind))),
         }
         !self.refused
+    }
+
+    fn take_delta(&mut self, message: &[u8]) -> bool {
+        let Some((seq, base)) = delta_ids(message) else {
+            return self.refuse(&format!("a message of {} did not decode", named(Kind::FrameDelta)));
+        };
+        if !self.due(Kind::FrameDelta, Kind::Frame, seq) {
+            return false;
+        }
+        if self.base.is_none() {
+            return self.refuse(&format!("a message of {} with no painted list kept to copy from", named(Kind::FrameDelta)));
+        }
+        if base != self.base_seq {
+            return self.refuse(&format!(
+                "a message of {} copying from frame {base} where {} was painted last",
+                named(Kind::FrameDelta),
+                self.base_seq
+            ));
+        }
+        let rebuilt = rebuild(message, &self.caps, self.base_seq, self.base.as_deref().unwrap_or_default());
+        let Some((frame, list)) = rebuilt else {
+            return self.refuse(&format!("a message of {} did not rebuild a frame", named(Kind::FrameDelta)));
+        };
+        self.expected.pop_front();
+        self.framed(frame, Some(list));
+        true
+    }
+
+    fn framed(&mut self, frame: Frame, list: Option<Vec<u8>>) {
+        if frame.painted {
+            self.base = list;
+            self.base_seq = frame.seq;
+        }
+        self.state = frame.state;
+        self.host.frame(frame);
     }
 
     fn take_messages(&mut self, message: &[u8]) -> bool {
@@ -304,6 +368,14 @@ impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
                 self.respond(|caps, bytes| ImageAnswer { ok, w, h }.encode(caps, bytes), reply)
             }
             Kind::PixelsRequest => self.answer_pixels(request, reply),
+            Kind::WidthsRequest => {
+                let Some(m) = self.take::<WidthsRequest>(request, kind) else { return false };
+                let widths = self.backend.text_widths(&m.texts);
+                if widths.len() != m.texts.len() {
+                    return self.refuse(&format!("the Backend gave {} widths for {} texts", widths.len(), m.texts.len()));
+                }
+                self.respond(|caps, bytes| WidthsAnswer { widths }.encode(caps, bytes), reply)
+            }
             Kind::Frame
             | Kind::State
             | Kind::Messages
@@ -312,7 +384,8 @@ impl<B: Backend, H: Host, C: Channel> PlatformEnd<B, H, C> {
             | Kind::ClaimAnswer
             | Kind::FontRelease
             | Kind::CanvasRun
-            | Kind::CanvasRelease => self.refuse(&format!("a one-way message of {} where a request belongs", named(kind))),
+            | Kind::CanvasRelease
+            | Kind::FrameDelta => self.refuse(&format!("a one-way message of {} where a request belongs", named(kind))),
             _ => self.refuse(&format!("a message of {}, which only the platform end sends", named(kind))),
         }
     }

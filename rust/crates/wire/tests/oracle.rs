@@ -28,6 +28,11 @@ impl Run {
         self.cases.push(Case::Same(form, bytes));
     }
 
+    fn starts(&mut self, most: u64, bytes: Vec<u8>, what: String) {
+        self.expected.push((starts_answer(&bytes, &self.caps, most), what));
+        self.cases.push(Case::Starts(most, bytes));
+    }
+
     fn encode(&mut self, form: FormKind, bytes: Vec<u8>, what: String) {
         self.expected.push((form.answer(&bytes, &Caps::default(), &self.caps), what));
         self.cases.push(Case::Encode(form, bytes));
@@ -150,6 +155,43 @@ fn generated_values_encode_alike() {
     }
     let tally = run.check(&oracle);
     eprintln!("generated values: {} refused, {} taken by both", tally[0], tally[1]);
+}
+
+/// The command starts both encoders note: every sample list and generated list, and their mutations, under the default,
+/// tight and one-command caps, with the bytes given at the list's own length, a byte less, below its head and none.
+#[test]
+fn command_starts_alike() {
+    let Some(oracle) = oracle() else { return };
+    let mut random = Lcg::new(0x6e6e_0003);
+    let mut lists: Vec<(String, Vec<u8>)> = Vec::new();
+    for (form, name, bytes) in encoded_samples(&Caps::default()) {
+        if form == FormKind::List {
+            lists.push((name.to_string(), bytes));
+        }
+    }
+    for i in 0..1500 {
+        let mut bytes = Vec::new();
+        assert!(encode_list(&any_list(&mut random), &Caps::default(), &mut bytes));
+        let mut changed = bytes.clone();
+        mutate(&mut random, &mut changed);
+        lists.push((format!("generated {i}"), bytes));
+        lists.push((format!("generated {i}, changed"), changed));
+    }
+    let mut run = Run::new();
+    let mut one = Caps::default();
+    one.commands = 1;
+    for caps in [Caps::default(), tight(), one] {
+        run.caps(caps);
+        for (name, bytes) in &lists {
+            let n = bytes.len() as u64;
+            for most in [u64::MAX, n, n.saturating_sub(1), n / 2, 6, 5, 0] {
+                run.starts(most, bytes.clone(), format!("{name} with its starts within {most} bytes"));
+            }
+        }
+    }
+    let tally = run.check(&oracle);
+    eprintln!("command starts: {} refused, {} noted by both, {} encodes refused", tally[0], tally[1], tally[2]);
+    assert!(tally[0] > 0 && tally[1] > 0);
 }
 
 /// Encoders refuse alike: values decoded under the default caps, encoded under each tight cap alone.

@@ -54,6 +54,25 @@ template <class T> void run(std::string_view bytes, const wire::Caps& decode_cap
     answer(1, out);
 }
 
+// 's': a u64 `most` before the length; the list decoded under the set caps is encoded after "xy" with its starts within `most`, answering those bytes, a u32 count and each start as a u64.
+void run_starts(std::string_view bytes, const wire::Caps& caps, uint64_t most) {
+    DisplayList value;
+    if (!wire::decode(bytes, caps, value)) return answer(0, {});
+    std::string out = "xy";
+    std::vector<size_t> starts{7, 8, 9};
+    if (!wire::encode(value, caps, out, starts, size_t(most))) {
+        out += std::to_string(starts.size());
+        return answer(2, out);
+    }
+    const uint32_t n = uint32_t(starts.size());
+    out.append(reinterpret_cast<const char*>(&n), 4);
+    for (size_t s : starts) {
+        const uint64_t v = s;
+        out.append(reinterpret_cast<const char*>(&v), 8);
+    }
+    answer(1, out);
+}
+
 void run_metrics(std::string_view bytes) {
     FontMetrics value;
     if (!wire::decode(bytes, value)) return answer(0, {});
@@ -89,11 +108,14 @@ int main() {
             caps.rects = size_t(v[9]);
             continue;
         }
+        uint64_t most = 0;
+        if (op == 's' && !read_u64(most)) return 2;
         uint32_t n = 0;
         if (!read_u32(n)) return 2;
         bytes.resize(n);
         if (!read_exact(bytes.data(), n)) return 2;
         switch (op) {
+        case 's': run_starts(bytes, caps, most); break;
         case 'l': run<DisplayList>(bytes, caps, caps); break;
         case 'd': run<wire::Damage>(bytes, caps, caps); break;
         case 'b': run<std::vector<CanvasOp>>(bytes, caps, caps); break;

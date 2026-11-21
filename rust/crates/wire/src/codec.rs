@@ -175,6 +175,8 @@ const COMMAND_BYTES: usize = 5;
 const CANVAS_OP_BYTES: usize = 9;
 const CLIP_BYTES: usize = 9;
 const RECT_BYTES: usize = 16;
+/// A list's form, version and command count.
+const LIST_HEAD_BYTES: usize = 2 + 4;
 
 // Version 1's defaults, written out rather than taken from the structs, so that old bytes keep their meaning.
 const ZERO_RECT: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
@@ -1313,15 +1315,53 @@ fn read_op(r: &mut Reader, caps: &Caps, clips: &mut ReadPayloads<Clips>, pixels:
 /// to its size on entry, for what the decoder would refuse under `caps`: a count or a length past its
 /// cap or u32::MAX.
 pub fn encode_list(list: &[Command], caps: &Caps, out: &mut Vec<u8>) -> bool {
-    appended(out, |w| {
-        w.head(Form::List);
-        if !w.count(list.len(), caps.commands) {
+    appended(out, |w| write_list(w, caps, list, None, usize::MAX))
+}
+
+/// Writes a list, noting in `starts`, when given, where each command starts and where the list ends, from the list's
+/// first byte, until one of them passes `most`: then `starts` is left empty, its room given back.
+fn write_list(w: &mut Writer, caps: &Caps, list: &[Command], mut starts: Option<&mut Vec<usize>>, most: usize) -> bool {
+    let origin = w.out.len();
+    let mut note = |w: &Writer| {
+        let Some(s) = starts.as_deref_mut() else { return };
+        let at = w.out.len() - origin;
+        if at <= most {
+            s.push(at);
+            return;
+        }
+        *s = Vec::new();
+        starts = None;
+    };
+    w.head(Form::List);
+    if !w.count(list.len(), caps.commands) {
+        return false;
+    }
+    let mut paths = WrittenPayloads::new();
+    let mut filters = WrittenPayloads::new();
+    for c in list {
+        note(w);
+        if !write_command(w, caps, &mut paths, &mut filters, c) {
             return false;
         }
-        let mut paths = WrittenPayloads::new();
-        let mut filters = WrittenPayloads::new();
-        list.iter().all(|c| write_command(w, caps, &mut paths, &mut filters, c))
-    })
+    }
+    note(w);
+    true
+}
+
+/// As [`encode_list`], and replaces `starts` with where each command starts and, last, where the list ends, counted
+/// from the list's first byte whatever `out` held before, while the list keeps within `most` bytes: for a longer one
+/// `starts` is left empty. `starts` untouched on false.
+pub fn encode_list_with_starts(list: &[Command], caps: &Caps, out: &mut Vec<u8>, starts: &mut Vec<usize>, most: usize) -> bool {
+    let mut at = Vec::new();
+    let may_fit = most >= LIST_HEAD_BYTES && list.len() <= (most - LIST_HEAD_BYTES) / COMMAND_BYTES;
+    if may_fit && list.len() <= caps.commands {
+        at.reserve(list.len() + 1);
+    }
+    if !appended(out, |w| write_list(w, caps, list, if may_fit { Some(&mut at) } else { None }, most)) {
+        return false;
+    }
+    *starts = at;
+    true
 }
 
 /// The one list all of `bytes` hold, an absent member at its version-1 default; None for anything else.

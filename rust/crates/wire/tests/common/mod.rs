@@ -1427,6 +1427,24 @@ pub enum Case {
     Same(FormKind, Vec<u8>),
     /// Decode under the default caps, encode under the set ones.
     Encode(FormKind, Vec<u8>),
+    /// A list decoded under the set caps and encoded after "xy" with its command starts within `most`.
+    Starts(u64, Vec<u8>),
+}
+
+/// What the oracle answers for a `Starts` case: the bytes written after "xy", the starts' count and each start.
+pub fn starts_answer(bytes: &[u8], caps: &Caps, most: u64) -> (u8, Vec<u8>) {
+    let Some(list) = decode_list(bytes, caps) else { return (0, Vec::new()) };
+    let mut out = b"xy".to_vec();
+    let mut starts = vec![7, 8, 9];
+    if !encode_list_with_starts(&list, caps, &mut out, &mut starts, most as usize) {
+        out.extend_from_slice(starts.len().to_string().as_bytes());
+        return (2, out);
+    }
+    out.extend_from_slice(&(starts.len() as u32).to_le_bytes());
+    for s in starts {
+        out.extend_from_slice(&(s as u64).to_le_bytes());
+    }
+    (1, out)
 }
 
 pub struct Oracle {
@@ -1458,6 +1476,13 @@ impl Oracle {
                 }
                 Case::Encode(form, bytes) => {
                     input.extend(twidget_testkit::framed(form.letter().to_ascii_uppercase(), bytes));
+                    expected += 1;
+                }
+                Case::Starts(most, bytes) => {
+                    input.push(b's');
+                    input.extend_from_slice(&most.to_le_bytes());
+                    input.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                    input.extend_from_slice(bytes);
                     expected += 1;
                 }
             }

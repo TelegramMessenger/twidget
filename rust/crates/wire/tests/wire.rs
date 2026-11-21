@@ -769,3 +769,81 @@ fn affine_and_em_box() {
     assert!(!set_em_box(&mut fm, -1.0, 2.0, 16.0));
     assert!(!set_em_box(&mut fm, 0.0, 0.0, 16.0));
 }
+
+/// The starts an encoder notes are where each command begins in what it wrote, counted from the list's first byte after
+/// a prefix too: the first commands alone encode to the same bytes up to the next start, shared payloads and references
+/// back to them included; a refusal leaves the bytes and the starts as they were (wire_tests.cpp's `command_starts`;
+/// its refusal of an unknown kind has no Rust counterpart, a Rust enum cannot hold one).
+#[test]
+fn command_starts() {
+    const EARLIER: &[u8] = b"earlier bytes";
+    let path = full_path(3.0);
+    let repeated: DisplayList = (0..6)
+        .map(|i| Command {
+            kind: if i % 3 != 0 { Cmd::Path } else { Cmd::FillRect },
+            rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+            path: (i % 3 != 0).then(|| Arc::clone(&path)),
+            ..Command::default()
+        })
+        .collect();
+    let mut all: Vec<(String, DisplayList)> = vec![("the same commands again, sharing a path".into(), repeated)];
+    for s in list_samples() {
+        all.push((s.name.to_string(), s.value));
+    }
+    let caps = Caps::default();
+    for (name, list) in &all {
+        let what = format!("list {name}");
+        let mut plain = Vec::new();
+        assert!(encode_list(list, &caps, &mut plain), "{what}: encodes");
+        for before in [&b""[..], EARLIER] {
+            let place = if before.is_empty() { "" } else { " after a prefix" };
+            let mut out = before.to_vec();
+            let mut starts = vec![99];
+            let ok = encode_list_with_starts(list, &caps, &mut out, &mut starts, usize::MAX);
+            assert!(ok && out == [before, &plain].concat(), "{what}: writes the same bytes{place}");
+            assert!(
+                starts.len() == list.len() + 1 && starts[0] == 6 && *starts.last().unwrap() == plain.len(),
+                "{what}: a start for each command, the first after the list's head, and the list's end{place}"
+            );
+            for i in 0..list.len() {
+                let mut first = Vec::new();
+                assert!(encode_list(&list[..i + 1], &caps, &mut first));
+                assert!(
+                    starts[i + 1] == first.len() && plain[starts[i]..starts[i + 1]] == first[starts[i]..],
+                    "{what}: command {i} lies between its starts as the first commands alone encode it{place}"
+                );
+            }
+            let (mut within, mut past, mut head) = (vec![99], vec![99], vec![99]);
+            let (mut at_most, mut short_by_one, mut headless) = (before.to_vec(), before.to_vec(), before.to_vec());
+            assert!(
+                encode_list_with_starts(list, &caps, &mut at_most, &mut within, plain.len())
+                    && at_most == [before, &plain].concat()
+                    && within == starts,
+                "{what}: a list as long as the bytes given keeps its starts{place}"
+            );
+            assert!(
+                encode_list_with_starts(list, &caps, &mut short_by_one, &mut past, plain.len() - 1)
+                    && short_by_one == [before, &plain].concat()
+                    && past.is_empty(),
+                "{what}: a list a byte longer is written the same with no starts{place}"
+            );
+            assert!(
+                encode_list_with_starts(list, &caps, &mut headless, &mut head, 5)
+                    && headless == [before, &plain].concat()
+                    && head.is_empty(),
+                "{what}: so is any list given fewer bytes than its head{place}"
+            );
+        }
+    }
+    let mut one = Caps::default();
+    one.commands = 1;
+    let sentinel = vec![7, 8];
+    let mut out = EARLIER.to_vec();
+    let mut starts = sentinel.clone();
+    assert!(
+        !encode_list_with_starts(&vec![Command::default(); 2], &one, &mut out, &mut starts, usize::MAX)
+            && out == EARLIER
+            && starts == sentinel,
+        "a list past its command cap is refused, the bytes and the starts kept"
+    );
+}

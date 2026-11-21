@@ -10,6 +10,6 @@ mod values;
 
 pub use codec::{
     Caps, Damage, Form, VERSION, decode_batch, decode_damage, decode_list, decode_metrics, encode_batch, encode_damage, encode_list,
-    encode_metrics, version_1_command, version_1_op, version_1_paint, version_1_path,
+    encode_list_with_starts, encode_metrics, version_1_command, version_1_op, version_1_paint, version_1_path,
 };
 pub use values::*;

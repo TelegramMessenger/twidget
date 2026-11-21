@@ -27,7 +27,9 @@ pub fn answer(message: &[u8], decode_caps: &Caps, encode_caps: &Caps) -> (u8, Ve
     let (d, e) = (decode_caps, encode_caps);
     match Kind::from_u8(*first) {
         None => (0, Vec::new()),
-        Some(Kind::PixelsAnswer) => (3, Vec::new()),
+        Some(Kind::PixelsAnswer) | Some(Kind::WidthsAnswer) => (3, Vec::new()),
+        Some(Kind::FrameDelta) => again::<FrameDelta>(message, d, e),
+        Some(Kind::WidthsRequest) => again::<WidthsRequest>(message, d, e),
         Some(Kind::FrameRequest) => again::<FrameRequest>(message, d, e),
         Some(Kind::SetWidth) => again::<SetWidth>(message, d, e),
         Some(Kind::SetMaxHeight) => again::<SetMaxHeight>(message, d, e),
@@ -83,10 +85,127 @@ pub fn caps_record(caps: &Caps) -> Vec<u8> {
         caps.text,
         caps.url,
         caps.messages,
+        caps.widths,
+        caps.widths_text,
+        caps.frame,
+        caps.delta_base,
     ] {
         out.extend_from_slice(&(x as u64).to_le_bytes());
     }
     out
+}
+
+fn put_texts(out: &mut Vec<u8>, texts: &[TextInFont]) {
+    out.extend_from_slice(&(texts.len() as u32).to_le_bytes());
+    for t in texts {
+        out.extend_from_slice(&t.font.to_le_bytes());
+        out.extend_from_slice(&(t.text.len() as u32).to_le_bytes());
+        out.extend_from_slice(&t.text);
+    }
+}
+
+fn framed_after(mut head: Vec<u8>, message: &[u8]) -> Vec<u8> {
+    head.extend_from_slice(&(message.len() as u32).to_le_bytes());
+    head.extend_from_slice(message);
+    head
+}
+
+/// The oracle's 'y' (or 'Y') record: a WidthsAnswer and the request it answers.
+pub fn widths_record(tag: u8, asked: &WidthsRequest, message: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    put_texts(&mut out, &asked.texts);
+    framed_after(out, message)
+}
+
+/// What the oracle answers for 'y' (and 'Y').
+pub fn answer_widths(message: &[u8], asked: &WidthsRequest, decode_caps: &Caps, encode_caps: &Caps) -> (u8, Vec<u8>) {
+    let Some(value) = WidthsAnswer::decode(message, decode_caps, asked) else {
+        return (0, Vec::new());
+    };
+    let mut out = Vec::new();
+    if value.encode(encode_caps, &mut out) { (1, out) } else { (2, Vec::new()) }
+}
+
+pub fn placed_record(most: u64, message: &[u8]) -> Vec<u8> {
+    let mut out = vec![b'p'];
+    out.extend_from_slice(&most.to_le_bytes());
+    framed_after(out, message)
+}
+
+/// What the oracle answers for 'p': the Frame encoded again after "xy" with its list's place.
+pub fn answer_placed(message: &[u8], caps: &Caps, most: u64) -> (u8, Vec<u8>) {
+    let Some(frame) = Frame::decode(message, caps) else { return (0, Vec::new()) };
+    let mut out = b"xy".to_vec();
+    let mut list = WrittenList { at: 1, size: 2, starts: vec![3] };
+    if !encode_frame_placed(&frame, caps, &mut out, most as usize, &mut list) {
+        out.extend_from_slice(format!("{},{},{}", list.at, list.size, list.starts.len()).as_bytes());
+        return (2, out);
+    }
+    out.extend_from_slice(&(list.at as u64).to_le_bytes());
+    out.extend_from_slice(&(list.size as u64).to_le_bytes());
+    out.extend_from_slice(&(list.starts.len() as u32).to_le_bytes());
+    for s in list.starts {
+        out.extend_from_slice(&(s as u64).to_le_bytes());
+    }
+    (1, out)
+}
+
+/// What the oracle answers for 'v': where the list's view lies in the message.
+pub fn answer_viewed(message: &[u8], caps: &Caps) -> (u8, Vec<u8>) {
+    let Some((_, list)) = decode_frame_viewed(message, caps) else { return (0, Vec::new()) };
+    let offset = if list.is_empty() { 0 } else { list.as_ptr() as usize - message.as_ptr() as usize };
+    let mut out = Vec::new();
+    out.extend_from_slice(&(offset as u64).to_le_bytes());
+    out.extend_from_slice(&(list.len() as u64).to_le_bytes());
+    (1, out)
+}
+
+/// What the oracle answers for 'i'.
+pub fn answer_ids(message: &[u8]) -> (u8, Vec<u8>) {
+    let Some((seq, base)) = delta_ids(message) else { return (0, Vec::new()) };
+    let mut out = Vec::new();
+    out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(&base.to_le_bytes());
+    (1, out)
+}
+
+pub fn rebuilt_record(base_seq: u64, base: &[u8], message: &[u8]) -> Vec<u8> {
+    let mut out = vec![b'r'];
+    out.extend_from_slice(&base_seq.to_le_bytes());
+    out.extend_from_slice(&(base.len() as u32).to_le_bytes());
+    out.extend_from_slice(base);
+    framed_after(out, message)
+}
+
+/// What the oracle answers for 'r': the rebuilt Frame's seq, state and damage, and the list's bytes.
+pub fn answer_rebuilt(message: &[u8], caps: &Caps, base_seq: u64, base: &[u8]) -> (u8, Vec<u8>) {
+    let Some((frame, list)) = rebuild(message, caps, base_seq, base) else { return (0, Vec::new()) };
+    let mut out = Vec::new();
+    out.extend_from_slice(&frame.seq.to_le_bytes());
+    out.extend_from_slice(&frame.state.width.to_bits().to_le_bytes());
+    out.extend_from_slice(&frame.state.height.to_le_bytes());
+    out.push(u8::from(frame.state.dirty));
+    out.push(u8::from(frame.state.wants_tick));
+    out.extend_from_slice(&frame.state.next_tick_in.to_bits().to_le_bytes());
+    out.push(u8::from(frame.state.frame_asked));
+    out.push(u8::from(frame.painted));
+    let mut damage = Vec::new();
+    wire::encode_damage(&frame.damage, &wire::Caps::default(), &mut damage);
+    out.extend_from_slice(&(damage.len() as u32).to_le_bytes());
+    out.extend_from_slice(&damage);
+    out.extend_from_slice(&list);
+    (1, out)
+}
+
+pub fn widths_in_request_record(texts: &[TextInFont], from: u32) -> Vec<u8> {
+    let mut out = vec![b'w'];
+    put_texts(&mut out, texts);
+    out.extend_from_slice(&from.to_le_bytes());
+    out
+}
+
+pub fn answer_widths_in_request(texts: &[TextInFont], from: u32, caps: &Caps) -> (u8, Vec<u8>) {
+    (1, (widths_in_request(texts, from as usize, caps) as u64).to_le_bytes().to_vec())
 }
 
 pub fn pixels_record(tag: u8, asked: &PixelsRequest, message: &[u8]) -> Vec<u8> {
@@ -227,7 +346,169 @@ pub fn samples() -> Vec<(String, Vec<u8>)> {
     add("an image request", encoded(&ImageRequest { id: 2, url: b"data:image/png;base64,AAAA".to_vec() }));
     add("a pixels request", encoded(&PixelsRequest { id: 1, x: -1, y: 2, w: 3, h: 4 }));
     add("the largest pixels request", encoded(&PixelsRequest { id: 1, x: 0, y: 0, w: 8192, h: 2048 }));
+    for (name, request) in widths_requests() {
+        add(&name, encoded(&request));
+    }
+    for (name, delta) in frame_deltas() {
+        add(&name, encoded(&delta));
+    }
     out
+}
+
+/// remote_tests.cpp's `ordinary_state()`.
+pub fn ordinary_state() -> State {
+    State { width: 320.5, height: 480, dirty: true, wants_tick: true, next_tick_in: 0.016, frame_asked: true }
+}
+
+/// remote_tests.cpp's `special_state()`: special doubles in both doubles.
+pub fn special_state() -> State {
+    State {
+        width: f64::from_bits(0x7ff0_0000_000a_bcde),
+        height: i32::MIN,
+        dirty: false,
+        wants_tick: true,
+        next_tick_in: f64::from_bits(0x7ff8_0000_0001_2345),
+        frame_asked: false,
+    }
+}
+
+pub fn text(font: i32, text: &[u8]) -> TextInFont {
+    TextInFont { font, text: text.to_vec() }
+}
+
+/// remote_tests.cpp's `widths_requests()`.
+pub fn widths_requests() -> Vec<(String, WidthsRequest)> {
+    let several = WidthsRequest { texts: vec![text(3, b"hello"), text(-1, b"\0\xff\n"), text(i32::MIN, b""), text(3, b"hello")] };
+    vec![
+        ("no widths request".into(), WidthsRequest::default()),
+        ("a widths request of one text".into(), WidthsRequest { texts: vec![text(7, b"word")] }),
+        ("a widths request repeated, empty and bytes".into(), several),
+        ("a widths request at the extremes".into(), WidthsRequest { texts: vec![text(i32::MAX, b" "), text(0, &[b'x'; 28])] }),
+    ]
+}
+
+/// remote_tests.cpp's `widths_answers()`, with the requests they answer.
+pub fn widths_answers() -> Vec<(String, WidthsAnswer, WidthsRequest)> {
+    let four = WidthsRequest { texts: vec![text(1, b"a"), text(1, b"bb"), text(2, b"a"), text(2, b"")] };
+    let specials: Vec<f32> = [0x7fc1_2345u32, 0xffc5_4321, 0x7f80_0abc, 0x8000_0000, 0x7f80_0000, 0xff80_0000, 0x0000_0003, 0x7f7f_ffff]
+        .iter()
+        .map(|&b| f32::from_bits(b))
+        .collect();
+    vec![
+        ("no widths".into(), WidthsAnswer::default(), WidthsRequest::default()),
+        ("one width".into(), WidthsAnswer { widths: vec![42.25] }, WidthsRequest { texts: vec![text(3, b"word")] }),
+        ("special widths".into(), WidthsAnswer { widths: specials[..4].to_vec() }, four.clone()),
+        ("more special widths".into(), WidthsAnswer { widths: specials[4..].to_vec() }, four.clone()),
+        ("ordinary widths".into(), WidthsAnswer { widths: vec![8.0, 0.0, 16.5, 1e-3] }, four),
+    ]
+}
+
+/// remote_tests.cpp's `frame_deltas()`: within its tight caps, each no shorter than the Frame it stands for.
+pub fn frame_deltas() -> Vec<(String, FrameDelta)> {
+    let literal = FrameDelta {
+        seq: 10,
+        state: ordinary_state(),
+        base: 9,
+        runs: vec![DeltaRun { offset: 0, length: 0, literal: b"\x01\x01\0\0\0\0".to_vec() }],
+        damage: None,
+    };
+    let mixed = FrameDelta {
+        seq: u64::MAX,
+        state: special_state(),
+        base: u64::MAX - 1,
+        runs: vec![
+            DeltaRun { offset: 0, length: 6, literal: Vec::new() },
+            DeltaRun { offset: 0, length: 0, literal: b"abc".to_vec() },
+            DeltaRun { offset: 55, length: 9, literal: Vec::new() },
+            DeltaRun { offset: 0, length: 0, literal: b"\0\xff".to_vec() },
+        ],
+        damage: Some(vec![Rect::new(1.0, 2.0, 3.0, 4.0), Rect::new(0.0, 0.0, f32::from_bits(0x7fc1_2345), 0.0)]),
+    };
+    let still = FrameDelta {
+        seq: 1,
+        state: State::default(),
+        base: 0,
+        runs: vec![DeltaRun { offset: 3, length: 1, literal: Vec::new() }],
+        damage: Some(Vec::new()),
+    };
+    vec![
+        ("a frame delta of one literal".into(), literal),
+        ("a frame delta of copies and literals".into(), mixed),
+        ("a frame delta of one byte copied".into(), still),
+    ]
+}
+
+/// remote_tests.cpp's `ends_alike`: runs that rebuild `list` from `base` without looking at commands: a copy of the
+/// bytes they begin with alike, the rest of `list` as it is, then a copy of the bytes they end with alike.
+pub fn ends_alike(base: &[u8], list: &[u8]) -> Vec<DeltaRun> {
+    let (mut head, mut tail) = (0, 0);
+    while head < base.len() && head < list.len() && base[head] == list[head] {
+        head += 1;
+    }
+    while tail < base.len() - head && tail < list.len() - head && base[base.len() - 1 - tail] == list[list.len() - 1 - tail] {
+        tail += 1;
+    }
+    let mut runs = Vec::new();
+    if head > 0 {
+        runs.push(DeltaRun { offset: 0, length: head as u32, literal: Vec::new() });
+    }
+    if list.len() > head + tail {
+        runs.push(DeltaRun { offset: 0, length: 0, literal: list[head..list.len() - tail].to_vec() });
+    }
+    if tail > 0 {
+        runs.push(DeltaRun { offset: (base.len() - tail) as u32, length: tail as u32, literal: Vec::new() });
+    }
+    runs
+}
+
+pub fn list_bytes(list: &DisplayList) -> Vec<u8> {
+    let mut out = Vec::new();
+    assert!(wire::encode_list(list, &wire::Caps::default(), &mut out), "a list the checks build encodes");
+    out
+}
+
+/// remote_tests.cpp's `compact_list()`, member for member: five commands, two of them sharing a path, one with a
+/// filter.
+pub fn cpp_compact_list() -> DisplayList {
+    let path = Arc::new(Path {
+        ops: vec![PathOp::Move, PathOp::Line, PathOp::Close],
+        points: vec![0.0, 0.0, 10.0, 0.0],
+        fill: true,
+        ..Path::default()
+    });
+    let filter = Arc::new(vec![twidget_wire::Filter { kind: twidget_wire::FilterKind::Blur, amount: 2.5, ..Default::default() }]);
+    let mut list = vec![Command::default(); 5];
+    list[0].rect = Rect::new(f32::from_bits(0x7f80_0abc), 2.0, 30.0, 40.0);
+    list[0].color = Color::rgba(10, 20, 30, 255);
+    list[0].key = 7;
+    list[1].kind = Cmd::Text;
+    list[1].text = b"hello".to_vec();
+    list[1].font = 3;
+    list[1].x = 1.5;
+    list[1].y = 12.0;
+    list[2].kind = Cmd::Path;
+    list[2].path = Some(Arc::clone(&path));
+    list[3].kind = Cmd::Path;
+    list[3].path = Some(path);
+    list[3].opacity = 0.5;
+    list[4].kind = Cmd::FilterPush;
+    list[4].filter = Some(filter);
+    list[4].rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+    list
+}
+
+/// remote_tests.cpp's `moved_list()`: its compact list with one member changed.
+pub fn moved_list() -> DisplayList {
+    let mut list = cpp_compact_list();
+    list[1].x = 9.5;
+    list
+}
+
+/// remote_tests.cpp's `third_list()`.
+pub fn third_list() -> DisplayList {
+    let mut list = moved_list();
+    list.push(list[3].clone());
+    list
 }
 
 fn any_f64(random: &mut Lcg) -> f64 {
@@ -301,7 +582,35 @@ pub fn any_message(random: &mut Lcg) -> Vec<u8> {
             Kind::ImageAnswer => {
                 encoded(&ImageAnswer { ok: random.chance(2), w: f32::from_bits(random.next()), h: f32::from_bits(random.next()) })
             }
-            Kind::PixelsAnswer => continue,
+            Kind::PixelsAnswer | Kind::WidthsAnswer => continue,
+            Kind::WidthsRequest => {
+                let n = random.below(5);
+                encoded(&WidthsRequest {
+                    texts: (0..n).map(|_| TextInFont { font: any_i32(random), text: any_bytes(random, 12) }).collect(),
+                })
+            }
+            Kind::FrameDelta => {
+                let n = 1 + random.below(4);
+                let runs = (0..n)
+                    .map(|_| {
+                        if random.chance(2) {
+                            DeltaRun { offset: random.below(300) as u32, length: 1 + random.below(50) as u32, literal: Vec::new() }
+                        } else {
+                            let mut literal = any_bytes(random, 12);
+                            literal.push(random.next() as u8);
+                            DeltaRun { offset: 0, length: 0, literal }
+                        }
+                    })
+                    .collect();
+                let damage = if random.chance(2) { Some(vec![Rect::new(0.0, 0.0, any_f64(random) as f32, 1.0)]) } else { None };
+                encoded(&FrameDelta {
+                    seq: u64::from(random.next()),
+                    state: any_state(random),
+                    base: u64::from(random.next()),
+                    runs,
+                    damage,
+                })
+            }
             Kind::Frame => {
                 let painted = random.chance(2);
                 let list = if painted && random.chance(2) { compact_list() } else { Vec::new() };
