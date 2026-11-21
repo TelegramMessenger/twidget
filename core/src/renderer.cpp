@@ -2548,7 +2548,8 @@ private:
 #endif
     size_t built_fonts_ = 0;
     litehtml::uint_ptr next_font_ = 0;
-    std::unordered_map<std::string, Image> images_;
+    /// By source, in the sources' order: image_ready takes the first image of an id, and id 0 repeats.
+    std::map<std::string, Image> images_;
     int next_image_ = 0;
     size_t image_sources_ = 0, image_bytes_ = 0;
     bool images_full_ = false;
