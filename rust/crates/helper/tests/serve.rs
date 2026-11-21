@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use twidget_helper::serve;
+use twidget_helper::{SteadyMicros, serve};
 use twidget_stream::Stream;
 
 struct Ended;
@@ -35,9 +35,9 @@ impl twidget_js::Platform for Os {
 
 #[test]
 fn an_ended_stream_ends_the_serving() {
-    for tapped in [false, true] {
+    for tap in [None, Some(Arc::new(|| 7_i64) as SteadyMicros)] {
         let lockdown = || -> Vec<u8> { panic!("no lockdown before an opening") };
-        let reason = serve(Arc::new(Ended), b"1", Some(&lockdown), Arc::new(Os), tapped);
+        let reason = serve(Arc::new(Ended), b"1", Some(&lockdown), Arc::new(Os), tap);
         assert!(reason.is_empty(), "the host's end: {}", String::from_utf8_lossy(&reason));
     }
 }

@@ -1,7 +1,8 @@
 //! tdesktop's `_other/widget_helper_renderer.cpp`: how the helper serves its stream, widget-sandbox's hosting served
 //! with this crate's glue as every hosted widget's renderer, through the Debug tap when the helper is a Debug one. With
 //! it the helper's hosting is Rust from the stream's bytes to the platform's: the OS glue (entry, channel adoption,
-//! lockdown) gives [`serve`] the stream, the OS's clocks and randomness, and the lockdown to run before `Ready`.
+//! lockdown) gives [`serve`] the stream, the OS's clocks and randomness, the tap's clock in a Debug helper, and the
+//! lockdown to run before `Ready`.
 
 use std::sync::Arc;
 
@@ -57,31 +58,33 @@ impl twidget_host::Renderer for Served {
 }
 
 /// The hosted renderers' factory (`WidgetHelper::Serve`'s): each widget's glue on its platform, through the tap when
-/// `tapped` (a Debug helper), on litehtml's state of the process and the engine platform's steady clock.
-pub fn hosted_renderers(platform: Arc<dyn EnginePlatform>, tapped: bool) -> HostedRendererFactory {
-    let clock = Arc::clone(&platform);
-    let options = HostedOptions { process: Arc::new(Process::default()), clock: Arc::new(move || clock.steady_seconds() * 1000.0) };
-    let micros: SteadyMicros = Arc::new(move || (platform.steady_seconds() * 1_000_000.0) as i64);
+/// it has the tap's clock (a Debug helper: test_widget_helper_tap.cpp's `SteadyMicros`, the OS glue's), on litehtml's
+/// state of the process and the engine platform's steady clock.
+pub fn hosted_renderers(platform: Arc<dyn EnginePlatform>, tap: Option<SteadyMicros>) -> HostedRendererFactory {
+    let options = HostedOptions { process: Arc::new(Process::default()), clock: Arc::new(move || platform.steady_seconds() * 1000.0) };
     Arc::new(move |_resources: Arc<SandboxResources>, scheme: &[u8], width: f64, hosted: Arc<HostedPlatform>| {
         let build = |given: Option<Arc<dyn Platform>>| make_hosted_renderer(scheme, width, given, &options);
         let given: Option<Arc<dyn Platform>> = Some(hosted);
-        let renderer =
-            if tapped { tap_helper_renderer(given, scheme, Arc::clone(&micros), &build) } else { untapped_helper_renderer(given, &build) };
+        let renderer = match &tap {
+            Some(micros) => tap_helper_renderer(given, scheme, Arc::clone(micros), &build),
+            None => untapped_helper_renderer(given, &build),
+        };
         Ok(renderer.map(|r| Box::new(Served(r)) as Box<dyn twidget_host::Renderer>))
     })
 }
 
 /// `WidgetHelper::Serve`: the stream served until it ends, on the calling thread; why it ended (empty when it ended
 /// as it should). `build` is the stamp's build, `lockdown` runs once the opening was accepted and says why it could
-/// not lock the process down (empty when it did), `platform` answers what only the OS does.
+/// not lock the process down (empty when it did), `platform` answers what only the OS does, and `tap` is the tap's
+/// clock in a Debug helper, whose renderers are tapped, None in a Release one.
 pub fn serve(
     stream: Arc<dyn Stream>,
     build: &[u8],
     lockdown: Option<&dyn Fn() -> Vec<u8>>,
     platform: Arc<dyn EnginePlatform>,
-    tapped: bool,
+    tap: Option<SteadyMicros>,
 ) -> Vec<u8> {
     prepare_hosted_renderers();
-    let renderers = hosted_renderers(Arc::clone(&platform), tapped);
+    let renderers = hosted_renderers(Arc::clone(&platform), tap);
     twidget_host::serve_hosting(stream, build, lockdown, platform, Some(renderers))
 }
