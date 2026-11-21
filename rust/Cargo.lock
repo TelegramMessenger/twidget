@@ -605,6 +605,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "twidget_replay"
+version = "0.1.0"
+dependencies = [
+ "twidget_document",
+ "twidget_ends",
+ "twidget_json",
+ "twidget_remote",
+ "twidget_renderer",
+ "twidget_wire",
+]
+
+[[package]]
 name = "twidget_sdk_policy"
 version = "0.1.0"
 dependencies = [

@@ -3,6 +3,9 @@
 with the comparison against it required, clippy with warnings as errors, rustfmt, and the `unsafe`
 report. Run `python -I tools/gate.py` from anywhere; cargo and cmake come from PATH (on the Telegram
 machines RUSTUP_HOME and CARGO_HOME point at ThirdParty/rust). --release also runs the tests optimized.
+--corpus [DIR] also replays every recording under DIR (TWIDGET_RECORDINGS; by default
+twidget/build-record/recordings, where tools/record/record_corpus.py records the corpus) through the Rust
+renderer end; without it the replay takes the committed recordings alone.
 """
 
 import os
@@ -11,6 +14,7 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RECORDINGS = os.path.join(os.path.dirname(ROOT), "build-record", "recordings")
 ORACLE = os.path.join(ROOT, "oracle")
 BUILD = os.path.join(ORACLE, "build")
 
@@ -52,6 +56,13 @@ def main():
         print("GATE FAIL: the oracle built, but no program is where the tests look")
         return 1
     env = dict(os.environ, TWIDGET_ORACLE_DIR=directory, TWIDGET_ORACLE_REQUIRED="1")
+    if "--corpus" in sys.argv:
+        at = sys.argv.index("--corpus")
+        recordings = sys.argv[at + 1] if at + 1 < len(sys.argv) and not sys.argv[at + 1].startswith("--") else RECORDINGS
+        if not os.path.isdir(recordings):
+            print(f"GATE FAIL: --corpus names {recordings}, which is no directory (tools/record/record_corpus.py records there)")
+            return 1
+        env["TWIDGET_RECORDINGS"] = os.path.abspath(recordings)
     checks = [
         # This workspace's packages: --all would walk widget-sandbox's workspace too, which its own gate checks.
         ("fmt", ["cargo", "fmt", "--check"], None),

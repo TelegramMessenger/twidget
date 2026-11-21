@@ -130,13 +130,26 @@ pub fn metrics_for(size: f32, weight: i32, italic: bool) -> FontMetrics {
     m
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct LogBackend {
     pub images_load: bool,
     pub reads: Read,
+    /// The Backend that answers in its place, every call logged with what it gave (log_backend.h's `answers`).
+    pub answers: Option<Box<dyn Backend>>,
     pub calls: Vec<Call>,
     next_font: i32,
     sizes: BTreeMap<i32, f32>,
+}
+
+impl std::fmt::Debug for LogBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogBackend")
+            .field("images_load", &self.images_load)
+            .field("reads", &self.reads)
+            .field("answers", &self.answers.is_some())
+            .field("calls", &self.calls.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl LogBackend {
@@ -155,11 +168,21 @@ impl LogBackend {
             metrics_in: *out,
             ..Call::default()
         };
-        *out = metrics_for(size, weight, italic);
-        self.next_font += 1;
-        c.font = self.next_font;
+        if let Some(answers) = self.answers.as_mut() {
+            c.font = if op == Op::CanvasFont {
+                answers.create_canvas_font(families, size, weight, italic, out)
+            } else {
+                answers.create_font(families, size, weight, italic, features, out)
+            };
+        } else {
+            *out = metrics_for(size, weight, italic);
+            self.next_font += 1;
+            c.font = self.next_font;
+        }
         c.metrics = *out;
-        self.sizes.insert(c.font, size);
+        if c.font != 0 {
+            self.sizes.insert(c.font, size);
+        }
         let font = c.font;
         self.calls.push(c);
         font
@@ -190,31 +213,53 @@ impl Backend for LogBackend {
     fn delete_font(&mut self, font: i32) {
         self.sizes.remove(&font);
         self.calls.push(Call { op: Op::DeleteFont, font, ..Call::default() });
+        if let Some(answers) = self.answers.as_mut() {
+            answers.delete_font(font);
+        }
     }
 
     fn text_width(&mut self, font: i32, text: &[u8]) -> f32 {
-        let width = self.sizes.get(&font).map_or(0.0, |size| size * 0.5 * text.len() as f32);
+        let width = match self.answers.as_mut() {
+            Some(answers) => answers.text_width(font, text),
+            None => self.sizes.get(&font).map_or(0.0, |size| size * 0.5 * text.len() as f32),
+        };
         self.calls.push(Call { op: Op::TextWidth, font, text: text.to_vec(), width, ..Call::default() });
         width
     }
 
     fn load_image(&mut self, id: i32, url: &[u8], w: &mut f32, h: &mut f32) -> bool {
-        let mut c = Call { op: Op::Image, id, url: url.to_vec(), w_in: *w, h_in: *h, ok: self.images_load, ..Call::default() };
-        *w = if self.images_load { (8 + url.len() % 32) as f32 } else { 2.0 };
-        *h = if self.images_load { (4 + url.len() % 16) as f32 } else { 3.0 };
+        let mut c = Call { op: Op::Image, id, url: url.to_vec(), w_in: *w, h_in: *h, ..Call::default() };
+        if let Some(answers) = self.answers.as_mut() {
+            c.ok = answers.load_image(id, url, w, h);
+        } else {
+            c.ok = self.images_load;
+            *w = if self.images_load { (8 + url.len() % 32) as f32 } else { 2.0 };
+            *h = if self.images_load { (4 + url.len() % 16) as f32 } else { 3.0 };
+        }
         c.image_w = *w;
         c.image_h = *h;
+        let ok = c.ok;
         self.calls.push(c);
-        self.images_load
+        ok
     }
 
     fn canvas_run(&mut self, id: i32, w: i32, h: i32, ops: &[CanvasOp]) {
         self.calls.push(Call { op: Op::CanvasRun, id, w, h, ops: ops.to_vec(), ..Call::default() });
+        if let Some(answers) = self.answers.as_mut() {
+            answers.canvas_run(id, w, h, ops);
+        }
     }
 
     fn canvas_read(&mut self, id: i32, x: i32, y: i32, w: i32, h: i32, rgba: &mut Vec<u8>) -> bool {
         let mut c = Call { op: Op::CanvasRead, id, x, y, w, h, rgba_in: rgba.len(), ..Call::default() };
         let bytes = w.max(0) as usize * h.max(0) as usize * 4;
+        if let Some(answers) = self.answers.as_mut() {
+            c.ok = answers.canvas_read(id, x, y, w, h, rgba);
+            c.rgba = rgba.clone();
+            let ok = c.ok;
+            self.calls.push(c);
+            return ok;
+        }
         c.ok = self.reads != Read::Unsupported;
         match self.reads {
             Read::Pixels => {
@@ -238,6 +283,9 @@ impl Backend for LogBackend {
 
     fn canvas_release(&mut self, id: i32) {
         self.calls.push(Call { op: Op::CanvasRelease, id, ..Call::default() });
+        if let Some(answers) = self.answers.as_mut() {
+            answers.canvas_release(id);
+        }
     }
 }
 
