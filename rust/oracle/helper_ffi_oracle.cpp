@@ -435,7 +435,8 @@ public:
             const auto lock = std::lock_guard(_mutex);
             if (!_frameSeq.contains(runtime)) return true;
         }
-        return probe(runtime, "(document.body && document.body.getBoundingClientRect(),1)").has_value();
+        return probe(runtime, "(document.body && document.body.getBoundingClientRect(),1)").has_value()
+            && barrier(runtime);
     }
 
     bool waitForFrame(uint32_t runtime, uint64_t seq) {
