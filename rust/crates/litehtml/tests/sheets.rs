@@ -389,6 +389,27 @@ fn declarations_keep_their_parts() {
     assert_eq!(rules.iter().map(|r| r.ty).collect::<Vec<_>>(), [RuleType::at, RuleType::qualified]);
 }
 
+#[test]
+fn declaration_boundaries_preserve_nested_values_and_recovery() {
+    use twidget_litehtml::css_parser::CssParser;
+
+    let tokens = normalize(b"missing (ignored;here); a:f(first;second); b:{x;y} !important", 0, None);
+    let mut decls = Vec::new();
+    CssParser::new(tokens).consume_style_block_contents(&mut decls, &mut Vec::new());
+    assert_eq!(decls.len(), 2);
+    assert_eq!(decls[0].name, b"a");
+    assert_eq!(get_repr(&decls[0].value, 0, -1, false), b"f(first;second)");
+    assert_eq!(decls[1].name, b"b");
+    assert_eq!(get_repr(&decls[1].value, 0, -1, false), b"{x;y}");
+    assert!(decls[1].important);
+
+    let mut parser = CssParser::new(normalize(b"missing a:b;c:d", 0, None));
+    assert!(!parser.consume_declaration().is_some());
+    let decl = parser.consume_declaration();
+    assert_eq!(decl.name, b"a");
+    assert_eq!(get_repr(&decl.value, 0, -1, false), b"b;c:d");
+}
+
 fn media(text: &str) -> twidget_litehtml::media_query::MediaQueryList {
     let lh = Lh::new();
     let sheets = Sheets { lh: &lh, container: TestContainer, mode: Default::default() };

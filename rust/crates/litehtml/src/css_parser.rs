@@ -306,6 +306,10 @@ impl CssParser {
     /// value with `!important` taken off and the whitespace of both ends (the leading one too, unlike the
     /// standard); a declaration without a name (as the C++ returns `{}`) when no `:` follows the name.
     pub fn consume_declaration(&mut self) -> RawDeclaration {
+        self.consume_declaration_until(EOF)
+    }
+
+    fn consume_declaration_until(&mut self, end: i32) -> RawDeclaration {
         let token = self.next_token();
         let mut decl = RawDeclaration { name: token.str, value: Vec::new(), important: false };
 
@@ -326,9 +330,12 @@ impl CssParser {
         }
 
         // 4. Component values to the end.
-        while self.peek_type() != EOF {
-            let value = self.consume_component_value();
-            decl.value.push(value);
+        loop {
+            let next = self.peek_type();
+            if next == EOF || next == end {
+                break;
+            }
+            decl.value.push(self.consume_component_value());
         }
 
         // 5. `!` `important` at the end.
@@ -363,16 +370,13 @@ impl CssParser {
                     }
                 }
                 IDENT => {
-                    // The token and every component value to `;` or the end, then a declaration of them.
-                    let mut temp = vec![self.next_token()];
-                    while !matches!(self.peek_type(), SEMICOLON | EOF) {
-                        let value = self.consume_component_value();
-                        temp.push(value);
-                    }
-
-                    let decl = CssParser::new(temp).consume_declaration();
+                    let decl = self.consume_declaration_until(SEMICOLON);
                     if decl.is_some() {
                         decls.push(decl);
+                    } else {
+                        while !matches!(self.peek_type(), SEMICOLON | EOF) {
+                            self.consume_component_value();
+                        }
                     }
                 }
                 AMPERSAND => {

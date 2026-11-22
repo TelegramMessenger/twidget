@@ -666,12 +666,14 @@ impl CssTokenizer {
 
     /// https://www.w3.org/TR/css-syntax-3/#consume-ident-like-token
     fn consume_ident_like_token(&mut self) -> CssToken {
-        let string = self.consume_ident_sequence();
+        let name = self.consume_ident_sequence();
+        if self.at(self.index) != i32::from(b'(') {
+            return CssToken { ty: IDENT, str: name, ..CssToken::default() };
+        }
+        self.index += 1;
 
         // `url` in any ASCII case and `(` next: consume it.
-        if lowcase(&string) == b"url" && self.at(self.index) == i32::from(b'(') {
-            self.index += 1;
-
+        if name.eq_ignore_ascii_case(b"url") {
             while Self::is_whitespace(self.at(self.index)) {
                 self.index += 1;
             }
@@ -681,18 +683,12 @@ impl CssTokenizer {
                 if Self::is_whitespace(self.at(self.index - 1)) {
                     self.index -= 1;
                 }
-                return CssToken::with_str(FUNCTION, &string);
+            } else {
+                return self.consume_url_token();
             }
-            return self.consume_url_token();
         }
 
-        // `(` next: a <function-token>.
-        if self.at(self.index) == i32::from(b'(') {
-            self.index += 1;
-            return CssToken::with_str(FUNCTION, &string);
-        }
-
-        CssToken::with_str(IDENT, &string)
+        CssToken { ty: FUNCTION, str: name, ..CssToken::default() }
     }
 
     /// https://www.w3.org/TR/css-syntax-3/#consume-token
