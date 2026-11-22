@@ -229,15 +229,40 @@ pub const template_requires_fresh_document: i32 = -2;
 
 // ---- document.cpp's static helpers --------------------------------------------------------------------------
 
+/// `hay.find(needle) != npos`: each place the needle's first byte is, compared there.
 fn find(hay: &[u8], needle: &[u8]) -> bool {
-    needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
+    let Some((&first, rest)) = needle.split_first() else { return true };
+    let Some(last) = hay.len().checked_sub(needle.len()) else { return false };
+    let mut from = 0;
+    while let Some(at) = hay[from..=last].iter().position(|&c| c == first) {
+        let at = from + at;
+        if hay[at + 1..at + needle.len()] == *rest {
+            return true;
+        }
+        from = at + 1;
+        if from > last {
+            break;
+        }
+    }
+    false
 }
 
+/// `hay.find_first_of(set) != npos`.
 fn find_first_of(hay: &[u8], set: &[u8]) -> bool {
-    hay.iter().any(|c| set.contains(c))
+    let mut members = [false; 256];
+    for &c in set {
+        members[usize::from(c)] = true;
+    }
+    hay.iter().any(|&c| members[usize::from(c)])
 }
 
 /// `find_first_not_of(set) == npos`.
+/// `dst = src` on a `std::string`: the bytes copied into what it holds.
+fn assign(dst: &mut Vec<u8>, src: &[u8]) {
+    dst.clear();
+    dst.extend_from_slice(src);
+}
+
 fn all_of(hay: &[u8], set: &[u8]) -> bool {
     hay.iter().all(|c| set.contains(c))
 }
@@ -374,20 +399,20 @@ pub fn style_change_property_patch(switches: &PatchSwitches, before: &[u8], afte
     }
     let a = split_style_declarations(before);
     let b = split_style_declarations(after);
-    let collect = |list: &[(Vec<u8>, Vec<u8>)], out: &mut BTreeMap<Vec<u8>, Vec<u8>>| -> bool {
+    fn collect<'a>(list: &'a [(Vec<u8>, Vec<u8>)], out: &mut BTreeMap<&'a [u8], &'a [u8]>) -> bool {
         for d in list {
             if d.0.is_empty()
                 || d.0 == b"all"
                 || d.0 == b"background"
                 || !all_of(&d.0, b"abcdefghijklmnopqrstuvwxyz-")
-                || out.contains_key(&d.0)
+                || out.contains_key(&d.0[..])
             {
                 return false;
             }
-            out.insert(d.0.clone(), d.1.clone());
+            out.insert(&d.0, &d.1);
         }
         true
-    };
+    }
     let mut left = BTreeMap::new();
     let mut right = BTreeMap::new();
     if !collect(&a, &mut left) || !collect(&b, &mut right) {
@@ -399,7 +424,7 @@ pub fn style_change_property_patch(switches: &PatchSwitches, before: &[u8], afte
         }
     }
     for d in &b {
-        if left.get(&d.0).is_some_and(|v| *v == d.1) {
+        if left.get(&d.0[..]).is_some_and(|v| *v == d.1) {
             continue;
         }
         let id = if d.0 == b"transform" {
@@ -2386,7 +2411,8 @@ impl Document {
             }
         }
         let mut list: Vec<(usize, Vec<u8>)> = Vec::with_capacity(changes.len());
-        let mut seen: Vec<usize> = Vec::with_capacity(changes.len());
+        // The C++ finds each hole in a vector of those seen; a mark per hole answers the same.
+        let mut seen = vec![false; self.holes.len()];
         for change in changes {
             let Some(indices) = change.owner.and_then(|o| self.patch.owner_holes.get(&o)) else { return false };
             let mut found = self.holes.len();
@@ -2410,10 +2436,10 @@ impl Document {
             if hole.text && hole.text_elements.first().is_none_or(|&t| self.parent(t) != change.owner) {
                 return false;
             }
-            if seen.contains(&found) {
+            if seen[found] {
                 return false;
             }
-            seen.push(found);
+            seen[found] = true;
             if change.value != hole.value {
                 list.push((found, change.value.clone()));
             }
@@ -2444,16 +2470,16 @@ impl Document {
         let mut classes: Vec<(usize, StringMap)> = Vec::new();
         for k in 0..n {
             let i = changes[k].0;
-            let v = changes[k].1.clone();
+            let v: &[u8] = &changes[k].1;
             if i >= self.holes.len() || v == self.holes[i].value {
                 continue;
             }
-            if find_first_of(&v, b"&\r") || v.contains(&0) || !is_valid_utf8(&v) {
+            if find_first_of(v, b"&\r") || v.contains(&0) || !is_valid_utf8(v) {
                 return -1;
             }
             if self.holes[i].cls {
                 let mut attrs = StringMap::new();
-                if !self.class_change_allowed(cx, i, &v, &mut attrs) {
+                if !self.class_change_allowed(cx, i, v, &mut attrs) {
                     return -1;
                 }
                 classes.push((k, attrs));
@@ -2461,7 +2487,7 @@ impl Document {
             }
             let hole = &self.holes[i];
             if hole.text {
-                if all_of(&v, b" \t\n\x0c") {
+                if all_of(v, b" \t\n\x0c") {
                     return -1;
                 }
             } else if !hole.src && hole.attr.is_empty() {
@@ -2470,15 +2496,15 @@ impl Document {
                 }
                 let owner = hole.owner.expect("a style hole has its element");
                 let patch = &mut property_patches[k];
-                if !style_change_property_patch(&sw, &hole.value, &v, patch) {
+                if !style_change_property_patch(&sw, &hole.value, v, patch) {
                     patch.names.clear();
-                    width_changes[k] = style_change_is_width_only(&hole.value, &v);
+                    width_changes[k] = style_change_is_width_only(&hole.value, v);
                     if width_changes[k] && self.has_generated_children(owner) {
                         return template_requires_fresh_document;
                     }
-                    let background = style_change_is_background_color(&sw, &hole.value, &v);
+                    let background = style_change_is_background_color(&sw, &hole.value, v);
                     background_changes[k] = background;
-                    if !background && !style_change_is_local(&hole.value, &v) {
+                    if !background && !style_change_is_local(&hole.value, v) {
                         return -1;
                     }
                 }
@@ -2564,13 +2590,13 @@ impl Document {
         let resize_only = !sw.same_size_text;
         let mut measured: Vec<(ElementId, Size)> = Vec::new();
         for &k in &dirty {
-            let value = changes[k].1.clone();
+            let value: &[u8] = &changes[k].1;
             let hi = changes[k].0;
             let (text, src, attr_empty, owner) =
                 (self.holes[hi].text, self.holes[hi].src, self.holes[hi].attr.is_empty(), self.holes[hi].owner);
             let inplace = text && {
                 let current = self.holes[hi].text_elements.clone();
-                self.retext_in_place(cx, &current, Some(&value), &mut words)
+                self.retext_in_place(cx, &current, Some(value), &mut words)
             };
             let background = background_changes[k];
             let patch = if property_patches[k].names.is_empty() { None } else { Some(&property_patches[k]) };
@@ -2592,7 +2618,7 @@ impl Document {
                 } else if let Some(patch) = patch {
                     if patch.box_ { 1 } else { 0 }
                 } else {
-                    style_change_region(&doc.holes[hi].value, &value)
+                    style_change_region(&doc.holes[hi].value, value)
                 }
             };
             if !text && !src {
@@ -2655,11 +2681,11 @@ impl Document {
                     }
                     paint_only = inside_svg;
                 } else if !text {
-                    paint_only = background || patch.is_some() || style_change_is_paint_only(&self.holes[hi].value, &value);
+                    paint_only = background || patch.is_some() || style_change_is_paint_only(&self.holes[hi].value, value);
                 }
             }
             if inplace {
-                self.holes[hi].value = value;
+                assign(&mut self.holes[hi].value, value);
                 for w in 0..words.len() {
                     let el = self.holes[hi].text_elements[w];
                     let before = self.get_content_size(cx, el, Px(0.0));
@@ -2677,7 +2703,7 @@ impl Document {
                     || (!text && attr_empty && !background && patch.is_none() && {
                         let owner = owner.expect("a style hole has its element");
                         let d = self.el(owner).css.m_display;
-                        !tree_neutral_change(&self.holes[hi].value, &value, d == display_inline, table_part(d))
+                        !tree_neutral_change(&self.holes[hi].value, value, d == display_inline, table_part(d))
                     }))
             {
                 keep_tree = false;
@@ -2690,11 +2716,11 @@ impl Document {
                     background_only.insert(owner);
                 }
             }
-            self.holes[hi].value = value.clone();
+            assign(&mut self.holes[hi].value, value);
             if src {
                 let owner = owner.expect("a src hole has its element");
                 let mut attrs = StringMap::new();
-                attrs.insert(b"src".to_vec(), value.clone());
+                attrs.insert(b"src".to_vec(), value.to_vec());
                 let mut tag = self.get_tag_name(cx.names, owner);
                 let keep = cx.container.sanitize_element(&mut tag, false, &mut attrs) && attrs.contains_key(&b"src"[..]);
                 let src_value = if keep { attrs[&b"src"[..]].clone() } else { Vec::new() };
@@ -2709,7 +2735,7 @@ impl Document {
                 let owner = owner.expect("an attribute hole has its element");
                 let attr = self.holes[hi].attr.clone();
                 let mut attrs = StringMap::new();
-                attrs.insert(attr.clone(), value.clone());
+                attrs.insert(attr.clone(), value.to_vec());
                 let mut tag = self.get_tag_name(cx.names, owner);
                 let keep = cx.container.sanitize_element(&mut tag, true, &mut attrs) && attrs.contains_key(&attr);
                 let attr_value = if keep { attrs[&attr].clone() } else { Vec::new() };
@@ -2719,7 +2745,7 @@ impl Document {
             }
             if !text {
                 let owner = owner.expect("a style hole has its element");
-                self.set_attr(cx.names, owner, b"style", &value);
+                self.set_attr(cx.names, owner, b"style", value);
                 restyle.push(owner);
                 if let Some(patch) = patch
                     && self.outermost_svg(Some(owner)).is_none()
@@ -2731,7 +2757,7 @@ impl Document {
             }
             let mut created: Vec<ElementId> = Vec::new();
             let mut pieces: Vec<(Vec<u8>, bool)> = Vec::new();
-            cx.container.split_text(c_str(&value), &mut |piece, space| pieces.push((piece.to_vec(), space)));
+            cx.container.split_text(c_str(value), &mut |piece, space| pieces.push((piece.to_vec(), space)));
             for (piece, space) in pieces {
                 created.push(self.new_text(&piece, space));
             }

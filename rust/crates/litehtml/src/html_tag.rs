@@ -630,16 +630,25 @@ impl Document {
         if !self.kind(id).is_html_tag() {
             return;
         }
-        let (name, val) = (lowcase(c_value(name)), c_value(val).to_vec());
+        let (name, val) = (lowcase(c_value(name)), c_value(val));
         let quirks = self.mode == DocumentMode::quirks_mode;
         let el = &mut self.elements[id.0 as usize];
-        el.attrs.insert(name.clone(), val.clone());
+        // `m_attrs[name] = val`: a value it holds takes the bytes in place.
+        match el.attrs.get_mut(&name[..]) {
+            Some(held) => {
+                held.clear();
+                held.extend_from_slice(val);
+            }
+            None => {
+                el.attrs.insert(name.clone(), val.to_vec());
+            }
+        }
         if name == b"class" {
-            let val = if quirks { lowcase(&val) } else { val };
+            let val = if quirks { lowcase(val) } else { val.to_vec() };
             el.str_classes = split_string(&val, WHITESPACE, b"", b"");
             el.classes = el.str_classes.iter().map(|cls| names.id(cls)).collect();
         } else if name == b"id" {
-            let val = if quirks { lowcase(&val) } else { val };
+            let val = if quirks { lowcase(val) } else { val.to_vec() };
             el.id = names.id(&val);
         }
     }
