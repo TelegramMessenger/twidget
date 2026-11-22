@@ -29,6 +29,9 @@
 
 #![allow(dead_code)]
 
+mod hash_id;
+use hash_id::hash_id;
+
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
@@ -262,15 +265,6 @@ pub fn script_record(steps: &[Step]) -> Vec<u8> {
 pub struct ScriptHashes {
     signatures: BTreeMap<u64, u64>,
     motions: BTreeMap<u64, u64>,
-}
-
-// The renderer compares these hashes for equality. Non-MSVC C++ libraries give their own string hashes.
-fn hash_id(hash: u64, seen: &mut BTreeMap<u64, u64>) -> u64 {
-    if cfg!(target_env = "msvc") || hash == 0 {
-        return hash;
-    }
-    let next = seen.len() as u64 + 1;
-    *seen.entry(hash).or_insert(next)
 }
 
 /// The script through the port, writing what the oracle writes.

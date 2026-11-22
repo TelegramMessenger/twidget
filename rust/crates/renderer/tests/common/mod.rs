@@ -18,6 +18,9 @@
 #![allow(dead_code)]
 
 pub mod cases;
+#[path = "../../../animations/tests/common/hash_id.rs"]
+mod hash_id;
+use hash_id::hash_id;
 #[path = "../../../events/tests/common/inputs.rs"]
 pub mod inputs;
 pub mod layer_scripts;
@@ -942,8 +945,15 @@ fn sorted_ids(ids: impl Iterator<Item = i64>, o: &mut Out) {
     }
 }
 
+#[derive(Default)]
+struct LayerHashes {
+    compositions: BTreeMap<u64, u64>,
+    signatures: BTreeMap<u64, u64>,
+    motions: BTreeMap<u64, u64>,
+}
+
 /// What stage 4.5 left, as RendererOracle::layers writes it.
-pub fn layers_state<E: Engine>(r: &Renderer<E, Stub>, o: &mut Out) {
+fn layers_state<E: Engine>(r: &Renderer<E, Stub>, o: &mut Out, hashes: &mut LayerHashes) {
     let l = &r.core().layers;
     o.flag(l.compositing);
     o.u32(l.promoted.len() as u32);
@@ -955,7 +965,7 @@ pub fn layers_state<E: Engine>(r: &Renderer<E, Stub>, o: &mut Out) {
         o.flag(p.has_clip);
         o.rect(&p.clip);
         radii(&p.clip_radii, o);
-        o.u64(p.signature);
+        o.u64(hash_id(p.signature, &mut hashes.signatures));
         o.u64(p.track_version);
         track(&p.track, o);
         o.u64(p.order as u64);
@@ -977,7 +987,7 @@ pub fn layers_state<E: Engine>(r: &Renderer<E, Stub>, o: &mut Out) {
     sorted_ids(l.layer_ids.iter().copied(), o);
     composition(&l.composition, o);
     o.f64(l.wake_at);
-    o.u64(l.composition_key);
+    o.u64(hash_id(l.composition_key, &mut hashes.compositions));
     o.u64(l.next_version);
     let streaks: BTreeMap<i64, i32> = l.svg_streaks.iter().map(|(&k, &v)| (k, v)).collect();
     o.u32(streaks.len() as u32);
@@ -1039,7 +1049,7 @@ pub fn layers_state<E: Engine>(r: &Renderer<E, Stub>, o: &mut Out) {
     for v in [l.paint.heavy(), l.paint.backdrop(), l.paint.peak_heavy(), l.paint.peak_backdrop()] {
         o.i32(v);
     }
-    o.u64(l.motion_hash);
+    o.u64(hash_id(l.motion_hash, &mut hashes.motions));
     o.flag(l.motion_stale);
     o.u32(l.motions.len() as u32);
     for m in &l.motions {
@@ -1186,11 +1196,12 @@ pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: 
         Some(Box::new(StepClock(clock.clone(), step_log.clone()))),
     );
     let mut run = Run::default();
+    let mut hashes = LayerHashes::default();
     let mut o = Out::default();
     let log = std::mem::take(&mut *step_log.borrow_mut());
     o.str(&log.0);
     build_state(&mut r, &mut o);
-    layers_state(&r, &mut o);
+    layers_state(&r, &mut o, &mut hashes);
     for (i, (t, step)) in script.steps.iter().enumerate() {
         clock.set(*t);
         shared.borrow_mut().step = i;
@@ -1310,7 +1321,7 @@ pub fn run_with<E: Engine>(script: &Script, shared: Option<tape::Tape>, engine: 
         o.str(&log.0);
         input_state(&mut r, &mut o);
         build_state(&mut r, &mut o);
-        layers_state(&r, &mut o);
+        layers_state(&r, &mut o, &mut hashes);
         o.u64(tree(r.document(), script.max_id));
         run.extras.push(extra.0);
         run.stats.push(r.stats().clone());

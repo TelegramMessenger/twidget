@@ -1,4 +1,5 @@
 // The whole renderer with the probes of renderer_probe.h at its calls into the document and the container (renderer_oracle.cmake's copy of renderer.cpp, included whole so that its Node is complete here), driven by scripts for rust/crates/renderer: scripts, the tape and the transcript are laid out in that crate's tests/common/mod.rs.
+#include "hash_id.h"
 #include "renderer.cpp"
 #include "wire.h"
 
@@ -515,8 +516,12 @@ struct RendererOracle {
         for (int64_t id : ids) o.raw(id);
     }
 
+    struct LayerHashes {
+        std::unordered_map<uint64_t, uint64_t> compositions, signatures, motions;
+    };
+
     // What stage 4.5 left: the layers, the scripted, SVG and canvas streaks, the last paint and its damage, the heavy boxes.
-    static void layers(Renderer& r, ro::Out& o) {
+    static void layers(Renderer& r, ro::Out& o, LayerHashes& hashes) {
         o.u8(r.compositing_);
         o.raw(uint32_t(r.promoted_.size()));
         for (const auto& [id, p] : r.promoted_) {
@@ -527,7 +532,7 @@ struct RendererOracle {
             o.u8(p.has_clip);
             o.rect(p.clip);
             radii(p.clip_radii, o);
-            o.raw(uint64_t(p.signature));
+            o.raw(hash_id(p.signature, hashes.signatures));
             o.raw(uint64_t(p.track_version));
             track(p.track, o);
             o.raw(uint64_t(p.order));
@@ -550,7 +555,7 @@ struct RendererOracle {
         sorted_ids(r.layer_ids_, o);
         composition(r.composition_, o);
         o.raw(r.wake_at_);
-        o.raw(uint64_t(r.composition_key_));
+        o.raw(hash_id(r.composition_key_, hashes.compositions));
         o.raw(uint64_t(r.next_version_));
         std::map<int64_t, int> svg_streaks(r.svg_streaks_.begin(), r.svg_streaks_.end());
         o.raw(uint32_t(svg_streaks.size()));
@@ -606,7 +611,7 @@ struct RendererOracle {
         o.raw(int32_t(r.paint_reported_.second));
         o.u8(r.paint_scan_);
         for (int v : {r.paint_.heavy(), r.paint_.backdrop(), r.paint_.peak_heavy(), r.paint_.peak_backdrop()}) o.raw(int32_t(v));
-        o.raw(uint64_t(r.motion_hash_));
+        o.raw(hash_id(r.motion_hash_, hashes.motions));
         o.u8(r.motion_stale_);
         o.raw(uint32_t(r.motions_.size()));
         for (const auto& m : r.motions_) {
@@ -654,10 +659,11 @@ void script(In& in, Out& o) {
     clock.log = &log;
     auto r = std::make_unique<Renderer>(width, dpr, dark, backend, &clock);
     Out transcript;
+    RendererOracle::LayerHashes hashes;
     transcript.str(log.s);
     log.s.clear();
     RendererOracle::build(*r, transcript);
-    RendererOracle::layers(*r, transcript);
+    RendererOracle::layers(*r, transcript, hashes);
     const uint32_t steps = in.u32();
     for (uint32_t i = 0; i < steps && in.at < in.s.size(); i++) {
         const uint8_t kind = in.u8();
@@ -782,7 +788,7 @@ void script(In& in, Out& o) {
         log.s.clear();
         RendererOracle::input(*r, transcript);
         RendererOracle::build(*r, transcript);
-        RendererOracle::layers(*r, transcript);
+        RendererOracle::layers(*r, transcript, hashes);
         transcript.raw(RendererOracle::tree(*r, max_id));
     }
     twp::tape.on = false;

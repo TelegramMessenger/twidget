@@ -1,4 +1,5 @@
 // core/src/animations.cpp on stdin for rust/crates/animations to compare with: its records and answers are laid out in that crate's tests/common/mod.rs.
+#include "hash_id.h"
 #include "animations.h"
 
 #include <algorithm>
@@ -136,15 +137,6 @@ void motions(Out& o, const std::vector<Animator::Motion>& list) {
 struct ScriptHashes {
     std::unordered_map<uint64_t, uint64_t> signatures, motions;
 };
-
-uint64_t hash_id(uint64_t hash, std::unordered_map<uint64_t, uint64_t>& seen) {
-#ifdef _MSC_VER
-    return hash;
-#else
-    if (!hash) return 0;
-    return seen.emplace(hash, seen.size() + 1).first->second;
-#endif
-}
 
 void script(In& in, Out& o, ScriptHashes& hashes) {
     Animator a;
