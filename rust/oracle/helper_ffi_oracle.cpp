@@ -382,6 +382,7 @@ public:
         {
             const auto lock = std::lock_guard(_mutex);
             _platforms[runtime] = std::make_shared<HostPlatform>(imagesLoad);
+            _frameSeq[runtime] = 0;
         }
         send(FrameOut(runtime, Open).bytes());
     }
@@ -427,6 +428,22 @@ public:
     bool ready() {
         auto lock = std::unique_lock(_mutex);
         return _changed.wait_for(lock, std::chrono::seconds(kWaitSeconds), [&] { return _greeted || _readerDone; });
+    }
+
+    bool flushLayout(uint32_t runtime) {
+        {
+            const auto lock = std::lock_guard(_mutex);
+            if (!_frameSeq.contains(runtime)) return true;
+        }
+        return probe(runtime, "(document.body && document.body.getBoundingClientRect(),1)").has_value();
+    }
+
+    bool waitForFrame(uint32_t runtime, uint64_t seq) {
+        auto lock = std::unique_lock(_mutex);
+        return _changed.wait_for(lock, std::chrono::seconds(kWaitSeconds), [&] {
+            const auto i = _frameSeq.find(runtime);
+            return _readerDone || i == _frameSeq.end() || i->second == seq;
+        }) && !_readerDone;
     }
 
     auto pendingStats(std::ptrdiff_t waitFor = 0) {
@@ -548,6 +565,14 @@ private:
             const auto lock = std::lock_guard(_mutex);
             if (kind == ProbeAnswer) {
                 _probes[int64_t(Little(frame, 9, 8))] = FirstString(frame, 8);
+            } else if (kind == PlatformMessage) {
+                const auto message = FirstString(frame);
+                const auto remoteKind = Remote::kind_of(message);
+                if (remoteKind == Remote::Kind::Frame || remoteKind == Remote::Kind::FrameDelta) {
+                    _frameSeq[runtime] = Little(message, 2, 8);
+                } else if (Tgw::HostedWire::KindOf(message) == Tgw::HostedWire::Kind::Stopped) {
+                    _frameSeq.erase(runtime);
+                }
             } else if (kind == Ready || kind == Refused) {
                 _greeted = true;
             }
@@ -571,6 +596,7 @@ private:
     std::condition_variable _changed;
     std::vector<std::string> _frames;
     std::map<int64_t, std::string> _probes;
+    std::map<uint32_t, uint64_t> _frameSeq;
     std::map<uint32_t, std::shared_ptr<HostPlatform>> _platforms;
     std::atomic<int64_t> _seq = 0;
     bool _greeted = false;
@@ -674,18 +700,22 @@ void MaskMemory(std::vector<std::vector<std::string>> &taken) {
     std::fflush(log);
 }
 
-// Runs `step` on each arm in turn, the C++ one first, and compares what each sent.
+// Give both arms the same step together so one cannot fire its idle timers while the other processes an earlier input.
 void Both(const std::function<bool(Arm &)> &step) {
     auto taken = std::vector<std::vector<std::string>>(2);
     auto failure = std::string();
+    bool completed[2] = {true, true};
+    auto first = std::thread();
+    if (Arms[0]) first = std::thread([&] { completed[0] = step(*Arms[0]); });
+    if (Arms[1]) completed[1] = step(*Arms[1]);
+    if (first.joinable()) first.join();
     for (auto i = 0; i != 2; ++i) {
-        if (!Arms[i]) continue;
-        if (!step(*Arms[i])) {
+        if (!completed[i]) {
             failure += std::string(i ? "Rust" : "C++") + ": the barrier's wait ran out or the serving ended\n";
         }
     }
     if (Arms[0] && Arms[1] && failure.empty()) {
-        // A trailing Stats uses a real 200 ms timer, including while the other arm is taking its step.
+        // A trailing Stats uses a real 200 ms timer.
         const auto cpp = Arms[0]->pendingStats();
         const auto rust = Arms[1]->pendingStats();
         if (cpp < rust) Arms[0]->pendingStats(rust);
@@ -730,8 +760,14 @@ void Step(int op, In &in) {
     SetClock(in.f64());
     auto frame = std::string();
     auto code = std::string();
+    auto frameSeq = std::optional<uint64_t>();
     switch (op) {
-    case 'P': frame = FrameOut(runtime, Platform).str(in.str()).bytes(); break;
+    case 'P': {
+        const auto message = in.str();
+        auto request = Remote::FrameRequest();
+        if (Remote::decode(message, Tgw::HostedWire::EmbeddingCaps(), request)) frameSeq = request.seq;
+        frame = FrameOut(runtime, Platform).str(message).bytes();
+    } break;
     case 'T': {
         auto theme = twidget::WidgetTheme();
         theme.colorScheme = in.str();
@@ -752,8 +788,10 @@ void Step(int op, In &in) {
         if (op == 'J') {
             return arm.probe(runtime, code).has_value() && arm.barrier(runtime);
         }
+        // Finish pending DOM work before a theme revalidates it, and finish a requested paint before the clock moves.
+        if (op == 'T' && !arm.flushLayout(runtime)) return false;
         arm.send(frame);
-        return arm.barrier(runtime);
+        return arm.barrier(runtime) && (!frameSeq || arm.waitForFrame(runtime, *frameSeq));
     });
 }
 
