@@ -66,6 +66,40 @@ fn css_animation() {
     assert_eq!(sampled(&later, 12, "transform").as_deref(), Some("rotate(43.2deg)"), "a frame later it has turned");
 }
 
+#[test]
+fn filtered_samples_preserve_events_and_composition() {
+    let mut full = Animator::new();
+    let mut filtered = Animator::new();
+    for a in [&mut full, &mut filtered] {
+        a.set_style_sheets(&["@keyframes mixed{from{opacity:0;width:10px}to{opacity:1;width:20px}}"]);
+        let animation = ("animation", "mixed 1s linear 2 both");
+        let transition = ("transition", "opacity 1.5s linear");
+        build(a, &[(10, &[animation]), (11, &[transition, ("opacity", "1")])], 0.0);
+        build(a, &[(10, &[animation]), (11, &[transition, ("opacity", "0")])], 0.0);
+        apply(
+            a,
+            r#"{"type":"anim","now":0,"anims":[{"aid":1,"target":10,"keyframes":[{"offset":0,"values":{"width":"2px","opacity":"0.1"}},{"offset":1,"values":{"width":"4px","opacity":"0.2"}}],"timing":{"duration":2000,"fill":"both"},"composite":"add","startTime":0}]}"#,
+            0.0,
+        );
+    }
+    let mut events = Vec::new();
+    for (now, promoted) in [(0.0, true), (0.25, true), (0.5, false), (1.25, true), (1.5, true), (2.25, true)] {
+        let keep = |_: i64| move |property: &[u8]| !promoted || property != b"opacity";
+        let mut expected = full.sample(now);
+        expected.retain(|&id, values| {
+            values.retain(|(property, _)| keep(id)(property));
+            !values.is_empty()
+        });
+        assert_eq!(filtered.sample_filtered(now, keep), expected);
+        let emitted = full.take_events();
+        assert_eq!(filtered.take_events(), emitted);
+        events.extend(emitted);
+        assert_eq!(filtered.peek(10, now), full.peek(10, now));
+        assert_eq!(filtered.animated_ids(now), full.animated_ids(now));
+    }
+    assert_eq!(types(&events), "animationiteration:10 transitionend:11 animationend:10 ");
+}
+
 // ── transition ──
 #[test]
 fn transition() {

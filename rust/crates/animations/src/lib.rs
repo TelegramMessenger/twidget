@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write as _;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use twidget_css as css;
 use twidget_json::Json;
@@ -80,14 +80,40 @@ fn number_text(value: f64, digits: i32) -> Vec<u8> {
     css::format_number(value, digits).into_bytes()
 }
 
+const FNV_OFFSET: u64 = 14695981039346656037;
+const FNV_PRIME: u64 = 1099511628211;
+
 /// MSVC's `std::hash` of a string: FNV-1a over its bytes (libstdc++ and libc++ hash otherwise; only
 /// equality of the results matters to the renderer).
 fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h = 14695981039346656037u64;
+    hash_bytes(FNV_OFFSET, bytes)
+}
+
+fn hash_bytes(mut h: u64, bytes: &[u8]) -> u64 {
     for &c in bytes {
-        h = (h ^ u64::from(c)).wrapping_mul(1099511628211);
+        h = (h ^ u64::from(c)).wrapping_mul(FNV_PRIME);
     }
     h
+}
+
+struct Signature(u64);
+
+impl Signature {
+    fn new() -> Self {
+        Self(FNV_OFFSET)
+    }
+
+    fn text(&mut self, value: &[u8]) {
+        self.0 = (hash_bytes(self.0, value) ^ u64::from(b'|')).wrapping_mul(FNV_PRIME);
+    }
+
+    fn number(&mut self, value: f64) {
+        self.text(&number_text(value, 6));
+    }
+
+    fn flag(&mut self, value: bool) {
+        self.text(if value { b"1" } else { b"0" });
+    }
 }
 
 fn initial_value(property: &[u8]) -> Option<&'static [u8]> {
@@ -101,6 +127,11 @@ fn initial_value(property: &[u8]) -> Option<&'static [u8]> {
         b"letter-spacing" => b"0px",
         _ => return None,
     })
+}
+
+fn declared_or_initial<'a>(base: Option<&'a Declared>, underlying: Option<&'a Declared>, property: &[u8]) -> &'a [u8] {
+    let value = base.and_then(|b| b.get(property)).or_else(|| underlying.and_then(|b| b.get(property)));
+    value.map(Vec::as_slice).or_else(|| initial_value(property)).unwrap_or_default()
 }
 
 fn merge(into: &mut StyleValues, property: &[u8], value: Vec<u8>) {
@@ -1719,8 +1750,10 @@ pub struct Motion {
     pub paint: BoxPaint,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 struct Running {
+    // Its spec and timeline origin stay fixed until update replaces this running animation.
+    signature_prefix: OnceLock<u64>,
     spec: AnimationSpec,
     start: f64,
     iteration: i32,
@@ -1743,11 +1776,24 @@ impl Running {
     }
 
     fn new(spec: AnimationSpec, start: f64, iteration: i32) -> Running {
-        Running { spec, start, iteration, ended: false, paused_at: None, paused_duration: 0.0 }
+        Running { signature_prefix: OnceLock::new(), spec, start, iteration, ended: false, paused_at: None, paused_duration: 0.0 }
     }
 
     fn timeline_start(&self) -> f64 {
         self.start + self.paused_duration
+    }
+
+    fn write_signature(&self, s: &mut Signature) {
+        let spec = &self.spec;
+        s.text(&spec.name);
+        s.number(self.timeline_start());
+        s.number(spec.duration);
+        s.text(&spec.timing_text);
+        s.number(spec.delay);
+        s.number(spec.iterations);
+        s.text(&spec.direction);
+        s.text(&spec.fill);
+        s.flag(spec.paused);
     }
 
     fn local_time(&self, now: f64) -> f64 {
@@ -1797,7 +1843,14 @@ fn override_of<'a>(overrides: &'a Overrides, id: i64, kind: &[u8], name: &[u8]) 
     overrides.get(&id)?.get(&key(kind, name)[..])
 }
 
-fn values(caches: &mut Caches, frames: &[Keyframe], base: &Declared, progress: f64, spec: &AnimationSpec) -> StyleValues {
+fn values(
+    caches: &mut Caches,
+    frames: &[Keyframe],
+    base: &Declared,
+    progress: f64,
+    spec: &AnimationSpec,
+    keep: &impl Fn(&[u8]) -> bool,
+) -> StyleValues {
     struct Stop<'a> {
         offset: f64,
         value: &'a [u8],
@@ -1807,10 +1860,13 @@ fn values(caches: &mut Caches, frames: &[Keyframe], base: &Declared, progress: f
     let mut properties: Vec<&[u8]> = Vec::new();
     for f in frames {
         for (name, _) in &f.declarations {
-            if !properties.contains(&name.as_slice()) {
+            if keep(name) && !properties.contains(&name.as_slice()) {
                 properties.push(name);
             }
         }
+    }
+    if properties.is_empty() {
+        return StyleValues::new();
     }
     let mut result = StyleValues::with_capacity(properties.len());
     let spec_timing = spec.timing(&mut caches.timings);
@@ -1860,17 +1916,14 @@ fn values(caches: &mut Caches, frames: &[Keyframe], base: &Declared, progress: f
 
 /// `events` None: a peek, which reports nothing. `marks` is the item's iteration and whether it ended, as the
 /// sample leaves them (what the C++ writes into its `item`, a copy for a peek).
-fn sample_animation(
-    caches: &mut Caches,
+fn animation_progress(
     overrides: &Overrides,
-    bases: &BTreeMap<i64, Declared>,
     id: i64,
     item: &Running,
     marks: &mut Marks,
-    frames: &[Keyframe],
     now: f64,
     events: Option<&mut Vec<AnimationEvent>>,
-) -> Option<StyleValues> {
+) -> Option<f64> {
     let mut local = item.local_time(now) - item.spec.delay;
     if let Some(o) = override_of(overrides, id, b"animation:", &item.spec.name) {
         if o.cancelled {
@@ -1878,8 +1931,6 @@ fn sample_animation(
         }
         local = o.local(now) - item.spec.delay;
     }
-    let empty = Declared::new();
-    let base = bases.get(&id).unwrap_or(&empty);
     let spec = &item.spec;
     let reversed = |iteration: i32| match spec.direction.as_slice() {
         b"reverse" => true,
@@ -1890,7 +1941,7 @@ fn sample_animation(
     if local < 0.0 {
         if spec.fill == b"backwards" || spec.fill == b"both" {
             let progress = if spec.direction.starts_with(b"reverse") || spec.direction == b"alternate-reverse" { 1.0 } else { 0.0 };
-            return Some(values(caches, frames, base, progress, spec));
+            return Some(progress);
         }
         return None;
     }
@@ -1913,7 +1964,7 @@ fn sample_animation(
             if reversed_last {
                 progress = 1.0 - progress;
             }
-            return Some(values(caches, frames, base, progress, &item.spec));
+            return Some(progress);
         }
         return None;
     }
@@ -1930,7 +1981,7 @@ fn sample_animation(
     if reversed_now {
         progress = 1.0 - progress;
     }
-    Some(values(caches, frames, base, progress, &item.spec))
+    Some(progress)
 }
 
 fn transition_value(
@@ -2071,13 +2122,7 @@ impl Animator {
 
     /// `underlying_value` where it is kept.
     fn underlying_bytes(&self, id: i64, property: &[u8]) -> &[u8] {
-        if let Some(v) = self.bases.get(&id).and_then(|b| b.get(property)) {
-            return v;
-        }
-        if let Some(v) = self.underlying.get(&id).and_then(|u| u.get(property)) {
-            return v;
-        }
-        initial_value(property).unwrap_or_default()
+        declared_or_initial(self.bases.get(&id), self.underlying.get(&id), property)
     }
 
     /// `property` of `id` without its animations: as declared, or the property's initial value.
@@ -2209,21 +2254,28 @@ impl Animator {
 
     /// Style overrides at `now`, and the animation events crossed since the last sample.
     pub fn sample(&mut self, now: f64) -> StyleOverrides {
+        self.sample_filtered(now, |_| |_| true)
+    }
+
+    /// Advances every animation and returns only the properties its caller displays.
+    pub fn sample_filtered<F: Fn(&[u8]) -> bool>(&mut self, now: f64, filter: impl Fn(i64) -> F) -> StyleOverrides {
         let mut caches = lock(&self.caches);
         let caches = &mut *caches;
         let mut out = StyleOverrides::new();
+        let empty = Declared::new();
         for (&id, list) in self.running.iter_mut() {
+            let keep = filter(id);
+            let base = self.bases.get(&id).unwrap_or(&empty);
             for item in list.iter_mut() {
                 let Some(frames) = self.keyframes.get(&item.spec.name) else { continue };
                 if frames.is_empty() {
                     continue;
                 }
                 let mut marks = item.marks();
-                let values =
-                    sample_animation(caches, &self.overrides, &self.bases, id, item, &mut marks, frames, now, Some(&mut self.events));
+                let progress = animation_progress(&self.overrides, id, item, &mut marks, now, Some(&mut self.events));
                 (item.iteration, item.ended) = (marks.iteration, marks.ended);
-                if let Some(values) = values {
-                    for (property, value) in values {
+                if let Some(progress) = progress {
+                    for (property, value) in values(caches, frames, base, progress, &item.spec, &keep) {
                         merge(out.entry(id).or_default(), &property, value);
                     }
                 }
@@ -2232,6 +2284,7 @@ impl Animator {
         let overrides = &self.overrides;
         let events = &mut self.events;
         self.transitions.retain(|&id, list| {
+            let keep = filter(id);
             list.retain(|property, transition| {
                 let mut elapsed = now - transition.start - transition.spec.delay;
                 if let Some(o) = override_in(overrides, id, &key(b"transition:", property)) {
@@ -2249,6 +2302,9 @@ impl Animator {
                     });
                     return false;
                 }
+                if !keep(property) {
+                    return true;
+                }
                 let progress = max(0.0, elapsed) / transition.spec.duration;
                 let value = if elapsed <= 0.0 {
                     transition.from.clone()
@@ -2261,14 +2317,21 @@ impl Animator {
             !list.is_empty()
         });
         if !self.web.is_empty() {
-            self.sample_web(caches, &mut out, now, 0);
+            self.sample_web(caches, &mut out, now, 0, filter);
         }
         out.retain(|_, values| !values.is_empty());
         out
     }
 
     /// `only` non-zero: that target alone.
-    fn sample_web(&self, caches: &mut Caches, out: &mut StyleOverrides, now: f64, only: i64) {
+    fn sample_web<F: Fn(&[u8]) -> bool>(
+        &self,
+        caches: &mut Caches,
+        out: &mut StyleOverrides,
+        now: f64,
+        only: i64,
+        filter: impl Fn(i64) -> F,
+    ) {
         // By target, then in aid order: later animations composite onto earlier ones.
         let mut by_target: BTreeMap<i64, Vec<&WebAnimation>> = BTreeMap::new();
         for a in self.web.values() {
@@ -2277,6 +2340,7 @@ impl Animator {
             }
         }
         for (id, list) in by_target {
+            let keep = filter(id);
             for a in list {
                 let Some(state) = compute(a, local_time(a, now), a.rate >= 0.0) else { continue };
                 if state.active_time.is_none() {
@@ -2292,7 +2356,9 @@ impl Animator {
                         self.underlying_value(id, property)
                     };
                     for property in &a.properties {
-                        if let Some(v) = web_value(&mut caches.pairs, a, property, state.progress, state.iteration, &underlying_of) {
+                        if keep(property)
+                            && let Some(v) = web_value(&mut caches.pairs, a, property, state.progress, state.iteration, &underlying_of)
+                        {
                             values.push((property.clone(), v));
                         }
                     }
@@ -2421,13 +2487,15 @@ impl Animator {
         let caches = &mut *caches;
         let mut out = StyleOverrides::new();
         if let Some(list) = self.running.get(&id) {
+            let empty = Declared::new();
+            let base = self.bases.get(&id).unwrap_or(&empty);
             for item in list {
                 let Some(frames) = self.keyframes.get(&item.spec.name) else { continue };
                 if frames.is_empty() {
                     continue;
                 }
-                if let Some(values) = sample_animation(caches, &self.overrides, &self.bases, id, item, &mut item.marks(), frames, t, None) {
-                    for (property, value) in values {
+                if let Some(progress) = animation_progress(&self.overrides, id, item, &mut item.marks(), t, None) {
+                    for (property, value) in values(caches, frames, base, progress, &item.spec, &|_| true) {
                         merge(out.entry(id).or_default(), &property, value);
                     }
                 }
@@ -2456,7 +2524,7 @@ impl Animator {
             }
         }
         if !self.web.is_empty() {
-            self.sample_web(caches, &mut out, t, id);
+            self.sample_web(caches, &mut out, t, id, |_| |_| true);
         }
         out.remove(&id).unwrap_or_default()
     }
@@ -2596,82 +2664,77 @@ impl Animator {
 
     /// Changes whenever anything that decides how `id` animates changes; equal values bake equal tracks.
     pub fn signature(&self, id: i64) -> u64 {
-        let mut s: Vec<u8> = Vec::new();
-        fn num(s: &mut Vec<u8>, v: f64) {
-            s.extend_from_slice(&number_text(v, 6));
-            s.push(b'|');
-        }
-        fn text(s: &mut Vec<u8>, v: &[u8]) {
-            s.extend_from_slice(v);
-            s.push(b'|');
-        }
-        let flag = |b: bool| if b { 1.0 } else { 0.0 };
-        let control = |s: &mut Vec<u8>, key: &[u8]| {
-            if let Some(o) = override_in(&self.overrides, id, key) {
-                text(s, key);
-                num(s, o.origin);
-                num(s, o.start.unwrap_or(-1.0));
-                num(s, o.hold.unwrap_or(-1.0));
-                num(s, o.rate);
-                num(s, flag(o.cancelled));
+        let mut s = Signature::new();
+        let controls = self.overrides.get(&id);
+        let control = |s: &mut Signature, kind: &[u8], name: &[u8]| {
+            let Some(map) = controls else { return };
+            let key = key(kind, name);
+            if let Some(o) = map.get(&key) {
+                s.text(&key);
+                s.number(o.origin);
+                s.number(o.start.unwrap_or(-1.0));
+                s.number(o.hold.unwrap_or(-1.0));
+                s.number(o.rate);
+                s.flag(o.cancelled);
             }
         };
         if let Some(list) = self.running.get(&id) {
-            for item in list {
-                let spec = &item.spec;
-                text(&mut s, &spec.name);
-                num(&mut s, item.timeline_start());
-                num(&mut s, spec.duration);
-                text(&mut s, &spec.timing_text);
-                num(&mut s, spec.delay);
-                num(&mut s, spec.iterations);
-                text(&mut s, &spec.direction);
-                text(&mut s, &spec.fill);
-                num(&mut s, flag(spec.paused));
-                num(&mut s, flag(item.ended));
-                control(&mut s, &key(b"animation:", &spec.name));
+            for (i, item) in list.iter().enumerate() {
+                if i == 0 {
+                    s.0 = *item.signature_prefix.get_or_init(|| {
+                        let mut prefix = Signature::new();
+                        item.write_signature(&mut prefix);
+                        prefix.0
+                    });
+                } else {
+                    item.write_signature(&mut s);
+                }
+                s.flag(item.ended);
+                control(&mut s, b"animation:", &item.spec.name);
             }
         }
         if let Some(list) = self.transitions.get(&id) {
             for (property, transition) in list {
-                text(&mut s, property);
-                text(&mut s, &transition.from);
-                text(&mut s, &transition.to);
-                num(&mut s, transition.start);
-                num(&mut s, transition.spec.duration);
-                num(&mut s, transition.spec.delay);
-                text(&mut s, &transition.spec.timing.text);
-                control(&mut s, &key(b"transition:", property));
+                s.text(property);
+                s.text(&transition.from);
+                s.text(&transition.to);
+                s.number(transition.start);
+                s.number(transition.spec.duration);
+                s.number(transition.spec.delay);
+                s.text(&transition.spec.timing.text);
+                control(&mut s, b"transition:", property);
             }
         }
         for (&aid, a) in &self.web {
             if a.target != id {
                 continue;
             }
-            num(&mut s, aid as f64);
-            num(&mut s, a.start_ms.unwrap_or(-1.0));
-            num(&mut s, a.hold_ms.unwrap_or(-1.0));
-            num(&mut s, a.rate);
-            num(&mut s, a.duration);
-            num(&mut s, a.delay);
-            num(&mut s, a.iterations);
-            text(&mut s, &a.direction);
-            text(&mut s, &a.fill);
-            text(&mut s, &a.easing.text);
-            text(&mut s, &a.composite);
+            s.number(aid as f64);
+            s.number(a.start_ms.unwrap_or(-1.0));
+            s.number(a.hold_ms.unwrap_or(-1.0));
+            s.number(a.rate);
+            s.number(a.duration);
+            s.number(a.delay);
+            s.number(a.iterations);
+            s.text(&a.direction);
+            s.text(&a.fill);
+            s.text(&a.easing.text);
+            s.text(&a.composite);
             for frame in &a.frames {
-                num(&mut s, frame.offset);
-                text(&mut s, &frame.easing.text);
+                s.number(frame.offset);
+                s.text(&frame.easing.text);
                 for (property, value) in &frame.values {
-                    text(&mut s, property);
-                    text(&mut s, value);
+                    s.text(property);
+                    s.text(value);
                 }
             }
         }
+        let base = self.bases.get(&id);
+        let underlying = self.underlying.get(&id);
         for property in ["transform", "opacity", "translate", "rotate", "scale", "transform-origin"] {
-            text(&mut s, &self.base_value(id, property.as_bytes()));
+            s.text(declared_or_initial(base, underlying, property.as_bytes()));
         }
-        fnv1a(&s)
+        s.0
     }
 
     /// `{type:'anim', now, anims}`: Web Animations records, or script control of CSS animations and

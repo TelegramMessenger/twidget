@@ -1132,16 +1132,16 @@ impl<E: Engine, B: Backend> Core<E, B> {
         }
     }
 
-    /// `strip_layers`: drops what the layers animate from `sampled`: the compositor shows it, the document must not.
-    pub(crate) fn strip_layers(&self, sampled: &mut StyleOverrides) {
-        for (id, p) in &self.layers.promoted {
-            let Some(values) = sampled.get_mut(id) else { continue };
-            let shimmer = p.shimmer;
-            values.retain(|v| !(if shimmer { is_shimmer_property(&v.0) } else { is_layer_property(&v.0) }));
-            if values.is_empty() {
-                sampled.remove(id);
+    pub(crate) fn sample_document(&mut self, now: f64) -> StyleOverrides {
+        let promoted = &self.layers.promoted;
+        self.animator.sample_filtered(now, |id| {
+            let shimmer = promoted.get(&id).map(|p| p.shimmer);
+            move |property| match shimmer {
+                Some(true) => !is_shimmer_property(property),
+                Some(false) => !is_layer_property(property),
+                None => true,
             }
-        }
+        })
     }
 
     // ── scripted layers ──
@@ -1509,7 +1509,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
             }
             let list = self.engine.draw_skipping(&skip, &backgrounds);
             order.sort();
-            let old = std::mem::take(&mut self.layers.composition);
+            let mut old = std::mem::take(&mut self.layers.composition);
             let mut next = Composition::default();
             let mut changed = order.len() != old.layers.len();
             // A layer whose element and descendants nothing touched since the last paint keeps its content.
@@ -1519,24 +1519,35 @@ impl<E: Engine, B: Backend> Core<E, B> {
                 for (i, layer) in old.layers.iter().enumerate() {
                     before.entry(layer.id).or_insert(i);
                 }
+                for &id in &self.touched {
+                    if before.is_empty() {
+                        break;
+                    }
+                    before.remove(&id);
+                    let mut parent = doc.node(id).and_then(|r| doc.get(r).parent);
+                    while let Some(r) = parent {
+                        let node = doc.get(r);
+                        if node.id != 0 {
+                            before.remove(&node.id);
+                        }
+                        parent = node.parent;
+                    }
+                }
             }
             for (_, id) in order {
                 let p = self.layers.promoted[&id].clone();
                 let mut layer = Layer { id, ..Layer::default() };
                 let drawn = &self.layers.canvases_drawn;
                 let redrawn = |list: &[Command]| list.iter().any(|c| c.canvas != 0 && drawn.contains(&c.canvas));
-                let keep = before
-                    .get(&id)
-                    .copied()
-                    .filter(|&i| !redrawn(&old.layers[i].content) && !self.touched.iter().any(|&t| t == id || is_ancestor(doc, id, t)));
+                let keep = before.get(&id).copied().filter(|&i| !redrawn(&old.layers[i].content));
                 if p.shimmer {
                     layer.content = p.tile;
                     layer.bounds = p.rect;
                     layer.content_version = p.tile_version;
                 } else if let Some(i) = keep {
                     // A selection change touches every layer: this one's tint is still the selection's.
-                    let o = &old.layers[i];
-                    layer.content = o.content.clone();
+                    let o = &mut old.layers[i];
+                    layer.content = std::mem::take(&mut o.content);
                     layer.bounds = o.bounds;
                     layer.content_version = o.content_version;
                     events.paint_selection(self, doc.theme_variables(), &mut layer.content, id, false);

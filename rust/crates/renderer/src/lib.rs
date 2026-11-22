@@ -848,8 +848,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
             self.animator.update(&declarations, now);
         }
         self.update_composition(doc, now);
-        let mut sampled = self.animator.sample(now);
-        self.strip_layers(&mut sampled);
+        let sampled = self.sample_document(now);
         self.queue_animation_events(doc);
         // Changed overrides patch the style attributes of the document just built; only a change the patch cannot
         // take builds again.
@@ -1897,8 +1896,7 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
         if !still(&self.doc) && (self.core.animator.active(now) || now >= self.core.layers.wake_at) {
             self.core.editing = self.events.editing_id();
             self.core.update_composition(&self.doc, now);
-            let mut sampled = self.core.animator.sample(now);
-            self.core.strip_layers(&mut sampled);
+            let sampled = self.core.sample_document(now);
             self.core.queue_animation_events(&self.doc);
             self.core.apply_overrides(&mut self.doc, sampled);
             self.core.count_paint(&mut self.doc);
