@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use common::cases::compare;
 use common::*;
@@ -812,7 +812,10 @@ impl Engine for NoDocument {
     fn background_is_local(&mut self, _id: i64) -> bool {
         false
     }
-    fn layer_candidate(&mut self, _id: i64, _movers: Option<&BTreeSet<i64>>) -> Option<Rect> {
+    type Elements = ();
+    fn elements(&mut self, _ids: impl IntoIterator<Item = i64>) {}
+    fn insert_element(&mut self, _set: &mut (), _id: i64) {}
+    fn layer_candidate(&mut self, _id: i64, _movers: Option<&()>) -> Option<Rect> {
         None
     }
     fn clip_of(&mut self, _id: i64) -> Option<Clip> {
@@ -828,10 +831,10 @@ impl Engine for NoDocument {
     fn paint_index(&mut self, _id: i64) -> usize {
         0
     }
-    fn covered(&mut self, _id: i64, _area: Rect, _ignore: &BTreeSet<i64>) -> bool {
+    fn covered(&mut self, _id: i64, _area: Rect, _ignore: &()) -> bool {
         true
     }
-    fn obscurers(&mut self, _id: i64, _area: Rect, _ignore: &BTreeSet<i64>, _limit: usize) -> Option<Vec<i64>> {
+    fn obscurers(&mut self, _id: i64, _area: Rect, _ignore: &(), _limit: usize) -> Option<Vec<i64>> {
         None
     }
     fn draw(&mut self) -> DisplayList {

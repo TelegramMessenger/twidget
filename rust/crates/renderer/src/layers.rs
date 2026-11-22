@@ -504,7 +504,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
         // Movers: elements whose usable animations touch only layer properties. One inside another becomes a
         // layer inside the other's (nested), so neither rules the other out.
         let mut movers: HashSet<i64> = HashSet::new();
-        let mut mover_elements: BTreeSet<i64> = BTreeSet::new();
+        let mut mover_elements = self.engine.elements(std::iter::empty());
         for p in &planned {
             let properties = self.animator.animated_properties(p.id);
             let Some(n) = doc.node(p.id).map(|r| doc.get(r)) else { continue };
@@ -513,7 +513,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
             }
             movers.insert(p.id);
             if self.engine.has_element(p.id) {
-                mover_elements.insert(p.id);
+                self.engine.insert_element(&mut mover_elements, p.id);
             }
         }
         let mut holds_animated: HashSet<i64> = HashSet::new();
@@ -779,7 +779,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
         // Scripted layers: still pictures apply_scripted moves, each alone in its branch of the tree, with room to
         // move around where it is now and the raster scale its transform asks for.
         {
-            let mut others: BTreeSet<i64> = next.keys().copied().collect();
+            let mut others = self.engine.elements(next.keys().copied());
             let mut candidates: Vec<i64> = Vec::new();
             let all: Vec<i64> = self.layers.scripted_candidates.iter().copied().collect();
             for &id in &all {
@@ -811,7 +811,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
                 if !alone || !el {
                     continue;
                 }
-                others.insert(id);
+                self.engine.insert_element(&mut others, id);
                 candidates.push(id);
             }
             for id in candidates {
@@ -944,7 +944,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
         // A few static elements over a wanted layer (labels on a moving card) become layers of their own, still
         // ones, so the moving one can go under them.
         {
-            let mut ignore_all: BTreeSet<i64> = next.keys().copied().collect();
+            let mut ignore_all = self.engine.elements(next.keys().copied());
             let mut budget = MAX_LAYERS.saturating_sub(next.len());
             let queue: Vec<i64> = next.keys().copied().collect();
             for id in queue {
@@ -994,7 +994,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
                     stills.push((other, s));
                 }
                 for (other, s) in stills {
-                    ignore_all.insert(other);
+                    self.engine.insert_element(&mut ignore_all, other);
                     next.entry(other).or_insert(s);
                     budget -= 1;
                 }
@@ -1071,7 +1071,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
         let mut round = 0;
         while round < rounds && !next.is_empty() {
             round += 1;
-            let ignore: BTreeSet<i64> = next.keys().copied().collect();
+            let ignore = self.engine.elements(next.keys().copied());
             let mut uncovered: Vec<(i64, f64)> = Vec::new();
             let mut total = 0.0;
             for (&id, p) in &next {

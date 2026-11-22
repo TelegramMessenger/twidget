@@ -17,4 +17,4 @@ mod cxx;
 mod engine;
 
 pub use container::{Container, MIN_HEIGHT, data_mime};
-pub use engine::{DocumentEngine, Process};
+pub use engine::{DocumentEngine, ElementSet, Process};

@@ -2,7 +2,7 @@
 //! parses, patches, lays out, paints and answers, with the container's own parts of stage 4.2 behind it). Each
 //! method is one call the C++ makes there, asked where and in the order renderer.cpp asks it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use twidget_animations::{Declared, StyleValues};
 use twidget_events::{EditorStyle, TextRun};
@@ -193,9 +193,17 @@ pub trait Engine {
     fn box_style(&mut self, id: i64) -> BoxStyle;
     /// `Container::background_is_local`: an animated background-color on `id` repaints `id` alone.
     fn background_is_local(&mut self, id: i64) -> bool;
+    /// A set of the document's elements, what renderer.cpp keeps as `std::unordered_set<const litehtml::element*>`
+    /// (`mover_elements`, `others`, `ignore_all`, `ignore`): made once where it makes one, and read by
+    /// `layer_candidate`, `covered` and `obscurers`.
+    type Elements;
+    /// The elements of `ids` in the document as built, `container_->element(id)` of each (none for an id without one).
+    fn elements(&mut self, ids: impl IntoIterator<Item = i64>) -> Self::Elements;
+    /// `set.insert(container_->element(id).get())`.
+    fn insert_element(&mut self, set: &mut Self::Elements, id: i64);
     /// `Container::layer_candidate`: element `id`'s border box when it can be painted on its own, inside no paint
     /// group but those of `movers` (when given).
-    fn layer_candidate(&mut self, id: i64, movers: Option<&BTreeSet<i64>>) -> Option<Rect>;
+    fn layer_candidate(&mut self, id: i64, movers: Option<&Self::Elements>) -> Option<Rect>;
     /// `Container::clip_of`: the ancestor that clips element `id`; None when an outer clip could cut what the
     /// inner one lets through.
     fn clip_of(&mut self, id: i64) -> Option<Clip>;
@@ -210,10 +218,10 @@ pub trait Engine {
     fn paint_index(&mut self, id: i64) -> usize;
     /// `Container::covered`: something painted after element `id` meets `area`, but its descendants and the
     /// elements of `ignore`.
-    fn covered(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>) -> bool;
+    fn covered(&mut self, id: i64, area: Rect, ignore: &Self::Elements) -> bool;
     /// `Container::obscurers`: the widget elements painted after `id` that meet `area`, as `covered` finds them;
     /// None past `limit` or for one without a widget id.
-    fn obscurers(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>, limit: usize) -> Option<Vec<i64>>;
+    fn obscurers(&mut self, id: i64, area: Rect, ignore: &Self::Elements, limit: usize) -> Option<Vec<i64>>;
     /// `Container::draw()`: the document's paint.
     fn draw(&mut self) -> DisplayList;
     /// `Container::draw(skip, backgrounds)`: the document without the elements of `skip` and without the

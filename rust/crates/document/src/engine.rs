@@ -68,6 +68,24 @@ struct Cover {
     invisible: bool,
 }
 
+/// A set of elements (renderer.cpp's `std::unordered_set<const litehtml::element*>`): a bit an element of the arena.
+#[derive(Clone, Debug, Default)]
+pub struct ElementSet(Vec<u64>);
+
+impl ElementSet {
+    fn insert(&mut self, el: ElementId) {
+        let (word, bit) = (el.0 as usize / 64, el.0 % 64);
+        if self.0.len() <= word {
+            self.0.resize(word + 1, 0);
+        }
+        self.0[word] |= 1 << bit;
+    }
+
+    fn contains(&self, el: ElementId) -> bool {
+        self.0.get(el.0 as usize / 64).is_some_and(|w| w & (1 << (el.0 % 64)) != 0)
+    }
+}
+
 /// `widget_id(el, placement)`'s walk: the widget id of an element or its nearest ancestor with one (0 when none), and
 /// that ancestor's border box.
 fn widget_id(doc: &Document, cx: &StyleCx, el: Option<ElementId>, placement: Option<&mut Rect>) -> i64 {
@@ -281,14 +299,7 @@ impl<K: Backend> DocumentEngine<K> {
     /// `scan`: the items painted after `el` that meet `area`, skipping its descendants, what `ignore` holds and what
     /// shows nothing: 1 at the first when `ids` is None, otherwise their widget ids into `ids` (-1 past `limit` or for
     /// one without an id). 0 when nothing covers it; 1 too when `el` is not painted.
-    fn scan(
-        &mut self,
-        el: Option<ElementId>,
-        area: Rect,
-        ignore: &BTreeSet<ElementId>,
-        mut ids: Option<&mut Vec<i64>>,
-        limit: usize,
-    ) -> i32 {
+    fn scan(&mut self, el: Option<ElementId>, area: Rect, ignore: &ElementSet, mut ids: Option<&mut Vec<i64>>, limit: usize) -> i32 {
         let Some(doc) = self.doc.as_ref() else { return if ids.is_some() { -1 } else { 1 } };
         let cx =
             StyleCx { names: &self.process.names, container: &self.container, cache: &self.process.cache, switches: self.process.switches };
@@ -337,7 +348,7 @@ impl<K: Backend> DocumentEngine<K> {
                 if skip {
                     break;
                 }
-                skip = Some(w) == ri || ignore.contains(&doc.render.item(w).element);
+                skip = Some(w) == ri || ignore.contains(doc.render.item(w).element);
                 walk = doc.render.parent(w);
             }
             if skip {
@@ -357,11 +368,6 @@ impl<K: Backend> DocumentEngine<K> {
             list.push(id);
         }
         if ids.is_some_and(|l| !l.is_empty()) { 1 } else { 0 }
-    }
-
-    /// The elements of widget ids, as a set (what the C++ keeps as element pointers).
-    fn element_set(&self, ids: &BTreeSet<i64>) -> BTreeSet<ElementId> {
-        ids.iter().filter_map(|id| self.element(*id)).collect()
     }
 
     /// `positioned_z`.
@@ -1131,8 +1137,23 @@ impl<K: Backend> Engine for DocumentEngine<K> {
         true
     }
 
-    fn layer_candidate(&mut self, id: i64, movers: Option<&BTreeSet<i64>>) -> Option<Rect> {
-        let movers = movers.map(|m| self.element_set(m));
+    type Elements = ElementSet;
+
+    fn elements(&mut self, ids: impl IntoIterator<Item = i64>) -> ElementSet {
+        let mut set = ElementSet(vec![0; self.doc.as_ref().map_or(0, |d| d.elements.len().div_ceil(64))]);
+        for id in ids {
+            self.insert_element(&mut set, id);
+        }
+        set
+    }
+
+    fn insert_element(&mut self, set: &mut ElementSet, id: i64) {
+        if let Some(el) = self.element(id) {
+            set.insert(el);
+        }
+    }
+
+    fn layer_candidate(&mut self, id: i64, movers: Option<&ElementSet>) -> Option<Rect> {
         let (doc, el) = (self.doc.as_ref()?, self.element(id)?);
         let ri = doc.get_render_item(el)?;
         if !doc.is_visible(ri) || (doc.is_inline(el) && !doc.is_inline_box(el)) {
@@ -1145,7 +1166,7 @@ impl<K: Backend> Engine for DocumentEngine<K> {
         let mut p = doc.render.parent(ri);
         while let Some(item) = p {
             let pel = doc.render.item(item).element;
-            if doc.el(pel).css.is_paint_group() && !movers.as_ref().is_some_and(|m| m.contains(&pel)) {
+            if doc.el(pel).css.is_paint_group() && !movers.is_some_and(|m| m.contains(pel)) {
                 return None;
             }
             p = doc.render.parent(item);
@@ -1272,17 +1293,15 @@ impl<K: Backend> Engine for DocumentEngine<K> {
         }
     }
 
-    fn covered(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>) -> bool {
-        let ignore = self.element_set(ignore);
+    fn covered(&mut self, id: i64, area: Rect, ignore: &ElementSet) -> bool {
         let el = self.element(id);
-        self.scan(el, area, &ignore, None, 0) != 0
+        self.scan(el, area, ignore, None, 0) != 0
     }
 
-    fn obscurers(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>, limit: usize) -> Option<Vec<i64>> {
-        let ignore = self.element_set(ignore);
+    fn obscurers(&mut self, id: i64, area: Rect, ignore: &ElementSet, limit: usize) -> Option<Vec<i64>> {
         let el = self.element(id);
         let mut out = Vec::new();
-        if self.scan(el, area, &ignore, Some(&mut out), limit) < 0 {
+        if self.scan(el, area, ignore, Some(&mut out), limit) < 0 {
             return None;
         }
         Some(out)

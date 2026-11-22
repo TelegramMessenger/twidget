@@ -18,7 +18,7 @@ use crate::common::cases::report;
 use crate::common::tape::{self, Entry, Shared, Tape, TapeEngine};
 use crate::common::{FontStub, Run, Script, SharedLog, Tally, run_on, split};
 use twidget_animations::{Declared, StyleValues};
-use twidget_document::{DocumentEngine, Process};
+use twidget_document::{DocumentEngine, ElementSet, Process};
 use twidget_events::{EditorStyle, TextRun};
 use twidget_json::Json;
 use twidget_renderer::{BoxStyle, Clip, Engine, HoleChange, ScrollExtent, TextContent, Tile};
@@ -514,9 +514,18 @@ impl Engine for Checked {
     fn background_is_local(&mut self, id: i64) -> bool {
         same!(self, "background_is_local", background_is_local(id))
     }
-    fn layer_candidate(&mut self, id: i64, movers: Option<&BTreeSet<i64>>) -> Option<Rect> {
-        let a = self.tape.layer_candidate(id, movers);
-        let b = self.port.layer_candidate(id, movers);
+    type Elements = (BTreeSet<i64>, ElementSet);
+    fn elements(&mut self, ids: impl IntoIterator<Item = i64>) -> Self::Elements {
+        let ids: Vec<i64> = ids.into_iter().collect();
+        (self.tape.elements(ids.iter().copied()), self.port.elements(ids))
+    }
+    fn insert_element(&mut self, set: &mut Self::Elements, id: i64) {
+        self.tape.insert_element(&mut set.0, id);
+        self.port.insert_element(&mut set.1, id);
+    }
+    fn layer_candidate(&mut self, id: i64, movers: Option<&Self::Elements>) -> Option<Rect> {
+        let a = self.tape.layer_candidate(id, movers.map(|m| &m.0));
+        let b = self.port.layer_candidate(id, movers.map(|m| &m.1));
         self.check("layer_candidate", a.map(|r| bits(&r)) == b.map(|r| bits(&r)), || format!("C++ {a:?} / Rust {b:?}"));
         a
     }
@@ -546,11 +555,17 @@ impl Engine for Checked {
     fn paint_index(&mut self, id: i64) -> usize {
         same!(self, "paint_index", paint_index(id))
     }
-    fn covered(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>) -> bool {
-        same!(self, "covered", covered(id, area, ignore))
+    fn covered(&mut self, id: i64, area: Rect, ignore: &Self::Elements) -> bool {
+        let a = self.tape.covered(id, area, &ignore.0);
+        let b = self.port.covered(id, area, &ignore.1);
+        self.check("covered", a == b, || format!("C++ {a:?} / Rust {b:?}"));
+        a
     }
-    fn obscurers(&mut self, id: i64, area: Rect, ignore: &BTreeSet<i64>, limit: usize) -> Option<Vec<i64>> {
-        same!(self, "obscurers", obscurers(id, area, ignore, limit))
+    fn obscurers(&mut self, id: i64, area: Rect, ignore: &Self::Elements, limit: usize) -> Option<Vec<i64>> {
+        let a = self.tape.obscurers(id, area, &ignore.0, limit);
+        let b = self.port.obscurers(id, area, &ignore.1, limit);
+        self.check("obscurers", a == b, || format!("C++ {a:?} / Rust {b:?}"));
+        a
     }
     fn draw(&mut self) -> DisplayList {
         let a = self.tape.draw();

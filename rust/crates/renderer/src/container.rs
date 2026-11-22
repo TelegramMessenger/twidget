@@ -62,7 +62,7 @@ impl Container {
 
     /// Lays the document out within the layout budget, the words its texts owe measured first in one request. Past the
     /// budget the document stays as far as it got and lays out nothing again, and the renderer stops.
-    pub fn layout(&mut self, engine: &mut dyn Engine, width: f32) -> Option<Exhausted> {
+    pub fn layout(&mut self, engine: &mut impl Engine, width: f32) -> Option<Exhausted> {
         let elements = engine.element_count();
         engine.measure_words();
         engine.render(width, LAYOUT_BUDGET_BASE.wrapping_add(LAYOUT_BUDGET_PER_ELEMENT.wrapping_mul(elements)));
@@ -70,25 +70,25 @@ impl Container {
     }
 
     /// The last layout ran past the budget: the document is laid out no more.
-    pub fn exhausted(&self, engine: &mut dyn Engine) -> bool {
+    pub fn exhausted(&self, engine: &mut impl Engine) -> bool {
         self.doc && engine.layout_exhausted()
     }
 
     /// Drops the document: the next build parses a new one.
-    pub fn drop_document(&mut self, engine: &mut dyn Engine) {
+    pub fn drop_document(&mut self, engine: &mut impl Engine) {
         engine.drop_document();
         self.doc = false;
     }
 
     /// The viewport is now `vp_height` tall, without a layout: the document does not depend on it.
-    pub fn viewport_resized(&mut self, engine: &mut dyn Engine, vp_height: i32) {
+    pub fn viewport_resized(&mut self, engine: &mut impl Engine, vp_height: i32) {
         self.vp_height = vp_height;
         engine.viewport_height(vp_height);
     }
 
     /// The master CSS of the next document. A change drops the current one: a patch keeps the master it was
     /// parsed with.
-    pub fn set_master(&mut self, engine: &mut dyn Engine, css: Vec<u8>) {
+    pub fn set_master(&mut self, engine: &mut impl Engine, css: Vec<u8>) {
         if css == self.master {
             return;
         }
@@ -97,7 +97,7 @@ impl Container {
         self.doc = false;
     }
 
-    fn fonts_grown(&self, engine: &mut dyn Engine) -> bool {
+    fn fonts_grown(&self, engine: &mut impl Engine) -> bool {
         engine.font_count() > self.built_fonts.wrapping_add(MAX_PATCHED_FONTS)
     }
 
@@ -105,7 +105,7 @@ impl Container {
     /// goes to `exhausted` as it happens, for the renderer to stop there.
     pub fn build(
         &mut self,
-        engine: &mut dyn Engine,
+        engine: &mut impl Engine,
         html: &[u8],
         vp_height: i32,
         width: f64,
@@ -163,14 +163,14 @@ impl Container {
         true
     }
 
-    pub fn height(&self, engine: &mut dyn Engine) -> f64 {
+    pub fn height(&self, engine: &mut impl Engine) -> f64 {
         if self.doc { engine.height() } else { 0.0 }
     }
 
     /// Whether the layout can change with the viewport's height, which follows the document's: fixed boxes,
     /// percentage heights on html or body, viewport lengths, height media queries, and absolute boxes placed
     /// against the viewport. Otherwise a new height needs no second layout.
-    pub fn depends_on_viewport_height(&self, engine: &mut dyn Engine, html: &[u8]) -> bool {
+    pub fn depends_on_viewport_height(&self, engine: &mut impl Engine, html: &[u8]) -> bool {
         if !self.doc || !engine.has_root() {
             return false;
         }
@@ -192,13 +192,13 @@ impl Container {
     }
 
     /// The document was laid out at the current width and viewport: a patch can go straight in.
-    pub fn can_patch(&self, engine: &mut dyn Engine, width: f64) -> bool {
+    pub fn can_patch(&self, engine: &mut impl Engine, width: f64) -> bool {
         self.doc && width as f32 == self.rendered_width && !self.fonts_grown(engine)
     }
 
     /// Attribute values and sole texts into the document in place (the fork's holes), relaying out only when a
     /// value can move boxes. False, leaving the document as it was, when a change has no hole.
-    pub fn patch(&mut self, engine: &mut dyn Engine, changes: &[HoleChange], exhausted: &mut dyn FnMut(Exhausted)) -> bool {
+    pub fn patch(&mut self, engine: &mut impl Engine, changes: &[HoleChange], exhausted: &mut dyn FnMut(Exhausted)) -> bool {
         let Some(changed) = engine.update_holes(changes) else { return false };
         self.patched = true;
         if changed && !engine.last_patch_paint_only() {
@@ -214,7 +214,7 @@ impl Container {
     /// can move boxes. False when the document cannot patch them.
     pub fn restyle(
         &mut self,
-        engine: &mut dyn Engine,
+        engine: &mut impl Engine,
         patches: &[(i64, Vec<u8>)],
         width: f64,
         exhausted: &mut dyn FnMut(Exhausted),

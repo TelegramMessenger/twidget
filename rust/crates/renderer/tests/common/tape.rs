@@ -930,6 +930,13 @@ impl Engine for TapeEngine {
     fn background_is_local(&mut self, id: i64) -> bool {
         answer!(self.tape, "background_is_local", Entry::Local { id: i, yes } => { self.check(i == id, || format!("background_is_local({i}) in C++, ({id}) in Rust")); yes }, false)
     }
+    type Elements = BTreeSet<i64>;
+    fn elements(&mut self, ids: impl IntoIterator<Item = i64>) -> BTreeSet<i64> {
+        ids.into_iter().collect()
+    }
+    fn insert_element(&mut self, set: &mut BTreeSet<i64>, id: i64) {
+        set.insert(id);
+    }
     fn layer_candidate(&mut self, id: i64, movers: Option<&BTreeSet<i64>>) -> Option<Rect> {
         let asked: Option<Vec<i64>> = movers.map(|m| m.iter().copied().collect());
         answer!(self.tape, "layer_candidate", Entry::Candidate { id: i, movers: m, rect } => {
