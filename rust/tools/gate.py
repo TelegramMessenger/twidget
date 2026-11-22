@@ -32,31 +32,40 @@ def is_oracle(name):
     return name.endswith("_oracle" + exe) or name == "lhdump" + exe
 
 
-def oracle_dir():
-    for candidate in (os.path.join(BUILD, "Release"), BUILD):
+def oracle_dir(build, config):
+    for candidate in (os.path.join(build, config), build):
         if os.path.isdir(candidate) and any(is_oracle(name) for name in os.listdir(candidate)):
             return candidate
     return None
 
 
-def main():
-    failed = []
-    configure = ["cmake", "-S", ORACLE, "-B", BUILD]
+def build_oracle(config):
+    build = os.path.join(BUILD, "debug") if config == "Debug" else BUILD
+    configure = ["cmake", "-S", ORACLE, "-B", build]
     if os.name != "nt":
-        configure += ["-DCMAKE_BUILD_TYPE=Release"]
+        configure += ["-DCMAKE_BUILD_TYPE=" + config]
         if sys.platform == "darwin":
             deployment = os.environ.get("MACOSX_DEPLOYMENT_TARGET") or "12.0"
             configure += ["-DCMAKE_OSX_DEPLOYMENT_TARGET=" + deployment]
-    elif not os.path.isdir(BUILD):
+    elif not os.path.isdir(build):
         configure += ["-A", "x64"]
     # CMAKE_BUILD_PARALLEL_LEVEL caps the jobs; a bare --parallel lets the build tool take every core.
     jobs = [os.environ["CMAKE_BUILD_PARALLEL_LEVEL"]] if os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL") else []
-    if not (step("oracle configure", configure) and step("oracle build", ["cmake", "--build", BUILD, "--config", "Release", "--parallel"] + jobs)):
+    if not (step("oracle configure", configure) and step("oracle build", ["cmake", "--build", build, "--config", config, "--parallel"] + jobs)):
         print("GATE FAIL: the oracle does not build")
-        return 1
-    directory = oracle_dir()
+        return None
+    directory = oracle_dir(build, config)
     if not directory:
         print("GATE FAIL: the oracle built, but no program is where the tests look")
+    return directory
+
+
+def main():
+    failed = []
+    # Darwin combines sin and cos in optimized code, with a different last bit.
+    config = "Debug" if sys.platform == "darwin" else "Release"
+    directory = build_oracle(config)
+    if not directory:
         return 1
     env = dict(os.environ, TWIDGET_ORACLE_DIR=directory, TWIDGET_ORACLE_REQUIRED="1")
     if "--corpus" in sys.argv:
@@ -74,7 +83,10 @@ def main():
         ("unsafe", [sys.executable, "-I", os.path.join(ROOT, "tools", "unsafe_report.py")], None),
     ]
     if "--release" in sys.argv:
-        checks.insert(2, ("test release", ["cargo", "test", "--workspace", "--locked", "--release"], env))
+        optimized = build_oracle("Release") if config == "Debug" else directory
+        if not optimized:
+            return 1
+        checks.insert(2, ("test release", ["cargo", "test", "--workspace", "--locked", "--release"], dict(env, TWIDGET_ORACLE_DIR=optimized)))
     for name, command, extra in checks:
         if not step(name, command, extra):
             failed.append(name)

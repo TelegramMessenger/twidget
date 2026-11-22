@@ -110,10 +110,10 @@ set(TW_SANDBOX_SRC "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/src")
 get_filename_component(TW_NOVA "${TWIDGET_WIDGET_SANDBOX}/../nova-safe" ABSOLUTE)
 find_program(TW_CARGO cargo REQUIRED)
 set(HELPER_FFI_LIB "${CMAKE_CURRENT_BINARY_DIR}/helper_ffi/${CMAKE_STATIC_LIBRARY_PREFIX}twidget_helper_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
-# Always runs: cargo decides what is stale, in the workspace's own target directory and release profile, and the copy changes only with its bytes.
+# Always runs: cargo decides what is stale, and the copy changes only with its bytes.
 add_custom_target(helper_ffi_cargo
-    COMMAND "${TW_CARGO}" build --release --locked --offline --package twidget_helper_ffi --features nova-c-api --lib --target-dir "${TW_RUST}/target"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${TW_RUST}/target/release/${CMAKE_STATIC_LIBRARY_PREFIX}twidget_helper_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}" "${HELPER_FFI_LIB}"
+    COMMAND "${TW_CARGO}" build --profile "$<IF:$<CONFIG:Debug>,dev,release>" --locked --offline --package twidget_helper_ffi --features nova-c-api --lib --target-dir "${TW_RUST}/target"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${TW_RUST}/target/$<IF:$<CONFIG:Debug>,debug,release>/${CMAKE_STATIC_LIBRARY_PREFIX}twidget_helper_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}" "${HELPER_FFI_LIB}"
     WORKING_DIRECTORY "${TW_RUST}"
     BYPRODUCTS "${HELPER_FFI_LIB}"
     COMMENT "cargo build twidget_helper_ffi"
