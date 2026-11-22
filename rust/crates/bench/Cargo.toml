@@ -10,7 +10,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# nova-safe's metering allocator as the global allocator, as the helper installs it (twidget_helper_ffi): every allocation
+# pays its header and counter, on account 0 here since no engine's account is entered.
+metered = ["dep:nova_meter"]
+
 [dependencies]
+nova_meter = { path = "../../../../nova-safe/nova_meter", optional = true }
 twidget_cstd = { path = "../cstd" }
 twidget_document = { path = "../document" }
 twidget_encode = { path = "../encode" }

@@ -385,6 +385,7 @@ dependencies = [
 name = "twidget_bench"
 version = "0.1.0"
 dependencies = [
+ "nova_meter",
  "twidget_cstd",
  "twidget_document",
  "twidget_encode",

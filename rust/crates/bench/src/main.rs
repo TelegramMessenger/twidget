@@ -2,11 +2,17 @@
 //!   twidget_bench [--step|--trace] [mixed|transform|swarm|css|drag|drag-doc|canvas] [count] [frames]
 //! `--step` runs on a step clock (1000 ms, a 60th of a second more at each tick), so that every run does the same work;
 //! `--trace` does too and writes a line of hashes for each call of the loop before the report. `oracle/bench_oracle`
-//! takes the same flags for the C++.
+//! takes the same flags for the C++. Built with `--features metered`, it allocates through nova-safe's metering
+//! allocator as the helper does.
 
 #![forbid(unsafe_code)]
 
 use twidget_bench::{Options, stepped, timed, traced};
+
+/// The helper's allocator (twidget_helper_ffi's `METERED`): a header and a counter on every allocation and free.
+#[cfg(feature = "metered")]
+#[global_allocator]
+static METERED: nova_meter::Metered = nova_meter::Metered;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
