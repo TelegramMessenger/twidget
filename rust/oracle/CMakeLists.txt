@@ -76,6 +76,9 @@ if (APPLE)
     target_compile_definitions(lhdump_litehtml PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
     # Gumbo is the release reference parser even when the C++ floating-point oracle needs Debug.
     set_property(SOURCE ${LHDUMP_GUMBO_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS "$<$<CONFIG:Debug>:NDEBUG>")
+    # Apple arm64 converts out-of-range color channels differently in the unoptimized reference.
+    set_property(SOURCE "${TW_LITEHTML}/src/web_color.cpp" APPEND PROPERTY COMPILE_OPTIONS
+        "$<$<CONFIG:Debug>:-Xarch_arm64>" "$<$<CONFIG:Debug>:-O3>")
 endif()
 target_include_directories(lhdump_litehtml
     PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
