@@ -73,7 +73,7 @@ file(GLOB LHDUMP_GUMBO_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/gumbo/*.c")
 file(GLOB LHDUMP_LITEHTML_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/*.cpp")
 add_library(lhdump_litehtml STATIC ${LHDUMP_GUMBO_SOURCES} ${LHDUMP_LITEHTML_SOURCES})
 if (APPLE)
-    target_link_libraries(lhdump_litehtml PUBLIC "-framework CoreFoundation")
+    target_compile_definitions(lhdump_litehtml PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
 endif()
 target_include_directories(lhdump_litehtml
     PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
