@@ -94,8 +94,12 @@ fn parse_list(tokens: &[CssToken], out: &mut Vec<CalcNode>, depth: i32) -> bool 
     }
 }
 
+/// `value_index(lowcase(unit))` of the lower-case unit names.
 fn units_index(unit: &[u8]) -> Option<i32> {
-    CssValues::from(&css_units_strings).value_index(&lowcase(unit))
+    if unit.is_empty() {
+        return None;
+    }
+    css_units_strings.iter().position(|entry| entry.as_bytes().eq_ignore_ascii_case(unit)).map(|i| i as i32)
 }
 
 fn parse_atom(tokens: &[CssToken], i: &mut usize, out: &mut CalcNode, depth: i32) -> bool {

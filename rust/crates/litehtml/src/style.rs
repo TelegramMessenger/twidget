@@ -504,7 +504,7 @@ fn split_declarations(txt: &[u8], out: &mut Vec<(usize, usize)>) -> bool {
 /// `has_var(tokens)`: a `var()` at any depth.
 pub fn has_var(tokens: &[CssToken]) -> bool {
     for tok in tokens {
-        if tok.ty == CV_FUNCTION && lowcase(tok.name()) == b"var" {
+        if tok.ty == CV_FUNCTION && tok.name().eq_ignore_ascii_case(b"var") {
             return true;
         }
         if tok.is_component_value() && has_var(&tok.value) {

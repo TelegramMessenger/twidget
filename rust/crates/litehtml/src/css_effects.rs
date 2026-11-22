@@ -6,6 +6,8 @@
 //! `svg_gradient`). What they compute for painting (`clip_path_shape::resolve`, the matrices of a CSS
 //! transform) comes with the stages that paint.
 
+use std::borrow::Cow;
+
 use crate::Names;
 use crate::css_length::{CssLength, f_length, f_length_percentage, f_percentage, f_positive};
 use crate::css_parser::parse_comma_separated_list;
@@ -616,12 +618,13 @@ pub fn parse_box_shadow(
     true
 }
 
-/// `function_args(tok, args)`: a function's arguments without the commas; whether there are any.
-fn function_args(tok: &CssToken, args: &mut Vec<CssToken>) -> bool {
+/// `function_args(tok, args)`: a function's arguments without the commas; whether there are any. The C++ copies
+/// each; here an argument is copied only when `fold_calc_arg` folds it.
+fn function_args<'a>(tok: &'a CssToken, args: &mut Vec<Cow<'a, CssToken>>) -> bool {
     args.clear();
     for arg in &tok.value {
         if arg.ch() != COMMA {
-            args.push(arg.clone());
+            args.push(Cow::Borrowed(arg));
         }
     }
     !args.is_empty()
@@ -818,7 +821,7 @@ fn folded_token(value: &CalcValue) -> CssToken {
 /// `fold_calc(tok)`: a `calc()` of one unit as its value; true for any other token, false for a `calc()`
 /// that does not fold.
 fn fold_calc(tok: &mut CssToken) -> bool {
-    if tok.ty != CV_FUNCTION || lowcase(tok.name()) != b"calc" {
+    if tok.ty != CV_FUNCTION || !tok.name().eq_ignore_ascii_case(b"calc") {
         return true;
     }
     let mut value = CalcValue::default();
@@ -832,6 +835,14 @@ fn fold_calc(tok: &mut CssToken) -> bool {
     }
     *tok = folded_token(&value);
     true
+}
+
+/// `fold_calc(arg)` of a function's argument, copied only when it is a `calc()`, which `fold_calc` alone changes.
+fn fold_calc_arg(arg: &mut Cow<'_, CssToken>) -> bool {
+    if arg.ty != CV_FUNCTION || !arg.name().eq_ignore_ascii_case(b"calc") {
+        return true;
+    }
+    fold_calc(arg.to_mut())
 }
 
 /// `fold_env(tok)`: `env(name, fallback)` as its one-token fallback, a safe-area or keyboard inset as 0px.
@@ -1110,7 +1121,7 @@ pub fn parse_filter(
         }
         function_args(tok, &mut args);
         for arg in &mut args {
-            if !fold_calc(arg) {
+            if !fold_calc_arg(arg) {
                 functions.clear();
                 return false;
             }
@@ -1216,9 +1227,9 @@ fn fast_digit(c: u8) -> bool {
     c.is_ascii_digit()
 }
 
+/// `lowcase(word)` is one of the lower-case `list`.
 fn fast_one_of(word: &[u8], list: &[&[u8]]) -> bool {
-    let low = lowcase(word);
-    list.contains(&&low[..])
+    list.iter().any(|w| w.eq_ignore_ascii_case(word))
 }
 
 /// `fast_transform_tokens(value, tokens)`: the tokens of a plain `transform` value (`none`, or up to 32 of
@@ -1284,7 +1295,7 @@ pub fn fast_transform_tokens(value: &[u8], tokens: &mut Vec<CssToken>) -> bool {
             return false;
         }
         i += 1;
-        let mut f = CssToken::with_str(CV_FUNCTION, &name);
+        let mut f = CssToken { ty: CV_FUNCTION, str: name, ..CssToken::default() };
         let mut args = 0;
         loop {
             whitespace(&mut i);
@@ -1389,7 +1400,7 @@ pub fn parse_transform(names: &Names, tokens: &[CssToken], functions: &mut Vec<T
         }
         // Math that mixes % and px does not fold: it stays a calc length, which layout resolves against the box.
         for arg in &mut args {
-            fold_calc(arg);
+            fold_calc_arg(arg);
         }
         let name = lowcase(tok.name());
         let mut f = TransformFunction::default();
