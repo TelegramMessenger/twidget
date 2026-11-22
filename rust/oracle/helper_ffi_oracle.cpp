@@ -24,6 +24,7 @@
 #include <bit>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -428,6 +429,17 @@ public:
         return _changed.wait_for(lock, std::chrono::seconds(kWaitSeconds), [&] { return _greeted || _readerDone; });
     }
 
+    auto pendingStats(std::ptrdiff_t waitFor = 0) {
+        auto lock = std::unique_lock(_mutex);
+        const auto count = [&] {
+            return std::count_if(_frames.begin(), _frames.end(), [](const std::string &frame) { return KindOf(frame) == Stats; });
+        };
+        if (waitFor) {
+            _changed.wait_for(lock, std::chrono::seconds(1), [&] { return _readerDone || count() >= waitFor; });
+        }
+        return count();
+    }
+
     // The frames since the last take, ordered by runtime and kind with each kind's in the order they came (each kind of a runtime comes from one thread in order, the kinds from several).
     std::vector<std::string> take() {
         auto frames = std::vector<std::string>();
@@ -671,7 +683,16 @@ void Both(const std::function<bool(Arm &)> &step) {
         if (!step(*Arms[i])) {
             failure += std::string(i ? "Rust" : "C++") + ": the barrier's wait ran out or the serving ended\n";
         }
-        taken[i] = Arms[i]->take();
+    }
+    if (Arms[0] && Arms[1] && failure.empty()) {
+        // A trailing Stats uses a real 200 ms timer, including while the other arm is taking its step.
+        const auto cpp = Arms[0]->pendingStats();
+        const auto rust = Arms[1]->pendingStats();
+        if (cpp < rust) Arms[0]->pendingStats(rust);
+        if (rust < cpp) Arms[1]->pendingStats(cpp);
+    }
+    for (auto i = 0; i != 2; ++i) {
+        if (Arms[i]) taken[i] = Arms[i]->take();
     }
     MaskMemory(taken);
     Compare(taken[0], taken[1], failure);
