@@ -15,13 +15,40 @@ pub fn to_lower(c: u8) -> u8 {
     c.to_ascii_lowercase()
 }
 
-/// The NaN `strtod` makes of `nan`: the Windows C runtime sets every payload bit; the other C libraries
-/// make the default quiet NaN (their payloads from `nan(…)` are not reproduced: no ported caller lets a
-/// NaN through).
 #[cfg(target_env = "msvc")]
 const STRTOD_NAN: u64 = 0x7fff_ffff_ffff_ffff;
 #[cfg(not(target_env = "msvc"))]
 const STRTOD_NAN: u64 = 0x7ff8_0000_0000_0000;
+
+// Darwin fixes the payload grammar and accepts other closed tags as zero (parseNan in Libc/stdlib/strtofp.c).
+#[cfg(target_vendor = "apple")]
+fn nan_payload(suffix: &[u8]) -> (u64, usize) {
+    let Some(body) = suffix.strip_prefix(b"(") else { return (0, 0) };
+    let Some(end) = body.iter().position(|&c| c == b')' || c == 0) else { return (0, 0) };
+    if body[end] == 0 {
+        return (0, 0);
+    }
+    let digits = &body[..end];
+    let (base, digits) = if let Some(hex) = digits.strip_prefix(b"0x") {
+        (16, hex)
+    } else if let Some(octal) = digits.strip_prefix(b"0") {
+        (8, octal)
+    } else {
+        (10, digits)
+    };
+    let payload = digits.iter().try_fold(0u64, |n, &c| {
+        let digit = char::from(c).to_digit(base)?;
+        Some(n.wrapping_mul(u64::from(base)).wrapping_add(u64::from(digit)))
+    });
+    (payload.unwrap_or(0), end + 2)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn nan_payload(suffix: &[u8]) -> (u64, usize) {
+    let Some(body) = suffix.strip_prefix(b"(") else { return (0, 0) };
+    let n = body.iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
+    (0, if body.get(n) == Some(&b')') { n + 2 } else { 0 })
+}
 
 /// `strtod(text, &end)`: the value and how many bytes it took; 0 bytes (and 0.0) when no conversion
 /// could be made.
@@ -48,16 +75,9 @@ pub fn strtod(text: &[u8]) -> (f64, usize) {
         return (signed(f64::INFINITY), i + n);
     }
     if starts_with_ignore_case(rest, b"nan") {
-        let mut n = 3;
-        if rest.get(3) == Some(&b'(') {
-            let close = rest[4..].iter().position(|c| !(c.is_ascii_alphanumeric() || *c == b'_'));
-            if let Some(k) = close
-                && rest[4 + k] == b')'
-            {
-                n = 4 + k + 1;
-            }
-        }
-        return (signed(f64::from_bits(STRTOD_NAN)), i + n);
+        let (payload, n) = nan_payload(&rest[3..]);
+        let bits = STRTOD_NAN | (payload & 0x0007_ffff_ffff_ffff);
+        return (signed(f64::from_bits(bits)), i + 3 + n);
     }
     if rest.len() >= 2
         && rest[0] == b'0'
@@ -304,9 +324,15 @@ pub fn strtof(text: &[u8]) -> (f32, usize) {
     };
     let signed = |v: f32| if negative { -v } else { v };
     let rest = &text[i..];
-    if starts_with_ignore_case(rest, b"inf") || starts_with_ignore_case(rest, b"nan") {
-        let (value, n) = strtod(text);
-        return (value as f32, n);
+    if starts_with_ignore_case(rest, b"inf") {
+        let n = if starts_with_ignore_case(rest, b"infinity") { 8 } else { 3 };
+        return (signed(f32::INFINITY), i + n);
+    }
+    if starts_with_ignore_case(rest, b"nan") {
+        let (payload, n) = nan_payload(&rest[3..]);
+        let base = (f64::from_bits(STRTOD_NAN) as f32).to_bits();
+        let bits = base | (payload as u32 & 0x003f_ffff);
+        return (signed(f32::from_bits(bits)), i + 3 + n);
     }
     if rest.len() >= 2
         && rest[0] == b'0'
