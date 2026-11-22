@@ -74,6 +74,8 @@ file(GLOB LHDUMP_LITEHTML_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/*.cpp")
 add_library(lhdump_litehtml STATIC ${LHDUMP_GUMBO_SOURCES} ${LHDUMP_LITEHTML_SOURCES})
 if (APPLE)
     target_compile_definitions(lhdump_litehtml PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
+    # Gumbo is the release reference parser even when the C++ floating-point oracle needs Debug.
+    set_property(SOURCE ${LHDUMP_GUMBO_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS "$<$<CONFIG:Debug>:NDEBUG>")
 endif()
 target_include_directories(lhdump_litehtml
     PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
