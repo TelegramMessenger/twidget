@@ -26,6 +26,7 @@ fn strtod_reads_the_c_grammar() {
     assert_eq!(strtod(b"."), (0.0, 0));
     assert_eq!(strtod(b"\x0b5"), (5.0, 2), "\\v is C's whitespace");
     assert_eq!(atoi(b"700"), 700);
+    assert_eq!(atoi(b"3000000000"), if core::ffi::c_long::BITS == 32 { i32::MAX } else { -1_294_967_296 });
     assert_eq!(format_fixed(-0.0, 2), "-0.00");
     assert_eq!(format_fixed(0.125, 2), "0.12", "ties to even");
 }

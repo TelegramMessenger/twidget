@@ -97,24 +97,9 @@ pub fn atof(text: &[u8]) -> f64 {
     strtod(text).0
 }
 
-/// `atoi` for the values the ported code gives it (it is undefined past `int`): whitespace, a sign and
-/// digits, saturated at the ends of `i32`.
+/// `atoi` in the widget C runtimes narrows the result of decimal `strtol` to `int`.
 pub fn atoi(text: &[u8]) -> i32 {
-    let mut i = 0;
-    while i < text.len() && is_space(text[i]) {
-        i += 1;
-    }
-    let negative = text.get(i) == Some(&b'-');
-    if matches!(text.get(i), Some(b'-' | b'+')) {
-        i += 1;
-    }
-    let mut value: i64 = 0;
-    while let Some(c) = text.get(i).filter(|c| c.is_ascii_digit()) {
-        value = (value * 10 + i64::from(c - b'0')).min(i64::from(i32::MAX) + 1);
-        i += 1;
-    }
-    let value = if negative { -value } else { value };
-    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    strtol(text).0 as i32
 }
 
 /// `snprintf("%.*f", precision, value)`: exact digits, ties to even, `-` kept on a negative zero; a
@@ -378,10 +363,9 @@ pub fn format_general(value: f64) -> String {
 }
 
 /// `strtol(text, &end, 10)` on a C string: the value and how many bytes it took, 0 bytes (and 0) when it
-/// read no digit. Past the range of C's `long` it is `LONG_MAX` or `LONG_MIN`; `long` is 32 bits on Windows
-/// and 64 elsewhere.
+/// read no digit. Past the range of C's `long` it is `LONG_MAX` or `LONG_MIN`.
 pub fn strtol(text: &[u8]) -> (i64, usize) {
-    let (min, max) = if cfg!(windows) { (i64::from(i32::MIN), i64::from(i32::MAX)) } else { (i64::MIN, i64::MAX) };
+    let (min, max) = (core::ffi::c_long::MIN, core::ffi::c_long::MAX);
     let at = |i: usize| text.get(i).copied().unwrap_or(0);
     let mut i = 0;
     while is_space(at(i)) {

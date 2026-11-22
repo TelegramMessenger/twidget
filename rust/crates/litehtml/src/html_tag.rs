@@ -1840,7 +1840,7 @@ impl Document {
             let li_baseline = pos.y + self.get_first_baseline(ri) - self.render.item(ri).content_offset_top();
             lm.pos.y = li_baseline - css.m_font_metrics.ascent;
             lm.pos.height = css.m_font_metrics.height;
-            lm.index = crate::el_font::c_atoi(self.get_attr(id, b"list_index").unwrap_or(b"0"));
+            lm.index = twidget_cstd::atoi(self.get_attr(id, b"list_index").unwrap_or(b"0"));
         } else {
             lm.pos.height = sz_font / Px(3.0);
             lm.pos.y = pos.y + ln_height / Px(2.0) - lm.pos.height / Px(2.0);

@@ -4,12 +4,6 @@ use crate::document::{Document, Env};
 use crate::element::ElementId;
 use crate::string_id::{_color_, _font_family_, _font_size_};
 
-/// `atoi(str)`, undefined past `int`: the Windows C runtime saturates, the others give `strtol`'s `long` cut to
-/// `int`.
-pub(crate) fn c_atoi(str: &[u8]) -> i32 {
-    if cfg!(windows) { twidget_cstd::atoi(str) } else { twidget_cstd::strtol(str).0 as i32 }
-}
-
 impl Document {
     /// `el_font::parse_attributes()`: `color` (with the container), `face` as `font-family`, and `size` as a
     /// keyword: 1 and below `x-small`, 6 and above `xx-large`, a signed size relative to 3 after a clamp to ±7.
@@ -21,7 +15,7 @@ impl Document {
             self.add_text_declaration(id, _font_family_, &str);
         }
         if let Some(str) = self.get_attr(id, b"size").map(<[u8]>::to_vec) {
-            let mut sz = c_atoi(&str);
+            let mut sz = twidget_cstd::atoi(&str);
             if str.first() == Some(&b'+') || str.first() == Some(&b'-') {
                 // relative size
                 sz = 3 + (-7).max(sz.min(7));
