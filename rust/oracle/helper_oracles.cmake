@@ -1,5 +1,6 @@
 # The widget helper's tdesktop glue (stage H1), compiled from a tdesktop checkout and never copied into twidget's git: its sparse Telegram/SourceFiles/{tgw,test,_other} are enough.
 set(TW_TDESKTOP_SOURCE "${TW_ROOT}/../tdesktop" CACHE PATH "tdesktop checkout whose Telegram/SourceFiles the helper's oracles compile")
+cmake_path(NORMAL_PATH TW_TDESKTOP_SOURCE)
 set(TW_TDESKTOP_FILES "${TW_TDESKTOP_SOURCE}/Telegram/SourceFiles")
 set(TW_ORACLE_IO "${TWIDGET_WIDGET_SANDBOX}/packages/rust/oracle")
 

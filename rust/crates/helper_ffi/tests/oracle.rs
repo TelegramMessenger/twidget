@@ -597,9 +597,9 @@ fn mutated_streams_end_alike_and_bounded() {
         let words: Vec<&str> = std::str::from_utf8(&rust.1).unwrap_or("<not UTF-8>").split(' ').take(3).collect();
         *reasons.entry(words.join(" ")).or_default() += 1;
     }
-    assert!(peak < PEAK_BOUND, "the oracle's peak commit {peak} past {PEAK_BOUND}");
+    assert!((1..PEAK_BOUND).contains(&peak), "the oracle's peak memory {peak} outside 1..{PEAK_BOUND} bytes");
     eprintln!(
-        "C ABI, mutated streams: {cases} served by both to their end with the same reason ({refused} with one, {clean} at the stream's end), no callback late, the process's peak commit {} MiB",
+        "C ABI, mutated streams: {cases} served by both to their end with the same reason ({refused} with one, {clean} at the stream's end), no callback late, the process's peak memory {} MiB",
         peak >> 20
     );
     eprintln!("C ABI, mutated streams' reasons by their first words: {reasons:?}");

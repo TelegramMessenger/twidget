@@ -44,6 +44,9 @@ def main():
     configure = ["cmake", "-S", ORACLE, "-B", BUILD]
     if os.name != "nt":
         configure += ["-DCMAKE_BUILD_TYPE=Release"]
+        if sys.platform == "darwin":
+            deployment = os.environ.get("MACOSX_DEPLOYMENT_TARGET") or "12.0"
+            configure += ["-DCMAKE_OSX_DEPLOYMENT_TARGET=" + deployment]
     elif not os.path.isdir(BUILD):
         configure += ["-A", "x64"]
     # CMAKE_BUILD_PARALLEL_LEVEL caps the jobs; a bare --parallel lets the build tool take every core.

@@ -21,6 +21,7 @@ target_include_directories(wire_oracle PRIVATE "${TW_CORE}")
 
 # widget-sandbox next to twidget, as twidget's own build expects it.
 set(TWIDGET_WIDGET_SANDBOX "${TW_ROOT}/../widget-sandbox" CACHE PATH "widget-sandbox checkout")
+cmake_path(NORMAL_PATH TWIDGET_WIDGET_SANDBOX)
 set(TW_SANDBOX_INCLUDE "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/include")
 if (NOT EXISTS "${TW_SANDBOX_INCLUDE}/twidget/json.h")
     message(FATAL_ERROR "widget-sandbox is not at ${TWIDGET_WIDGET_SANDBOX}: set TWIDGET_WIDGET_SANDBOX.")
@@ -71,6 +72,9 @@ set(TW_LITEHTML "${TW_ROOT}/litehtml")
 file(GLOB LHDUMP_GUMBO_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/gumbo/*.c")
 file(GLOB LHDUMP_LITEHTML_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/*.cpp")
 add_library(lhdump_litehtml STATIC ${LHDUMP_GUMBO_SOURCES} ${LHDUMP_LITEHTML_SOURCES})
+if (APPLE)
+    target_link_libraries(lhdump_litehtml PUBLIC "-framework CoreFoundation")
+endif()
 target_include_directories(lhdump_litehtml
     PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
     PRIVATE "${TW_LITEHTML}/src")

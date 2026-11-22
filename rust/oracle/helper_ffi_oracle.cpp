@@ -12,8 +12,12 @@
 #include "twidget/remote_stream.h"
 #include "twidget_helper.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
+#else
+#include <sys/resource.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -741,13 +745,23 @@ void Finish(Out &out, Arm &arm) {
     for (const auto &f : frames) out.str(f);
 }
 
-uint64_t PeakCommit() {
+uint64_t PeakMemoryBytes() {
+#ifdef _WIN32
     auto counters = PROCESS_MEMORY_COUNTERS_EX();
-    K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters));
-    return counters.PeakPagefileUsage;
+    return K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))
+        ? counters.PeakPagefileUsage : 0;
+#else
+    auto usage = rusage();
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return 0;
+#ifdef __APPLE__
+    return uint64_t(usage.ru_maxrss);
+#else
+    return uint64_t(usage.ru_maxrss) * 1024;
+#endif
+#endif
 }
 
-// A stream of the host's bytes, mutated: each arm serves it to its end, its requests answered empty; why each ended, what each wrote, and the process's peak commit.
+// A stream of the host's bytes, mutated: each arm serves it to its end, its requests answered empty; why each ended, what each wrote, and the process's peak memory use.
 void Fuzz(In &in) {
     const auto tapped = in.u8() != 0;
     const auto bytes = in.str();
@@ -764,7 +778,7 @@ void Fuzz(In &in) {
         for (const auto &f : frames) written += f.size();
         out.flag(finished).str(arm.reason()).u32(uint32_t(frames.size())).u64(written).u64(arm.glue().late);
     }
-    out.u64(PeakCommit());
+    out.u64(PeakMemoryBytes());
     oracle::answer(1, out.s);
 }
 
