@@ -10,7 +10,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+metered = ["dep:nova_meter"]
+
 [dependencies]
+nova_meter = { path = "../../../../nova-safe/nova_meter", optional = true }
 twidget_document = { path = "../document" }
 twidget_ends = { path = "../ends" }
 twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }

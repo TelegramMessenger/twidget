@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.20)
+project(twidget_bench_control LANGUAGES C CXX)
+
+get_filename_component(default_root "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+set(TWIDGET_BENCH_CPP_ROOT "${default_root}" CACHE PATH "C++ renderer checkout to benchmark")
+set(TWIDGET_BUILD_TESTS OFF)
+if (MSVC)
+    add_compile_options(/utf-8 /fp:precise)
+else()
+    add_compile_options(-ffp-contract=off)
+endif()
+
+add_subdirectory("${TWIDGET_BENCH_CPP_ROOT}" twidget EXCLUDE_FROM_ALL)
+add_executable(bench_oracle ../bench_oracle.cpp)
+target_compile_features(bench_oracle PRIVATE cxx_std_20)
+target_include_directories(bench_oracle PRIVATE "${TWIDGET_BENCH_CPP_ROOT}/tests")
+target_link_libraries(bench_oracle PRIVATE twidget::core twidget::wire)

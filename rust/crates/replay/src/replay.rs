@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use twidget_document::{DocumentEngine, Process};
 use twidget_ends::{Output, Proxy};
@@ -244,7 +245,8 @@ struct Session {
 impl Session {
     fn new(caps: Caps) -> Session {
         let answers = Arc::new(Mutex::new(Answers::default()));
-        let lp = Loopback::<Replayed>::made(caps);
+        let mut lp = Loopback::<Replayed>::made(caps);
+        lp.omit_formatted_transcript();
         lp.backend.0.borrow_mut().answers = Some(Box::new(AnswersHandle(Arc::clone(&answers))));
         Session {
             answers,
@@ -498,6 +500,7 @@ pub struct Options {
     pub sessions: Option<u64>,
     pub message_bytes: Option<u64>,
     pub perturb: Perturb,
+    pub benchmark: bool,
 }
 
 impl Options {
@@ -516,6 +519,7 @@ impl Options {
                 (!text.is_empty() && text.len() <= 19 && text.bytes().all(|b| b.is_ascii_digit())).then(|| text.parse().ok()).flatten()
             };
             match arg {
+                "--benchmark" => o.benchmark = true,
                 "--source" => {
                     i += 1;
                     o.source = args[i].clone();
@@ -552,7 +556,7 @@ impl Options {
             i += 1;
         }
         o.recording = recording?;
-        (!o.source.is_empty()).then_some(o)
+        (!o.source.is_empty() && (!o.benchmark || o.perturb == Perturb::None)).then_some(o)
     }
 }
 
@@ -807,6 +811,7 @@ pub struct Replay {
     live: BTreeMap<u32, SessionBox>,
     labelled: BTreeMap<u32, (Vec<u8>, Counts)>,
     total: Counts,
+    timings: BTreeMap<u32, SessionTiming>,
     index: u64,
     made: u32,
     most_alive: usize,
@@ -821,6 +826,49 @@ pub struct Replay {
 }
 
 struct SessionBox(Box<Session>);
+
+#[derive(Debug, Default)]
+struct SessionTiming {
+    label: Vec<u8>,
+    steps: Vec<(Kind, u64)>,
+    frames: Vec<(usize, bool, usize)>,
+    first_paint_step: Option<usize>,
+}
+
+impl SessionTiming {
+    fn add(&mut self, step: &Step, ns: u64) {
+        if step.kind == Kind::Construct {
+            self.label.clone_from(&step.label);
+        }
+        self.steps.push((step.kind, ns));
+        if step.kind == Kind::Frame {
+            let index = self.steps.len();
+            self.frames.push((index, step.painted, step.list.len()));
+            if step.painted && !step.list.is_empty() && self.first_paint_step.is_none() {
+                self.first_paint_step = Some(index);
+            }
+        }
+    }
+
+    fn json(&self, id: u32) -> Json {
+        let mut report = Json::object();
+        report.set("id", id).set("label", self.label.as_slice());
+        report.set("first_paint_step", self.first_paint_step.map(Json::from).unwrap_or_default());
+        report.set(
+            "first_paint_ns",
+            self.first_paint_step.map(|n| Json::from(self.steps[..n].iter().map(|s| s.1).sum::<u64>())).unwrap_or_default(),
+        );
+        report.set("steps", self.steps.iter().map(|(kind, ns)| Json::Array(vec![kind.name().into(), (*ns).into()])).collect::<Vec<_>>());
+        report.set(
+            "frames",
+            self.frames
+                .iter()
+                .map(|&(index, painted, commands)| Json::Array(vec![index.into(), painted.into(), commands.into()]))
+                .collect::<Vec<_>>(),
+        );
+        report
+    }
+}
 
 impl std::fmt::Debug for SessionBox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -841,6 +889,7 @@ impl Replay {
             live: BTreeMap::new(),
             labelled: BTreeMap::new(),
             total: Counts::default(),
+            timings: BTreeMap::new(),
             index: 0,
             made: 0,
             most_alive: 0,
@@ -1100,6 +1149,8 @@ impl Replay {
         let mut returned: Vec<Json> = Vec::new();
         let mut out: Option<Output> = None;
         let mut input = false;
+        let mut stopped = false;
+        let start = self.o.benchmark.then(Instant::now);
         match kind {
             Kind::Construct => {
                 let clock = Arc::clone(&session.clock);
@@ -1149,16 +1200,22 @@ impl Replay {
                 input = true;
             }
             _ => {
-                let stopped = lp.end().stopped();
-                f.ok(!stopped, "the helper calls the renderer of a healthy end".to_string());
+                stopped = lp.end().stopped();
                 if !stopped {
                     returned = helper(lp.end().renderer(), step);
                     lp.report(&returned);
                 }
             }
         }
+        let pumped = input && lp.pump();
+        if let Some(start) = start {
+            let ns = start.elapsed().as_nanos() as u64;
+            self.timings.entry(step.session).or_default().add(step, ns);
+        }
+        if stopped {
+            f.0.push("the helper calls the renderer of a healthy end".to_string());
+        }
         if input {
-            let pumped = lp.pump();
             f.ok(
                 pumped && lp.delivered.len() == 1 && lp.delivered.last() == Some(&true),
                 "the platform input is delivered and taken".to_string(),
@@ -1328,6 +1385,12 @@ impl Replay {
         }
         let line = format!("{}: every step of every session matches", self.o.source);
         self.print(line);
+        if self.o.benchmark {
+            let sessions: Vec<_> = self.timings.iter().map(|(&id, timing)| timing.json(id)).collect();
+            let mut report = Json::object();
+            report.set("schema", 1).set("timing", "renderer_loopback_ns").set("sessions", sessions);
+            self.print(report.dump_lossy());
+        }
         0
     }
 }

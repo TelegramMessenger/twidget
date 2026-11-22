@@ -5,6 +5,7 @@
 #include "renderer.h"
 #include "wire.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
@@ -18,6 +19,7 @@
 namespace bench_trace {
 
 bool tracing = true;
+bool original_css_setup = false;
 
 struct Hash {
     uint64_t h = 14695981039346656037ull;
@@ -62,6 +64,25 @@ std::string outs(const std::vector<twidget::Json>& out) {
     Hash h;
     for (const auto& m : out) h.str(m.dump());
     return " out=" + std::to_string(out.size()) + ":" + hex(h.h);
+}
+
+std::string original_css_outs(std::vector<twidget::Json> out) {
+    const auto invalid = [] {
+        std::fputs("Expected a size followed by animation starts on distinct targets.\n", stderr);
+        std::exit(2);
+    };
+    if (out.empty() || out.front()["type"].asString() != "size") invalid();
+    const auto id = [](const twidget::Json& message) { return message["ev"]["targetId"].asNumber(); };
+    for (auto it = out.begin() + 1; it != out.end(); ++it) {
+        const auto& event = (*it)["ev"];
+        const double target = id(*it);
+        if ((*it)["type"].asString() != "event" || event["type"].asString() != "animationstart"
+            || !event["targetId"].isNumber() || !std::isfinite(target) || std::trunc(target) != target) invalid();
+    }
+    const auto first = out.begin() + 1;
+    std::sort(first, out.end(), [&](const auto& a, const auto& b) { return id(a) < id(b); });
+    if (std::adjacent_find(first, out.end(), [&](const auto& a, const auto& b) { return id(a) == id(b); }) != out.end()) invalid();
+    return outs(out);
 }
 
 struct StepClock : twlite::Clock {
@@ -188,7 +209,8 @@ public:
         if (!tracing) return out;
         Hash in;
         in.str(msg.dump());
-        line("receive", " in=" + hex(in.h) + outs(out));
+        line("receive", " in=" + hex(in.h) + (original_css_setup ? original_css_outs(out) : outs(out)));
+        original_css_setup = false;
         return out;
     }
     std::vector<twidget::Json> hover(int action, double x, double y, int modifiers = 0) {
@@ -263,7 +285,14 @@ using bench_trace::TracingRenderer;
 #undef Renderer
 
 int main(int argc, char** argv) {
-    if (argc > 1 && (std::strcmp(argv[1], "--step") == 0 || std::strcmp(argv[1], "--trace") == 0)) {
+    if (argc > 1 && std::strcmp(argv[1], "--trace-original-css") == 0) {
+        if (argc < 3 || std::strcmp(argv[2], "css") != 0) {
+            std::fputs("--trace-original-css requires the css benchmark.\n", stderr);
+            return 2;
+        }
+        bench_trace::original_css_setup = true;
+    }
+    if (argc > 1 && (bench_trace::original_css_setup || std::strcmp(argv[1], "--step") == 0 || std::strcmp(argv[1], "--trace") == 0)) {
         bench_trace::tracing = argv[1][2] == 't';
         argv[1] = argv[0];
         return bench_main(argc - 1, argv + 1);

@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use twidget_json::Json;
+use twidget_replay::recording::{Kind, Reader, Step};
 use twidget_replay::{Options, Perturb, Replay, replay_tree};
 
 fn twidget() -> PathBuf {
@@ -47,6 +49,50 @@ fn committed_stub_corpus() {
         assert_eq!(code, 0, "a perturbed {perturb:?} is caught where it was changed: {}", shown(&replay));
         println!("{}", replay.lines.last().cloned().unwrap_or_default());
     }
+}
+
+#[test]
+fn benchmark_reports_only_verified_steps_and_first_contentful_paint() {
+    let path = twidget().join("tests/recordings/ordinary/article-card.twrec");
+    let mut options = options(&path, "article-card");
+    options.benchmark = true;
+    let (code, replay) = run(options.clone());
+    assert_eq!(code, 0, "{}", shown(&replay));
+    let report = Json::parse(replay.lines.last().unwrap()).unwrap();
+    let sessions = report["sessions"].arr();
+    assert_eq!(sessions.len(), 1);
+    let session = &sessions[0];
+    let mut reader = Reader::open(&path);
+    let mut step = Step::default();
+    let mut bytes = 0;
+    let mut steps = Vec::new();
+    let mut frames = Vec::new();
+    let mut first = None;
+    while reader.next(&mut step, &mut bytes) {
+        steps.push(step.kind.name());
+        if step.kind == Kind::Frame {
+            frames.push(Json::Array(vec![steps.len().into(), step.painted.into(), step.list.len().into()]));
+            if step.painted && !step.list.is_empty() {
+                first.get_or_insert(steps.len());
+            }
+        }
+    }
+    assert!(reader.ended());
+    let samples = session["steps"].arr();
+    assert_eq!(samples.len(), steps.len());
+    for (sample, kind) in samples.iter().zip(steps) {
+        assert_eq!(sample.at(0).as_str(), kind.as_bytes());
+        assert!(sample.at(1).as_number(-1.0) >= 0.0);
+    }
+    let first = first.expect("the article's first contentful paint");
+    let first_ns: f64 = samples[..first].iter().map(|s| s.at(1).as_number(-1.0)).sum();
+    assert_eq!(session["first_paint_step"], first.into());
+    assert_eq!(session["first_paint_ns"], first_ns.into());
+    assert_eq!(session["frames"].arr(), frames);
+    options.sessions = Some(2);
+    let (code, rejected) = run(options);
+    assert_ne!(code, 0);
+    assert!(!rejected.lines.iter().any(|s| Json::parse(s).is_some()));
 }
 
 /// corpus.twrec was recorded on macOS at twidget 5bc9639, before stage 0.3 made `~Renderer` release a canvas's fonts in

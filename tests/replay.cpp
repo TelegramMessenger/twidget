@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -78,10 +79,11 @@ struct Answers : Backend {
 private:
     const Call* take(Call::Op op) {
         while (calls && next < calls->size() && (*calls)[next].op == Call::Frame) next++;
-        const std::string at = "replayed Backend call " + std::to_string(taken++) + " (" + OP_NAMES[op] + ")";
-        if (!calls || next == calls->size()) return miss(at + " is past the recorded ones");
+        const size_t index = taken++;
+        const auto at = [&] { return "replayed Backend call " + std::to_string(index) + " (" + OP_NAMES[op] + ")"; };
+        if (!calls || next == calls->size()) return miss(at() + " is past the recorded ones");
         const Call& c = (*calls)[next++];
-        if (c.op != op) return miss(at + " is where the recording has one of the " + OP_NAMES[c.op]);
+        if (c.op != op) return miss(at() + " is where the recording has one of the " + OP_NAMES[c.op]);
         return &c;
     }
     const Call* miss(const std::string& why) {
@@ -245,6 +247,7 @@ struct Options {
     std::optional<uint64_t> sessions;
     std::optional<uint64_t> message_bytes;
     Perturb perturb = Perturb::None;
+    bool benchmark = false;
 };
 
 bool number(const std::string& text, uint64_t& out) {
@@ -279,13 +282,15 @@ bool options_of(int argc, char** argv, Options& o) {
             const std::string what = argv[++i];
             if (what != "list" && what != "call" && what != "key") return false;
             o.perturb = what == "list" ? Perturb::List : what == "call" ? Perturb::Call : Perturb::Key;
+        } else if (arg == "--benchmark") {
+            o.benchmark = true;
         } else if (arg.empty() || arg[0] == '-' || !o.recording.empty()) {
             return false;
         } else {
             o.recording = arg;
         }
     }
-    return !o.recording.empty() && !o.source.empty();
+    return !o.recording.empty() && !o.source.empty() && (!o.benchmark || o.perturb == Perturb::None);
 }
 
 /// The numbers a step of `kind` carries, a letter each (d a double, f a float, i an int, b a bool, u an edit generation, p a Paint), and how many texts.
@@ -393,6 +398,20 @@ private:
     size_t most_alive_ = 0;
     bool perturbed_ = false;
     std::optional<KeyTarget> key_target_;
+    struct Timing {
+        struct Step {
+            record::Kind kind;
+            int64_t ns;
+            bool painted;
+            size_t commands;
+        };
+        std::string label;
+        std::vector<Step> steps;
+        int64_t elapsed = 0;
+        std::optional<int64_t> first_paint;
+        size_t first_paint_step = 0;
+    };
+    std::map<uint32_t, Timing> timings_;
 };
 
 int Replay::refuse(const std::string& why) const {
@@ -539,6 +558,9 @@ int Replay::play(record::Step& step, size_t bytes) {
     std::vector<Json> returned;
     std::optional<remote::RendererEnd::Output> out;
     bool input = false;
+    bool helper_ready = true;
+    using Timer = std::chrono::steady_clock;
+    const auto start = o_.benchmark ? Timer::now() : Timer::time_point{};
     switch (kind) {
     case record::Kind::Construct: loop.open(n[0], n[1], n[2] != 0, &session.clock); break;
     case record::Kind::Destroy: loop.close(); break;
@@ -577,16 +599,29 @@ int Replay::play(record::Step& step, size_t bytes) {
         input = true;
         break;
     default:
-        ok(!loop.end->stopped(), "the helper calls the renderer of a healthy end");
-        if (!loop.end->stopped()) {
+        helper_ready = !loop.end->stopped();
+        if (helper_ready) {
             returned = helper(loop.end->renderer(), step);
             loop.end->report(returned);
             loop.wire.flush();
         }
         break;
     }
+    const bool pumped = !input || loop.pump();
+    if (o_.benchmark) {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Timer::now() - start).count();
+        auto& time = timings_[step.session];
+        if (kind == record::Kind::Construct) time.label = step.label;
+        time.steps.push_back({kind, ns, step.painted, step.list.size()});
+        time.elapsed += ns;
+        if (!time.first_paint && kind == record::Kind::Frame && step.painted && !step.list.empty()) {
+            time.first_paint = time.elapsed;
+            time.first_paint_step = time.steps.size();
+        }
+    }
+    if (!helper_ready) ok(false, "the helper calls the renderer of a healthy end");
     if (input) {
-        ok(loop.pump() && loop.delivered.size() == 1 && loop.delivered.back(), "the platform input is delivered and taken");
+        ok(pumped && loop.delivered.size() == 1 && loop.delivered.back(), "the platform input is delivered and taken");
         out = loop.outputs.empty() ? remote::RendererEnd::Output() : loop.outputs.back();
         returned = out->messages;
     }
@@ -679,6 +714,25 @@ int Replay::run() {
     }
     if (!met) return 1;
     std::printf("%s: every step of every session matches\n", o_.source.c_str());
+    if (o_.benchmark) {
+        auto sessions = Json::array();
+        for (const auto& [id, time] : timings_) {
+            auto steps = Json::array();
+            auto frames = Json::array();
+            for (const auto& [kind, ns, painted, commands] : time.steps) {
+                steps.push(Json::Array{record::kind_name(kind), ns});
+                if (kind == record::Kind::Frame) frames.push(Json::Array{steps.size(), painted, commands});
+            }
+            auto result = Json::object();
+            result.set("id", id).set("label", time.label).set("first_paint_ns", time.first_paint ? Json(*time.first_paint) : Json(nullptr));
+            result.set("first_paint_step", time.first_paint_step ? Json(time.first_paint_step) : Json(nullptr));
+            result.set("steps", std::move(steps)).set("frames", std::move(frames));
+            sessions.push(std::move(result));
+        }
+        auto result = Json::object();
+        result.set("schema", 1).set("timing", "renderer_loopback_ns").set("sessions", std::move(sessions));
+        std::puts(result.dump().c_str());
+    }
     return 0;
 }
 
@@ -687,7 +741,7 @@ int Replay::run() {
 int main(int argc, char** argv) {
     Options o;
     if (!options_of(argc, argv, o)) {
-        std::fprintf(stderr, "usage: twidget_replay <recording> --source NAME [--needs a,b,...] [--sessions N] [--message-bytes N] [--perturb list|call|key]\n"
+        std::fprintf(stderr, "usage: twidget_replay <recording> --source NAME [--needs a,b,...] [--sessions N] [--message-bytes N] [--perturb list|call|key | --benchmark]\n"
                              "needs: sessions steps lists batches reads calls pointers claims holds selections ticks engine resizes themes images keys\n");
         return 2;
     }

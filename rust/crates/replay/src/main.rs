@@ -7,6 +7,10 @@ use std::path::Path;
 
 use twidget_replay::{Options, Replay, replay_tree};
 
+#[cfg(feature = "metered")]
+#[global_allocator]
+static METERED: nova_meter::Metered = nova_meter::Metered;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let [dir] = args.as_slice()
@@ -29,7 +33,7 @@ fn main() {
     }
     let Some(options) = Options::parse(&args) else {
         eprintln!(
-            "usage: twidget_replay <recording> --source NAME [--needs a,b,...] [--sessions N] [--message-bytes N] [--perturb list|call|key]\n\
+            "usage: twidget_replay <recording> --source NAME [--needs a,b,...] [--sessions N] [--message-bytes N] [--benchmark | --perturb list|call|key]\n\
              \x20      twidget_replay <directory of recordings>\n\
              needs: sessions steps lists batches reads calls pointers claims holds selections ticks engine resizes themes images keys"
         );

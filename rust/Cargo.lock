@@ -656,6 +656,7 @@ dependencies = [
 name = "twidget_replay"
 version = "0.1.0"
 dependencies = [
+ "nova_meter",
  "twidget_document",
  "twidget_ends",
  "twidget_json",

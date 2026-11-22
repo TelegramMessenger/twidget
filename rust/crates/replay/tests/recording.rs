@@ -120,8 +120,8 @@ fn write(name: &str, steps: &[Step], end: &End) -> PathBuf {
     path
 }
 
-fn valid() -> PathBuf {
-    write("valid.twrec", &steps(), &End { sessions: 1, steps: 7, error: Vec::new() })
+fn valid(name: &str) -> PathBuf {
+    write(name, &steps(), &End { sessions: 1, steps: 7, error: Vec::new() })
 }
 
 /// The reader's verdict on a file: the steps it gave and its error, empty when it ended.
@@ -148,7 +148,7 @@ fn with_bytes(name: &str, bytes: Vec<u8>) -> PathBuf {
 
 #[test]
 fn round_trip() {
-    let path = valid();
+    let path = valid("round-trip.twrec");
     let (got, error) = read(&path);
     assert_eq!(error, "", "the recording reads to its end");
     let want = steps();
@@ -195,7 +195,7 @@ fn the_writer_refuses_what_no_reader_gives_back() {
 
 #[test]
 fn refusals() {
-    let good = std::fs::read(valid()).expect("read");
+    let good = std::fs::read(valid("refusals-base.twrec")).expect("read");
     let origin_end = 5 + 1 + 1 + br#"{"source":"tests"}"#.len();
     let cases: Vec<(&str, Vec<u8>, &str)> = vec![
         ("empty", Vec::new(), "not a recording"),

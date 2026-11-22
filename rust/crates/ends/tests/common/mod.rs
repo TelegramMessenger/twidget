@@ -377,6 +377,15 @@ pub struct Heard {
     pub refusals: Vec<String>,
     /// Each as the oracle's transcript writes it.
     pub lines: Vec<Vec<u8>>,
+    omit_transcript: bool,
+}
+
+impl Heard {
+    fn trace(&mut self, make: impl FnOnce() -> Vec<u8>) {
+        if !self.omit_transcript {
+            self.lines.push(make());
+        }
+    }
 }
 
 pub fn state_line(s: &State) -> String {
@@ -406,64 +415,74 @@ impl Host for HeardHandle {
         let mut h = self.heard.borrow_mut();
         h.events.push(Kind::Frame);
         self.backend.0.borrow_mut().frame(frame.painted);
-        let line = format!(
-            "frame {} {} {} {} {}",
-            frame.seq,
-            u8::from(frame.painted),
-            state_line(&frame.state),
-            hex(&list_bytes(&frame.list)),
-            hex(&damage_bytes(&frame.damage))
-        );
-        h.lines.push(line.into_bytes());
+        h.trace(|| {
+            format!(
+                "frame {} {} {} {} {}",
+                frame.seq,
+                u8::from(frame.painted),
+                state_line(&frame.state),
+                hex(&list_bytes(&frame.list)),
+                hex(&damage_bytes(&frame.damage))
+            )
+            .into_bytes()
+        });
         h.frames.push(frame);
     }
     fn state(&mut self, state: &State) {
         let mut h = self.heard.borrow_mut();
         h.events.push(Kind::State);
-        h.lines.push(format!("state {}", state_line(state)).into_bytes());
+        h.trace(|| format!("state {}", state_line(state)).into_bytes());
         h.states.push(*state);
     }
     fn messages(&mut self, messages: Vec<Json>) {
         let mut h = self.heard.borrow_mut();
         h.events.push(Kind::Messages);
-        let mut line = b"messages ".to_vec();
-        for (i, m) in messages.iter().enumerate() {
-            if i > 0 {
-                line.push(b' ');
+        h.trace(|| {
+            let mut line = b"messages ".to_vec();
+            for (i, m) in messages.iter().enumerate() {
+                if i > 0 {
+                    line.push(b' ');
+                }
+                line.extend_from_slice(&m.dump());
             }
-            line.extend_from_slice(&m.dump());
-        }
-        h.lines.push(line);
+            line
+        });
         h.batches.push(messages);
     }
     fn pointer(&mut self, pointer: &Pointer) {
         let mut h = self.heard.borrow_mut();
         h.events.push(Kind::Pointer);
-        let mut line = b"pointer ".to_vec();
-        line.extend_from_slice(&quote(&pointer.cursor));
-        line.extend_from_slice(format!(" {}", pointer.claim.as_ref().map_or("-".to_string(), claim_line)).as_bytes());
-        h.lines.push(line);
+        h.trace(|| {
+            let mut line = b"pointer ".to_vec();
+            line.extend_from_slice(&quote(&pointer.cursor));
+            line.extend_from_slice(format!(" {}", pointer.claim.as_ref().map_or("-".to_string(), claim_line)).as_bytes());
+            line
+        });
         h.pointers.push(pointer.clone());
     }
     fn selection(&mut self, selection: &Selection) {
         let mut h = self.heard.borrow_mut();
         h.events.push(Kind::Selection);
-        let mut line = b"selection ".to_vec();
-        line.extend_from_slice(&quote(&selection.text));
-        h.lines.push(line);
+        h.trace(|| {
+            let mut line = b"selection ".to_vec();
+            line.extend_from_slice(&quote(&selection.text));
+            line
+        });
         h.selections.push(selection.clone());
     }
     fn claim(&mut self, answer: &ClaimAnswer) {
         let mut h = self.heard.borrow_mut();
         h.events.push(Kind::ClaimAnswer);
-        h.lines.push(format!("claim {} {}", answer.seq, claim_line(&answer.claim)).into_bytes());
+        h.trace(|| format!("claim {} {}", answer.seq, claim_line(&answer.claim)).into_bytes());
         h.claims.push(*answer);
     }
     fn refused(&mut self, reason: &str) {
         let mut h = self.heard.borrow_mut();
-        let mut line = b"refused ".to_vec();
-        line.extend_from_slice(&quote(reason));
-        h.lines.push(line);
+        h.trace(|| {
+            let mut line = b"refused ".to_vec();
+            line.extend_from_slice(&quote(reason));
+            line
+        });
         h.refusals.push(reason.to_string());
     }
 }
@@ -507,6 +526,15 @@ pub struct WireState {
     pub spoiled: usize,
     /// The traffic as the oracle's transcript writes it: `>` a message, `?` a request, `!` its answer.
     pub traffic: Vec<String>,
+    omit_transcript: bool,
+}
+
+impl WireState {
+    fn trace(&mut self, make: impl FnOnce() -> String) {
+        if !self.omit_transcript {
+            self.traffic.push(make());
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -551,7 +579,7 @@ impl Channel for Wire {
     fn send(&mut self, message: Vec<u8>) {
         let mut s = self.state.borrow_mut();
         s.kinds.push(kind_byte(&message));
-        s.traffic.push(format!("> {}", hex(&message)));
+        s.trace(|| format!("> {}", hex(&message)));
         s.outbox.push_back(message);
     }
 }
@@ -562,7 +590,7 @@ impl RendererChannel for Wire {
         let now = {
             let mut s = self.state.borrow_mut();
             s.kinds.push(asked);
-            s.traffic.push(format!("? {}", hex(&message)));
+            s.trace(|| format!("? {}", hex(&message)));
             s.requests += 1;
             Fault::default()
         };
@@ -579,18 +607,18 @@ impl RendererChannel for Wire {
             }
         };
         if now.how == Spoil::Unanswered {
-            self.state.borrow_mut().traffic.push("! -".to_string());
+            self.state.borrow_mut().trace(|| "! -".to_string());
             return false;
         }
         let mut reply = Vec::new();
         if !self.platform.borrow_mut().answer(&message, &mut reply) {
             let mut s = self.state.borrow_mut();
             s.refused += 1;
-            s.traffic.push("! refused".to_string());
+            s.trace(|| "! refused".to_string());
             return false;
         }
         Wire::spoil(&now, &mut reply);
-        self.state.borrow_mut().traffic.push(format!("! {}", hex(&reply)));
+        self.state.borrow_mut().trace(|| format!("! {}", hex(&reply)));
         *answer = reply;
         true
     }
@@ -650,6 +678,11 @@ impl<R: Renderer> Loopback<R> {
             outputs: Vec::new(),
             log: Log::default(),
         }
+    }
+
+    pub fn omit_formatted_transcript(&mut self) {
+        self.host.borrow_mut().omit_transcript = true;
+        self.wire.borrow_mut().omit_transcript = true;
     }
 
     pub fn channel(&self) -> Wire {

@@ -47,3 +47,5 @@ twidget (`-DTWIDGET_WIDGET_SANDBOX=` elsewhere), and for the helper's glue a tde
 (`-DTW_TDESKTOP_SOURCE=` elsewhere; without one those comparisons skip); the JSON tests read its files the same way
 (`TWIDGET_WIDGET_SANDBOX`). On the Telegram
 machines the toolchain is `ThirdParty/rust` (`RUSTUP_HOME`, `CARGO_HOME`); nothing here pins it.
+
+The paired performance suite compares steady frames, real widget recordings and signed helper sessions with the original C++ implementation. [Build and run the benchmarks](tools/benchmark.md)
