@@ -28,6 +28,7 @@ missing_safety_doc = "deny"
 [dependencies]
 nova_embed_ffi = { path = "../../../../nova-safe/nova_embed_ffi", optional = true }
 nova_meter = { path = "../../../../nova-safe/nova_meter" }
+twidget_engine = { path = "../../../../widget-sandbox/packages/rust/crates/engine", optional = true }
 twidget_helper = { path = "../helper" }
 twidget_js = { path = "../../../../widget-sandbox/packages/rust/crates/js" }
 twidget_stream = { path = "../../../../widget-sandbox/packages/rust/crates/stream" }
@@ -48,3 +49,4 @@ twidget_wire = { path = "../wire" }
 # Nova's own C interface (nova_engine.h) in the same library, for a program whose C++ also drives Nova: the oracle's
 # C++ serving (oracle/helper_oracles.cmake); the helper leaves it out, and so does the unsafe report.
 nova-c-api = ["dep:nova_embed_ffi"]
+oracle-stats-clock = ["dep:twidget_engine", "twidget_engine/oracle-stats-clock"]

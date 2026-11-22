@@ -446,17 +446,6 @@ public:
         }) && !_readerDone;
     }
 
-    auto pendingStats(std::ptrdiff_t waitFor = 0) {
-        auto lock = std::unique_lock(_mutex);
-        const auto count = [&] {
-            return std::count_if(_frames.begin(), _frames.end(), [](const std::string &frame) { return KindOf(frame) == Stats; });
-        };
-        if (waitFor) {
-            _changed.wait_for(lock, std::chrono::seconds(1), [&] { return _readerDone || count() >= waitFor; });
-        }
-        return count();
-    }
-
     // The frames since the last take, ordered by runtime and kind with each kind's in the order they came (each kind of a runtime comes from one thread in order, the kinds from several).
     std::vector<std::string> take() {
         auto frames = std::vector<std::string>();
@@ -714,13 +703,6 @@ void Both(const std::function<bool(Arm &)> &step) {
             failure += std::string(i ? "Rust" : "C++") + ": the barrier's wait ran out or the serving ended\n";
         }
     }
-    if (Arms[0] && Arms[1] && failure.empty()) {
-        // A trailing Stats uses a real 200 ms timer.
-        const auto cpp = Arms[0]->pendingStats();
-        const auto rust = Arms[1]->pendingStats();
-        if (cpp < rust) Arms[0]->pendingStats(rust);
-        if (rust < cpp) Arms[1]->pendingStats(cpp);
-    }
     for (auto i = 0; i != 2; ++i) {
         if (Arms[i]) taken[i] = Arms[i]->take();
     }
@@ -785,6 +767,8 @@ void Step(int op, In &in) {
     case 'J': code = in.str(); break;
     }
     Both([&](Arm &arm) {
+        const auto tick = arm.probe(runtime, "__twidget_oracle_advance_stats__");
+        if (!tick || (*tick != "1" && *tick != kNoRuntime)) return false;
         if (op == 'J') {
             return arm.probe(runtime, code).has_value() && arm.barrier(runtime);
         }

@@ -112,7 +112,7 @@ find_program(TW_CARGO cargo REQUIRED)
 set(HELPER_FFI_LIB "${CMAKE_CURRENT_BINARY_DIR}/helper_ffi/${CMAKE_STATIC_LIBRARY_PREFIX}twidget_helper_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
 # Always runs: cargo decides what is stale, and the copy changes only with its bytes.
 add_custom_target(helper_ffi_cargo
-    COMMAND "${TW_CARGO}" build --profile "$<IF:$<CONFIG:Debug>,dev,release>" --locked --offline --package twidget_helper_ffi --features nova-c-api --lib --target-dir "${TW_RUST}/target"
+    COMMAND "${TW_CARGO}" build --profile "$<IF:$<CONFIG:Debug>,dev,release>" --locked --offline --package twidget_helper_ffi --features nova-c-api,oracle-stats-clock --lib --target-dir "${TW_RUST}/target"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${TW_RUST}/target/$<IF:$<CONFIG:Debug>,debug,release>/${CMAKE_STATIC_LIBRARY_PREFIX}twidget_helper_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}" "${HELPER_FFI_LIB}"
     WORKING_DIRECTORY "${TW_RUST}"
     BYPRODUCTS "${HELPER_FFI_LIB}"
@@ -125,6 +125,19 @@ file(WRITE "${SERVE_SEAM}/steady_clock.h.tmp" "#pragma once\ndouble OracleSteady
 configure_file("${SERVE_SEAM}/steady_clock.h.tmp" "${SERVE_SEAM}/steady_clock.h" COPYONLY)
 configure_file("${TW_SANDBOX_SRC}/nova_context.cpp" "${SERVE_SEAM}/nova_context.cpp" COPYONLY)
 configure_file("${TW_SANDBOX_SRC}/sandbox_engine_shared.cpp" "${SERVE_SEAM}/sandbox_engine_shared.cpp" COPYONLY)
+# Drive the engine's trailing Stats callback on its own thread when the session clock advances.
+file(READ "${TW_SANDBOX_SRC}/sandbox_engine.cpp" STATS_ENGINE)
+string(REPLACE "\r\n" "\n" STATS_ENGINE "${STATS_ENGINE}")
+tw_probe(STATS_ENGINE 1 [=[#include "twidget/sandbox_engine.h"]=] [=[#include "twidget/sandbox_engine.h"
+#include "stats_timer.h"]=])
+tw_probe(STATS_ENGINE 1 [=[trailingStats_ = thread_.after(0.2,]=] [=[trailingStats_ = oracle::statsTimer.after(now, 0.2,]=])
+tw_probe(STATS_ENGINE 1 [=[auto evaluate = [this, code]() -> std::string {]=] [=[auto evaluate = [this, code]() -> std::string {
+        if (code == "__twidget_oracle_advance_stats__") {
+            oracle::statsTimer.advance(nowSeconds());
+            return "1";
+        }]=])
+file(WRITE "${SERVE_SEAM}/sandbox_engine.cpp.tmp" "${STATS_ENGINE}")
+configure_file("${SERVE_SEAM}/sandbox_engine.cpp.tmp" "${SERVE_SEAM}/sandbox_engine.cpp" COPYONLY)
 # widget_helper_renderer.cpp untapped too, as a Release helper builds it: TapHelperRenderer's Release identity in the tap's place.
 file(READ "${TW_TDESKTOP_FILES}/_other/widget_helper_renderer.cpp" SERVE_CPP)
 string(REPLACE "\r\n" "\n" SERVE_CPP "${SERVE_CPP}")
@@ -140,16 +153,16 @@ namespace WidgetHelper {
 file(WRITE "${SERVE_SEAM}/widget_helper_renderer_untapped.cpp.tmp" "${SERVE_CPP}")
 configure_file("${SERVE_SEAM}/widget_helper_renderer_untapped.cpp.tmp" "${SERVE_SEAM}/widget_helper_renderer_untapped.cpp" COPYONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${TW_TDESKTOP_FILES}/_other/widget_helper_renderer.cpp" "${TW_SANDBOX_SRC}/nova_context.cpp" "${TW_SANDBOX_SRC}/sandbox_engine_shared.cpp")
+    "${TW_TDESKTOP_FILES}/_other/widget_helper_renderer.cpp" "${TW_SANDBOX_SRC}/nova_context.cpp" "${TW_SANDBOX_SRC}/sandbox_engine_shared.cpp" "${TW_SANDBOX_SRC}/sandbox_engine.cpp")
 
 # widget-sandbox's desktop sandbox as its CMakeLists.txt builds it, but for engine_platform.cpp (the oracle defines what the OS answers) and gesture_policy.cpp (oracle_core has it).
 add_library(serve_sandbox STATIC
     "${SERVE_SEAM}/nova_context.cpp" "${SERVE_SEAM}/sandbox_engine_shared.cpp"
-    "${TW_SANDBOX_SRC}/cpu_budget.cpp" "${TW_SANDBOX_SRC}/bundle_stamp.cpp" "${TW_SANDBOX_SRC}/trusted_validator.cpp" "${TW_SANDBOX_SRC}/sandbox_engine.cpp"
+    "${TW_SANDBOX_SRC}/cpu_budget.cpp" "${TW_SANDBOX_SRC}/bundle_stamp.cpp" "${TW_SANDBOX_SRC}/trusted_validator.cpp" "${SERVE_SEAM}/sandbox_engine.cpp"
     "${TW_SANDBOX_SRC}/remote_engine.cpp" "${TW_SANDBOX_SRC}/remote_stream_engine.cpp" "${TW_SANDBOX_SRC}/remote_hosted.cpp" "${TW_SANDBOX_SRC}/widget_host_local.cpp"
     "${TW_SANDBOX_SRC}/js_thread.cpp" "${TW_SANDBOX_SRC}/sdk_policy.cpp" "${TW_SANDBOX_SRC}/intl.cpp" "${TW_SANDBOX_SRC}/resources.cpp"
     "${TW_SANDBOX_SRC}/remote_coding.cpp" "${TW_SANDBOX_SRC}/remote_stream.cpp" "${TW_SANDBOX_SRC}/sandbox_engine_client.cpp" "${TW_SANDBOX_SRC}/widget_host.cpp")
-target_include_directories(serve_sandbox PUBLIC "${TW_SANDBOX_INCLUDE}" PRIVATE "${TW_SANDBOX_SRC}" "${TW_NOVA}/nova_embed_ffi/include")
+target_include_directories(serve_sandbox PUBLIC "${TW_SANDBOX_INCLUDE}" PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${TW_SANDBOX_SRC}" "${TW_NOVA}/nova_embed_ffi/include")
 if (WIN32)
     target_sources(serve_sandbox PRIVATE "${TW_SANDBOX_SRC}/icu_intl.cpp")
     target_compile_definitions(serve_sandbox PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
