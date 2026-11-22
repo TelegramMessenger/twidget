@@ -79,10 +79,14 @@ pub fn f64_to_int(v: f64) -> i32 {
     v as i32
 }
 
-/// `static_cast<unsigned char>(float)`: undefined outside 0..255; x86 converts to a 32-bit `int` as
-/// [`f32_to_int`] and keeps its low byte, arm64 converts to a saturated 32-bit unsigned and keeps its low byte.
+/// A C++ cast to a byte keeps the low byte of a signed word on x86 and Apple arm64,
+/// and an unsigned word on other arm64 targets.
 pub fn f32_to_byte(v: f32) -> u8 {
-    if cfg!(any(target_arch = "x86", target_arch = "x86_64")) { f32_to_int(v) as u8 } else { v as u32 as u8 }
+    if cfg!(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", target_vendor = "apple"))) {
+        f32_to_int(v) as u8
+    } else {
+        v as u32 as u8
+    }
 }
 
 /// `std::to_string(int)`.
@@ -92,19 +96,8 @@ pub fn to_string_int(v: i32) -> Vec<u8> {
 
 /// `std::to_string(float)` and `std::to_string(double)`: `%f` of the value as a double.
 pub fn to_string_f64(v: f64) -> Vec<u8> {
-    if v.is_nan() {
-        return nan_text(v).into_bytes();
+    if cfg!(target_env = "msvc") && v.to_bits() == 0xfff8_0000_0000_0000 {
+        return b"-nan(ind)".to_vec();
     }
     twidget_cstd::format_fixed(v, 6).into_bytes()
-}
-
-/// How the C library prints a NaN with `%f`. The Windows C runtime names the indefinite NaN x86 computes
-/// (sign set, only the quiet bit) `-nan(ind)` and any other quiet one `nan` or `-nan`; the other C libraries
-/// print `nan` or `-nan`.
-fn nan_text(v: f64) -> String {
-    let negative = v.is_sign_negative();
-    if cfg!(target_env = "msvc") && v.to_bits() == 0xfff8_0000_0000_0000 {
-        return "-nan(ind)".into();
-    }
-    if negative { "-nan".into() } else { "nan".into() }
 }

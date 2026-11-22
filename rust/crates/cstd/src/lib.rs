@@ -102,12 +102,16 @@ pub fn atoi(text: &[u8]) -> i32 {
     strtol(text).0 as i32
 }
 
+fn format_nan(value: f64) -> String {
+    if cfg!(target_vendor = "apple") || value.is_sign_positive() { "nan".into() } else { "-nan".into() }
+}
+
 /// `snprintf("%.*f", precision, value)`: exact digits, ties to even, `-` kept on a negative zero; a
 /// negative precision is C's default of 6.
 pub fn format_fixed(value: f64, precision: i32) -> String {
     let p = if precision < 0 { 6 } else { precision as usize };
     if value.is_nan() {
-        return if value.is_sign_negative() { "-nan".into() } else { "nan".into() };
+        return format_nan(value);
     }
     if value.is_infinite() {
         return if value < 0.0 { "-inf".into() } else { "inf".into() };
@@ -339,7 +343,7 @@ pub fn strtof(text: &[u8]) -> (f32, usize) {
 /// from 1e6 on.
 pub fn format_general(value: f64) -> String {
     if value.is_nan() {
-        return if value.is_sign_negative() { "-nan".into() } else { "nan".into() };
+        return format_nan(value);
     }
     if value.is_infinite() {
         return if value < 0.0 { "-inf".into() } else { "inf".into() };
