@@ -161,7 +161,7 @@ def check_canvas(messages, step):
         h = 4 + ((step * 7 + i * 3) % 25)
         x, y = 12 * i, 36 - h
         geometry = struct.pack("<8f", x, y, x + 9, y, x + 9, 36, x, 36)
-        check(geometry in batches[-1][1] and bytes((32 + h, 75, 121, 255)) in batches[-1][1],
+        check(geometry + bytes((0, 1, 32 + h, 75, 121, 255)) in batches[-1][1],
               f"missing painted canvas bar {i} at update {step}")
 
 
@@ -232,7 +232,7 @@ def measure(binary, opening, case, updates, observe_dom):
                         canvas_runs.append(canvas_batch)
                         break
                 if renderer and (marker if observe_dom else render_pending) and not frame_requested:
-                    send(sock, 1, 35, string(struct.pack("<BBQBB", 1, 1, step + 1, 0, 2)))
+                    send(sock, 1, 35, string(struct.pack("<BBQBB", 1, 1, step + 1, 0, 1)))
                     frame_requested = True
         send(sock, 1, 21)
     previous = None
