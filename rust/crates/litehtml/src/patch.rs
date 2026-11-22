@@ -1705,7 +1705,7 @@ impl Document {
             && crate::css_effects::fast_transform_tokens(&patch[10..patch.len() - 1], &mut fast)
         {
             if cx.container.sanitize_declaration(b"transform", &fast) {
-                scratch.add_property(cx.names, _transform_, &fast, b"", false, Some(cx.container));
+                scratch.add_property_owned(cx.names, _transform_, fast, b"", false, Some(cx.container));
             }
         } else {
             scratch.add(cx.names, &normalize(patch, f_componentize, None), b"", Some(cx.container));
@@ -1725,7 +1725,7 @@ impl Document {
         let transform = self.el(id).css.m_transform.is_empty();
         self.note_style_change();
         let mut style = std::mem::take(&mut self.el_mut(id).style);
-        style.replace_properties(&ids, &self.el(id).style_base, &scratch);
+        style.replace_properties(&ids, &self.el(id).style_base, &mut scratch);
         self.el_mut(id).style = style;
         let mut css = std::mem::take(&mut self.el_mut(id).css);
         for &name in names {
@@ -2505,7 +2505,7 @@ impl Document {
 
         let mut restyle: Vec<ElementId> = Vec::new();
         let mut background_only: BTreeSet<ElementId> = BTreeSet::new();
-        let mut patched: BTreeMap<ElementId, PropertyPatch> = BTreeMap::new();
+        let mut patched: BTreeMap<ElementId, &PropertyPatch> = BTreeMap::new();
         let mut shallow_width: BTreeSet<ElementId> = BTreeSet::new();
         let mut allow_shallow_width = classes.is_empty() && !self.has_svg && self.render.tabular.is_empty() && sw.shallow_width_patch;
         let mut new_text: Vec<ElementId> = Vec::new();
@@ -2725,7 +2725,7 @@ impl Document {
                     && self.outermost_svg(Some(owner)).is_none()
                     && self.kind(owner).is_html_tag()
                 {
-                    patched.insert(owner, patch.clone());
+                    patched.insert(owner, patch);
                 }
                 continue;
             }
@@ -2821,7 +2821,7 @@ impl Document {
         keep_tree: bool,
         retext: &[ElementId],
         background_only: &BTreeSet<ElementId>,
-        patched: &BTreeMap<ElementId, PropertyPatch>,
+        patched: &BTreeMap<ElementId, &PropertyPatch>,
         shallow_width: &BTreeSet<ElementId>,
     ) {
         self.invalidate_paint();
@@ -2837,11 +2837,11 @@ impl Document {
             }
             false
         };
-        let mut fast: BTreeMap<ElementId, PropertyPatch> = BTreeMap::new();
+        let mut fast: BTreeMap<ElementId, &PropertyPatch> = BTreeMap::new();
         for &el in restyle {
             match patched.get(&el) {
-                Some(patch) if !covered(self, el) => {
-                    fast.insert(el, patch.clone());
+                Some(&patch) if !covered(self, el) => {
+                    fast.insert(el, patch);
                 }
                 _ => {
                     if self.kind(el).is_html_tag() {
@@ -2880,7 +2880,7 @@ impl Document {
             }
         }
         for &el in &roots {
-            let patch = fast.get(&el).cloned();
+            let patch = fast.get(&el).copied();
             let local = patch.is_some() || background_only.contains(&el);
             let tag = local && self.kind(el).is_html_tag();
             if tag && let Some(patch) = patch {

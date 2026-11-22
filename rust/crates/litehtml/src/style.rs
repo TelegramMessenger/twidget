@@ -14,6 +14,7 @@
 //! `subst_vars` asks the element whose style it is for its custom properties through a [`VarElement`], which
 //! the cascade gives.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
@@ -1329,12 +1330,39 @@ impl Style {
     pub fn add_property(
         &mut self,
         names: &Names,
-        mut name: StringId,
+        name: StringId,
         value: &[CssToken],
         baseurl: &[u8],
         important: bool,
         container: Option<&dyn DocumentContainer>,
     ) {
+        self.add_property_tokens(names, name, Cow::Borrowed(value), baseurl, important, container);
+    }
+
+    /// `add_property` of tokens the caller has no more use for: a property that keeps the tokens as they are takes
+    /// them instead of a copy.
+    pub fn add_property_owned(
+        &mut self,
+        names: &Names,
+        name: StringId,
+        value: Vec<CssToken>,
+        baseurl: &[u8],
+        important: bool,
+        container: Option<&dyn DocumentContainer>,
+    ) {
+        self.add_property_tokens(names, name, Cow::Owned(value), baseurl, important, container);
+    }
+
+    fn add_property_tokens(
+        &mut self,
+        names: &Names,
+        mut name: StringId,
+        tokens: Cow<'_, [CssToken]>,
+        baseurl: &[u8],
+        important: bool,
+        container: Option<&dyn DocumentContainer>,
+    ) {
+        let value: &[CssToken] = &tokens;
         if is_raw_declaration(names, name) {
             self.add_parsed_property(name, PropertyValue::with_var(Value::Tokens(value.to_vec()), important, has_var(value)));
             return;
@@ -1362,7 +1390,7 @@ impl Style {
         if !custom && has_foldable_math(value) {
             let mut folded = value.to_vec();
             if fold_math(names, &mut folded, container, 0) {
-                self.add_property(names, name, &folded, baseurl, important, container);
+                self.add_property_owned(names, name, folded, baseurl, important, container);
                 return;
             }
         }
@@ -1879,7 +1907,7 @@ impl Style {
             | _grid_column_start_
             | _grid_column_end_
             | _grid_row_start_
-            | _grid_row_end_ => self.add_value(name, Value::Tokens(value.to_vec()), important),
+            | _grid_row_end_ => self.add_value(name, Value::Tokens(tokens.into_owned()), important),
 
             //  =============================  COUNTER, CONTENT  =============================
             _counter_increment_ | _counter_reset_ => {
@@ -2505,8 +2533,9 @@ impl Style {
     }
 
     /// `replace_properties(names, base, patch)`: each of the names as `base` has it (or none), then as `patch`
-    /// adds it. The C++ moves the values out of `patch`, which no one reads after.
-    pub fn replace_properties(&mut self, names: &[StringId], base: &Style, patch: &Style) {
+    /// adds it, its values moved out of `patch` as the C++ moves them (no one reads `patch` after); a name given
+    /// again takes a copy until its last time.
+    pub fn replace_properties(&mut self, names: &[StringId], base: &Style, patch: &mut Style) {
         for &name in names {
             match base.m_properties.get(&name) {
                 None => {
@@ -2517,9 +2546,11 @@ impl Style {
                 }
             }
         }
-        for &name in names {
-            if let Some(from) = patch.m_properties.get(&name) {
-                self.add_parsed_property(name, from.clone());
+        for (i, &name) in names.iter().enumerate() {
+            let from =
+                if names[i + 1..].contains(&name) { patch.m_properties.get(&name).cloned() } else { patch.m_properties.remove(&name) };
+            if let Some(from) = from {
+                self.add_parsed_property(name, from);
             }
         }
     }
