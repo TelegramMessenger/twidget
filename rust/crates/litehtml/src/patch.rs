@@ -1733,7 +1733,7 @@ impl Document {
                 scratch.add_property_owned(cx.names, _transform_, fast, b"", false, Some(cx.container));
             }
         } else {
-            scratch.add(cx.names, &normalize(patch, f_componentize, None), b"", Some(cx.container));
+            scratch.add_tokens(cx.names, normalize(patch, f_componentize, None), b"", Some(cx.container));
         }
         let mut ids = Vec::new();
         for &name in names {

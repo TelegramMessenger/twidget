@@ -1193,7 +1193,7 @@ impl Style {
         let mut declarations = Vec::new();
         if !baseurl.is_empty() || !split_declarations(txt, &mut declarations) {
             let tokens = normalize(txt, f_componentize, None);
-            self.add(names, &tokens, baseurl, container);
+            self.add_tokens(names, tokens, baseurl, container);
             return;
         }
         let mut layer = false;
@@ -1208,10 +1208,11 @@ impl Style {
                 None => {
                     let mut scratch = Style { recording: Some(Vec::new()), ..Style::default() };
                     let tokens = normalize(&txt[start..start + len], f_componentize, None);
-                    scratch.add(names, &tokens, baseurl, container);
+                    let cacheable = key.len() <= max_cached_declaration && !has_viewport_units(&tokens);
+                    scratch.add_tokens(names, tokens, baseurl, container);
                     let ops = scratch.recording.take().unwrap_or_default();
                     // Viewport lengths fold to px at the current viewport, so their result holds for this parse only.
-                    if key.len() <= max_cached_declaration && !has_viewport_units(&tokens) {
+                    if cacheable {
                         cache.put(key, &ops);
                     }
                     ops
@@ -1234,29 +1235,35 @@ impl Style {
     /// it ignored), each value without whitespace, each name lower-case unless custom and looked up through
     /// the name table (which keeps it), those the container sanitizes away skipped.
     pub fn add(&mut self, names: &Names, tokens: &[CssToken], baseurl: &[u8], container: Option<&dyn DocumentContainer>) {
+        self.add_tokens(names, tokens.to_vec(), baseurl, container);
+    }
+
+    pub(crate) fn add_tokens(&mut self, names: &Names, tokens: Vec<CssToken>, baseurl: &[u8], container: Option<&dyn DocumentContainer>) {
         let mut decls = Vec::new();
         let mut rules = Vec::new();
-        CssParser::new(tokens.to_vec()).consume_style_block_contents(&mut decls, &mut rules);
+        CssParser::new(tokens).consume_style_block_contents(&mut decls, &mut rules);
         // a rule inside a style block is a parse error
         if decls.is_empty() {
             return;
         }
 
         let saved = self.suppress_raw;
-        for decl in &mut decls {
+        for mut decl in decls {
             if decl.name == b"-lh-anim" {
                 self.suppress_raw = true;
             }
             remove_whitespace(&mut decl.value, None);
             // decl.value is already componentized, and may be empty.
-            let name = if decl.name.starts_with(b"--") { decl.name.clone() } else { lowcase(&decl.name) };
+            if !decl.name.starts_with(b"--") {
+                decl.name.make_ascii_lowercase();
+            }
             if let Some(container) = container
-                && !container.sanitize_declaration(&name, &decl.value)
+                && !container.sanitize_declaration(&decl.name, &decl.value)
             {
                 continue;
             }
-            let id = names.id(&name);
-            self.add_property(names, id, &decl.value, baseurl, decl.important, container);
+            let id = names.id(&decl.name);
+            self.add_property_owned(names, id, decl.value, baseurl, decl.important, container);
         }
         self.suppress_raw = saved;
     }
@@ -1273,7 +1280,7 @@ impl Style {
         container: Option<&dyn DocumentContainer>,
     ) {
         let tokens = normalize(value, f_componentize | f_remove_whitespace, None);
-        self.add_property(names, name, &tokens, baseurl, important, container);
+        self.add_property_owned(names, name, tokens, baseurl, important, container);
     }
 
     /// `inherit_property(name, important)`.

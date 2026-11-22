@@ -174,8 +174,7 @@ const K_MAX_NESTING: i32 = 128;
 /// `css_parser`: a list of tokens being consumed.
 #[derive(Debug, Default)]
 pub struct CssParser {
-    tokens: CssTokenVector,
-    index: usize,
+    tokens: std::vec::IntoIter<CssToken>,
     depth: i32,
 }
 
@@ -187,7 +186,7 @@ pub fn parse_stylesheet(input: &[u8], top_level: bool) -> Vec<RawRule> {
     let str = decode(input, Encoding::utf_8);
     // 2. Normalize.
     let tokens = normalize(&str, 0, None);
-    parse_stylesheet_tokens(&tokens, top_level)
+    CssParser::new(tokens).consume_list_of_rules(top_level)
 }
 
 /// `css_parser::parse_stylesheet(input, top_level)` of tokens: the list of rules, the top-level flag set
@@ -208,24 +207,15 @@ pub fn trim_whitespace(tokens: &mut CssTokenVector) {
 
 impl CssParser {
     pub fn new(tokens: CssTokenVector) -> CssParser {
-        CssParser { tokens, index: 0, depth: 0 }
+        CssParser { tokens: tokens.into_iter(), depth: 0 }
     }
 
-    /// https://www.w3.org/TR/css-syntax-3/#consume-the-next-input-token: a copy, EOF past the end.
     fn next_token(&mut self) -> CssToken {
-        if self.index == self.tokens.len() {
-            return CssToken::new(EOF);
-        }
-        self.index += 1;
-        self.tokens[self.index - 1].clone()
+        self.tokens.next().unwrap_or_else(|| CssToken::new(EOF))
     }
 
-    /// `peek_token()`: the next token, EOF past the end.
-    fn peek_token(&self) -> CssToken {
-        if self.index == self.tokens.len() {
-            return CssToken::new(EOF);
-        }
-        self.tokens[self.index].clone()
+    fn peek_type(&self) -> i32 {
+        self.tokens.as_slice().first().map_or(EOF, |token| token.ty)
     }
 
     /// https://www.w3.org/TR/css-syntax-3/#consume-list-of-rules: CDO and CDC are skipped at the top level.
@@ -233,22 +223,23 @@ impl CssParser {
         let mut rules = Vec::new();
 
         loop {
-            let token = self.next_token();
-
-            match token.ty {
-                WHITESPACE => {}
-                EOF => return rules,
-                CDO | CDC if top_level => {}
+            match self.peek_type() {
+                WHITESPACE => {
+                    self.next_token();
+                }
+                EOF => {
+                    self.next_token();
+                    return rules;
+                }
+                CDO | CDC if top_level => {
+                    self.next_token();
+                }
                 AT_KEYWORD => {
-                    // Reconsume the current input token and consume an at-rule.
-                    self.index -= 1;
                     if let Some(rule) = self.consume_at_rule() {
                         rules.push(rule);
                     }
                 }
                 _ => {
-                    // Reconsume the current input token and consume a qualified rule.
-                    self.index -= 1;
                     if let Some(rule) = self.consume_qualified_rule() {
                         rules.push(rule);
                     }
@@ -276,9 +267,7 @@ impl CssParser {
                     return Some(rule);
                 }
                 _ => {
-                    // Reconsume the current input token and append a component value to the prelude.
-                    self.index -= 1;
-                    let value = self.consume_component_value();
+                    let value = self.component_value(token);
                     rule.prelude.push(value);
                 }
             }
@@ -306,8 +295,7 @@ impl CssParser {
                     return Some(rule);
                 }
                 _ => {
-                    self.index -= 1;
-                    let value = self.consume_component_value();
+                    let value = self.component_value(token);
                     rule.prelude.push(value);
                 }
             }
@@ -322,23 +310,23 @@ impl CssParser {
         let mut decl = RawDeclaration { name: token.str, value: Vec::new(), important: false };
 
         // 1. Whitespace.
-        while self.peek_token().ty == WHITESPACE {
+        while self.peek_type() == WHITESPACE {
             self.next_token();
         }
 
         // 2. Anything but `:` is a parse error.
-        if self.peek_token().ch() != COLON {
+        if self.peek_type() != COLON {
             return RawDeclaration::default();
         }
         self.next_token();
 
         // 3. Whitespace.
-        while self.peek_token().ty == WHITESPACE {
+        while self.peek_type() == WHITESPACE {
             self.next_token();
         }
 
         // 4. Component values to the end.
-        while self.peek_token().ty != EOF {
+        while self.peek_type() != EOF {
             let value = self.consume_component_value();
             decl.value.push(value);
         }
@@ -361,21 +349,23 @@ impl CssParser {
     /// `&` nested ones) of a style block, apart.
     pub fn consume_style_block_contents(&mut self, decls: &mut Vec<RawDeclaration>, rules: &mut Vec<RawRule>) {
         loop {
-            let token = self.next_token();
-
-            match token.ty {
-                WHITESPACE | SEMICOLON => {}
-                EOF => return,
+            match self.peek_type() {
+                WHITESPACE | SEMICOLON => {
+                    self.next_token();
+                }
+                EOF => {
+                    self.next_token();
+                    return;
+                }
                 AT_KEYWORD => {
-                    self.index -= 1;
                     if let Some(rule) = self.consume_at_rule() {
                         rules.push(rule);
                     }
                 }
                 IDENT => {
                     // The token and every component value to `;` or the end, then a declaration of them.
-                    let mut temp = vec![token];
-                    while !matches!(self.peek_token().ty, SEMICOLON | EOF) {
+                    let mut temp = vec![self.next_token()];
+                    while !matches!(self.peek_type(), SEMICOLON | EOF) {
                         let value = self.consume_component_value();
                         temp.push(value);
                     }
@@ -386,15 +376,13 @@ impl CssParser {
                     }
                 }
                 AMPERSAND => {
-                    self.index -= 1;
                     if let Some(rule) = self.consume_qualified_rule() {
                         rules.push(rule);
                     }
                 }
                 _ => {
                     // unexpected token in a style block: component values to `;` or the end, thrown away
-                    self.index -= 1;
-                    while !matches!(self.peek_token().ty, SEMICOLON | EOF) {
+                    while !matches!(self.peek_type(), SEMICOLON | EOF) {
                         self.consume_component_value();
                     }
                 }
@@ -445,9 +433,7 @@ impl CssParser {
                 self.depth -= 1;
                 return block;
             }
-            // Reconsume the current input token and append a component value.
-            self.index -= 1;
-            let val = self.consume_component_value();
+            let val = self.component_value(token);
             block.value.push(val);
         }
     }
@@ -455,7 +441,10 @@ impl CssParser {
     /// https://www.w3.org/TR/css-syntax-3/#consume-component-value
     pub fn consume_component_value(&mut self) -> CssToken {
         let token = self.next_token();
+        self.component_value(token)
+    }
 
+    fn component_value(&mut self, token: CssToken) -> CssToken {
         match token.ty {
             LEFT_BRACE | LEFT_BRACKET | LEFT_PAREN => self.consume_simple_block(token.ch() as u8),
             FUNCTION => self.consume_function(&token.str),
@@ -487,8 +476,7 @@ impl CssParser {
                     return function;
                 }
                 _ => {
-                    self.index -= 1;
-                    let val = self.consume_component_value();
+                    let val = self.component_value(token);
                     function.value.push(val);
                 }
             }

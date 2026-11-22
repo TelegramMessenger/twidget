@@ -146,7 +146,7 @@ impl Css {
         };
         let mut import_allowed = top_level;
 
-        for rule in &rules {
+        for rule in rules {
             if rule.ty == RuleType::qualified {
                 if self.parse_style_rule(rule, baseurl, doc, media) {
                     import_allowed = false;
@@ -164,7 +164,7 @@ impl Css {
                 _charset_ => {}
                 _import_ => {
                     if import_allowed {
-                        self.parse_import_rule(rule, baseurl, doc, media);
+                        self.parse_import_rule(&rule, baseurl, doc, media);
                     }
                     // else: incorrect placement of @import rule
                 }
@@ -190,7 +190,7 @@ impl Css {
                     if rule.block.ty != CURLY_BLOCK {
                         continue;
                     }
-                    let condition = normalize_tokens(rule.prelude.clone(), f_componentize, None);
+                    let condition = normalize_tokens(rule.prelude, f_componentize, None);
                     if eval_supports_condition(&condition, doc) {
                         self.parse_css_stylesheet(StyleSheetInput::Tokens(&rule.block.value), baseurl, doc, media, false);
                     }
@@ -248,7 +248,7 @@ impl Css {
     /// specificity reckoned.
     fn parse_style_rule(
         &mut self,
-        rule: &RawRule,
+        rule: RawRule,
         baseurl: &[u8],
         doc: &dyn StyleSheetHost,
         media: Option<&Arc<MediaQueryListList>>,
@@ -261,8 +261,8 @@ impl Css {
 
         // The content of the qualified rule's block is parsed as a style block's contents.
         let mut block = Style::default();
-        block.add(doc.names(), &rule.block.value, baseurl, Some(doc.container()));
-        let style = Arc::new(StyleRule { prelude: rule.prelude.clone(), style: block, baseurl: baseurl.to_vec() });
+        block.add_tokens(doc.names(), rule.block.value, baseurl, Some(doc.container()));
+        let style = Arc::new(StyleRule { prelude: rule.prelude, style: block, baseurl: baseurl.to_vec() });
 
         for sel in list {
             let mut sel = Arc::try_unwrap(sel).unwrap_or_else(|shared| (*shared).clone());
