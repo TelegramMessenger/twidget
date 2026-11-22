@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use twidget_animations::{Animator, Declared, Motion, Plan, StyleOverrides};
+use twidget_animations::{Animator, Declared, Motion, Plan, StyleOverrides, StyleValues};
 use twidget_compositor::{
     Composition, Layer, LayerKey, LayerTrack, PaintSummary, bake_track, damage_between, drop_inert_clips, paint_digest, resume_track,
     summarize,
@@ -243,6 +243,16 @@ fn bounds_under(r: &Rect, m: &Affine) -> Rect {
 
 /// When a track's key at `t` (0..1) applies. A loop's end is the next iteration's start already, so its last key
 /// reads a moment before.
+/// What a layer's sample reads of `property`: the last value the animations give it, else its base value.
+fn sampled<'a>(values: &'a StyleValues, animator: &'a Animator, id: i64, property: &[u8]) -> &'a [u8] {
+    for (k, v) in values.iter().rev() {
+        if k == property {
+            return v;
+        }
+    }
+    animator.base_bytes(id, property)
+}
+
 fn plan_time(plan: &Plan, t: f64) -> f64 {
     let t = if plan.repeat && t >= 1.0 { 1.0 - 1e-6 } else { t };
     plan.start + t * plan.duration
@@ -613,19 +623,11 @@ impl<E: Engine, B: Backend> Core<E, B> {
                 let animator = &self.animator;
                 let sample = |t: f64, out: &mut LayerKey| -> bool {
                     let values = animator.peek(id, plan_time(&plan, t));
-                    let value = |property: &[u8]| -> Vec<u8> {
-                        for (k, v) in values.iter().rev() {
-                            if k == property {
-                                return v.clone();
-                            }
-                        }
-                        animator.base_value(id, property)
-                    };
-                    let translate = css::parse_translate(&value(b"translate"), rect.w, rect.h);
-                    let rotate = css::parse_rotate(&value(b"rotate"));
-                    let scale = css::parse_scale(&value(b"scale"));
-                    let transform = css::parse_transform(&value(b"transform"), rect.w, rect.h);
-                    let opacity = css::parse_opacity(&value(b"opacity"));
+                    let translate = css::parse_translate(sampled(&values, animator, id, b"translate"), rect.w, rect.h);
+                    let rotate = css::parse_rotate(sampled(&values, animator, id, b"rotate"));
+                    let scale = css::parse_scale(sampled(&values, animator, id, b"scale"));
+                    let transform = css::parse_transform(sampled(&values, animator, id, b"transform"), rect.w, rect.h);
+                    let opacity = css::parse_opacity(sampled(&values, animator, id, b"opacity"));
                     let (Some(translate), Some(rotate), Some(scale), Some(transform), Some(opacity)) =
                         (translate, rotate, scale, transform, opacity)
                     else {

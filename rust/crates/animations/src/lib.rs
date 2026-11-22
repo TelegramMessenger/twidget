@@ -12,7 +12,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use twidget_css as css;
@@ -527,10 +529,14 @@ impl PairCache {
         self.bytes
     }
 
-    fn tokens(&mut self, a: &[u8], b: &[u8]) -> Option<TokenPair> {
-        let key = concat(&[a.len().to_string().as_bytes(), b":", a, b]);
-        if let Some(found) = self.pairs.get(&key) {
-            return found.clone();
+    /// The pair's tokens, read where the cache keeps them (the C++ returns a copy).
+    fn tokens(&mut self, a: &[u8], b: &[u8]) -> Cow<'_, Option<TokenPair>> {
+        let mut key = Vec::with_capacity(a.len() + b.len() + 8);
+        let _ = write!(key, "{}:", a.len());
+        key.extend_from_slice(a);
+        key.extend_from_slice(b);
+        if self.pairs.contains_key(&key) {
+            return Cow::Borrowed(&self.pairs[&key]);
         }
         let mut from = css::normalize_colors(a);
         let mut to = css::normalize_colors(b);
@@ -561,9 +567,9 @@ impl PairCache {
                 self.bytes = 0;
             }
             self.bytes += key.len();
-            self.pairs.insert(key, result.clone());
+            return Cow::Borrowed(self.pairs.entry(key).or_insert(result));
         }
-        result
+        Cow::Owned(result)
     }
 }
 
@@ -1423,9 +1429,10 @@ pub fn interpolate(pairs: &mut PairCache, a: &[u8], b: &[u8], t: f64) -> Vec<u8>
         }
         concat(&[&scaled_translations(&css::trim(&from), 1.0 - t), b" ", &scaled_translations(&css::trim(&to), t)])
     };
-    let Some((left, right)) = pairs.tokens(a, b) else { return weighted() };
-    let mut out = Vec::new();
-    for (x, y) in left.iter().zip(&right) {
+    let pair = pairs.tokens(a, b);
+    let Some((left, right)) = &*pair else { return weighted() };
+    let mut out = Vec::with_capacity(a.len().max(b.len()) + 16);
+    for (x, y) in left.iter().zip(right) {
         if x.number && y.number && (x.text == y.text || x.value == 0.0 || y.value == 0.0) {
             out.extend_from_slice(&number_text(x.value + (y.value - x.value) * t, 4));
             out.extend_from_slice(if x.text.is_empty() { &y.text } else { &x.text });
@@ -1723,7 +1730,18 @@ struct Running {
     paused_duration: f64,
 }
 
+/// What sampling a `Running` changes of it.
+#[derive(Clone, Copy, Debug)]
+struct Marks {
+    iteration: i32,
+    ended: bool,
+}
+
 impl Running {
+    fn marks(&self) -> Marks {
+        Marks { iteration: self.iteration, ended: self.ended }
+    }
+
     fn new(spec: AnimationSpec, start: f64, iteration: i32) -> Running {
         Running { spec, start, iteration, ended: false, paused_at: None, paused_duration: 0.0 }
     }
@@ -1774,6 +1792,11 @@ fn key(kind: &[u8], name: &[u8]) -> Vec<u8> {
     concat(&[kind, name])
 }
 
+/// `override_in(overrides, id, key(kind, name))`, the key made only for an element with overrides.
+fn override_of<'a>(overrides: &'a Overrides, id: i64, kind: &[u8], name: &[u8]) -> Option<&'a Override> {
+    overrides.get(&id)?.get(&key(kind, name)[..])
+}
+
 fn values(caches: &mut Caches, frames: &[Keyframe], base: &Declared, progress: f64, spec: &AnimationSpec) -> StyleValues {
     struct Stop<'a> {
         offset: f64,
@@ -1789,10 +1812,10 @@ fn values(caches: &mut Caches, frames: &[Keyframe], base: &Declared, progress: f
             }
         }
     }
-    let mut result = StyleValues::new();
+    let mut result = StyleValues::with_capacity(properties.len());
     let spec_timing = spec.timing(&mut caches.timings);
     for property in properties {
-        let mut stops: Vec<Stop> = Vec::new();
+        let mut stops: Vec<Stop> = Vec::with_capacity(frames.len() + 2);
         for f in frames {
             if let Some(v) = last_value(&f.declarations, property) {
                 stops.push(Stop { offset: f.offset, value: v, timing: &f.timing });
@@ -1835,19 +1858,21 @@ fn values(caches: &mut Caches, frames: &[Keyframe], base: &Declared, progress: f
     result
 }
 
-/// `events` None: a peek, which reports nothing.
+/// `events` None: a peek, which reports nothing. `marks` is the item's iteration and whether it ended, as the
+/// sample leaves them (what the C++ writes into its `item`, a copy for a peek).
 fn sample_animation(
     caches: &mut Caches,
     overrides: &Overrides,
     bases: &BTreeMap<i64, Declared>,
     id: i64,
-    item: &mut Running,
+    item: &Running,
+    marks: &mut Marks,
     frames: &[Keyframe],
     now: f64,
     events: Option<&mut Vec<AnimationEvent>>,
 ) -> Option<StyleValues> {
     let mut local = item.local_time(now) - item.spec.delay;
-    if let Some(o) = override_in(overrides, id, &key(b"animation:", &item.spec.name)) {
+    if let Some(o) = override_of(overrides, id, b"animation:", &item.spec.name) {
         if o.cancelled {
             return None;
         }
@@ -1876,8 +1901,8 @@ fn sample_animation(
         let iterations = spec.iterations;
         let last_iteration = 0.max(clamp(iterations, 0.0, 1e9).ceil() as i32 - 1);
         let reversed_last = reversed(last_iteration);
-        if !item.ended {
-            item.ended = true;
+        if !marks.ended {
+            marks.ended = true;
             if let Some(events) = events {
                 events.push(AnimationEvent { kind: EventKind::AnimationEnd, target: id, name: item.spec.name.clone(), elapsed: total });
             }
@@ -1895,8 +1920,8 @@ fn sample_animation(
     // The C++'s int() of a NaN is INT_MIN on x64, Rust's 0; a finite clock gives no NaN here.
     let iteration = min(local / duration, 1e9) as i32;
     let reversed_now = reversed(iteration);
-    if iteration != item.iteration {
-        item.iteration = iteration;
+    if iteration != marks.iteration {
+        marks.iteration = iteration;
         if let Some(events) = events {
             events.push(AnimationEvent { kind: EventKind::AnimationIteration, target: id, name: item.spec.name.clone(), elapsed: local });
         }
@@ -2041,18 +2066,28 @@ impl Animator {
     }
 
     fn underlying_value(&self, id: i64, property: &[u8]) -> Vec<u8> {
+        self.underlying_bytes(id, property).to_vec()
+    }
+
+    /// `underlying_value` where it is kept.
+    fn underlying_bytes(&self, id: i64, property: &[u8]) -> &[u8] {
         if let Some(v) = self.bases.get(&id).and_then(|b| b.get(property)) {
-            return v.clone();
+            return v;
         }
         if let Some(v) = self.underlying.get(&id).and_then(|u| u.get(property)) {
-            return v.clone();
+            return v;
         }
-        initial_value(property).unwrap_or_default().to_vec()
+        initial_value(property).unwrap_or_default()
     }
 
     /// `property` of `id` without its animations: as declared, or the property's initial value.
     pub fn base_value(&self, id: i64, property: &[u8]) -> Vec<u8> {
         self.underlying_value(id, property)
+    }
+
+    /// `base_value` where the animator keeps it.
+    pub fn base_bytes(&self, id: i64, property: &[u8]) -> &[u8] {
+        self.underlying_bytes(id, property)
     }
 
     /// The declared values of every element after a build; starts, restarts and stops animations
@@ -2183,8 +2218,11 @@ impl Animator {
                 if frames.is_empty() {
                     continue;
                 }
-                if let Some(values) = sample_animation(caches, &self.overrides, &self.bases, id, item, frames, now, Some(&mut self.events))
-                {
+                let mut marks = item.marks();
+                let values =
+                    sample_animation(caches, &self.overrides, &self.bases, id, item, &mut marks, frames, now, Some(&mut self.events));
+                (item.iteration, item.ended) = (marks.iteration, marks.ended);
+                if let Some(values) = values {
                     for (property, value) in values {
                         merge(out.entry(id).or_default(), &property, value);
                     }
@@ -2384,12 +2422,11 @@ impl Animator {
         let mut out = StyleOverrides::new();
         if let Some(list) = self.running.get(&id) {
             for item in list {
-                let mut item = item.clone();
                 let Some(frames) = self.keyframes.get(&item.spec.name) else { continue };
                 if frames.is_empty() {
                     continue;
                 }
-                if let Some(values) = sample_animation(caches, &self.overrides, &self.bases, id, &mut item, frames, t, None) {
+                if let Some(values) = sample_animation(caches, &self.overrides, &self.bases, id, item, &mut item.marks(), frames, t, None) {
                     for (property, value) in values {
                         merge(out.entry(id).or_default(), &property, value);
                     }
