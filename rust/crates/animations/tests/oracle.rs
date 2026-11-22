@@ -15,8 +15,15 @@ fn shared() -> SharedCaches {
     SharedCaches::default()
 }
 
-fn script_case(c: &mut Comparison, caches: &SharedCaches, steps: &[Step], tally: &mut Tally, what: impl Into<String>) {
-    let answer = run_script(caches, steps, tally);
+fn script_case(
+    c: &mut Comparison,
+    caches: &SharedCaches,
+    hashes: &mut ScriptHashes,
+    steps: &[Step],
+    tally: &mut Tally,
+    what: impl Into<String>,
+) {
+    let answer = run_script(caches, hashes, steps, tally);
     c.case(&script_record(steps), (1, answer), what);
 }
 
@@ -27,6 +34,7 @@ fn report(name: &str, cases: usize, tally: &Tally) {
 fn generated(seed: u64, count: usize) -> (usize, Tally) {
     let Some(oracle) = Oracle::find("animations_oracle") else { return (0, Tally::default()) };
     let caches = shared();
+    let mut hashes = ScriptHashes::default();
     let mut random = Lcg::new(seed);
     let mut tally = Tally::default();
     let mut c = Comparison::new();
@@ -37,7 +45,14 @@ fn generated(seed: u64, count: usize) -> (usize, Tally) {
                 eprintln!("{step:?}");
             }
         }
-        script_case(&mut c, &caches, &steps, &mut tally, format!("script {seed:x}/{i} (TWIDGET_ANIMATIONS_SHOW={seed:x}/{i} prints it)"));
+        script_case(
+            &mut c,
+            &caches,
+            &mut hashes,
+            &steps,
+            &mut tally,
+            format!("script {seed:x}/{i} (TWIDGET_ANIMATIONS_SHOW={seed:x}/{i} prints it)"),
+        );
     }
     let n = c.len();
     c.check(&oracle);
@@ -79,6 +94,7 @@ fn more_generated_scripts_alike() {
 fn long_scripts_alike() {
     let Some(oracle) = Oracle::find("animations_oracle") else { return };
     let caches = shared();
+    let mut hashes = ScriptHashes::default();
     let mut random = Lcg::new(0xa1_0003);
     let mut tally = Tally::default();
     let mut c = Comparison::new();
@@ -91,7 +107,7 @@ fn long_scripts_alike() {
                 steps.iter().rev().find_map(|s| if let Step::Sample(t) | Step::Update(t, _) = s { Some(*t) } else { None }).unwrap_or(0.0);
             steps.extend(more.into_iter().map(|s| shift(s, base)));
         }
-        script_case(&mut c, &caches, &steps, &mut tally, format!("long script {i}"));
+        script_case(&mut c, &caches, &mut hashes, &steps, &mut tally, format!("long script {i}"));
     }
     let n = c.len();
     c.check(&oracle);
@@ -124,6 +140,7 @@ fn mutated(random: &mut Lcg, bytes: &[u8]) -> Vec<u8> {
 fn changed_scripts_alike() {
     let Some(oracle) = Oracle::find("animations_oracle") else { return };
     let caches = shared();
+    let mut hashes = ScriptHashes::default();
     let mut random = Lcg::new(0xa1_0004);
     let mut tally = Tally::default();
     let mut c = Comparison::new();
@@ -148,7 +165,7 @@ fn changed_scripts_alike() {
                 }
             })
             .collect();
-        script_case(&mut c, &caches, &steps, &mut tally, format!("changed script {i}"));
+        script_case(&mut c, &caches, &mut hashes, &steps, &mut tally, format!("changed script {i}"));
     }
     let n = c.len();
     c.check(&oracle);
@@ -361,6 +378,7 @@ fn corpus_alike() {
     let animated: Vec<&Vec<u8>> = sheets.iter().filter(|s| s.windows(9).any(|w| w.eq_ignore_ascii_case(b"keyframes"))).collect();
     assert!(animated.len() > 50, "style sheets with @keyframes in widget-sandbox's corpus: {}", animated.len());
     let caches = shared();
+    let mut hashes = ScriptHashes::default();
     let mut random = Lcg::new(0xa1_000a);
     let mut tally = Tally::default();
     let mut c = Comparison::new();
@@ -436,7 +454,7 @@ fn corpus_alike() {
             steps.push(Step::Signature(id));
             steps.push(Step::Peek(id, now + 0.05));
         }
-        script_case(&mut c, &caches, &steps, &mut tally, format!("corpus script {i}"));
+        script_case(&mut c, &caches, &mut hashes, &steps, &mut tally, format!("corpus script {i}"));
     }
     let n = c.len();
     c.check(&oracle);
@@ -462,6 +480,7 @@ fn composite_record(aid: usize, target: i64, property: &str, frames: &[(f64, &st
 fn composites_alike() {
     let Some(oracle) = Oracle::find("animations_oracle") else { return };
     let caches = shared();
+    let mut hashes = ScriptHashes::default();
     let mut random = Lcg::new(0xa1_000b);
     let mut tally = Tally::default();
     let mut c = Comparison::new();
@@ -512,7 +531,7 @@ fn composites_alike() {
             }
         }
         steps.push(Step::Heavy(0.5));
-        script_case(&mut c, &caches, &steps, &mut tally, format!("composite script {i}"));
+        script_case(&mut c, &caches, &mut hashes, &steps, &mut tally, format!("composite script {i}"));
     }
     let n = c.len();
     c.check(&oracle);
@@ -523,6 +542,7 @@ fn composites_alike() {
 fn edges_alike() {
     let Some(oracle) = Oracle::find("animations_oracle") else { return };
     let caches = shared();
+    let mut hashes = ScriptHashes::default();
     let mut tally = Tally::default();
     let mut c = Comparison::new();
     // linear() of as many points as it takes, and one more.
@@ -622,7 +642,7 @@ fn edges_alike() {
             steps.extend([Step::Signature(id), Step::Plan(id, 0.5, true), Step::Peek(id, 0.5), Step::Query(vec![id], 0.5)]);
         }
         steps.extend([Step::Sample(0.5), Step::Heavy(0.5), Step::Ids(0.5), Step::WebTargets(2), Step::Active(0.5, vec![1])]);
-        script_case(&mut c, &caches, &steps, &mut tally, format!("edge message {i}"));
+        script_case(&mut c, &caches, &mut hashes, &steps, &mut tally, format!("edge message {i}"));
     }
     // Clocks far from zero: local times that are no longer finite, sums that overflow.
     let effect = concat!(
@@ -657,7 +677,7 @@ fn edges_alike() {
             ]);
         }
         steps.push(Step::Signature(1));
-        script_case(&mut c, &caches, &steps, &mut tally, format!("far clock {i}: {now}"));
+        script_case(&mut c, &caches, &mut hashes, &steps, &mut tally, format!("far clock {i}: {now}"));
     }
     let n = c.len();
     c.check(&oracle);
@@ -668,6 +688,7 @@ fn edges_alike() {
 fn css_overrides_alike() {
     let Some(oracle) = Oracle::find("animations_oracle") else { return };
     let caches = shared();
+    let mut hashes = ScriptHashes::default();
     let mut random = Lcg::new(0xa1_000c);
     let mut tally = Tally::default();
     let mut c = Comparison::new();
@@ -742,7 +763,7 @@ fn css_overrides_alike() {
             steps.extend([Step::Signature(id), Step::Plan(id, now, true), Step::Query(vec![id], now), Step::Peek(id, now)]);
         }
         steps.extend([Step::Heavy(now), Step::Active(now, vec![2]), Step::Sample(now)]);
-        script_case(&mut c, &caches, &steps, &mut tally, format!("override script {i}"));
+        script_case(&mut c, &caches, &mut hashes, &steps, &mut tally, format!("override script {i}"));
     }
     let n = c.len();
     c.check(&oracle);

@@ -133,7 +133,20 @@ void motions(Out& o, const std::vector<Animator::Motion>& list) {
     }
 }
 
-void script(In& in, Out& o) {
+struct ScriptHashes {
+    std::unordered_map<uint64_t, uint64_t> signatures, motions;
+};
+
+uint64_t hash_id(uint64_t hash, std::unordered_map<uint64_t, uint64_t>& seen) {
+#ifdef _MSC_VER
+    return hash;
+#else
+    if (!hash) return 0;
+    return seen.emplace(hash, seen.size() + 1).first->second;
+#endif
+}
+
+void script(In& in, Out& o, ScriptHashes& hashes) {
     Animator a;
     const uint32_t steps = in.u32();
     for (uint32_t i = 0; i < steps && in.at < in.s.size(); i++) {
@@ -220,7 +233,7 @@ void script(In& in, Out& o) {
             }
             break;
         }
-        case 'g': o.u64(a.signature(in.i64())); break;
+        case 'g': o.u64(hash_id(a.signature(in.i64()), hashes.signatures)); break;
         case 'q': {
             auto ids = id_list(in);
             o.str(a.css_animations(ids, in.f64()).dump());
@@ -238,9 +251,9 @@ void script(In& in, Out& o) {
         }
         case 'h': {
             const double now = in.f64();
-            o.u64(a.heavy_motion(now, nullptr));
+            o.u64(hash_id(a.heavy_motion(now, nullptr), hashes.motions));
             std::vector<Animator::Motion> list;
-            o.u64(a.heavy_motion(now, &list));
+            o.u64(hash_id(a.heavy_motion(now, &list), hashes.motions));
             motions(o, std::move(list));
             break;
         }
@@ -346,6 +359,7 @@ void web(In& in, Out& o) {
 } // namespace
 
 int main() {
+    ScriptHashes hashes;
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
@@ -360,7 +374,7 @@ int main() {
         In in{bytes};
         Out o;
         switch (op) {
-        case 'S': script(in, o); break;
+        case 'S': script(in, o, hashes); break;
         case 'T': timing(in, o); break;
         case 'I': {
             std::string a = in.str(), b = in.str();

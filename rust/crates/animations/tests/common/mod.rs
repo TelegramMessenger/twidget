@@ -258,8 +258,23 @@ pub fn script_record(steps: &[Step]) -> Vec<u8> {
     f.framed(b'S')
 }
 
+#[derive(Default)]
+pub struct ScriptHashes {
+    signatures: BTreeMap<u64, u64>,
+    motions: BTreeMap<u64, u64>,
+}
+
+// The renderer compares these hashes for equality. Non-MSVC C++ libraries give their own string hashes.
+fn hash_id(hash: u64, seen: &mut BTreeMap<u64, u64>) -> u64 {
+    if cfg!(target_env = "msvc") || hash == 0 {
+        return hash;
+    }
+    let next = seen.len() as u64 + 1;
+    *seen.entry(hash).or_insert(next)
+}
+
 /// The script through the port, writing what the oracle writes.
-pub fn run_script(caches: &SharedCaches, steps: &[Step], tally: &mut Tally) -> Vec<u8> {
+pub fn run_script(caches: &SharedCaches, hashes: &mut ScriptHashes, steps: &[Step], tally: &mut Tally) -> Vec<u8> {
     let mut a = Animator::with_caches(caches.clone());
     let mut o = Out::default();
     for step in steps {
@@ -371,7 +386,7 @@ pub fn run_script(caches: &SharedCaches, steps: &[Step], tally: &mut Tally) -> V
             }
             Step::Signature(id) => {
                 o.u8(b'g');
-                o.u64(a.signature(*id));
+                o.u64(hash_id(a.signature(*id), &mut hashes.signatures));
             }
             Step::Query(ids, now) => {
                 o.u8(b'q');
@@ -392,9 +407,9 @@ pub fn run_script(caches: &SharedCaches, steps: &[Step], tally: &mut Tally) -> V
             }
             Step::Heavy(now) => {
                 o.u8(b'h');
-                o.u64(a.heavy_motion(*now, None));
+                o.u64(hash_id(a.heavy_motion(*now, None), &mut hashes.motions));
                 let mut list = Vec::new();
-                o.u64(a.heavy_motion(*now, Some(&mut list)));
+                o.u64(hash_id(a.heavy_motion(*now, Some(&mut list)), &mut hashes.motions));
                 o.u32(list.len() as u32);
                 for m in &list {
                     tally.add(format!("motion {}", m.kind as char));
