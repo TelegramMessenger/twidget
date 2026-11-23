@@ -852,19 +852,20 @@ impl<E: Engine, B: Backend> Core<E, B> {
                 }
                 // The widest margin around it that nothing paints over.
                 let at = bounds_under(&p.rect, &m);
+                let mut room = at;
                 for margin in [max_f32(48.0, max_f32(p.rect.w, p.rect.h) / 2.0), 16.0, 2.0] {
-                    p.reach = Rect::new(at.x - margin, at.y - margin, at.w + 2.0 * margin, at.h + 2.0 * margin);
-                    if p.has_clip {
-                        p.reach = intersection(&p.reach, &p.clip);
-                    }
+                    room = Rect::new(at.x - margin, at.y - margin, at.w + 2.0 * margin, at.h + 2.0 * margin);
+                    p.reach = if p.has_clip { intersection(&room, &p.clip) } else { room };
                     if !self.engine.covered(id, p.reach, &others) {
                         break;
                     }
                 }
+                // A clip that all the room is inside, away from its corners, cuts nothing: the layer goes without.
+                // The room as it is before the clip cuts it: what is left of it is inside the clip always.
                 if p.has_clip {
                     let corner = corner_of(&p.clip_radii);
                     let inner = Rect::new(p.clip.x + corner, p.clip.y + corner, p.clip.w - 2.0 * corner, p.clip.h - 2.0 * corner);
-                    if contains(&inner, &p.reach) {
+                    if contains(&inner, &room) {
                         p.has_clip = false;
                     }
                 }

@@ -581,6 +581,30 @@ fn scripted_layers() {
 }
 
 #[test]
+fn a_scripted_layer_keeps_the_overflow_clip_it_shows_through() {
+    let mut s = Script::new(20);
+    s.width = 400.0;
+    s.after(0.0, Step::Compositing(true));
+    s.ops(0.0, r#"[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+        {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+        {"op":"el","id":10,"tag":"div","attrs":[["style","margin:100px;width:20px;height:20px;overflow:hidden"]]},{"op":"ins","parent":4,"id":10,"before":null},
+        {"op":"el","id":11,"tag":"div","attrs":[["style","width:20px;height:200px;background-color:#0a0"]]},{"op":"ins","parent":10,"id":11,"before":null}]"#);
+    s.after(0.0, Step::Paint);
+    for y in 1..=3 {
+        s.ops(0.0, &format!(r#"[{{"op":"style","id":11,"name":"transform","value":"translateY(-{}px)"}}]"#, 20 * y));
+        s.after(0.0, Step::Paint);
+    }
+    let rolled = last(&s);
+    let Some(run) = replay(s) else { return };
+    let layers = &painted(&run, rolled).composition.layers;
+    assert!(layers.len() == 1 && layers[0].id == 11, "a column a script rolls in a window is a layer");
+    assert!(
+        layers[0].has_clip && layers[0].clip == Rect::new(100.0, 100.0, 20.0, 20.0),
+        "under the window's clip: the column is taller than the window"
+    );
+}
+
+#[test]
 fn a_crowd_moved_by_script_stays_in_the_document() {
     let mut s = Script::new(400);
     s.width = 400.0;
