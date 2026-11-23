@@ -12,10 +12,12 @@ canvas message with that control. Host event-to-paint times exclude display vsyn
 import argparse
 from contextlib import contextmanager
 import hashlib
+from itertools import combinations
 import json
 import os
 from pathlib import Path
 import platform
+import signal
 import socket
 from statistics import median
 import struct
@@ -66,6 +68,18 @@ def elapsed(start, end):
     return (end - start) / 1_000_000
 
 
+def wait_for_exit(pid):
+    deadline = time.monotonic() + 3
+    while True:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            return os.waitstatus_to_exitcode(status)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        time.sleep(min(left, 0.01))
+
+
 @contextmanager
 def launch(binary):
     parent, child = socket.socketpair()
@@ -75,13 +89,23 @@ def launch(binary):
         start = CLOCK()
         pid = os.posix_spawn(str(binary), [str(binary), "3"], {}, file_actions=actions)
         child.close()
+        completed = False
         try:
             with parent.makefile("rb") as stream:
                 yield parent, stream, start
+            completed = True
         finally:
             parent.close()
-            waited, status = os.waitpid(pid, 0)
-            check(waited == pid and os.waitstatus_to_exitcode(status) == 0, "helper failed to exit cleanly")
+            status = wait_for_exit(pid)
+            if status is None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                check(wait_for_exit(pid) is not None, f"could not reap helper {pid} after SIGKILL")
+            if completed:
+                check(status is not None, "helper did not exit after its socket closed")
+                check(status == 0, f"helper exited with status {status}")
 
 
 def document(case, bars):
@@ -275,10 +299,13 @@ def run(args):
                   ("candidate", "rust", "cpp"), ("rust", "cpp", "candidate"), ("cpp", "candidate", "rust")]
     else:
         orders = [("cpp", "rust"), ("rust", "cpp")]
+    hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in binaries.items()}
+    for a, b in combinations(binaries, 2):
+        check(not binaries[a].samefile(binaries[b]) and hashes[a] != hashes[b],
+              f"helpers {a} and {b} need distinct executable contents")
     report = {"platform": platform.platform(), "machine": platform.machine(),
               "build_version": version, "updates": args.updates, "pairs": args.pairs, "timed_dom_observer": args.observe_dom,
-              "binaries": {k: {"path": str(v), "sha256": hashlib.sha256(v.read_bytes()).hexdigest()}
-                           for k, v in binaries.items()},
+              "binaries": {name: {"path": str(path), "sha256": hashes[name]} for name, path in binaries.items()},
               "bundles": {k: hashlib.sha256(v).hexdigest() for k, v in bundles.items()}, "cases": {}}
     for case in args.cases:
         validated = None

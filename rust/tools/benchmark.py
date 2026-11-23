@@ -155,9 +155,10 @@ def main():
         if not cpp:
             continue
         programs = {"cpp": cpp.resolve(strict=True), "rust": rust.resolve(strict=True)}
-        if programs["cpp"].samefile(programs["rust"]):
-            parser.error(f"{family} needs distinct control and candidate executables")
         binaries[family] = {arm: {"path": str(path), "sha256": fingerprint(path)} for arm, path in programs.items()}
+        if (programs["cpp"].samefile(programs["rust"])
+                or binaries[family]["cpp"]["sha256"] == binaries[family]["rust"]["sha256"]):
+            parser.error(f"{family} needs distinct control and candidate executable contents")
         if family == "synthetic":
             for mode, count in SYNTHETIC:
                 cases[f"synthetic/{mode}/{count}"] = (family, programs, [mode, count, args.frames])
