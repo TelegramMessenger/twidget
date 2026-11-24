@@ -136,8 +136,101 @@ fn theme_variables_follow_the_sdk() {
     assert_eq!(get("--tg-button-font"), None, "only generic families");
     assert_eq!(get("--tg-text-font-size").as_deref(), Some("15.56px"));
     assert_eq!(get("--tg-text-line-height").as_deref(), Some("1.35"), "the reference value when left out");
-    let inset = content_safe_area_variables(&Json::parse(r#"{"top":24.005,"cornerLeft":250}"#).expect("parses"));
+    let inset = content_safe_area_variables(&Json::parse(r#"{"top":24.005,"cornerLeft":250}"#).expect("parses"), false);
     assert_eq!(inset[0].1, b"24.01px".to_vec());
     assert_eq!(inset[4].1, b"0px".to_vec(), "past 200 is 0");
     assert!(is_theme_variable(b"--tg-theme-bottom-bar-bg-color") && !is_theme_variable(b"--tg-theme-other"));
+    for (name, _) in &vars {
+        assert!(is_theme_variable(name), "{} is the host's", String::from_utf8_lossy(name));
+    }
+    assert!(
+        !is_theme_variable(b"--tg-theme-bg_color") && !is_theme_variable(b"--tg-theme-bg-colors") && !is_theme_variable(b"--tg-theme-")
+    );
+}
+
+/// Both safe-area layers and the viewport in a bubble and on a profile page (docs/sdk-v1.md §2.17, §2.19),
+/// as the merged core/src/css.cpp makes them.
+#[test]
+fn place_variables_follow_the_sdk() {
+    let json = |text: &str| Json::parse(text).expect("parses");
+    let text = |vars: Variables| -> Vec<String> {
+        vars.into_iter().map(|(k, v)| format!("{}:{}", String::from_utf8_lossy(&k), String::from_utf8_lossy(&v))).collect()
+    };
+    let content = |top: &str, right: &str, bottom: &str, left: &str, corner_left: &str, corner_right: &str| {
+        vec![
+            format!("--tg-content-safe-area-inset-top:{top}"),
+            format!("--tg-content-safe-area-inset-right:{right}"),
+            format!("--tg-content-safe-area-inset-bottom:{bottom}"),
+            format!("--tg-content-safe-area-inset-left:{left}"),
+            format!("--tg-content-safe-area-corner-left:{corner_left}"),
+            format!("--tg-content-safe-area-corner-right:{corner_right}"),
+        ]
+    };
+    let device = |top: &str, right: &str, bottom: &str, left: &str| {
+        vec![
+            format!("--tg-safe-area-inset-top:{top}"),
+            format!("--tg-safe-area-inset-right:{right}"),
+            format!("--tg-safe-area-inset-bottom:{bottom}"),
+            format!("--tg-safe-area-inset-left:{left}"),
+        ]
+    };
+
+    let edges = json(r#"{"top":64,"right":64.004,"bottom":64.006,"left":-1,"cornerLeft":200,"cornerRight":200.01}"#);
+    assert_eq!(text(content_safe_area_variables(&edges, false)), content("64px", "0px", "0px", "0px", "200px", "0px"));
+    assert_eq!(text(content_safe_area_variables(&edges, true)), content("64px", "64px", "64.01px", "0px", "0px", "0px"));
+    let tall = json(r#"{"top":56,"bottom":120,"cornerLeft":0,"cornerRight":30}"#);
+    assert_eq!(text(content_safe_area_variables(&tall, true)), content("56px", "0px", "120px", "0px", "0px", "0px"));
+    assert_eq!(text(content_safe_area_variables(&tall, false)), content("56px", "0px", "0px", "0px", "0px", "30px"));
+
+    let malformed = json(r#"{"top":"12","right":null,"bottom":true,"cornerLeft":[1]}"#);
+    for page in [false, true] {
+        let zero = content("0px", "0px", "0px", "0px", "0px", "0px");
+        assert_eq!(text(content_safe_area_variables(&malformed, page)), zero);
+        assert_eq!(text(content_safe_area_variables(&Json::Null, page)), zero);
+        assert_eq!(text(safe_area_variables(&malformed, page)), device("0px", "0px", "0px", "0px"));
+        assert_eq!(text(safe_area_variables(&Json::Null, page)), device("0px", "0px", "0px", "0px"));
+    }
+
+    let edges = json(r#"{"top":47,"right":-3,"bottom":34.567,"left":"5"}"#);
+    assert_eq!(text(safe_area_variables(&edges, false)), device("0px", "0px", "0px", "0px"));
+    assert_eq!(text(safe_area_variables(&edges, true)), device("47px", "0px", "34.57px", "0px"));
+    assert_eq!(text(safe_area_variables(&json(r#"{"left":1000}"#), true)), device("0px", "0px", "0px", "1000px"));
+
+    let huge = json(r#"{"bottom":1e308}"#);
+    assert_eq!(text(safe_area_variables(&huge, true)), device("0px", "0px", "1e+308px", "0px"));
+    assert_eq!(text(content_safe_area_variables(&huge, true)), content("0px", "0px", "1e+308px", "0px", "0px", "0px"));
+    let (length, end) = strtod(b"1e+308px");
+    assert!(length.is_finite() && end == 6);
+
+    for (page, height, expected) in [
+        (true, "844.567", 844.57),
+        (true, "844", 844.0),
+        (false, "844", 0.0),
+        (true, "4000", 4000.0),
+        (true, "3999.996", 4000.0),
+        (true, "4000.004", 0.0),
+        (true, "4000.01", 0.0),
+        (true, "0.004", 0.0),
+        (true, "0", 0.0),
+        (true, "-1", 0.0),
+        (true, "\"844\"", 0.0),
+        (true, "null", 0.0),
+    ] {
+        assert_eq!(page_viewport_height(page, &json(height)), expected, "viewport {height} on a page: {page}");
+    }
+    assert_eq!(page_viewport_height(true, &Json::Null), 0.0);
+    assert_eq!(PAGE_MAX_HEIGHT, 4000.0);
+
+    for name in [
+        "--tg-safe-area-inset-top",
+        "--tg-safe-area-inset-right",
+        "--tg-safe-area-inset-bottom",
+        "--tg-safe-area-inset-left",
+        "--tg-content-safe-area-corner-right",
+        VIEWPORT_HEIGHT_VARIABLE,
+    ] {
+        assert!(is_theme_variable(name.as_bytes()), "{name} is the host's");
+    }
+    assert_eq!(VIEWPORT_HEIGHT_VARIABLE, "--tg-viewport-height");
+    assert!(!is_theme_variable(b"--tg-safe-area-inset-middle") && !is_theme_variable(b"--tg-viewport-width"));
 }

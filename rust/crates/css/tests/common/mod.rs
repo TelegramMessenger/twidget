@@ -218,7 +218,7 @@ pub fn answer(op: u8, input: &[u8]) -> (u8, Vec<u8>) {
         b'H' | b'A' => match Json::parse(input) {
             None => (2, Vec::new()),
             Some(json) => {
-                pairs(&mut o, &if op == b'H' { css::theme_variables(&json) } else { css::content_safe_area_variables(&json) });
+                pairs(&mut o, &if op == b'H' { css::theme_variables(&json) } else { css::content_safe_area_variables(&json, false) });
                 (1, o.s)
             }
         },

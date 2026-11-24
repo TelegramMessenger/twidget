@@ -9,17 +9,8 @@ use twidget_json::Json;
 use twidget_testkit::Lcg;
 
 use super::inputs::{document, pick, quote};
-use super::scripts::{host_message, patch_batch, query};
+use super::scripts::{attr_op, batch, el, host_message, patch_batch, query, sheet, style_op};
 use super::{Script, Step};
-
-fn el(id: i64, tag: &str, parent: i64, attrs: &[(&str, &str)]) -> String {
-    let attrs: Vec<String> = attrs.iter().map(|(k, v)| format!("[{},{}]", quote(k), quote(v))).collect();
-    format!(
-        "{{\"op\":\"el\",\"id\":{id},\"tag\":{},\"attrs\":[{}]}},{{\"op\":\"ins\",\"parent\":{parent},\"id\":{id},\"before\":null}}",
-        quote(tag),
-        attrs.join(",")
-    )
-}
 
 fn svg_el(id: i64, tag: &str, parent: i64, attrs: &[(&str, &str)]) -> String {
     let attrs: Vec<String> = attrs.iter().map(|(k, v)| format!("[{},{}]", quote(k), quote(v))).collect();
@@ -32,18 +23,6 @@ fn svg_el(id: i64, tag: &str, parent: i64, attrs: &[(&str, &str)]) -> String {
 
 fn text(id: i64, parent: i64, data: &str) -> String {
     format!("{{\"op\":\"text\",\"id\":{id},\"data\":{}}},{{\"op\":\"ins\",\"parent\":{parent},\"id\":{id},\"before\":null}}", quote(data))
-}
-
-fn style_op(id: i64, name: &str, value: &str) -> String {
-    format!("{{\"op\":\"style\",\"id\":{id},\"name\":{},\"value\":{}}}", quote(name), quote(value))
-}
-
-fn attr_op(id: i64, name: &str, value: &str) -> String {
-    format!("{{\"op\":\"attr\",\"id\":{id},\"name\":{},\"value\":{}}}", quote(name), quote(value))
-}
-
-fn batch(ops: &[String]) -> Vec<u8> {
-    format!("[{}]", ops.join(",")).into_bytes()
 }
 
 const LAYER_SHEET: &str = "@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}} \
@@ -69,7 +48,7 @@ const LAYER_SHEET: &str = "@keyframes spin{from{transform:rotate(0deg)}to{transf
 /// boxes, filters, selectable text in a moving card. Ids 10–79, the sheet 5.
 pub fn layer_page(r: &mut Lcg) -> (Vec<String>, u32) {
     let mut ops = Vec::new();
-    ops.push(format!("{{\"op\":\"el\",\"id\":5,\"tag\":\"style\",\"attrs\":[]}},{{\"op\":\"css\",\"id\":5,\"text\":{}}},{{\"op\":\"ins\",\"parent\":3,\"id\":5,\"before\":null}}", quote(LAYER_SHEET)));
+    ops.push(sheet(LAYER_SHEET));
     let movers = ["s", "sl", "f", "p", "g", "pop", "rise", "st", "late", "t", "s f", "", ""];
     let looks = [
         "width:40px;height:40px;background:#c33;margin:10px",
@@ -308,14 +287,14 @@ const HEAVY_STYLES: [&str; 16] = [
 /// policies switched, across frames and paints; most cross a limit somewhere.
 pub fn heavy_script(r: &mut Lcg) -> Script {
     let mut ops = Vec::new();
-    let sheet = ".h{box-shadow:0 2px 6px rgba(0,0,0,.4)} .bf::before{content:\"\";display:block;width:6px;height:6px;filter:blur(1px)} \
+    let rules = ".h{box-shadow:0 2px 6px rgba(0,0,0,.4)} .bf::before{content:\"\";display:block;width:6px;height:6px;filter:blur(1px)} \
 .bn::before{content:none;opacity:.5} .ba::after{content:\"x\";opacity:.4} .g{backdrop-filter:blur(3px)} \
 @keyframes fade{from{opacity:1}to{opacity:.2}} @keyframes still{from{opacity:1}to{opacity:1}} @keyframes spin{to{transform:rotate(1turn)}} \
 @keyframes glow{from{box-shadow:0 0 0 0 rgba(0,0,0,0)}to{box-shadow:0 4px 12px rgba(0,0,0,.4)}} @keyframes ring{from{box-shadow:inset 0 0 0 0 #fff}to{box-shadow:inset 0 0 0 4px #fff}} \
 @keyframes frost{from{backdrop-filter:blur(0px)}to{backdrop-filter:blur(8px)}} @keyframes soft{from{filter:blur(0px)}to{filter:blur(2px)}} \
 .a1{animation:fade .5s linear} .a2{animation:fade 1s linear infinite} .a3{animation:still 1s 10s} .a4{animation:spin 1s infinite} \
 .a5{animation:glow .4s 2} .a6{animation:ring 1s infinite} .a7{animation:frost .6s} .a8{animation:soft .3s} .t{transition:opacity .3s linear,filter .2s}";
-    ops.push(format!("{{\"op\":\"el\",\"id\":5,\"tag\":\"style\",\"attrs\":[]}},{{\"op\":\"css\",\"id\":5,\"text\":{}}},{{\"op\":\"ins\",\"parent\":3,\"id\":5,\"before\":null}}", quote(sheet)));
+    ops.push(sheet(rules));
     ops.push(el(6, "div", 4, &[("style", pick(r, &["", "display:none", "display:contents;opacity:.5", "opacity:.5"]))]));
     let n = 8 + r.below(14);
     for i in 0..n {
@@ -436,7 +415,7 @@ pub fn damage_script(r: &mut Lcg) -> Script {
     ops.push(el(20, "canvas", 4, &[("width", "10"), ("height", "10"), ("style", "position:absolute;left:200px;top:60px")]));
     ops.push(el(21, "canvas", 4, &[("width", "30"), ("height", "20")]));
     ops.push(el(22, "div", 4, &[("class", "s"), ("style", "width:20px;height:20px;margin-top:90px;background:#0a0")]));
-    ops.push(format!("{{\"op\":\"el\",\"id\":5,\"tag\":\"style\",\"attrs\":[]}},{{\"op\":\"css\",\"id\":5,\"text\":{}}},{{\"op\":\"ins\",\"parent\":3,\"id\":5,\"before\":null}}", quote(LAYER_SHEET)));
+    ops.push(sheet(LAYER_SHEET));
     let mut s = Script::new(40);
     s.dpr = *pick(r, &[1.0, 2.0]);
     s.after(0.0, Step::Compositing(r.chance(2)));

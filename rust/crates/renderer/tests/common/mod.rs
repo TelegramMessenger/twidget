@@ -1164,6 +1164,14 @@ pub fn result(out: &[Json]) -> Json {
     out.iter().find(|m| m.get("type").as_str() == b"result").map(|m| m.get("result").clone()).unwrap_or(Json::Null)
 }
 
+/// The height and innerHeight of each `size` in a step's messages.
+pub fn sizes(out: &[Json]) -> Vec<(f64, f64)> {
+    out.iter()
+        .filter(|m| m.get("type").as_str() == b"size")
+        .map(|m| (m.get("height").as_number(-1.0), m.get("innerHeight").as_number(-1.0)))
+        .collect()
+}
+
 /// The script through the port, on the tape the oracle recorded of the C++ running it.
 pub fn run(script: &Script, tape_bytes: &[u8], tally: &mut Tally) -> Run {
     let entries = match tape::parse(tape_bytes) {

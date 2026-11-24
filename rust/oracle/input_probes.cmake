@@ -78,7 +78,7 @@ tw_probe(EVENTS_CPP 6 [=[restyled_by_input();]=] [=[TWP_ACT('y', restyled_by_inp
 tw_probe(EVENTS_CPP 5 [=[settle(out);]=] [=[TWP_ACT('s', settle(out));]=])
 tw_probe(EVENTS_CPP 2 [=[settle(pending_events_);]=] [=[TWP_ACT('p', settle(pending_events_));]=])
 tw_probe(EVENTS_CPP 5 [=[rebuild(true);]=] [=[TWP_ACT('r', rebuild(true));]=])
-tw_probe(EVENTS_CPP 9 [=[rebuild();]=] [=[TWP_ACT('R', rebuild());]=])
+tw_probe(EVENTS_CPP 10 [=[rebuild();]=] [=[TWP_ACT('R', rebuild());]=])
 
 # The input's code the rest of the renderer calls: a call op, and markers for the calls a replay makes itself.
 tw_probe(EVENTS_CPP 1 [=[    } else if (kind == "call") {

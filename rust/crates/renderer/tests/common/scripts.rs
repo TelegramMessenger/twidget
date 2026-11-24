@@ -1,19 +1,49 @@
 //! This stage's scripts: documents patched batch after batch (holes, style attributes, texts, canvases, SVG attributes,
 //! structural changes and what has no hole), themes and safe areas, sizes, every query kind with valid, malformed and
 //! limit-crossing arguments, animations sampled and queried, resize diffs, `frozen`, and documents past the layout
-//! budget and the name table's bounds.
+//! budget and the name table's bounds. Then the bot's profile page and a bubble's place, named scripts both the
+//! renderer's and the document's comparisons run.
 
 use twidget_testkit::Lcg;
 
 use super::inputs::{document, pick, quote};
 use super::{Script, Step};
 
+pub fn el(id: i64, tag: &str, parent: i64, attrs: &[(&str, &str)]) -> String {
+    let attrs: Vec<String> = attrs.iter().map(|(k, v)| format!("[{},{}]", quote(k), quote(v))).collect();
+    format!(
+        "{{\"op\":\"el\",\"id\":{id},\"tag\":{},\"attrs\":[{}]}},{{\"op\":\"ins\",\"parent\":{parent},\"id\":{id},\"before\":null}}",
+        quote(tag),
+        attrs.join(",")
+    )
+}
+
+pub fn style_op(id: i64, name: &str, value: &str) -> String {
+    format!("{{\"op\":\"style\",\"id\":{id},\"name\":{},\"value\":{}}}", quote(name), quote(value))
+}
+
+pub fn attr_op(id: i64, name: &str, value: &str) -> String {
+    format!("{{\"op\":\"attr\",\"id\":{id},\"name\":{},\"value\":{}}}", quote(name), quote(value))
+}
+
+pub fn batch(ops: &[String]) -> Vec<u8> {
+    format!("[{}]", ops.join(",")).into_bytes()
+}
+
+/// A style sheet (5) in the head.
+pub fn sheet(text: &str) -> String {
+    format!(
+        "{{\"op\":\"el\",\"id\":5,\"tag\":\"style\",\"attrs\":[]}},{{\"op\":\"css\",\"id\":5,\"text\":{}}},{{\"op\":\"ins\",\"parent\":3,\"id\":5,\"before\":null}}",
+        quote(text)
+    )
+}
+
 /// html(2) head(3) body(4); a style sheet (5); boxes 10–17, texts 20–27 in them, an inline span (30) with a long text
 /// (31), a textarea (32), a canvas (33), an SVG (34) with a rect (35), a path (36) and a text (37) holding (38), an
 /// image (39), a transformed box (40), a positioned box (41) holding (42), a details (43) with a summary (44).
 pub fn page(r: &mut Lcg) -> (Vec<String>, u32) {
     let mut ops = Vec::new();
-    let sheet = pick(
+    let text = pick(
         r,
         &[
             ".a{color:red;padding:2px}.b{border:1px solid blue;width:40px}@keyframes f{from{opacity:0}to{opacity:1}} .anim{animation:f .3s linear 2}.t{transition:opacity .2s linear,width .2s}",
@@ -23,7 +53,7 @@ pub fn page(r: &mut Lcg) -> (Vec<String>, u32) {
             "",
         ],
     );
-    ops.push(format!("{{\"op\":\"el\",\"id\":5,\"tag\":\"style\",\"attrs\":[]}},{{\"op\":\"css\",\"id\":5,\"text\":{}}},{{\"op\":\"ins\",\"parent\":3,\"id\":5,\"before\":null}}", quote(sheet)));
+    ops.push(sheet(text));
     for i in 0..8 {
         let (e, t) = (10 + i, 20 + i);
         let class = pick(r, &["a", "b", "a b", "c", "anim", "t", "q", ""]);
@@ -422,10 +452,9 @@ pub fn budget_script(r: &mut Lcg, n: usize) -> Script {
         2 => {
             // Blocks under a sheet whose class makes them flex boxes, the class set in one batch.
             let mut ops = nested("block", depth, 100);
-            ops.push(format!(
-                "{{\"op\":\"el\",\"id\":5,\"tag\":\"style\",\"attrs\":[]}},{{\"op\":\"css\",\"id\":5,\"text\":{}}},{{\"op\":\"ins\",\"parent\":3,\"id\":5,\"before\":null}}",
-                quote(&format!(".x{{display:{display}}} @keyframes w{{from{{width:10px}}to{{width:90px}}}} .y{{animation:w 1s infinite}}"))
-            ));
+            ops.push(sheet(&format!(
+                ".x{{display:{display}}} @keyframes w{{from{{width:10px}}to{{width:90px}}}} .y{{animation:w 1s infinite}}"
+            )));
             s.after(0.0, Step::Ops(document(&ops).into_bytes()));
             let ops: Vec<String> =
                 (0..depth).map(|i| format!("{{\"op\":\"attr\",\"id\":{},\"name\":\"class\",\"value\":\"x y\"}}", 100 + i)).collect();
@@ -783,4 +812,421 @@ pub fn scripted_script(r: &mut Lcg) -> Script {
         }
     }
     s
+}
+
+/// A script whose steps the tests read by name.
+#[derive(Clone, Debug)]
+pub struct Marked {
+    pub script: Script,
+    marks: Vec<(String, usize)>,
+}
+
+impl Marked {
+    pub fn new(script: Script) -> Marked {
+        Marked { script, marks: Vec::new() }
+    }
+
+    /// Names the step added last.
+    pub fn mark(&mut self, name: impl Into<String>) -> &mut Marked {
+        let at = self.script.steps.len().saturating_sub(1);
+        self.marks.push((name.into(), at));
+        self
+    }
+
+    /// `step` `ms` after the last one, named `name`.
+    pub fn step(&mut self, name: impl Into<String>, ms: f64, step: Step) -> &mut Marked {
+        self.script.after(ms, step);
+        self.mark(name)
+    }
+
+    /// A host message `ms` after the last step, named `name`.
+    pub fn message(&mut self, name: impl Into<String>, ms: f64, msg: &str) -> &mut Marked {
+        self.script.message(ms, msg);
+        self.mark(name)
+    }
+
+    /// A query at once, named `name`.
+    pub fn ask(&mut self, name: impl Into<String>, query: &str) -> &mut Marked {
+        self.script.query(0.0, 1, query);
+        self.mark(name)
+    }
+
+    /// The step named `name`.
+    pub fn at(&self, name: &str) -> usize {
+        match self.marks.iter().find(|(n, _)| n == name) {
+            Some((_, at)) => *at,
+            None => panic!("no step named {name:?}"),
+        }
+    }
+}
+
+/// The place's variables on the root, in the order renderer.cpp's `apply_place` sets them: the device's edges, the
+/// client's chrome, a page's viewport.
+pub const PLACE_VARIABLES: [&str; 11] = [
+    "--tg-safe-area-inset-top",
+    "--tg-safe-area-inset-right",
+    "--tg-safe-area-inset-bottom",
+    "--tg-safe-area-inset-left",
+    "--tg-content-safe-area-inset-top",
+    "--tg-content-safe-area-inset-right",
+    "--tg-content-safe-area-inset-bottom",
+    "--tg-content-safe-area-inset-left",
+    "--tg-content-safe-area-corner-left",
+    "--tg-content-safe-area-corner-right",
+    "--tg-viewport-height",
+];
+
+/// auto/46-profile-safe-area.html's style sheet as the validator hands it over: each `env(safe-area-inset-*)` the sum
+/// of both layers (css-sanitizer.ts `resolveEnv`, a unitless 0 fallback as 0px).
+pub const AUTO_46_SHEET: &str = ".p{position:relative;height:6px;margin:0 0 2px;background:#eef}.p>div{height:6px;background:#46c}#e1{width:calc(var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top))}#e2{width:calc(var(--tg-safe-area-inset-bottom,0px) + var(--tg-content-safe-area-inset-bottom,77px))}#e3{width:calc(var(--tg-safe-area-inset-left,0px) + var(--tg-content-safe-area-inset-left,5px))}#e4{width:calc(10px + calc(var(--tg-safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px)))}#e5{width:max(4px,calc(var(--tg-safe-area-inset-right,0px) + var(--tg-content-safe-area-inset-right)))}#e6{width:var(--tg-safe-area-inset-top)}#e7{width:var(--tg-safe-area-inset-bottom)}#e8{width:var(--tg-content-safe-area-inset-top)}";
+
+/// Neither layer over the widget.
+pub const NO_INSET: &str = "{\"top\":0,\"right\":0,\"bottom\":0,\"left\":0,\"cornerLeft\":0,\"cornerRight\":0}";
+
+const VIEWPORT: &str = "{\"q\":\"viewport\"}";
+
+/// The host's `surface` message: the place and the viewport's JSON.
+pub fn surface(place: &str, viewport: &str) -> String {
+    format!("{{\"type\":\"surface\",\"surface\":{},\"viewportHeight\":{viewport}}}", quote(place))
+}
+
+pub fn safe_area(inset: &str) -> String {
+    format!("{{\"type\":\"safeArea\",\"inset\":{inset}}}")
+}
+
+pub fn device_safe_area(inset: &str) -> String {
+    format!("{{\"type\":\"deviceSafeArea\",\"inset\":{inset}}}")
+}
+
+/// What WidgetHost sends before any ops (docs/sdk-v1.md §3.4): the theme, the place, the client's chrome, the device's
+/// edges and the policy; `content` and `device` are the insets' JSON.
+pub fn profile_start(s: &mut Script, surface: &str, content: &str, device: &str) {
+    s.message(
+        0.0,
+        "{\"type\":\"theme\",\"theme\":{\"colorScheme\":\"light\",\"params\":{\"bg_color\":\"#ffffff\",\"text_color\":\"#000000\"}}}",
+    );
+    s.message(0.0, surface);
+    s.message(0.0, &safe_area(content));
+    s.message(0.0, &device_safe_area(device));
+    s.message(0.0, "{\"type\":\"policy\",\"policy\":\"strict\"}");
+}
+
+/// auto/46's probes: its sheet and the `.p` boxes 11–18 in the body, each holding `#e1`–`#e8` (21–28).
+fn auto_46_probes() -> Vec<String> {
+    let mut ops = vec![sheet(AUTO_46_SHEET)];
+    for e in 1..=8 {
+        let (p, d) = (10 + e, 20 + e);
+        ops.push(el(p, "div", 4, &[("class", "p")]));
+        ops.push(el(d, "div", p, &[("id", &format!("e{e}"))]));
+    }
+    ops
+}
+
+/// The root's place variables (`cs` of the adopted html), as steps named `state` and the variable.
+fn read_variables(m: &mut Marked, state: &str) {
+    for name in PLACE_VARIABLES {
+        m.ask(format!("{state} {name}"), &format!("{{\"q\":\"cs\",\"id\":2,\"prop\":{}}}", quote(name)));
+    }
+}
+
+/// What auto/46 reads, as steps named `state` and what they read: the root's place variables, the unstyled body's
+/// computed style ("body"), the eight probes' rects ("e1"–"e8") and the viewport.
+fn read_probes(m: &mut Marked, state: &str) {
+    read_variables(m, state);
+    m.ask(format!("{state} body"), "{\"q\":\"cs\",\"id\":4}");
+    for e in 1..=8 {
+        m.ask(format!("{state} e{e}"), &format!("{{\"q\":\"rect\",\"id\":{}}}", 20 + e));
+    }
+    m.ask(format!("{state} viewport"), VIEWPORT);
+}
+
+/// auto/46-profile-safe-area.html on `REFERENCE_PROFILE` (widget-sandbox's shared/reference.ts: 390 × 844, the
+/// device's edges 47 / 34, the client's chrome 56 / 64): the start WidgetHost sends, its root inspected ("start
+/// inspect"), the probes loaded ("load") and read ("reference"); distinct right and left edges on both layers, with
+/// corners the page drops ("sides"); a host theme ("theme"); the widget's own style ops on the root's place
+/// variables ("overwritten").
+pub fn reference_profile() -> Marked {
+    let mut s = Script::new(30);
+    s.width = 390.0;
+    profile_start(
+        &mut s,
+        &surface("profile", "844"),
+        "{\"top\":56,\"right\":0,\"bottom\":64,\"left\":0,\"cornerLeft\":0,\"cornerRight\":0}",
+        "{\"top\":47,\"right\":0,\"bottom\":34,\"left\":0}",
+    );
+    let mut m = Marked::new(s);
+    m.step("start inspect", 0.0, Step::Inspect);
+    m.step("load", 16.0, Step::Ops(document(&auto_46_probes()).into_bytes()));
+    read_probes(&mut m, "reference");
+    m.message("sides content", 16.0, &safe_area("{\"top\":56,\"right\":7,\"bottom\":64,\"left\":5,\"cornerLeft\":12,\"cornerRight\":30}"));
+    m.message("sides device", 0.0, &device_safe_area("{\"top\":47,\"right\":13,\"bottom\":34,\"left\":11}"));
+    read_probes(&mut m, "sides");
+    m.message(
+        "theme message",
+        16.0,
+        "{\"type\":\"theme\",\"theme\":{\"colorScheme\":\"dark\",\"params\":{\"bg_color\":\"#101010\",\"text_color\":\"#fafafa\"}}}",
+    );
+    read_probes(&mut m, "theme");
+    let own: Vec<String> =
+        ["--tg-safe-area-inset-top", "--tg-safe-area-inset-right", "--tg-content-safe-area-inset-top", "--tg-viewport-height"]
+            .iter()
+            .map(|name| style_op(2, name, "1px"))
+            .collect();
+    m.step("overwrite", 16.0, Step::Ops(batch(&own)));
+    read_probes(&mut m, "overwritten");
+    m
+}
+
+/// core_tests.cpp's "the bot's profile page": the ops first, then the place at a fractional viewport ("surface"), the
+/// client's chrome with a side past 64 and a corner, the device's edges with a negative one; the root's variables,
+/// `#hero` sized by the viewport's ("hero") and the body read back; the widget's style ops on the root ("overwrite");
+/// `#hero` 9000 px tall ("tall") and the frame after it.
+pub fn profile_page() -> Marked {
+    let mut s = Script::new(12);
+    s.width = 390.0;
+    let ops = vec![sheet("#hero{height:var(--tg-viewport-height,10px)}"), el(10, "div", 4, &[("id", "hero")])];
+    s.after(0.0, Step::Ops(document(&ops).into_bytes()));
+    let mut m = Marked::new(s);
+    m.message("surface", 16.0, &surface("profile", "844.567"));
+    m.message("content", 0.0, &safe_area("{\"top\":56,\"right\":0,\"bottom\":120,\"left\":0,\"cornerLeft\":0,\"cornerRight\":30}"));
+    m.message("device", 0.0, &device_safe_area("{\"top\":47,\"right\":-3,\"bottom\":34,\"left\":0}"));
+    read_variables(&mut m, "page");
+    m.ask("hero", "{\"q\":\"cs\",\"id\":10}");
+    m.ask("body", "{\"q\":\"cs\",\"id\":4}");
+    let own = [style_op(2, "--tg-safe-area-inset-top", "1px"), style_op(2, "--tg-viewport-height", "1px")];
+    m.step("overwrite", 16.0, Step::Ops(batch(&own)));
+    read_variables(&mut m, "overwritten");
+    m.step("tall", 16.0, Step::Ops(batch(&[style_op(10, "height", "9000px")])));
+    m.step("tall tick", 16.0, Step::Tick);
+    m.ask("tall viewport", VIEWPORT);
+    m.step("tall inspect", 0.0, Step::Inspect);
+    m
+}
+
+/// A page at DPR 1 without margins or insets, its viewport 844: a short document with a box half the viewport tall
+/// ("short"), one 2000 px tall ("midrange"), one 9000 px tall ("clipped", painted); the host's own bounds below the
+/// viewport ("lowered") and between it and the ceiling ("between").
+pub fn profile_heights() -> Marked {
+    let mut s = Script::new(12);
+    s.width = 390.0;
+    profile_start(&mut s, &surface("profile", "844"), NO_INSET, NO_INSET);
+    let mut m = Marked::new(s);
+    let ops = vec![
+        style_op(4, "margin", "0"),
+        el(10, "div", 4, &[("id", "v"), ("style", "height:50vh")]),
+        el(11, "div", 4, &[("id", "c"), ("style", "height:100px")]),
+    ];
+    m.step("short", 16.0, Step::Ops(document(&ops).into_bytes()));
+    m.ask("short v", "{\"q\":\"rect\",\"id\":10}");
+    m.ask("short viewport", VIEWPORT);
+    m.step("short inspect", 0.0, Step::Inspect);
+    m.step("midrange", 16.0, Step::Ops(batch(&[style_op(10, "display", "none"), style_op(11, "height", "2000px")])));
+    m.ask("midrange viewport", VIEWPORT);
+    m.step("midrange inspect", 0.0, Step::Inspect);
+    m.step("clipped", 16.0, Step::Ops(batch(&[style_op(11, "height", "9000px")])));
+    m.step("clipped tick", 16.0, Step::Tick);
+    m.ask("clipped viewport", VIEWPORT);
+    m.step("clipped inspect", 0.0, Step::Inspect);
+    m.step("clipped paint", 0.0, Step::Paint);
+    m.step("lowered", 16.0, Step::MaxHeight(100.0));
+    m.step("between", 16.0, Step::MaxHeight(3000.0));
+    m
+}
+
+/// A page whose viewport is none, past the ceiling ("none": no `--tg-viewport-height`, the widget's fallback, the
+/// least height 50); a fractional one ("fraction", the least height to the next pixel), the ceiling itself
+/// ("ceiling"), a string ("string") and a place of another name ("named"), each read back: the variable ("var"),
+/// `#f` the variable sizes ("f") and the viewport.
+pub fn profile_without_viewport() -> Marked {
+    let mut s = Script::new(12);
+    profile_start(&mut s, &surface("profile", "4000.5"), NO_INSET, NO_INSET);
+    let mut m = Marked::new(s);
+    let ops = vec![style_op(4, "margin", "0"), sheet("#f{height:var(--tg-viewport-height,30px)}"), el(10, "div", 4, &[("id", "f")])];
+    m.step("load", 16.0, Step::Ops(document(&ops).into_bytes()));
+    for (state, viewport, place) in [
+        ("none", "", ""),
+        ("fraction", "844.567", "profile"),
+        ("ceiling", "4000", "profile"),
+        ("string", "\"844\"", "profile"),
+        ("named", "844", "Profile"),
+    ] {
+        if !viewport.is_empty() {
+            m.message(state, 16.0, &surface(place, viewport));
+        }
+        m.ask(format!("{state} var"), "{\"q\":\"cs\",\"id\":2,\"prop\":\"--tg-viewport-height\"}");
+        m.ask(format!("{state} f"), "{\"q\":\"rect\",\"id\":10}");
+        m.ask(format!("{state} viewport"), VIEWPORT);
+    }
+    m
+}
+
+/// A settled page, its document 1000 px tall and its viewport 600 ("load"), then one change after another, each
+/// with the frame after it ("… tick"): the device's top edge ("device"), the client's bottom band ("content"), a
+/// viewport taller than the padded document ("viewport"), each once more as it is ("… again"); then a left edge
+/// that moves the document's box but no reported number ("sides"), its rect read before and after.
+pub fn profile_relayout() -> Marked {
+    let mut s = Script::new(12);
+    s.width = 390.0;
+    profile_start(&mut s, &surface("profile", "600"), NO_INSET, NO_INSET);
+    let mut m = Marked::new(s);
+    let ops = vec![style_op(4, "margin", "0"), el(10, "div", 4, &[("id", "c"), ("style", "height:1000px")])];
+    m.step("load", 16.0, Step::Ops(document(&ops).into_bytes()));
+    m.step("load tick", 16.0, Step::Tick);
+    let changes = [
+        ("device", device_safe_area("{\"top\":20,\"right\":0,\"bottom\":0,\"left\":0}")),
+        ("content", safe_area("{\"top\":0,\"right\":0,\"bottom\":30,\"left\":0,\"cornerLeft\":0,\"cornerRight\":0}")),
+        ("viewport", surface("profile", "1500")),
+    ];
+    for (name, msg) in &changes {
+        m.message(*name, 16.0, msg);
+        m.step(format!("{name} tick"), 16.0, Step::Tick);
+        m.message(format!("{name} again"), 16.0, msg);
+        m.step(format!("{name} again tick"), 16.0, Step::Tick);
+    }
+    m.ask("before sides", "{\"q\":\"rect\",\"id\":10}");
+    m.message("sides", 16.0, &device_safe_area("{\"top\":20,\"right\":0,\"bottom\":0,\"left\":10}"));
+    m.step("sides tick", 16.0, Step::Tick);
+    m.ask("after sides", "{\"q\":\"rect\",\"id\":10}");
+    m
+}
+
+/// The bubble's root variables, body, `#f` and viewport, as steps named `state` and what they read.
+fn read_bubble(m: &mut Marked, state: &str) {
+    read_variables(m, state);
+    m.ask(format!("{state} body"), "{\"q\":\"cs\",\"id\":4}");
+    m.ask(format!("{state} f"), "{\"q\":\"rect\",\"id\":10}");
+    m.ask(format!("{state} viewport"), VIEWPORT);
+}
+
+/// A bubble the host gives the device's edges and a viewport, a bottom band and corners of the client's: its root
+/// inspected ("start inspect"), `#f` sized by the viewport variable's fallback ("load"), the root, the body and the
+/// viewport read back; the device's edges and the place again, which change nothing ("device", "surface", "inert
+/// tick"); a side of the client's within its range ("side"); a document past the bubble's bound ("tall") and the
+/// host's own bound above it ("override").
+pub fn bubble_place() -> Marked {
+    let mut s = Script::new(12);
+    profile_start(
+        &mut s,
+        &surface("message", "844"),
+        "{\"top\":0,\"right\":0,\"bottom\":24,\"left\":0,\"cornerLeft\":16,\"cornerRight\":20}",
+        "{\"top\":47,\"right\":13,\"bottom\":34,\"left\":11}",
+    );
+    let mut m = Marked::new(s);
+    m.step("start inspect", 0.0, Step::Inspect);
+    let ops = vec![sheet("#f{height:var(--tg-viewport-height,5px)}"), el(10, "div", 4, &[("id", "f")])];
+    m.step("load", 16.0, Step::Ops(document(&ops).into_bytes()));
+    read_bubble(&mut m, "load");
+    m.message("device", 16.0, &device_safe_area("{\"top\":60,\"right\":20,\"bottom\":40,\"left\":30}"));
+    m.message("surface", 16.0, &surface("message", "500"));
+    m.step("inert tick", 16.0, Step::Tick);
+    m.message("side", 16.0, &safe_area("{\"top\":0,\"right\":10,\"bottom\":24,\"left\":0,\"cornerLeft\":16,\"cornerRight\":20}"));
+    read_bubble(&mut m, "side");
+    m.step("tall", 16.0, Step::Ops(batch(&[el(11, "div", 4, &[("id", "t"), ("style", "height:2000px")])])));
+    m.step("override", 16.0, Step::MaxHeight(3000.0));
+    m
+}
+
+/// The profile page's scripts both comparisons run (the renderer's on the C++ document's answers, the document's on
+/// the Rust engine), by name.
+pub fn profile_scripts() -> Vec<(Script, String)> {
+    [
+        ("the reference profile page", reference_profile()),
+        ("core_tests' profile page", profile_page()),
+        ("a page's heights", profile_heights()),
+        ("a page without a viewport", profile_without_viewport()),
+        ("a page laid out again", profile_relayout()),
+        ("a bubble's place", bubble_place()),
+    ]
+    .into_iter()
+    .map(|(name, m)| (m.script, name.to_string()))
+    .collect()
+}
+
+/// A page ("page") or a bubble 9000 px tall, given the host's own bounds: past the page's ceiling ("raised"),
+/// endless ("endless"), below the page's viewport ("lowered"), between ("between"); then a page's bound of 1200
+/// ("bound") and its viewport sent again ("same viewport"), lower ("lower viewport") and above the bound ("higher
+/// viewport"). renderer.cpp lets a host raise a page past its ceiling and its `surface` puts the ceiling back, the
+/// port keeps the page's ceiling and the host's bound (`Renderer::set_max_height`): the port's own, never compared.
+pub fn host_bounds(page: bool) -> Marked {
+    let mut s = Script::new(12);
+    s.width = 390.0;
+    if page {
+        profile_start(&mut s, &surface("profile", "844"), NO_INSET, NO_INSET);
+    }
+    let mut m = Marked::new(s);
+    let ops = vec![style_op(4, "margin", "0"), el(10, "div", 4, &[("id", "c"), ("style", "height:9000px")])];
+    m.step("load", 16.0, Step::Ops(document(&ops).into_bytes()));
+    m.step("raised", 16.0, Step::MaxHeight(8000.0));
+    m.step("endless", 16.0, Step::MaxHeight(f64::INFINITY));
+    m.step("lowered", 16.0, Step::MaxHeight(100.0));
+    m.step("between", 16.0, Step::MaxHeight(3000.0));
+    if page {
+        m.step("bound", 16.0, Step::MaxHeight(1200.0));
+        for (name, viewport) in [("same viewport", "844"), ("lower viewport", "1000"), ("higher viewport", "1500")] {
+            m.message(name, 16.0, &surface("profile", viewport));
+        }
+    }
+    m
+}
+
+/// The root's `--tg-viewport-height` ("… var") and `--own` ("… own") and `#f`'s rect ("… f"), as steps named `state`
+/// and what they read.
+fn read_root(m: &mut Marked, state: &str) {
+    m.ask(format!("{state} var"), "{\"q\":\"cs\",\"id\":2,\"prop\":\"--tg-viewport-height\"}");
+    m.ask(format!("{state} own"), "{\"q\":\"cs\",\"id\":2,\"prop\":\"--own\"}");
+    m.ask(format!("{state} f"), "{\"q\":\"rect\",\"id\":10}");
+}
+
+/// A page ("page") or a bubble whose root the widget's style attribute gives `--tg-viewport-height` and `--own`,
+/// adopted with it ("adopted") and set again ("set"), `#f` 30 px without the variable ("load"); a page then without
+/// its viewport ("withdrawn"), each read back. renderer.cpp keeps the widget's variable where the host sets none, the
+/// port writes the host's names on the root only with the host's values: the port's own, never compared.
+pub fn root_style(page: bool) -> Marked {
+    let mut s = Script::new(12);
+    profile_start(&mut s, &surface(if page { "profile" } else { "message" }, "844"), NO_INSET, NO_INSET);
+    let mut m = Marked::new(s);
+    let ops = vec![sheet("#f{height:var(--tg-viewport-height,30px)}"), el(10, "div", 4, &[("id", "f")])];
+    m.step("load", 16.0, Step::Ops(document(&ops).into_bytes()));
+    read_root(&mut m, "load");
+    let adopted =
+        "{\"op\":\"el\",\"id\":2,\"tag\":\"html\",\"adopt\":\"html\",\"attrs\":[[\"style\",\"--tg-viewport-height:123px;--own:4px\"]]}";
+    m.step("adopted", 16.0, Step::Ops(batch(&[adopted.to_string()])));
+    read_root(&mut m, "adopted");
+    m.step("set", 16.0, Step::Ops(batch(&[attr_op(2, "style", "--own:5px;--tg-viewport-height:123px")])));
+    read_root(&mut m, "set");
+    if page {
+        m.message("withdrawn", 16.0, &surface("profile", "0"));
+        read_root(&mut m, "withdrawn");
+    }
+    m
+}
+
+/// A page 600 px tall ("page") whose 900 px document, or a bubble whose 100 px one, a long batch makes 100 px taller at
+/// its frame ("batch"), built by a claim before that frame ("claim"), then the host's `update` once the 60 ms
+/// animation of the box (10, its size observed) has ended ("update") and the frame after it ("tick"). With `late` the
+/// claim comes at the update's time, the animation ending in its build: its `animationend` is held before its size.
+/// renderer.cpp delivers the claim's size after a new one of the update's, the port before it: the port's own, never
+/// compared.
+pub fn held_size(page: bool, late: bool, update: &str) -> Marked {
+    let mut s = Script::new(12);
+    s.width = 390.0;
+    profile_start(&mut s, &surface(if page { "profile" } else { "message" }, "600"), NO_INSET, NO_INSET);
+    s.message(0.0, "{\"type\":\"listen\",\"types\":[\"animationend\"]}");
+    let mut m = Marked::new(s);
+    let (from, to) = if page { ("height:900px", "1000px") } else { ("height:100px", "200px") };
+    let ops = vec![
+        style_op(4, "margin", "0"),
+        sheet("@keyframes fade{from{opacity:1}to{opacity:.5}} #c{animation:fade .06s linear}"),
+        el(10, "div", 4, &[("id", "c"), ("style", from)]),
+        "{\"op\":\"call\",\"id\":10,\"method\":\"observeResize\",\"args\":[]}".to_string(),
+    ];
+    m.step("load", 16.0, Step::Ops(document(&ops).into_bytes()));
+    m.step("load tick", 16.0, Step::Tick);
+    let long = vec![style_op(10, "height", to); twidget_renderer::PARTIAL_BATCH_OPS];
+    m.step("batch", 16.0, Step::Ops(batch(&long)));
+    let (claim, update_ms) = if late { (44.0, 0.0) } else { (0.0, 44.0) };
+    m.step("claim", claim, Step::Claim { x: 10.0, y: 10.0 });
+    m.message("update", update_ms, update);
+    m.step("tick", 16.0, Step::Tick);
+    m
 }

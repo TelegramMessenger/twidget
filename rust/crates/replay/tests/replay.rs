@@ -1,14 +1,14 @@
 //! T5, the renderer's gate (stage 5.2): recordings of the C++ renderer replayed through the Rust renderer end, step
 //! for step, as `twidget_parity_*` replays them through the C++ one. The committed stub recording
 //! (`tests/recordings/corpus-stub.twrec`) is replayed whole and then perturbed three ways, each change caught where it
-//! was made; `corpus.twrec` up to where its recording's release order parts from the C++ the port follows; with
+//! was made; `corpus.twrec` up to where its recording parts from the C++ the port follows; with
 //! `TWIDGET_RECORDINGS` set to a directory, every recording under it (`tools/record/record_corpus.py`'s corpus, and
 //! the `core.twrec` and `bench.twrec` `twidget_core_record` and `twidget_bench_record` make).
 
 use std::path::{Path, PathBuf};
 
 use twidget_json::Json;
-use twidget_replay::recording::{Kind, Reader, Step};
+use twidget_replay::recording::{Kind, Reader, Step, Writer};
 use twidget_replay::{Options, Perturb, Replay, replay_tree};
 
 fn twidget() -> PathBuf {
@@ -97,9 +97,11 @@ fn benchmark_reports_only_verified_steps_and_first_contentful_paint() {
 
 /// corpus.twrec was recorded on macOS at twidget 5bc9639, before stage 0.3 made `~Renderer` release a canvas's fonts in
 /// the order they were made: libc++'s hash order released canvas font 6 before 5. The C++ since then and the port
-/// release 5 first, so the replay matches every step up to the first widget's destruction (step 132) and parts there,
-/// as the C++ replay does on Windows. Past it a second difference of the time waits: at step 343 a 160deg gradient's
-/// end point is one ulp off, where clang on arm64 fused `y - m * x` before 0.3 turned contraction off. Once the owner
+/// release 5 first, and past it a second difference of the time waits: at step 343 a 160deg gradient's end point is
+/// one ulp off, where clang on arm64 fused `y - m * x` before 0.3 turned contraction off. It was also recorded before
+/// the bot's profile page (cea5126) put the place's variables on every root, a bubble's `--tg-safe-area-inset-*: 0px`
+/// included: litehtml's name table now holds those four names (102 bytes) more from the first build on, so the C++
+/// replay and the port both part at step 2, the first Receive after it, on the name counts alone. Once the owner
 /// records it again on macOS, it must match whole.
 #[test]
 fn committed_corpus_twrec() {
@@ -117,6 +119,45 @@ fn committed_corpus_twrec() {
         assert_eq!(code, 0, "a corpus.twrec recorded again matches whole: {}", shown(&replay));
         return;
     }
+    assert_eq!(code, 1, "{}", shown(&replay));
+    let (step, failures) = replay.failure.clone().expect("a step that differs");
+    assert_eq!(step, 2, "the first difference is the first Receive after the first build: {}", shown(&replay));
+    assert_eq!(
+        failures,
+        vec!["litehtml's name table holds 507 names of 6098 bytes where the recording had 503 of 5996".to_string()],
+        "and only the place's four names in litehtml's name table"
+    );
+    assert_eq!(replay.counts().steps, 1, "every step before it matches");
+}
+
+/// The macOS corpus.twrec of 5bc9639 with only its name counts raised by the place's four names from step 2 on: as
+/// before the place, every step matches up to the first widget's destruction (step 132) and parts there on the
+/// release order alone.
+#[test]
+fn committed_corpus_twrec_with_the_places_names() {
+    let path = twidget().join("tests/recordings/corpus.twrec");
+    let mut reader = Reader::open(&path);
+    if !String::from_utf8_lossy(reader.origin()).contains(r#""twidget":"5bc9639-dirty""#) {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("twidget_replay_tests_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let copy = dir.join("corpus-with-the-places-names.twrec");
+    let mut writer = Writer::default();
+    assert!(writer.open(&copy, reader.origin()), "the copy opens");
+    let (mut step, mut bytes, mut at) = (Step::default(), 0, 0);
+    while reader.next(&mut step, &mut bytes) {
+        at += 1;
+        if at >= 2 {
+            step.names += 4;
+            step.name_bytes += 102;
+        }
+        assert!(writer.write(&step), "step {at} is written as it was read");
+    }
+    assert!(reader.ended(), "{}", reader.error());
+    assert!(writer.close(reader.end()), "the copy closes");
+    let (code, replay) = run(options(&copy, "corpus"));
+    std::fs::remove_file(&copy).ok();
     assert_eq!(code, 1, "{}", shown(&replay));
     let (step, failures) = replay.failure.clone().expect("a step that differs");
     assert_eq!(step, 132, "the first difference is the first widget's destruction: {}", shown(&replay));

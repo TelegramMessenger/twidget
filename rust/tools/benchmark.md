@@ -1,24 +1,23 @@
 # Comparing the Rust widget helper with C++
 
-Run the implementations on the same machine. The original C++ control is the twidget revision from Desktop immediately before the Rust renderer was integrated, `7cfa2957b044bae2e3885037fcf48e24a168234f`. Build both controls from this checkout's benchmark sources so they use the same clock, input and verification code. The C++ renderer itself comes from the historical checkout.
+Run the implementations on the same machine. Build both C++ controls from this checkout's benchmark sources so they use the same clock, input and verification code. The C++ renderer itself is this checkout's own, the C++ the Rust renderer follows. The original C++ control is the twidget revision from Desktop immediately before the Rust renderer was integrated, `7cfa2957b044bae2e3885037fcf48e24a168234f`. It is measured from an earlier checkout, described after the workloads.
 
 ## Build the renderer benchmarks
 
 Place the Desktop-pinned `widget-sandbox` and `nova-safe` checkouts next to this twidget checkout. These commands assume a single-configuration Release build, Ninja, a C++20 toolchain and the Rust toolchain pinned in Desktop's prepare script. Run from the twidget root. On macOS set `MACOSX_DEPLOYMENT_TARGET=12.0` in the environment first.
 
 ```sh
-git worktree add --detach ../twidget-original 7cfa2957b044bae2e3885037fcf48e24a168234f
-cmake -S rust/oracle/bench -B build/bench-original -G Ninja \
+cmake -S rust/oracle/bench -B build/bench-cpp -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
-    -DTWIDGET_BENCH_CPP_ROOT="$PWD/../twidget-original" \
+    -DTWIDGET_BENCH_CPP_ROOT="$PWD" \
     -DTWIDGET_WIDGET_SANDBOX="$PWD/../widget-sandbox"
-cmake --build build/bench-original --target bench_oracle
-cmake -S tests/replay_bench -B build/replay-original -G Ninja \
+cmake --build build/bench-cpp --target bench_oracle
+cmake -S tests/replay_bench -B build/replay-cpp -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
-    -DTWIDGET_REPLAY_CORE="$PWD/../twidget-original" \
+    -DTWIDGET_REPLAY_CORE="$PWD" \
     -DTWIDGET_WIDGET_SANDBOX="$PWD/../widget-sandbox" \
     -DTWIDGET_LITEHTML_NO_CORE_FOUNDATION=ON
-cmake --build build/replay-original --target twidget_replay
+cmake --build build/replay-cpp --target twidget_replay
 (cd rust && CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true \
     cargo build --locked --release --features metered -p twidget_bench -p twidget_replay)
 ```
@@ -29,14 +28,16 @@ The renderer runs with overflow checks and the helper's metered allocator. FP co
 
 ```sh
 python3 rust/tools/benchmark.py \
-    --cpp-bench build/bench-original/bench_oracle --rust-bench rust/target/release/twidget_bench \
-    --cpp-replay build/replay-original/twidget_replay --rust-replay rust/target/release/twidget_replay \
+    --cpp-bench build/bench-cpp/bench_oracle --rust-bench rust/target/release/twidget_bench \
+    --cpp-replay build/replay-cpp/twidget_replay --rust-replay rust/target/release/twidget_replay \
     --frames 240 --samples 9 --output renderer-results.json
 ```
 
 The steady-frame workloads cover mixed DOM style changes, transforms, many moving nodes, two sizes of compositor animation, two forms of dragging and canvas. Each case first compares the complete untimed trace and checks the work counters on every timing run. For the historical CSS animation case the C++ trace orders the initial independent animation-start messages by distinct target ID. Their complete contents and every subsequent output still have to match.
 
 Real sessions cover initial layout, measurement, gestures and pointer handling, changes of width and theme, transforms, text, SVG and both static and repeatedly painted canvas. Each timed run also checks its outputs against its recording. The first paint is the first nonempty display list. The remainder includes all later work through destruction. The active-repaint measurement averages only later frames that paint a nonempty list. The full session sums all timed steps. These timings include the renderer and the loopback platform end. The recorded backend answers remove OS rasterization and widget JS execution from this comparison. [Recordings and capture method](../../tests/recordings/ordinary/README.md)
+
+The default recordings were captured with twidget `cea5126`, after the bot's profile page gave every renderer's root four more variables. Only a C++ renderer from `cea5126` on replays them, because the replay checks litehtml's name table before every step, and only such a renderer writes the current Rust renderer's synthetic traces. The original control at `7cfa295` differs from the current Rust renderer at the first line of a synthetic trace and from the recordings at step 2, so the driver stops before it records a timing. To measure against that control, check out twidget `cea5126` and follow its copy of this guide, which builds both C++ controls from `git worktree add --detach ../twidget-original 7cfa2957b044bae2e3885037fcf48e24a168234f`. Its Rust renderer and its ordinary recordings, captured at `7deb25e`, both predate the change. Timings of the two generations are not comparable.
 
 The driver warms both executables, alternates their execution order and records all measured pairs. Ratios are Rust time divided by the paired C++ time. It reports their median and median absolute deviation, executable hashes and recording or trace hashes. The 2× check covers the whole synthetic frame and the first paint, active repaint, remainder and total of each recording. The JSON also retains individual stage costs for diagnosis. A partially written suite has `complete` set to false.
 

@@ -325,8 +325,20 @@ pub struct Document {
     pub patch_log: PatchLog,
     dark: bool,
     theme_received: bool,
+    /// The host's `surface` message: a profile page (else a bubble) and the page's checked viewport, 0
+    /// without one.
+    page: bool,
+    page_viewport: f64,
+    /// The host's last `safeArea` (the client's chrome) and `deviceSafeArea` (the device's edges) insets,
+    /// unchecked: the place's ranges apply when the variables are made, so a later `surface` re-checks them.
+    content_inset: Json,
+    device_inset: Json,
+    /// From the host's `theme` message (the scheme's defaults before one), set on the root after the
+    /// widget's own style.
     host_theme_vars: css::Variables,
+    /// The place's (both safe-area layers and a page's viewport), set on the root after the host theme's.
     safe_area_vars: css::Variables,
+    /// Both, as set on the root.
     theme_vars: css::Variables,
     frozen: bool,
     frozen_fatal: bool,
@@ -361,6 +373,10 @@ impl Document {
             patch_log: PatchLog::default(),
             dark,
             theme_received: false,
+            page: false,
+            page_viewport: 0.0,
+            content_inset: Json::Null,
+            device_inset: Json::Null,
             host_theme_vars: Vec::new(),
             safe_area_vars: Vec::new(),
             theme_vars: Vec::new(),
@@ -375,7 +391,7 @@ impl Document {
         d.get_mut(HEAD).parent = Some(HTML);
         d.get_mut(BODY).parent = Some(HTML);
         d.get_mut(HTML).children = vec![HEAD, BODY];
-        d.safe_area_vars = css::content_safe_area_variables(&Json::Null);
+        d.apply_place();
         let mut scheme = Json::object();
         scheme.set("colorScheme", if dark { "dark" } else { "light" });
         d.apply_theme(&scheme);
@@ -523,8 +539,50 @@ impl Document {
         self.apply_theme(theme)
     }
 
+    /// The host's `safeArea` message, the client's chrome over the widget (docs/sdk-v1.md §2.17): false
+    /// when no variable changed.
     pub fn apply_safe_area(&mut self, inset: &Json) -> bool {
-        let vars = css::content_safe_area_variables(inset);
+        self.content_inset = inset.clone();
+        self.apply_place()
+    }
+
+    /// The host's `deviceSafeArea` message, the device's edges (docs/sdk-v1.md §2.17): false when no
+    /// variable changed, as in a bubble, where the layer is always 0.
+    pub fn apply_device_safe_area(&mut self, inset: &Json) -> bool {
+        self.device_inset = inset.clone();
+        self.apply_place()
+    }
+
+    /// The host's `surface` message, where the widget is (docs/sdk-v1.md §2.19): a profile page (`page`,
+    /// else a bubble) and the page's viewport as the message gives it, checked. Both layers are checked
+    /// again on the new place. False when no variable changed.
+    pub fn apply_surface(&mut self, page: bool, viewport_height: &Json) -> bool {
+        self.page = page;
+        self.page_viewport = css::page_viewport_height(page, viewport_height);
+        self.apply_place()
+    }
+
+    /// A profile page, as the host's last `surface` message named it (else a bubble).
+    pub fn page(&self) -> bool {
+        self.page
+    }
+
+    /// The page's checked viewport, 0 without one and in a bubble.
+    pub fn page_viewport(&self) -> f64 {
+        self.page_viewport
+    }
+
+    /// Both safe-area layers and the viewport on the place the host's `surface` names (docs/sdk-v1.md
+    /// §2.17, §2.19), from `content_inset`, `device_inset`, `page` and `page_viewport`. False when no
+    /// variable changed.
+    fn apply_place(&mut self) -> bool {
+        let mut vars = css::safe_area_variables(&self.device_inset, self.page);
+        vars.extend(css::content_safe_area_variables(&self.content_inset, self.page));
+        if self.page_viewport > 0.0 {
+            let mut value = twidget_json::number(self.page_viewport).into_bytes();
+            value.extend_from_slice(b"px");
+            vars.push((css::VIEWPORT_HEIGHT_VARIABLE.as_bytes().to_vec(), value));
+        }
         if vars == self.safe_area_vars {
             return false;
         }
@@ -533,6 +591,7 @@ impl Document {
         true
     }
 
+    /// The root's variables: the host theme's, then the place's.
     fn apply_root_variables(&mut self) {
         self.theme_vars = self.host_theme_vars.clone();
         self.theme_vars.extend(self.safe_area_vars.iter().cloned());
@@ -1499,9 +1558,14 @@ impl Document {
     }
 
     /// The style attribute of `r` as written: its own declarations, the theme on the root, then the
-    /// animated values after the marker. Escaped once; the same text goes to the fork's style holes.
+    /// animated values after the marker. Escaped once; the same text goes to the fork's style holes. On the root
+    /// a name of the host's goes only with the host's value, which follows it: the widget's own `--tg-viewport-height`
+    /// in a bubble is not written, where renderer.cpp keeps it.
     pub fn write_style(&self, r: NodeRef, chrome: &Chrome, out: &mut Vec<u8>) {
         let n = self.get(r);
+        let withheld = |name: &[u8]| {
+            r == HTML && name.starts_with(b"--tg-") && css::is_theme_variable(name) && !self.theme_vars.iter().any(|(host, _)| host == name)
+        };
         let mut plain: Vec<u8> = Vec::new();
         let dark = self.dark;
         let mut declare = |name: &[u8], value: &[u8]| {
@@ -1513,7 +1577,7 @@ impl Document {
             plain.extend_from_slice(&css::resolve_light_dark(value, dark, 0));
         };
         for (name, value) in &n.styles {
-            if css::is_property_name(name) {
+            if css::is_property_name(name) && !withheld(name) {
                 declare(name, value);
             }
         }

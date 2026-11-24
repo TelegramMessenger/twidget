@@ -4,9 +4,10 @@
 //! batch's log where it can (the fork's holes), patches it from the serialised HTML where the fork can take that,
 //! and parses a new one otherwise, within the layout budget, which stops the widget for good past it, as the name
 //! table's bounds do. Around the builds: the coalesced batch that waits for its frame, the viewport that follows
-//! the document's height, animation overrides patched into style attributes, the theme and the safe area with the
-//! master CSS made from their variables, `frozen` and the badge, the size and resize reports, and every query kind
-//! with its `result`. The input is `twidget_events`', driven through this renderer as the C++ drives it.
+//! the document's height (on a profile page between its viewport and the page ceiling), animation overrides patched
+//! into style attributes, the theme and the place (the surface, both safe-area layers) with the master CSS made from
+//! their variables, `frozen` and the badge, the size and resize reports, and every query kind with its `result`. The
+//! input is `twidget_events`', driven through this renderer as the C++ drives it.
 //!
 //! Stage 4.5 is [`Layers`]: the paint policy's heavy boxes counted in the renderer, the compositor layers and the
 //! scripted ones, the paint with its damage between frames (`layers.rs`). The seam is [`Engine`], litehtml's
@@ -231,9 +232,10 @@ fn int_of(v: f64) -> i32 {
     if v.is_nan() || v >= 2147483648.0 || v <= -2147483649.0 { i32::MIN } else { v as i32 }
 }
 
-/// `int(std::ceil(std::clamp(height, MIN_HEIGHT, max_height)))`: the viewport a document height asks for.
-fn viewport_for(height: f64, max_height: f64) -> i32 {
-    int_of(clamp(height, MIN_HEIGHT, max_height).ceil())
+/// `int(std::ceil(std::clamp(height, min_height, std::max(min_height, max_height))))`: the viewport a document height
+/// asks for, at least the least height (a profile page's viewport) whatever the most is.
+fn viewport_for(height: f64, min_height: f64, max_height: f64) -> i32 {
+    int_of(clamp(height, min_height, max_f64(min_height, max_height)).ceil())
 }
 
 fn rect_json(r: &Rect) -> Json {
@@ -337,6 +339,10 @@ pub struct Core<E: Engine, B: Backend> {
     vp_height: i32,
     doc_height: f64,
     max_height: f64,
+    /// The least height reported: 50, and on a profile page its viewport (docs/sdk-v1.md §2.19).
+    min_height: f64,
+    /// The host's own bound (`Renderer::set_max_height`), None before it gives one.
+    host_max_height: Option<f64>,
     dirty: bool,
     /// What changed since the last paint, for layers to keep their content: the elements patched, or everything.
     touched: BTreeSet<i64>,
@@ -632,7 +638,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
             if pass == 0 && self.container.patched() {
                 self.stats.patched += 1;
             }
-            let h = viewport_for(self.container.height(&mut self.engine), self.max_height);
+            let h = viewport_for(self.container.height(&mut self.engine), self.min_height, self.max_height);
             if h == self.vp_height {
                 break;
             }
@@ -654,7 +660,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
                 container.build(engine, html, *vp_height, *width, &mut |e| Core::<E, B>::stop_layout(doc, e.0));
             }
             self.pushed(doc);
-            self.vp_height = viewport_for(self.container.height(&mut self.engine), self.max_height);
+            self.vp_height = viewport_for(self.container.height(&mut self.engine), self.min_height, self.max_height);
             self.container.viewport_resized(&mut self.engine, self.vp_height);
             changed = true;
         }
@@ -736,7 +742,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
         if !patched {
             return false;
         }
-        let h = viewport_for(self.container.height(&mut self.engine), self.max_height);
+        let h = viewport_for(self.container.height(&mut self.engine), self.min_height, self.max_height);
         // A new height moves the viewport: when the layout depends on it, the full path settles that, with the
         // patch already in. Style sheets only change through that path, so html's are current.
         if h != self.vp_height {
@@ -897,7 +903,7 @@ impl<E: Engine, B: Backend> Core<E, B> {
             };
             self.pushed(doc);
             if restyled && !doc.layout_stopped() {
-                let h = viewport_for(self.container.height(&mut self.engine), self.max_height);
+                let h = viewport_for(self.container.height(&mut self.engine), self.min_height, self.max_height);
                 if h == self.vp_height {
                     self.doc_height = self.container.height(&mut self.engine).ceil();
                     self.stats.parse_ms = self.now_ms() - t0;
@@ -961,6 +967,17 @@ impl<E: Engine, B: Backend> Core<E, B> {
             Some(out) => out.push(msg),
             None => self.pending_events.push(msg),
         }
+    }
+
+    /// The `size` messages among the first `count` the renderer holds, each moved whole to `out` in their order; the
+    /// others stay in theirs.
+    fn take_sizes_before(&mut self, count: usize, out: &mut Vec<Json>) {
+        out.extend(self.pending_events.extract_if(..count, |m| m.get("type").as_str() == b"size"));
+    }
+
+    /// A profile page's most height: the host's own bound, at most the page ceiling.
+    fn page_max_height(&self) -> f64 {
+        self.host_max_height.map_or(css::PAGE_MAX_HEIGHT, |h| min_f64(h, css::PAGE_MAX_HEIGHT))
     }
 
     /// After a layout, with tracking on: the element edges, and the diff when the height changed.
@@ -1480,6 +1497,8 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
             vp_height: MIN_HEIGHT as i32,
             doc_height: 0.0,
             max_height: 600.0,
+            min_height: MIN_HEIGHT,
+            host_max_height: None,
             dirty: true,
             touched: BTreeSet::new(),
             touched_all: true,
@@ -1561,6 +1580,22 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
         self.events.refresh_editor(&self.doc, &mut self.core);
         self.core.rebuild_ends(&mut self.doc);
         self.follow(before);
+    }
+
+    /// A place message's `rebuild(false)` and its size into `out`. When the size is new, the sizes held back before
+    /// the build (a settle's that had no reply to go in) go first, in their order: the host takes the sizes in the
+    /// order they were made, where renderer.cpp sends the held ones after the new one. Every other message, held or
+    /// this build's, follows the resize entries in the ordinary flush in its order (a callback after the observers
+    /// of its layout), as do the held sizes when the size is not new.
+    fn rebuild_place(&mut self, out: &mut Vec<Json>) {
+        let held = self.core.pending_events.len();
+        self.rebuild(false);
+        let mut size = Vec::new();
+        self.core.report_size(Some(&mut size));
+        if !size.is_empty() {
+            self.core.take_sizes_before(held, out);
+        }
+        out.append(&mut size);
     }
 
     /// Builds a document a coalesced batch left stale, its size into `out` or, for None, the pending messages.
@@ -1700,12 +1735,28 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
                     self.core.report_size(Some(&mut out));
                 }
             }
-            b"safeArea" => {
-                // The client's time over the widget (docs/sdk-v1.md §2.17): the UA layer pads the body by its band.
-                if self.doc.apply_safe_area(msg.get("inset")) {
+            kind @ (b"safeArea" | b"deviceSafeArea") => {
+                // Both layers over the widget (docs/sdk-v1.md §2.17): the UA layer pads the body by their sum on all four sides.
+                let inset = msg.get("inset");
+                let changed = if kind == b"safeArea" { self.doc.apply_safe_area(inset) } else { self.doc.apply_device_safe_area(inset) };
+                if changed {
                     self.core.set_master(&self.doc);
-                    self.rebuild(false);
-                    self.core.report_size(Some(&mut out));
+                    self.rebuild_place(&mut out);
+                }
+            }
+            b"surface" => {
+                let page = msg.get("surface").as_str() == b"profile";
+                let place = self.doc.apply_surface(page, msg.get("viewportHeight"));
+                let min_height = if page { max_f64(MIN_HEIGHT, self.doc.page_viewport()) } else { MIN_HEIGHT };
+                let max_height = if page { self.core.page_max_height() } else { self.core.max_height };
+                let heights = min_height != self.core.min_height || max_height != self.core.max_height;
+                self.core.min_height = min_height;
+                self.core.max_height = max_height;
+                if place {
+                    self.core.set_master(&self.doc);
+                }
+                if place || heights {
+                    self.rebuild_place(&mut out);
                 }
             }
             b"frozen" => {
@@ -1741,9 +1792,14 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
     }
 
     /// The tallest the widget may grow, in CSS px (600, widget-sandbox's shared bound, unless the host says
-    /// otherwise); past it the document is cut off.
+    /// otherwise); past it the document is cut off. A profile page is at most its ceiling (`css::PAGE_MAX_HEIGHT`,
+    /// profile.json's `tables.surfaces`, provisional) whatever the host says, and at least its viewport
+    /// (`viewport_for`) however low the host's bound is; the bound holds across the page's `surface` messages. There
+    /// renderer.cpp lets a host raise a page to HEIGHT_CEILING, and each `surface` puts the page's ceiling back.
     pub fn set_max_height(&mut self, height: f64, out: &mut Vec<Json>) {
-        let height = bounded(height, MIN_HEIGHT, HEIGHT_CEILING);
+        let host = bounded(height, MIN_HEIGHT, HEIGHT_CEILING);
+        self.core.host_max_height = Some(host);
+        let height = if self.doc.page() { self.core.page_max_height() } else { host };
         if height == self.core.max_height {
             return;
         }
@@ -1862,7 +1918,8 @@ impl<E: Engine, B: Backend> Renderer<E, B> {
         self.core.container.master()
     }
 
-    /// The variables the host sets on the root: the theme's and the content safe area's.
+    /// The variables the host sets on the root: the theme's and the place's (both safe-area layers and a page's
+    /// viewport).
     pub fn theme_variables(&self) -> &css::Variables {
         self.doc.theme_variables()
     }

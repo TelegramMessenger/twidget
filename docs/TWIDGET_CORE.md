@@ -845,7 +845,7 @@ ctest:
   (keyed SVG paints) and `attacks/render-nested-flex.html` (the layout budget's violation). Its answers
   are fixed functions of the calls and it was recorded after stage 0.3 ordered the releases and turned
   contraction off, so it is checked on every platform. `parity.cmake` fails it when it is missing or
-  larger than 271565 bytes, its 217252 plus a quarter.
+  larger than 282000 bytes, its 225600 plus a quarter.
 
 ## Building
 

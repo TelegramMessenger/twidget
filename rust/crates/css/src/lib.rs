@@ -1310,6 +1310,18 @@ const SAFE_AREA_VARS: [(&str, &str); 6] = [
     ("cornerRight", "--tg-content-safe-area-corner-right"),
 ];
 
+const DEVICE_SAFE_AREA_VARS: [(&str, &str); 4] = [
+    ("top", "--tg-safe-area-inset-top"),
+    ("right", "--tg-safe-area-inset-right"),
+    ("bottom", "--tg-safe-area-inset-bottom"),
+    ("left", "--tg-safe-area-inset-left"),
+];
+
+/// The page ceiling of profile.json's `tables.surfaces.profile.height.max` (provisional).
+pub const PAGE_MAX_HEIGHT: f64 = 4000.0;
+/// `--tg-viewport-height` (the widget's whole area on a profile page, edge to edge).
+pub const VIEWPORT_HEIGHT_VARIABLE: &str = "--tg-viewport-height";
+
 fn hex_color(v: &[u8]) -> bool {
     v.len() == 7 && v[0] == b'#' && v[1..].iter().all(u8::is_ascii_hexdigit)
 }
@@ -1502,8 +1514,23 @@ fn button_token(field: &str, value: &Json) -> Option<Vec<u8>> {
     }
 }
 
+const THEME_VARIABLE_PREFIX: &str = "--tg-theme-";
+
+/// A palette key as its name spells it after `THEME_VARIABLE_PREFIX` (`bg_color`: `bg-color`), byte for byte.
+fn theme_key_suffix(key: &str) -> impl Iterator<Item = u8> {
+    key.bytes().map(|b| if b == b'_' { b'-' } else { b })
+}
+
 fn theme_variable_name(key: &str) -> Vec<u8> {
-    format!("--tg-theme-{key}").replace('_', "-").into_bytes()
+    let mut name = Vec::with_capacity(THEME_VARIABLE_PREFIX.len() + key.len());
+    name.extend_from_slice(THEME_VARIABLE_PREFIX.as_bytes());
+    name.extend(theme_key_suffix(key));
+    name
+}
+
+/// Whether `rest`, a name after `THEME_VARIABLE_PREFIX`, is `key` as `theme_variable_name` writes it.
+fn is_theme_key(key: &str, rest: &[u8]) -> bool {
+    rest.len() == key.len() && theme_key_suffix(key).eq(rest.iter().copied())
 }
 
 pub type Variables = Vec<(Vec<u8>, Vec<u8>)>;
@@ -1541,32 +1568,78 @@ pub fn theme_variables(theme: &Json) -> Variables {
     vars
 }
 
+/// `n` at two decimals, `std::round(n * 100) / 100`. A finite number so large that `n * 100` overflows
+/// has no fractions left to round and stays as it is, where the C++ expression makes it infinite (and
+/// `Json::number` writes `null`).
+fn hundredths(n: f64) -> f64 {
+    let scaled = n * 100.0;
+    if scaled.is_finite() { scaled.round() / 100.0 } else { n }
+}
+
+/// One inset of a place's table (profile.json `tables.surfaces`): a finite number in 0…`max` (None: no
+/// maximum) at two decimals, anything else 0.
+fn inset_px(value: &Json, max: Option<f64>) -> Vec<u8> {
+    let mut n = value.as_number(0.0);
+    if !n.is_finite() || n < 0.0 || max.is_some_and(|max| n > max) {
+        n = 0.0;
+    }
+    let mut px = twidget_json::number(hundredths(n)).into_bytes();
+    px.extend_from_slice(b"px");
+    px
+}
+
 /// The `--tg-content-safe-area-*` properties of the host's `safeArea` message (docs/sdk-v1.md §2.17): all
-/// six, each inset 0–64 and corner 0–200 px at two decimals, anything else 0px.
-pub fn content_safe_area_variables(inset: &Json) -> Variables {
+/// six at two decimals. In a bubble each inset 0–64 and corner 0–200 px; on a profile page (`page`, §2.19)
+/// any finite inset ≥ 0 and the corners 0; anything else 0px.
+pub fn content_safe_area_variables(inset: &Json, page: bool) -> Variables {
     SAFE_AREA_VARS
         .iter()
         .map(|(field, name)| {
-            let max = if field.starts_with("corner") { 200.0 } else { 64.0 };
-            let mut n = inset[*field].as_number(0.0);
-            if !n.is_finite() || n < 0.0 || n > max {
-                n = 0.0;
-            }
-            let mut value = twidget_json::number((n * 100.0).round() / 100.0).into_bytes();
-            value.extend_from_slice(b"px");
-            (name.as_bytes().to_vec(), value)
+            let corner = field.starts_with("corner");
+            // A page has no corners and no upper bound on a side (a large system font, a foldable, Split View).
+            let max = match (page, corner) {
+                (true, true) => Some(0.0),
+                (true, false) => None,
+                (false, true) => Some(200.0),
+                (false, false) => Some(64.0),
+            };
+            (name.as_bytes().to_vec(), inset_px(&inset[*field], max))
         })
         .collect()
 }
 
-/// A name `theme_variables` or `content_safe_area_variables` may set: the widget's own style ops cannot
-/// set it on the root.
+/// The `--tg-safe-area-inset-*` properties of the host's `deviceSafeArea` message (docs/sdk-v1.md §2.17),
+/// the device's edges: all four at two decimals, any finite value ≥ 0 on a profile page, always 0px in a
+/// bubble.
+pub fn safe_area_variables(inset: &Json, page: bool) -> Variables {
+    DEVICE_SAFE_AREA_VARS
+        .iter()
+        .map(|(field, name)| (name.as_bytes().to_vec(), if page { inset_px(&inset[*field], None) } else { b"0px".to_vec() }))
+        .collect()
+}
+
+/// A profile page's viewport as the host's `surface` message gives it (docs/sdk-v1.md §2.19): a finite
+/// number above 0 and at most `PAGE_MAX_HEIGHT`, at two decimals; anything else and every bubble 0 (no
+/// `--tg-viewport-height`).
+pub fn page_viewport_height(page: bool, height: &Json) -> f64 {
+    let h = height.as_number(0.0);
+    if !page || !h.is_finite() || h <= 0.0 || h > PAGE_MAX_HEIGHT {
+        return 0.0;
+    }
+    hundredths(h)
+}
+
+/// A name `theme_variables`, either safe-area layer or the viewport may set: the widget's own style ops
+/// cannot set it on the root. Allocates nothing: the root's style asks it of each of the widget's `--tg-*`
+/// declarations whenever it is written.
 pub fn is_theme_variable(name: &[u8]) -> bool {
     name == b"--tg-color-scheme"
+        || name == VIEWPORT_HEIGHT_VARIABLE.as_bytes()
         || SAFE_AREA_VARS.iter().any(|(_, v)| v.as_bytes() == name)
+        || DEVICE_SAFE_AREA_VARS.iter().any(|(_, v)| v.as_bytes() == name)
         || BUTTON_VARS.iter().any(|(_, v)| v.as_bytes() == name)
         || TEXT_VARS.iter().any(|(_, v, _)| v.as_bytes() == name)
-        || THEME_KEYS.iter().any(|k| theme_variable_name(k) == name)
+        || name.strip_prefix(THEME_VARIABLE_PREFIX.as_bytes()).is_some_and(|rest| THEME_KEYS.iter().any(|k| is_theme_key(k, rest)))
 }
 
 /// `css` with every `var(--name[, fallback])` replaced by the value of `--name` in `vars`, else by its

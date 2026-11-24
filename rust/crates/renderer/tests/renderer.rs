@@ -1,5 +1,6 @@
 //! core_tests.cpp's checks of builds, patches, the viewport, the layout budget and the name table, `frozen`, the theme
-//! and the safe area, the size reports and resize diffs, and the queries, by their names, on the port. What the document
+//! and the safe area, the bot's profile page and a bubble's place (auto/46's probes, a page's heights, a relayout per
+//! host message), the size reports and resize diffs, and the queries, by their names, on the port. What the document
 //! answers comes from the C++ renderer running the same script (`oracle/renderer_oracle`) as a tape the port replays;
 //! the port's own messages and state are checked against what core_tests expects of the C++, and against the C++'s
 //! transcript. core_tests' sleeps are steps that far apart. Those checks are skipped without `TWIDGET_ORACLE_DIR`; the
@@ -297,6 +298,9 @@ fn safe_area() {
     cs(&mut s, 10, "padding-bottom");
     s.ops(16.0, r#"[{"op":"style","id":2,"name":"--tg-content-safe-area-inset-bottom","value":"1px"}]"#);
     cs(&mut s, 2, "--tg-content-safe-area-inset-bottom");
+    s.message(16.0, r#"{"type":"deviceSafeArea","inset":{"top":47,"right":0,"bottom":34,"left":0}}"#);
+    cs(&mut s, 2, "--tg-safe-area-inset-top");
+    cs(&mut s, 4, "padding-top");
     let Some(r) = replay(s) else { return };
     let text = |i: usize| result(&r.outs[i]).as_str().to_vec();
     let prop = |i: usize, p: &str| result(&r.outs[i]).get(p).as_str().to_vec();
@@ -310,6 +314,276 @@ fn safe_area() {
         "the UA layer pads the body by the band, a widget's var() reads it, and the height is reported again"
     );
     assert_eq!(text(10), b"24.57px", "the widget cannot set the safe area on the root");
+    assert!(
+        text(12) == b"0px" && prop(13, "padding-top") == b"0px" && !has(&r.outs[11], b"size"),
+        "in a bubble the device's edges are always 0px, and they change nothing"
+    );
+}
+
+/// The text an Inspect step's returned bytes hold at `at` (a u32 length, the bytes), and where the next field starts.
+fn inspected_text(extra: &[u8], at: usize) -> (&[u8], usize) {
+    let n = extra.get(at..at + 4).and_then(|b| b.try_into().ok()).map_or(0, |b| u32::from_le_bytes(b) as usize);
+    (extra.get(at + 4..at + 4 + n).unwrap_or_default(), at + 4 + n)
+}
+
+/// An Inspect step's theme_variables_json() (after wants_tick(), next_tick_in() and master_css()) and px_height().
+fn inspected_root(extra: &[u8]) -> (Json, u32) {
+    let (_, at) = inspected_text(extra, 9);
+    let (vars, _) = inspected_text(extra, at);
+    let px = extra.len().checked_sub(4).and_then(|n| extra[n..].try_into().ok()).map_or(0, u32::from_le_bytes);
+    (Json::parse(vars).unwrap_or(Json::Null), px)
+}
+
+/// The root's last `n` variables, names and values.
+fn last_variables(root: &Json, n: usize) -> Vec<(String, String)> {
+    let all = root.obj();
+    all[all.len().saturating_sub(n)..]
+        .iter()
+        .map(|(k, v)| (String::from_utf8_lossy(k).into_owned(), String::from_utf8_lossy(v.as_str()).into_owned()))
+        .collect()
+}
+
+/// The names `PLACE_VARIABLES` with `values`.
+fn place(values: &[&str]) -> Vec<(String, String)> {
+    scripts::PLACE_VARIABLES.iter().zip(values).map(|(n, v)| (n.to_string(), v.to_string())).collect()
+}
+
+/// The body's computed padding, top, right, bottom and left, in a `cs` answer.
+fn padding(body: &Json) -> Vec<String> {
+    ["top", "right", "bottom", "left"]
+        .iter()
+        .map(|side| String::from_utf8_lossy(body.get(format!("padding-{side}")).as_str()).into_owned())
+        .collect()
+}
+
+#[test]
+fn profile_reference_page() {
+    let m = scripts::reference_profile();
+    let Some(r) = replay(m.script.clone()) else { return };
+    let answer = |name: &str| result(&r.outs[m.at(name)]);
+    let reference = ["47px", "0px", "34px", "0px", "56px", "0px", "64px", "0px", "0px", "0px", "844px"];
+    let (root, _) = inspected_root(&r.extras[m.at("start inspect")]);
+    assert_eq!(
+        last_variables(&root, 11),
+        place(&reference),
+        "before any ops the root ends with the device's edges, the client's chrome and the viewport, in renderer.cpp's order"
+    );
+    let sides = ["47px", "13px", "34px", "11px", "56px", "7px", "64px", "5px", "0px", "0px", "844px"];
+    let sides_padding = ["103px", "20px", "98px", "16px"];
+    let sides_widths = [103.0, 98.0, 16.0, 113.0, 20.0, 47.0, 34.0, 56.0];
+    for (state, values, body, widths) in [
+        ("reference", reference, ["103px", "0px", "98px", "0px"], [103.0, 98.0, 0.0, 113.0, 4.0, 47.0, 34.0, 56.0]),
+        ("sides", sides, sides_padding, sides_widths),
+        ("theme", sides, sides_padding, sides_widths),
+        ("overwritten", sides, sides_padding, sides_widths),
+    ] {
+        let got: Vec<(String, String)> = scripts::PLACE_VARIABLES
+            .iter()
+            .map(|n| (n.to_string(), String::from_utf8_lossy(answer(&format!("{state} {n}")).as_str()).into_owned()))
+            .collect();
+        assert_eq!(got, place(&values), "{state}: the root's place variables are the host's, a page's corners 0");
+        assert_eq!(
+            padding(&answer(&format!("{state} body"))),
+            body,
+            "{state}: the UA layer pads the unstyled body by the sum of both layers"
+        );
+        let got: Vec<f64> = (1..=8).map(|e| answer(&format!("{state} e{e}")).get("width").as_number(-1.0)).collect();
+        assert_eq!(got, widths, "{state}: auto/46's probes e1–e8, env() the sum and var() one layer");
+        assert_eq!(
+            answer(&format!("{state} viewport")).get("innerHeight").as_number(0.0),
+            844.0,
+            "{state}: the short page is its viewport tall"
+        );
+    }
+    let load = sizes(&r.outs[m.at("load")]);
+    assert!(
+        load.len() == 1 && load[0].0 < 844.0 && load[0].1 == 844.0,
+        "the short page reports its own height and the viewport's: {load:?}"
+    );
+}
+
+#[test]
+fn profile_page() {
+    let m = scripts::profile_page();
+    let Some(r) = replay(m.script.clone()) else { return };
+    let answer = |name: &str| result(&r.outs[m.at(name)]);
+    let text = |name: &str| answer(name).as_str().to_vec();
+    let surface = sizes(&r.outs[m.at("surface")]);
+    assert!(surface.len() == 1 && surface[0].1 >= 844.57, "a page is at least its viewport tall: {surface:?}");
+    assert!(
+        text("page --tg-viewport-height") == b"844.57px" && answer("hero").get("height").as_str() == b"844.57px",
+        "a page sets --tg-viewport-height at two decimals"
+    );
+    assert!(
+        text("page --tg-safe-area-inset-top") == b"47px"
+            && text("page --tg-safe-area-inset-right") == b"0px"
+            && text("page --tg-content-safe-area-inset-bottom") == b"120px"
+            && text("page --tg-content-safe-area-corner-right") == b"0px",
+        "on a page the device's edges are set, a negative one is 0, a content side past 64 stays and a corner is 0"
+    );
+    let body = answer("body");
+    assert!(
+        body.get("padding-top").as_str() == b"103px" && body.get("padding-bottom").as_str() == b"154px",
+        "the UA layer pads the body by the sum of both layers: {}",
+        body.dump_lossy()
+    );
+    assert!(
+        text("overwritten --tg-safe-area-inset-top") == b"47px" && text("overwritten --tg-viewport-height") == b"844.57px",
+        "the widget cannot set the device's edges or the viewport on the root"
+    );
+    let tall = sizes(&r.outs[m.at("tall")]);
+    assert!(
+        tall.len() == 1 && tall[0].0 > 9000.0 && tall[0].1 == 4000.0 && sizes(&r.outs[m.at("tall tick")]).is_empty(),
+        "a page is clipped at the 4000 px ceiling, its own height reported whole: {tall:?}"
+    );
+    let (_, px) = inspected_root(&r.extras[m.at("tall inspect")]);
+    assert!(
+        px == 4000 && answer("tall viewport").get("innerHeight").as_number(0.0) == 4000.0,
+        "and so are its pixels and its viewport ({px})"
+    );
+}
+
+#[test]
+fn profile_heights() {
+    let m = scripts::profile_heights();
+    let Some(r) = replay(m.script.clone()) else { return };
+    let answer = |name: &str| result(&r.outs[m.at(name)]);
+    let inner = |name: &str| answer(name).get("innerHeight").as_number(0.0);
+    let px = |name: &str| inspected_root(&r.extras[m.at(name)]).1;
+    let reported = |name: &str| sizes(&r.outs[m.at(name)]);
+    assert!(
+        reported("short") == [(522.0, 844.0)]
+            && answer("short v").get("height").as_number(0.0) == 422.0
+            && inner("short viewport") == 844.0
+            && px("short inspect") == 844,
+        "a short page is laid out at its viewport's height and reports its own: {:?}",
+        reported("short")
+    );
+    assert!(
+        reported("midrange") == [(2000.0, 2000.0)] && inner("midrange viewport") == 2000.0 && px("midrange inspect") == 2000,
+        "a taller one is its own height: {:?}",
+        reported("midrange")
+    );
+    assert!(
+        reported("clipped") == [(9000.0, 4000.0)]
+            && reported("clipped tick").is_empty()
+            && inner("clipped viewport") == 4000.0
+            && px("clipped inspect") == 4000,
+        "past the ceiling it is cut off at 4000 px, its own height reported whole: {:?}",
+        reported("clipped")
+    );
+    assert!(
+        r.viewports[m.at("lowered")] == 844 && reported("lowered") == [(9000.0, 844.0)],
+        "a host's bound below the viewport cannot take a page below it: {:?}",
+        reported("lowered")
+    );
+    assert_eq!(r.viewports[m.at("between")], 3000, "one between the viewport and the ceiling holds");
+}
+
+#[test]
+fn profile_without_a_viewport() {
+    let m = scripts::profile_without_viewport();
+    let Some(r) = replay(m.script.clone()) else { return };
+    let answer = |name: &str| result(&r.outs[m.at(name)]);
+    for (state, var, f, inner) in [
+        ("none", "", 30.0, 50.0),
+        ("fraction", "844.57px", 844.57, 845.0),
+        ("ceiling", "4000px", 4000.0, 4000.0),
+        ("string", "", 30.0, 50.0),
+        ("named", "", 30.0, 50.0),
+    ] {
+        let got = (
+            String::from_utf8_lossy(answer(&format!("{state} var")).as_str()).into_owned(),
+            answer(&format!("{state} f")).get("height").as_number(0.0),
+            answer(&format!("{state} viewport")).get("innerHeight").as_number(0.0),
+        );
+        assert!(
+            got.0 == var && (got.1 - f).abs() < 0.01 && got.2 == inner,
+            "{state}: --tg-viewport-height {var:?}, #f {f}, the viewport {inner} (got {got:?})"
+        );
+    }
+}
+
+#[test]
+fn profile_relayout() {
+    let m = scripts::profile_relayout();
+    let Some(r) = replay(m.script.clone()) else { return };
+    let laid_out = |name: &str| {
+        let at = m.at(name);
+        r.layouts[at] - r.layouts[at - 1]
+    };
+    let reported = |name: &str| {
+        let mut all = sizes(&r.outs[m.at(name)]);
+        all.extend(sizes(&r.outs[m.at(&format!("{name} tick"))]));
+        all
+    };
+    assert_eq!(sizes(&r.outs[m.at("load")]), [(1000.0, 1000.0)], "a page taller than its viewport is its own height");
+    for (name, size) in [("device", (1020.0, 1020.0)), ("content", (1050.0, 1050.0)), ("viewport", (1050.0, 1500.0))] {
+        assert!(
+            laid_out(name) > 0 && reported(name) == [size],
+            "{name}: laid out again ({} layouts) and its new size reported once: {:?}",
+            laid_out(name),
+            reported(name)
+        );
+        let again = format!("{name} again");
+        assert!(
+            laid_out(&again) == 0 && reported(&again).is_empty(),
+            "{again}: the same input at the same bounds lays out nothing and reports nothing: {:?}",
+            reported(&again)
+        );
+    }
+    let (before, after) = (result(&r.outs[m.at("before sides")]), result(&r.outs[m.at("after sides")]));
+    let at = |j: &Json, k: &str| j.get(k).as_number(-1.0);
+    assert!(
+        laid_out("sides") > 0
+            && reported("sides").is_empty()
+            && at(&before, "x") == 0.0
+            && at(&after, "x") == 10.0
+            && at(&after, "width") == at(&before, "width") - 10.0,
+        "a left edge lays the page out again without a size report while no reported number moves: {} / {}",
+        before.dump_lossy(),
+        after.dump_lossy()
+    );
+}
+
+#[test]
+fn bubble_place() {
+    let m = scripts::bubble_place();
+    let Some(r) = replay(m.script.clone()) else { return };
+    let answer = |name: &str| result(&r.outs[m.at(name)]);
+    let text = |name: &str| String::from_utf8_lossy(answer(name).as_str()).into_owned();
+    let laid_out = |name: &str| {
+        let at = m.at(name);
+        r.layouts[at] - r.layouts[at - 1]
+    };
+    let (root, _) = inspected_root(&r.extras[m.at("start inspect")]);
+    let chrome = ["0px", "0px", "0px", "0px", "0px", "0px", "24px", "0px", "16px", "20px"];
+    assert!(
+        last_variables(&root, 10) == place(&chrome) && root.find("--tg-viewport-height").is_none(),
+        "a bubble's root: the device's edges 0px whatever the host says, the client's chrome, no viewport: {}",
+        root.dump_lossy()
+    );
+    for state in ["load", "side"] {
+        let got: Vec<String> = scripts::PLACE_VARIABLES[..4].iter().map(|n| text(&format!("{state} {n}"))).collect();
+        assert_eq!(got, ["0px"; 4], "{state}: the device's edges are 0px in a bubble");
+        assert!(
+            text(&format!("{state} --tg-viewport-height")).is_empty() && answer(&format!("{state} f")).get("height").as_number(0.0) == 5.0,
+            "{state}: no viewport variable in a bubble, the widget's fallback applies"
+        );
+        assert_eq!(answer(&format!("{state} viewport")).get("innerHeight").as_number(0.0), 50.0, "{state}: a short bubble is 50 px tall");
+    }
+    assert_eq!(padding(&answer("load body")), ["0px", "0px", "24px", "0px"], "the client's bottom band pads the body's bottom alone");
+    assert_eq!(padding(&answer("side body")), ["0px", "10px", "24px", "0px"], "and a side within its range that side once");
+    for name in ["device", "surface"] {
+        assert!(laid_out(name) == 0 && sizes(&r.outs[m.at(name)]).is_empty(), "{name}: nothing changes in a bubble");
+    }
+    assert!(sizes(&r.outs[m.at("inert tick")]).is_empty(), "not at the frame after either");
+    assert_eq!(r.viewports[m.at("tall")], 600, "a tall bubble stops at 600 px");
+    let over = sizes(&r.outs[m.at("override")]);
+    assert!(
+        over.len() == 1 && over[0].1 == over[0].0 && over[0].1 > 600.0,
+        "and the host's own bound lets it grow to its content: {over:?}"
+    );
 }
 
 #[test]

@@ -316,8 +316,8 @@ if(TWIDGET_BUILD_TESTS)
     endif()
     # Corpus widgets recorded by tools/record on its stub Backend (record_corpus.py --curated) and committed: every answer a fixed function of the calls, and the 0.3 orders, so it replays everywhere.
     set(TW_CORPUS_STUB_RECORDING "${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/corpus-stub.twrec")
-    # The recording's 217252 bytes plus a quarter.
-    set(TW_CORPUS_STUB_BYTES 271565)
+    # The recording's 225600 bytes plus a quarter.
+    set(TW_CORPUS_STUB_BYTES 282000)
     add_test(NAME twidget_parity_corpus_stub
         COMMAND "${CMAKE_COMMAND}" "-DREPLAY=$<TARGET_FILE:twidget_replay>" "-DRECORDING=${TW_CORPUS_STUB_RECORDING}" -DSOURCE=corpus-stub
             "-DNEEDS=sessions,steps,lists,batches,calls,pointers,claims,holds,ticks,engine,resizes,themes,images,keys" -DSESSIONS=7
