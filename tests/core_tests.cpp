@@ -1760,6 +1760,25 @@ int main() {
         check(img("DATA:IMAGE/SVG+XML,%3Csvg%3E%3C/svg%3E") == 0 && img(" data:image/Svg+Xml ;utf8,<svg/>") == 0, "an SVG in any spelling is the placeholder, never the backend's");
         check(img("data:image/PNG;base64,AA==") == 1, "a profile type in capitals still loads");
         check(img("data:image/bmp;base64,AA==") == 0 && img("data:text/html,<b>") == 0, "a type outside the profile is refused");
+
+        // An <img> given a new source over and over: the URLs kept stay within the bound, the ones past it fail to load.
+        lb.loaded.clear();
+        Renderer many(300, 1, false, lb);
+        many.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},{"op":"el","id":10,"tag":"img"},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        size_t errors = 0, violations = 0;
+        for (int i = 0; i < 1500; i++) {
+            Json op = Json::object().set("op", "attr").set("id", 10).set("name", "src").set("value", "data:image/png;base64,AA==#" + std::to_string(i));
+            Json ops = Json::array();
+            ops.push(op);
+            for (const Json& m : many.receive(Json::object().set("type", "ops").set("ops", ops))) {
+                if (m["type"].asString() == "violation") violations++;
+                if (m["type"].asString() == "event" && m["ev"]["type"].asString() == "error") errors++;
+            }
+            if (i % 100 == 0) many.paint();
+        }
+        check(lb.loaded.size() == 1024, "a widget's image URLs past the bound never reach the backend (got " + std::to_string(lb.loaded.size()) + ")");
+        check(errors == 1500 - 1024 && violations == 1, "each image past the bound fails to load, and the bound is reported once (got " + std::to_string(errors) + ", " + std::to_string(violations) + ")");
     }
 
     // ── getComputedStyle ──

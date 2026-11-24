@@ -473,6 +473,10 @@ bool coalesced(const std::string& type) {
 }
 
 constexpr int MAX_CANVASES = 64;
+/// The image URLs a widget's container keeps, each with what the backend decoded for it, and their bytes together:
+/// neither is let go while the widget lives, so a URL past either bound is an image that failed to load.
+constexpr size_t MAX_IMAGES = 1024;
+constexpr size_t MAX_IMAGE_URL_BYTES = 4 << 20;
 /// Layers: at most this many per widget, this many device pixels in all, and no track shorter
 /// than this (a frame or two is cheaper to paint than to hand over).
 constexpr size_t MAX_LAYERS = 256;
@@ -1424,7 +1428,18 @@ public:
         std::string url = src;
         if (images_.count(url)) return;
         Image img;
-        if (url.rfind("tw-canvas:", 0) == 0) {
+        const bool canvas = url.rfind("tw-canvas:", 0) == 0;
+        if (!canvas) {
+            // Not kept: the lookups of a URL that is not here answer as for an image that failed.
+            if (image_urls_ >= MAX_IMAGES || url.size() > MAX_IMAGE_URL_BYTES - image_url_bytes_) {
+                if (!images_refused_) r_.pending_violations_.push_back("image limit: more than " + std::to_string(MAX_IMAGES) + " images or " + std::to_string(MAX_IMAGE_URL_BYTES) + " bytes of their URLs");
+                images_refused_ = true;
+                return;
+            }
+            image_urls_++;
+            image_url_bytes_ += url.size();
+        }
+        if (canvas) {
             // The renderer's own source for a <canvas>: tw-canvas:<node id>/<w>x<h>, drawn from the backend's bitmap.
             int id = 0, w = 0, h = 0;
             if (std::sscanf(url.c_str() + 10, "%d/%dx%d", &id, &w, &h) == 3) {
@@ -2428,6 +2443,8 @@ private:
     litehtml::uint_ptr next_font_ = 0;
     std::unordered_map<std::string, Image> images_;
     int next_image_ = 0;
+    size_t image_urls_ = 0, image_url_bytes_ = 0;
+    bool images_refused_ = false;
     DisplayList list_;
     std::vector<Command> clips_;
     std::vector<std::vector<Command>> suspended_;
