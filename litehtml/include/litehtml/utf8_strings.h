@@ -9,6 +9,7 @@ namespace litehtml
     void     append_char(std::string& str, char32_t ch);
     char32_t read_utf8_char(const std::string& str, int& index);
     void     prev_utf8_char(const std::string& str, int& index);
+    bool     is_valid_utf8(const std::string& str);
 
     class utf8_to_utf32
     {

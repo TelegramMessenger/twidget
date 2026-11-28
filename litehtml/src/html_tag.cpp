@@ -138,7 +138,10 @@ namespace litehtml
     litehtml::elements_list litehtml::html_tag::select_all(const std::string& selector)
     {
         css_selector sel;
-        sel.parse(selector, get_document()->mode());
+        if(!sel.parse(selector, get_document()->mode()))
+        {
+            return {};
+        }
 
         return select_all(sel);
     }
@@ -166,7 +169,10 @@ namespace litehtml
     litehtml::element::ptr litehtml::html_tag::select_one(const std::string& selector)
     {
         css_selector sel;
-        sel.parse(selector, get_document()->mode());
+        if(!sel.parse(selector, get_document()->mode()))
+        {
+            return nullptr;
+        }
 
         return select_one(sel);
     }
@@ -193,6 +199,7 @@ namespace litehtml
     {
         constexpr int64_t        kSelectorStepBudget = 4000000;
         thread_local int         g_apply_depth       = 0;
+        thread_local int         g_budget_depth      = 0;
         thread_local int64_t     g_selector_steps    = 0;
 
         thread_local uint64_t    g_apply_pass        = 0;
@@ -227,14 +234,33 @@ namespace litehtml
             {
                 if(g_apply_depth++ == 0)
                 {
-                    g_selector_steps = 0;
+                    if(g_budget_depth == 0)
+                    {
+                        g_selector_steps = 0;
+                    }
                     g_apply_pass++;
                     sibling_indexes().clear();
                 }
             }
             ~apply_scope() { g_apply_depth--; }
         };
+
+        // A walk over a child list is charged to the selector budget: one step for every 64 children.
+        void charge_children(size_t count)
+        {
+            g_selector_steps += static_cast<int64_t>(count / 64);
+        }
     }
+
+    selector_budget::selector_budget()
+    {
+        if(g_budget_depth++ == 0 && g_apply_depth == 0)
+        {
+            g_selector_steps = 0;
+        }
+    }
+
+    selector_budget::~selector_budget() { g_budget_depth--; }
 
     void litehtml::html_tag::apply_stylesheet(const litehtml::css& stylesheet)
     {
@@ -258,7 +284,7 @@ namespace litehtml
             return false;
         for(const auto& child : m_children)
         {
-            if(child->tag() == __tag_before_ || child->tag() == __tag_after_ || !child->children().empty())
+            if(!child->is_text())
                 return false;
         }
         const int parent_id = parent() ? parent()->css().get_shared_id() : 0;
@@ -438,6 +464,11 @@ namespace litehtml
 
     void litehtml::html_tag::apply_selector(const css_selector::ptr& sel)
     {
+        const size_t max_used_styles = 256;
+        if(m_used_styles.size() >= max_used_styles)
+        {
+            return;
+        }
         {
             {
                 const auto& r = sel->m_right;
@@ -804,7 +835,7 @@ namespace litehtml
             for(const auto& us : m_used_styles)
             {
                 shareKey += us->m_used ? '|' : '!';
-                shareKey += std::to_string(reinterpret_cast<uintptr_t>(us->m_selector.get()));
+                shareKey += std::to_string(us->m_selector->place());
             }
             if(const css_properties* hit = doc->share_lookup(shareKey))
             {
@@ -863,13 +894,16 @@ namespace litehtml
     int litehtml::html_tag::select(const std::string& selector)
     {
         css_selector sel;
-        sel.parse(selector, get_document()->mode());
+        if(!sel.parse(selector, get_document()->mode()))
+        {
+            return select_no_match;
+        }
         return select(sel, true);
     }
 
     int litehtml::html_tag::select(const css_selector& selector, bool apply_pseudo)
     {
-        if(g_apply_depth > 0 && ++g_selector_steps > kSelectorStepBudget)
+        if((g_apply_depth > 0 || g_budget_depth > 0) && ++g_selector_steps > kSelectorStepBudget)
         {
             return select_no_match;
         }
@@ -977,6 +1011,12 @@ namespace litehtml
                 }
                 break;
             case select_pseudo_element:
+                // A generated box has no ::before or ::after of its own: only the bare form styles it.
+                if((m_tag == __tag_before_ || m_tag == __tag_after_) &&
+                   (selector.m_attrs.size() > 1 || selector.m_tag != star_id))
+                {
+                    return select_no_match;
+                }
                 if(attr.name == _after_)
                 {
                     if(selector.m_attrs.size() == 1 && selector.m_tag == star_id && m_tag != __tag_after_)
@@ -1282,7 +1322,7 @@ namespace litehtml
                 std::string text = value;
                 if(std::string(name) == "font-size" && text.find_first_not_of("0123456789.") == std::string::npos)
                     text += "px";
-                m_style.add(std::string(name) + ":" + text, "", nullptr);
+                m_style.add_property(_id(name), text, "", false, get_document()->container());
             }
         }
         for(auto& el : m_children)
@@ -1869,13 +1909,19 @@ namespace litehtml
         }
     }
 
+    static bool is_generated(const element& el)
+    {
+        return el.tag() == __tag_before_ || el.tag() == __tag_after_;
+    }
+
     bool html_tag::is_nth_child(const element::ptr& el, int num, int off, bool of_type,
                                 const css_selector::vector& selector_list) const
     {
+        charge_children(m_children.size());
         int idx = 1;
         for(const auto& child : m_children)
         {
-            if(child->css().get_display() != display_inline_text)
+            if(child->css().get_display() != display_inline_text && !is_generated(*child))
             {
                 if((!of_type && selector_list.empty()) || (of_type && child->tag() == el->tag()) ||
                    child->select(selector_list))
@@ -1884,7 +1930,7 @@ namespace litehtml
                     {
                         if(num != 0)
                         {
-                            if((idx - off) * num >= 0 && (idx - off) % num == 0)
+                            if((int64_t(idx) - off) * num >= 0 && (int64_t(idx) - off) % num == 0)
                             {
                                 return true;
                             }
@@ -1909,10 +1955,11 @@ namespace litehtml
     bool html_tag::is_nth_last_child(const element::ptr& el, int num, int off, bool of_type,
                                      const css_selector::vector& selector_list) const
     {
+        charge_children(m_children.size());
         int idx = 1;
         for(auto child = m_children.rbegin(); child != m_children.rend(); child++)
         {
-            if((*child)->css().get_display() != display_inline_text)
+            if((*child)->css().get_display() != display_inline_text && !is_generated(**child))
             {
                 if((!of_type && selector_list.empty()) || (of_type && (*child)->tag() == el->tag()) ||
                    (*child)->select(selector_list))
@@ -1921,7 +1968,7 @@ namespace litehtml
                     {
                         if(num != 0)
                         {
-                            if((idx - off) * num >= 0 && (idx - off) % num == 0)
+                            if((int64_t(idx) - off) * num >= 0 && (int64_t(idx) - off) % num == 0)
                             {
                                 return true;
                             }
@@ -1960,7 +2007,7 @@ namespace litehtml
                 entry.index.clear();
                 for(auto& e : m_children)
                 {
-                    if(e->css().get_display() != display_inline_text)
+                    if(e->css().get_display() != display_inline_text && !is_generated(*e))
                     {
                         entry.index[e.get()] = entry.kids.size();
                         entry.kids.push_back(e.get());
@@ -1978,10 +2025,11 @@ namespace litehtml
                 *is_pseudo = (res & select_match_pseudo_class) != 0;
             return prev;
         }
-        element::ptr ret;
+        charge_children(m_children.size());
+        element* ret = nullptr;
         for(auto& e : m_children)
         {
-            if(e->css().get_display() != display_inline_text)
+            if(e->css().get_display() != display_inline_text && !is_generated(*e))
             {
                 if(e == el)
                 {
@@ -2000,12 +2048,12 @@ namespace litehtml
                                     *is_pseudo = false;
                                 }
                             }
-                            return ret;
+                            return ret->shared_from_this();
                         }
                     }
                     return nullptr;
                 }
-                ret = e;
+                ret = e.get();
             }
         }
         return nullptr;
@@ -2014,10 +2062,11 @@ namespace litehtml
     litehtml::element::ptr litehtml::html_tag::find_sibling(const element::ptr& el, const css_selector& selector,
                                                             bool apply_pseudo /*= true*/, bool* is_pseudo /*= 0*/)
     {
+        charge_children(m_children.size());
         element::ptr ret = nullptr;
         for(auto& e : m_children)
         {
-            if(e->css().get_display() != display_inline_text)
+            if(e->css().get_display() != display_inline_text && !is_generated(*e))
             {
                 if(e == el)
                 {
@@ -2057,7 +2106,7 @@ namespace litehtml
         int child_count = 0;
         for(const auto& child : m_children)
         {
-            if(child->css().get_display() != display_inline_text)
+            if(child->css().get_display() != display_inline_text && !is_generated(*child))
             {
                 if(!of_type || (of_type && el->tag() == child->tag()))
                 {
@@ -2104,7 +2153,7 @@ namespace litehtml
         return nullptr;
     }
 
-    void litehtml::html_tag::handle_counter_properties()
+    void litehtml::html_tag::handle_counter_properties(bool increment)
     {
         const auto& reset_property = m_style.get_property(_counter_reset_);
         if(reset_property.is<string_vector>())
@@ -2115,8 +2164,9 @@ namespace litehtml
         }
 
         const auto& inc_property = m_style.get_property(_counter_increment_);
-        if(inc_property.is<string_vector>())
+        if(increment && m_counter_changes < 2 && inc_property.is<string_vector>())
         {
+            m_counter_changes++;
             auto inc_function = [&](const string_id& name_id, const int value) { increment_counter(name_id, value); };
             parse_counter_tokens(inc_property.get<string_vector>(), 1, inc_function);
             return;
@@ -2125,8 +2175,12 @@ namespace litehtml
 
     void litehtml::html_tag::add_style(const style& style)
     {
+        const auto& added   = style.get_property(_counter_increment_);
+        const auto& counted = m_style.get_property(_counter_increment_);
+        const bool  changed = added.is<string_vector>() &&
+                              !(counted.is<string_vector>() && counted.get<string_vector>() == added.get<string_vector>());
         m_style.combine(style);
-        handle_counter_properties();
+        handle_counter_properties(changed);
     }
 
     void litehtml::html_tag::restore_base_style()
@@ -2164,6 +2218,7 @@ namespace litehtml
             }
         }
         m_style.clear();
+        m_counter_changes = 0;
         m_style_base     = style();
         m_has_style_base = false;
         m_used_styles.clear();
@@ -2171,6 +2226,7 @@ namespace litehtml
 
     void litehtml::html_tag::refresh_styles()
     {
+        selector_budget budget;
         m_has_style_base = false;
         for(auto& el : m_children)
         {
@@ -2181,6 +2237,7 @@ namespace litehtml
         }
 
         m_style.clear();
+        m_counter_changes = 0;
 
         for(auto& usel : m_used_styles)
         {

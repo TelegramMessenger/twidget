@@ -1,4 +1,5 @@
 #include "html.h"
+#include "c_locale.h"
 #include "el_form.h"
 #include "el_text.h"
 #include "document.h"
@@ -8,7 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(TW_LITEHTML_NO_CORE_FOUNDATION)
 #include <CoreFoundation/CoreFoundation.h>
 #endif
 #include <cstdio>
@@ -97,7 +98,7 @@ namespace litehtml
 
         std::string date_pattern()
         {
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(TW_LITEHTML_NO_CORE_FOUNDATION)
             CFLocaleRef locale  = CFLocaleCopyCurrent();
             CFStringRef pattern = CFDateFormatterCreateDateFormatFromTemplate(nullptr, CFSTR("ddMMyyyy"), 0, locale);
             CFRelease(locale);
@@ -319,7 +320,7 @@ namespace litehtml
                 return def;
             }
             char* end    = nullptr;
-            float result = std::strtof(value, &end);
+            float result = c_strtof(value, &end);
             return end == value || !std::isfinite(result) ? def : result;
         }
 
@@ -545,7 +546,7 @@ namespace litehtml
             size        = size >= 1 && size <= 1000 ? size : 20;
             float width = size * 0.636f + 0.182f - (m_type == "number" ? 0.91f : 0.f);
             std::string style = "display:block;flex:1 1 auto;min-width:0;overflow:hidden;white-space:pre;width:" +
-                                std::to_string(width) + "em";
+                                c_to_string(width) + "em";
             if(placeholder)
             {
                 style += ";color:#a9a9a9";
@@ -567,7 +568,7 @@ namespace litehtml
             float val  = attr_number(this, "value", min + (max - min) / 2);
             m_fraction = max > min ? std::max(0.f, std::min(1.f, (val - min) / (max - min))) : 0.f;
             char percent[32];
-            snprintf(percent, sizeof(percent), "%g%%", m_fraction * 100);
+            c_snprintf(percent, sizeof(percent), "%g%%", m_fraction * 100);
             auto doc   = get_document();
             auto track = std::make_shared<html_tag>(doc);
             track->set_tagName("lh-range-track");

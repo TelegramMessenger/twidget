@@ -63,6 +63,12 @@ namespace litehtml
         css_selector::vector m_selectors;
 
       public:
+        // `sheet` numbers the document's sheets: 0 the master CSS, 1 the document's own, 2 the user's.
+        explicit css(int sheet = 0) :
+            m_sheet(sheet)
+        {
+        }
+
         const css_selector::vector& selectors() const
         {
             return m_selectors;
@@ -82,11 +88,13 @@ namespace litehtml
         void add_selector(const css_selector::ptr& selector);
 
         int m_layer_depth = 0;  // inside an @layer block
+        int m_sheet       = 0;
     };
 
     inline void css::add_selector(const css_selector::ptr& selector)
     {
         selector->m_order = static_cast<int>(m_selectors.size());
+        selector->m_sheet = m_sheet;
         selector->m_layered = m_layer_depth > 0;
         m_selectors.push_back(selector);
     }

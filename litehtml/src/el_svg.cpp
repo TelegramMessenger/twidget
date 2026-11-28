@@ -1,10 +1,12 @@
 #include <unordered_set>
+#include <map>
 #include <atomic>
 #include <cstring>
 #include <cmath>
 #include <cctype>
 #include <functional>
 #include "html.h"
+#include "c_locale.h"
 #include "el_svg.h"
 #include "render_item.h"
 #include "render_image.h"
@@ -86,7 +88,7 @@ namespace litehtml
                     }
                 }
             }
-            value = std::strtof(std::string(start, p).c_str(), nullptr);
+            value = c_strtof(std::string(start, p).c_str(), nullptr);
             s     = p;
             return true;
         }
@@ -232,6 +234,11 @@ namespace litehtml
                 };
                 float theta1 = angle(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
                 float dtheta = angle((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+                if(!std::isfinite(theta1) || !std::isfinite(dtheta))
+                {
+                    line(x2, y2);
+                    return;
+                }
                 if(!sweep && dtheta > 0)
                 {
                     dtheta -= 2 * pi;
@@ -778,6 +785,18 @@ namespace litehtml
             return {};
         }
 
+        bool svg_reference_id(const std::string& id)
+        {
+            if(id.empty() || id.size() > 128)
+                return false;
+            for(char ch : id)
+            {
+                if(!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_' && static_cast<unsigned char>(ch) < 0x80)
+                    return false;
+            }
+            return true;
+        }
+
         float gradient_coordinate(const element::ptr& el, const char* name, float def)
         {
             const char* value = el->get_attr(name);
@@ -791,20 +810,16 @@ namespace litehtml
         }
 
         bool svg_gradient_paint(const element::ptr& el, string_id name, const vector_path& path, svg_gradient& out,
-                                float opacity, document_container* container)
+                                float opacity, document_container* container,
+                                const std::function<element::ptr(const std::string&)>& reference)
         {
             std::string id = svg_url_id(svg_property(el, name, true));
-            if(id.empty() || id.size() > 128)
+            if(!svg_reference_id(id))
                 return false;
-            for(char ch : id)
-            {
-                if(!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_')
-                    return false;
-            }
             auto doc = el->get_document();
             if(!doc || !doc->root())
                 return false;
-            element::ptr target = doc->root()->select_one("#" + id);
+            element::ptr target = reference(id);
             if(!target)
                 return false;
             std::string tag = lowcase(target->get_tagName());
@@ -935,7 +950,37 @@ namespace litehtml
             // Elements a <use> drew in this pass: uses of uses multiply (ten per level, eight levels deep, are 10^8),
             // so past the cap the rest of what they name is left out.
             static constexpr int kMaxUseDrawn = 10000;
-            int                 m_use_drawn = 0;
+            static constexpr int kUseLookup   = 16;
+            int                 m_use_left  = kMaxUseDrawn;
+            int                 m_use_depth = 0;
+            std::map<std::string, element::ptr> m_references;
+
+            bool use_charge(size_t units)
+            {
+                if(m_use_left < 0 || units > static_cast<size_t>(m_use_left))
+                {
+                    m_use_left = 0;
+                    return false;
+                }
+                m_use_left -= static_cast<int>(units);
+                return true;
+            }
+
+            element::ptr reference(const element::ptr& from, const std::string& id)
+            {
+                auto found = m_references.find(id);
+                if(found == m_references.end())
+                {
+                    if(m_use_depth > 0 && !use_charge(kUseLookup))
+                        return nullptr;
+                    element::ptr target;
+                    auto         doc = from->get_document();
+                    if(doc && doc->root())
+                        target = doc->root()->select_one("#" + id);
+                    found = m_references.emplace(id, target).first;
+                }
+                return found->second;
+            }
 
             bool hits(float x0, float y0, float x1, float y1, float slop) const
             {
@@ -983,22 +1028,27 @@ namespace litehtml
                 {
                     return;
                 }
+                if(m_use_depth > 0 && !use_charge(path.points.size() / 256))
+                {
+                    return;
+                }
                 if(m_hit_mode)
                 {
                     hit_path(el, path);
                     return;
                 }
+                const auto find = [&](const std::string& id) { return reference(el, id); };
                 path.fill   = svg_paint(el, _fill_, web_color::black, true, path.fill_color, m_container);
                 bool stroke_gradient = false;
                 path.stroke = svg_paint(el, _stroke_, web_color::black, false, path.stroke_color, m_container, &stroke_gradient);
                 path.fill_color   = with_opacity(path.fill_color, svg_number(el, _fill_opacity_, 1));
-                if(!path.fill && svg_gradient_paint(el, _fill_, path, path.fill_gradient, svg_number(el, _fill_opacity_, 1), m_container))
+                if(!path.fill && svg_gradient_paint(el, _fill_, path, path.fill_gradient, svg_number(el, _fill_opacity_, 1), m_container, find))
                 {
                     path.fill       = true;
                     path.fill_color = path.fill_gradient.stops.back().second;
                 }
                 path.stroke_color = with_opacity(path.stroke_color, svg_number(el, _stroke_opacity_, 1));
-                if(!path.stroke && stroke_gradient && svg_gradient_paint(el, _stroke_, path, path.stroke_gradient, svg_number(el, _stroke_opacity_, 1), m_container))
+                if(!path.stroke && stroke_gradient && svg_gradient_paint(el, _stroke_, path, path.stroke_gradient, svg_number(el, _stroke_opacity_, 1), m_container, find))
                 {
                     path.stroke       = true;
                     path.stroke_color = path.stroke_gradient.stops.back().second;
@@ -1044,6 +1094,10 @@ namespace litehtml
                 }
                 for(const auto& run : runs)
                 {
+                    if(m_use_depth > 0 && !use_charge(run.text.size() / 256))
+                    {
+                        return;
+                    }
                     const position& pos = run.box;
                     if(m_hit_mode)
                     {
@@ -1064,9 +1118,13 @@ namespace litehtml
             }
 
           public:
-            svg_painter(document_container* container, uint_ptr hdc, const float view[4], const position* cache_bounds = nullptr) :
+            static constexpr int use_budget = kMaxUseDrawn;
+
+            svg_painter(document_container* container, uint_ptr hdc, const float view[4], const position* cache_bounds = nullptr,
+                        int use_left = kMaxUseDrawn) :
                 m_container(container),
-                m_hdc(hdc)
+                m_hdc(hdc),
+                m_use_left(use_left)
             {
                 std::copy(view, view + 4, m_view);
                 if(cache_bounds)
@@ -1090,6 +1148,11 @@ namespace litehtml
             element::ptr hit() const
             {
                 return m_hit;
+            }
+
+            int use_left() const
+            {
+                return m_use_left;
             }
 
             static int attribute_visibility(const element::ptr& el)
@@ -1118,6 +1181,10 @@ namespace litehtml
 
             void draw_children(const element::ptr& el, int inherited = -1, int depth = 0)
             {
+                if(m_use_depth > 0 && !use_charge(el->children().size() / 256))
+                {
+                    return;
+                }
                 for(const auto& child : el->children())
                 {
                     draw_child(child, inherited, depth);
@@ -1130,11 +1197,9 @@ namespace litehtml
                 const char* href = use->get_attr("href");
                 if(!href)
                     href = use->get_attr("xlink:href");
-                if(!href || href[0] != '#' || !href[1] || depth > 8)
+                if(!href || href[0] != '#' || !svg_reference_id(href + 1) || depth > 8)
                     return;
-                element::ptr target;
-                if(auto root = use->get_document()->root())
-                    target = root->select_one(std::string("#") + (href + 1));
+                element::ptr target = reference(use, href + 1);
                 if(!target)
                     return;
                 for(element::ptr p = use; p; p = p->parent())
@@ -1142,7 +1207,7 @@ namespace litehtml
                     if(p == target)
                         return;
                 }
-                if(++m_use_drawn > kMaxUseDrawn)
+                if(!use_charge(1))
                     return;
                 transform_matrix m{1, 0, 0, 1, attr_length(use, "x", m_view[2], 0), attr_length(use, "y", m_view[3], 0)};
                 const bool symbol = lowcase(target->get_tagName() ? target->get_tagName() : "") == "symbol";
@@ -1166,10 +1231,12 @@ namespace litehtml
                 }
                 {
                     use_host_scope host(target, use);
+                    m_use_depth++;
                     if(symbol)
                         draw_children(target, visibility, depth + 1);
                     else
                         draw_child(target, visibility, depth + 1);
+                    m_use_depth--;
                 }
                 if(!m_hit_mode)
                     m_container->end_group(m_hdc);
@@ -1178,6 +1245,10 @@ namespace litehtml
 
             void draw_child(const element::ptr& child, int inherited, int depth)
             {
+                if(m_use_depth > 0 && !child->is_text() && !use_charge(1))
+                {
+                    return;
+                }
                 const float diag = std::sqrt((m_view[2] * m_view[2] + m_view[3] * m_view[3]) / 2);
                 {
                     if(child->is_text() || child->css().get_display() == display_none || attribute_hides(child))
@@ -1199,7 +1270,7 @@ namespace litehtml
                     float opacity = child->css().get_opacity();
                     if(const char* attr = child->get_attr("opacity"))
                     {
-                        opacity *= std::max(0.f, std::min(1.f, std::strtof(attr, nullptr)));
+                        opacity *= std::max(0.f, std::min(1.f, c_strtof(attr, nullptr)));
                     }
                     paint_group group;
                     const auto tag = std::dynamic_pointer_cast<html_tag>(child);
@@ -1769,9 +1840,16 @@ namespace litehtml
         container->set_clip(pos, no_radius);
         const position cache_bounds(pixel_t((pos.x.value() - group.matrix.tx) / sx), pixel_t((pos.y.value() - group.matrix.ty) / sy),
                                     pixel_t(pos.width.value() / sx), pixel_t(pos.height.value() / sy));
+        const uint32_t generation = doc_ptr()->paint_generation();
+        int&           budget     = doc_ptr()->svg_use_budget(svg_painter::use_budget);
+        const bool     granted    = m_use_generation == generation;
+        const int      allowance  = granted ? m_use_allowance : budget;
+        int            spent      = 0;
         auto paint = [&](uint_ptr target) {
             container->begin_group(target, group);
-            svg_painter(container, target, view, m_group_cache_eligible ? &cache_bounds : nullptr).draw_children(shared_from_this());
+            svg_painter painter(container, target, view, m_group_cache_eligible ? &cache_bounds : nullptr, allowance);
+            painter.draw_children(shared_from_this());
+            spent = allowance - painter.use_left();
             container->end_group(target);
         };
         uint64_t key    = 0;
@@ -1801,6 +1879,12 @@ namespace litehtml
         if(!cached)
         {
             container->draw_isolated(hdc, pos, paint);
+        }
+        if(!granted)
+        {
+            m_use_generation = generation;
+            m_use_allowance  = spent;
+            budget          -= spent;
         }
         container->del_clip();
     }

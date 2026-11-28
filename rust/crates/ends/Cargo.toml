@@ -1,0 +1,20 @@
+[package]
+name = "twidget_ends"
+description = "TwidgetCore's two ends over a byte channel: the renderer end with its backend proxy, and the platform end"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_remote = { path = "../remote" }
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_base64 = { path = "../base64" }
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

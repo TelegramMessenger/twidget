@@ -15,6 +15,8 @@ namespace twlite {
 namespace {
 
 constexpr double INF = std::numeric_limits<double>::infinity();
+/// A retargeted transition starts from its interpolated value only while that is this short: one mixed by weight holds both its ends.
+constexpr size_t MAX_RETARGET_VALUE = 16384;
 
 bool is_digit(char c) { return c >= '0' && c <= '9'; }
 bool is_letter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
@@ -303,7 +305,9 @@ std::string scaled_translations(std::string_view text, double factor) {
 
 std::optional<std::pair<std::vector<Token>, std::vector<Token>>> pair_tokens(const std::string& a, const std::string& b) {
     thread_local std::unordered_map<std::string, std::optional<std::pair<std::vector<Token>, std::vector<Token>>>> cache;
-    std::string key = a + '\x01' + b;
+    thread_local size_t cached_bytes = 0;
+    // Led by the length of `a`: no two pairs share a key, so what one widget cached is what any other would compute.
+    std::string key = std::to_string(a.size()) + ':' + a + b;
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     std::string from = css::normalize_colors(a), to = css::normalize_colors(b);
     if (css::iequals(from, "none") && to.find('(') != std::string::npos) from = identity(to);
@@ -324,8 +328,15 @@ std::optional<std::pair<std::vector<Token>, std::vector<Token>>> pair_tokens(con
     }
     std::optional<std::pair<std::vector<Token>, std::vector<Token>>> result;
     if (left.size() == right.size()) result = std::make_pair(std::move(left), std::move(right));
-    if (cache.size() >= 2048) cache.clear();
-    if (key.size() <= 4096) cache.emplace(std::move(key), result);
+    if (key.size() <= 4096) {
+        // Its tokens take some forty times a pair's text: the cache holds those of 256 K of pairs at most.
+        if (cache.size() >= 2048 || cached_bytes + key.size() > 256 * 1024) {
+            cache.clear();
+            cached_bytes = 0;
+        }
+        cached_bytes += key.size();
+        cache.emplace(std::move(key), result);
+    }
     return result;
 }
 
@@ -856,8 +867,8 @@ std::optional<WebAnimation> WebAnimation::parse(const Json& o, double clock_offs
     const Json* frames = o.find("keyframes");
     if (!aid || !aid->isNumber() || !target || !target->isNumber() || !frames || !frames->isArray() || frames->arr().size() > MAX_KEYFRAMES) return std::nullopt;
     WebAnimation a;
-    a.aid = int64_t(aid->asNumber());
-    a.target = int64_t(target->asNumber());
+    a.aid = int64_t(aid->asInt());
+    a.target = int64_t(target->asInt());
     const Json& timing = o["timing"];
     auto ms = [&](const char* key, double fallback) -> std::optional<double> {
         const Json* v = timing.find(key);
@@ -1000,8 +1011,15 @@ std::optional<std::string> Animator::transition_value(int64_t id, const std::str
 }
 
 void Animator::update(const std::unordered_map<int64_t, Declared>& declarations, double now) {
-    std::unordered_map<int64_t, std::vector<Running>> next_running;
-    for (const auto& [id, values] : declarations) {
+    // In id order: the animationstart events come out in it.
+    std::vector<const std::pair<const int64_t, Declared>*> elements;
+    elements.reserve(declarations.size());
+    for (const auto& element : declarations) elements.push_back(&element);
+    std::sort(elements.begin(), elements.end(), [](const auto* a, const auto* b) { return a->first < b->first; });
+    std::map<int64_t, std::vector<Running>> next_running;
+    for (const auto* element : elements) {
+        const int64_t id = element->first;
+        const Declared& values = element->second;
         auto specs = AnimationSpec::list(values);
         if (!specs.empty()) {
             const auto& previous = running_[id];
@@ -1045,6 +1063,7 @@ void Animator::update(const std::unordered_map<int64_t, Declared>& declarations,
                     if (auto t = transitions_.find(id); t != transitions_.end()) t->second.erase(property);
                 } else {
                     std::string current = transition_value(id, property, now).value_or(*old_value);
+                    if (current.size() > MAX_RETARGET_VALUE) current = *old_value;
                     // Its keyframes are its two ends.
                     paint::AnimationPaint heavy;
                     heavy.keyframe(0);
@@ -1144,7 +1163,7 @@ std::optional<StyleValues> Animator::sample_animation(int64_t id, Running& item,
             if (events) events->push_back({"animationend", id, spec.name, total});
         }
         if (spec.fill == "forwards" || spec.fill == "both") {
-            int last_iteration = std::max(0, int(std::ceil(std::min(spec.iterations, 1e9))) - 1);
+            int last_iteration = std::max(0, int(std::ceil(std::clamp(spec.iterations, 0.0, 1e9))) - 1);
             double fraction = std::fmod(spec.iterations, 1.0);
             double progress = fraction == 0 ? 1.0 : fraction;
             if (reversed(last_iteration)) progress = 1 - progress;
@@ -1494,7 +1513,7 @@ void Animator::apply_web(const Json& message, double clock_offset_ms) {
             const Json* origin = css_record->find("origin");
             if (!target || !target->isNumber() || !kind || !name || !name->isString() || !origin || !origin->isNumber()) continue;
             if (kind->asString() != "animation" && kind->asString() != "transition") continue;
-            int64_t id = int64_t(target->asNumber());
+            int64_t id = int64_t(target->asInt());
             std::string key = kind->asString() + ":" + name->asString();
             if (item["remove"].asBool()) {
                 if (auto o = overrides_.find(id); o != overrides_.end()) {
@@ -1517,7 +1536,7 @@ void Animator::apply_web(const Json& message, double clock_offset_ms) {
             overrides_[id][key] = o;
             continue;
         }
-        int64_t key = int64_t(aid->asNumber());
+        int64_t key = int64_t(aid->asInt());
         if (item["remove"].asBool()) {
             web_.erase(key);
             continue;

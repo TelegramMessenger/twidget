@@ -35,6 +35,7 @@
 #include "render_table.h"
 #include "stylesheet.h"
 #include "types.h"
+#include "utf8_strings.h"
 
 #include <cstdlib>
 #include <cmath>
@@ -77,6 +78,11 @@ namespace litehtml
 
         // Parse document into GumboOutput
         GumboOutput* output = doc->parse_html(str);
+        if(output->truncated)
+        {
+            container->sanitizer_limit("elements");
+            doc->m_build_limited = true;
+        }
 
         // mode must be set before doc->create_node because it is used in html_tag::set_attr
         switch(output->document->v.document.doc_type_quirks_mode)
@@ -115,6 +121,11 @@ namespace litehtml
         document::ptr doc = std::make_shared<document>(container);
         doc->m_text        = html;
         GumboOutput* output = gumbo_parse_with_options(&kGumboDefaultOptions, doc->m_text.data(), doc->m_text.size());
+        if(output->truncated)
+        {
+            container->sanitizer_limit("elements");
+            doc->m_build_limited = true;
+        }
         switch(output->document->v.document.doc_type_quirks_mode)
         {
         case GUMBO_DOCTYPE_NO_QUIRKS:
@@ -328,7 +339,7 @@ namespace litehtml
                    type == typeid(el_tr) || type == typeid(el_body);
         }
 
-        void scan_selector(const css_selector& selector, bool& attributes, bool& positions)
+        void scan_selector(const css_selector& selector, bool& attributes, bool& positions, bool& emptiness)
         {
             for(const css_selector* sel = &selector; sel; sel = sel->m_left.get())
             {
@@ -357,6 +368,10 @@ namespace litehtml
                             if(!attr.selector_list.empty())
                                 attributes = true;
                             break;
+                        case _empty_:
+                            attributes = true;
+                            emptiness  = true;
+                            break;
                         default:
                             break;
                         }
@@ -364,7 +379,7 @@ namespace litehtml
                     for(const auto& inner : attr.selector_list)
                     {
                         if(inner)
-                            scan_selector(*inner, attributes, positions);
+                            scan_selector(*inner, attributes, positions, emptiness);
                     }
                 }
             }
@@ -564,7 +579,10 @@ namespace litehtml
         case display_inline_flex:
         case display_grid:
         case display_inline_grid:
-            return std::static_pointer_cast<html_tag>(owner)->can_restyle_width_shallow();
+        {
+            auto tag = std::dynamic_pointer_cast<html_tag>(owner);
+            return tag && tag->can_restyle_width_shallow();
+        }
         default:
             return false;
         }
@@ -1123,6 +1141,7 @@ namespace litehtml
 
     int document::apply_template_values(std::vector<std::pair<size_t, std::string>>& changes, bool* changed)
     {
+        selector_budget budget;
         begin_layout_patch();
         invalidate_paint();
         std::vector<size_t>                             dirty;
@@ -1136,7 +1155,7 @@ namespace litehtml
             const std::string& v = change.second;
             if(i >= m_holes.size() || v == m_holes[i].value)
                 continue;
-            if(v.find_first_of("&\r") != std::string::npos || v.find('\0') != std::string::npos)
+            if(v.find_first_of("&\r") != std::string::npos || v.find('\0') != std::string::npos || !is_valid_utf8(v))
                 return -1;
             if(m_holes[i].cls)
             {
@@ -1167,7 +1186,7 @@ namespace litehtml
                         return -1;
                 }
             }
-            if(m_holes[i].text && !m_holes[i].text_elements.front()->parent())
+            if(m_holes[i].text && (m_holes[i].text_elements.empty() || !m_holes[i].text_elements.front()->parent()))
                 return -1;
             if(m_holes[i].text && v[0] == '\n')
             {
@@ -1204,7 +1223,9 @@ namespace litehtml
         {
             html_hole& hole   = m_holes[changes[entry.first].first];
             int        region = 0;
-            auto       tag    = std::static_pointer_cast<html_tag>(hole.owner);
+            auto       tag    = std::dynamic_pointer_cast<html_tag>(hole.owner);
+            if(!tag)
+                return -1;
             const bool fast   = tag->flip_class(hole.value, changes[entry.first].second, m_match_epoch, &region);
             if(!fast)
             {
@@ -1316,7 +1337,8 @@ namespace litehtml
                     size before;
                     hole.text_elements[w]->get_content_size(before, 0_px);
                     measured.emplace_back(hole.text_elements[w], before);
-                    std::static_pointer_cast<el_text>(hole.text_elements[w])->set_text(words[w]);
+                    if(auto text = std::dynamic_pointer_cast<el_text>(hole.text_elements[w]))
+                        text->set_text(words[w]);
                     retext.push_back(hole.text_elements[w]);
                 }
                 continue;
@@ -1357,7 +1379,7 @@ namespace litehtml
             {
                 hole.owner->set_attr("style", hole.value.c_str());
                 restyle.push_back(hole.owner);
-                if(patch && !outermost_svg(hole.owner))
+                if(patch && !outermost_svg(hole.owner) && dynamic_cast<html_tag*>(hole.owner.get()))
                     patched[hole.owner.get()] = patch;
                 continue;
             }
@@ -1441,6 +1463,28 @@ namespace litehtml
         }
         m_table_cells += count;
         return true;
+    }
+
+    bool document::take_generated(size_t bytes)
+    {
+        if(m_generated_limited)
+            return false;
+        if(m_generated_boxes >= max_generated_boxes || bytes > max_generated_box ||
+           bytes > max_generated_bytes - m_generated_bytes)
+        {
+            m_generated_limited = true;
+            m_container->sanitizer_limit("content");
+            return false;
+        }
+        m_generated_boxes++;
+        m_generated_bytes += bytes;
+        return true;
+    }
+
+    void document::release_generated(int boxes, size_t bytes)
+    {
+        m_generated_boxes -= std::min(boxes, m_generated_boxes);
+        m_generated_bytes -= std::min(bytes, m_generated_bytes);
     }
 
     void document::forget_positions()
@@ -1608,17 +1652,18 @@ namespace litehtml
         }
         for(const auto& el : roots)
         {
-            auto patch = fast.find(el.get());
-            if(patch != fast.end())
+            auto       patch = fast.find(el.get());
+            const bool local = patch != fast.end() || background_only.count(el.get());
+            auto       tag   = local ? std::dynamic_pointer_cast<html_tag>(el) : nullptr;
+            if(tag && patch != fast.end())
             {
-                auto tag = std::static_pointer_cast<html_tag>(el);
                 if(!tag->patch_inline_properties(patch->second->names, patch->second->text))
                 {
                     tag->restore_base_style();
                     tag->compute_styles(true);
                 }
-            } else if(background_only.count(el.get()))
-                std::static_pointer_cast<html_tag>(el)->compute_background_style();
+            } else if(tag)
+                tag->compute_background_style();
             else
                 el->compute_styles(!shallow_width.count(el.get()));
         }
@@ -1678,6 +1723,7 @@ namespace litehtml
             return m_selector_scope;
         bool           attributes = false;
         bool           positions  = false;
+        bool           emptiness  = false;
         selector_names names{m_left_classes, m_left_ids, m_left_attrs};
         for(const css* sheet : {&m_master_css, &m_styles, &m_user_css})
         {
@@ -1685,14 +1731,14 @@ namespace litehtml
             {
                 if(!sel)
                     continue;
-                scan_selector(*sel, attributes, positions);
+                scan_selector(*sel, attributes, positions, emptiness);
                 collect_ancestor_names(*sel, !(sel->m_style && sel->m_style->declares_custom_property()), names);
             }
         }
         bool counters = mentions_counters(m_master_styles);
         for(const auto& sheet : m_css)
             counters = counters || mentions_counters(sheet.text);
-        m_selector_scope = (attributes ? 1 : 0) | (positions ? 2 : 0) | (counters ? 4 : 0);
+        m_selector_scope = (attributes ? 1 : 0) | (positions ? 2 : 0) | (counters || emptiness ? 4 : 0);
         return m_selector_scope;
     }
 
@@ -1778,7 +1824,9 @@ namespace litehtml
             std::sort(rules.begin(), rules.end());
             return rules;
         };
-        auto                                              tag     = std::static_pointer_cast<html_tag>(el);
+        auto                                              tag     = std::dynamic_pointer_cast<html_tag>(el);
+        if(!tag)
+            return false;
         bool                                              neutral = check && !has_pseudo();
         std::vector<std::pair<const css_selector*, bool>> rules_before;
         string_map                                        attrs_before;
@@ -1833,6 +1881,7 @@ namespace litehtml
 
     bool document::update_structure(const std::string& html, bool* changed)
     {
+        selector_budget budget;
         m_match_epoch++;
         begin_layout_patch();
         invalidate_paint();
@@ -1853,7 +1902,7 @@ namespace litehtml
             gumbo_destroy_output(&kGumboDefaultOptions, output);
             return false;
         };
-        if(output->document->v.document.doc_type_quirks_mode != m_gumbo->document->v.document.doc_type_quirks_mode)
+        if(output->truncated || output->document->v.document.doc_type_quirks_mode != m_gumbo->document->v.document.doc_type_quirks_mode)
             return fail();
         int total = 0, deepest = 0;
         count_elements(output->document, 0, total, deepest);
@@ -2224,7 +2273,8 @@ namespace litehtml
         {
             for(size_t w = 0; w < entry.second.size(); w++)
             {
-                std::static_pointer_cast<el_text>(entry.first[w])->set_text(entry.second[w]);
+                if(auto text = std::dynamic_pointer_cast<el_text>(entry.first[w]))
+                    text->set_text(entry.second[w]);
                 retext.push_back(entry.first[w]);
             }
         }
@@ -2483,7 +2533,9 @@ namespace litehtml
             for(const auto& css : m_css)
             {
                 // Viewport lengths are folded to px while parsing, so such a sheet holds for one viewport.
-                if(css.media != "" || css.text.find("@media") != std::string::npos || css.text.find("@import") != std::string::npos || has_viewport_units(css.text))
+                // At-rule names match in any case, and an escape can spell one, or a viewport unit.
+                const std::string text = lowcase(css.text);
+                if(css.media != "" || text.find('\\') != std::string::npos || text.find("@media") != std::string::npos || text.find("@import") != std::string::npos || has_viewport_units(css.text))
                 {
                     styles_cacheable = false;
                     break;
@@ -2526,10 +2578,18 @@ namespace litehtml
                 m_styles.sort_selectors();
                 if(styles_cacheable)
                 {
+                    // A parse is some 30 times its text: the cache holds the parses of 256 K of sheets at most.
+                    static constexpr size_t     max_styles_cache_bytes = 256 * 1024;
+                    static size_t               styles_cache_bytes     = 0;
                     std::lock_guard<std::mutex> lock(styles_cache_mutex);
-                    if(styles_cache.size() > 128)
+                    const size_t                bytes = styles_key.size();
+                    if(styles_cache.size() > 128 || styles_cache_bytes + bytes > max_styles_cache_bytes)
+                    {
                         styles_cache.clear();
-                    styles_cache.emplace(std::move(styles_key), m_styles);
+                        styles_cache_bytes = 0;
+                    }
+                    if(bytes <= max_styles_cache_bytes && styles_cache.emplace(std::move(styles_key), m_styles).second)
+                        styles_cache_bytes += bytes;
                 }
             }
 
@@ -3187,7 +3247,7 @@ namespace litehtml
             ret = val.calc_percent(size);
             break;
         case css_units_calc:
-            ret = calc_evaluate(static_cast<int>(val.calc_index()), size, [&](float value, css_units unit) {
+            ret = calc_evaluate(val.calc().get(), size, [&](float value, css_units unit) {
                 return to_pixels(css_length(value, unit), metrics, size).value();
             });
             break;
@@ -3237,7 +3297,7 @@ namespace litehtml
             ret = pixel_t(val.val());
             break;
         }
-        return ret;
+        return clamp_length(ret.value());
     }
 
     void document::cvt_units(css_length& val, const font_metrics& metrics, pixel_t size) const
@@ -3249,14 +3309,14 @@ namespace litehtml
         if(val.units() == css_units_calc)
         {
             // Every leaf but % in px; with no % left, the length is a plain one.
-            float px    = 0;
-            int   index = calc_resolve_units(val.calc_index(), [&](float value, css_units unit) {
+            float px         = 0;
+            auto  expression = calc_resolve_units(val.calc(), [&](float value, css_units unit) {
                 return to_pixels(css_length(value, unit), metrics, size).value();
             }, px);
-            if(index < 0)
-                val.set_value(px, css_units_px);
+            if(!expression)
+                val.set_value(clamp_length(px), css_units_px);
             else
-                val.set_calc(index);
+                val.set_calc(std::move(expression));
         } else if(val.units() != css_units_percentage)
         {
             val.set_value(static_cast<float>(to_pixels(val, metrics, size)), css_units_px);
@@ -3771,6 +3831,7 @@ namespace litehtml
 
     void document::append_children_from_string(element& parent, const char* str, bool replace_existing)
     {
+        selector_budget budget;
         invalidate_paint();
         // parent must belong to this document
         if(parent.get_document().get() != this)

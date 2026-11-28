@@ -1,0 +1,20 @@
+[package]
+name = "twidget_canvas"
+description = "TwidgetCore's 2D canvas interpreter: the sandbox's canvas commands in, resolved canvas ops out"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_base64 = { path = "../base64" }
+twidget_css = { path = "../css" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

@@ -998,14 +998,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::new_widt
             }
             i++;
         }
-        if(remove_begin != m_items.end())
-        {
-            while(remove_begin != m_items.end())
-            {
-                ret_items.emplace_back(std::move(*remove_begin));
-            }
-            m_items.erase(remove_begin, m_items.end());
-        }
+        ret_items.splice(ret_items.end(), m_items, remove_begin, m_items.end());
     }
     return ret_items;
 }
@@ -1016,9 +1009,10 @@ void litehtml::line_box::reorder_bidi()
     // the items. A simplified bidi: a word is right to left or left to right by its first strong character,
     // digits, punctuation, spaces and boxes take the direction around them.
     auto direction_of = [](const line_box_item& lbi) {
-        if(lbi.get_type() != line_box_item::type_text_part || !lbi.get_el()->src_el()->is_text())
+        if(lbi.get_type() != line_box_item::type_text_part)
             return 0;
-        return static_cast<const el_text*>(lbi.get_el()->src_el().get())->strong_direction();
+        const auto* text = dynamic_cast<const el_text*>(lbi.get_el()->src_el().get());
+        return text ? text->strong_direction() : 0;
     };
     // Most lines are left to right through and through: they are left as they are, without allocating.
     if(!m_rtl && std::none_of(m_items.begin(), m_items.end(), [&](const auto& lbi) { return direction_of(*lbi) > 0; }))

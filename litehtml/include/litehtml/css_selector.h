@@ -174,8 +174,8 @@ namespace litehtml
       public:
         using ptr = std::shared_ptr<css_element_selector>;
 
-        string_id                      m_prefix;
-        string_id                      m_tag;
+        string_id                      m_prefix = empty_id;
+        string_id                      m_tag    = empty_id;
         css_attribute_selector::vector m_attrs; // subclass and pseudo-element selectors
     };
 
@@ -199,6 +199,8 @@ namespace litehtml
 
         selector_specificity       m_specificity;
         int                        m_order = 0;
+        // Which of the document's style sheets holds it (css::m_sheet): with m_order, it tells it from every other selector of the document.
+        int                        m_sheet = 0;
         css_selector::ptr          m_left;
         css_element_selector       m_right;
         css_combinator             m_combinator = combinator_descendant;
@@ -209,6 +211,11 @@ namespace litehtml
 
         bool parse(const std::string& text, document_mode mode);
         void calc_specificity();
+        // The selector in paint and style-sharing keys: its sheet and its order there, never its address.
+        uint64_t place() const
+        {
+            return uint64_t(uint32_t(m_sheet)) << 32 | uint32_t(m_order);
+        }
         bool is_media_valid() const;
         void add_media_to_doc(document* doc) const;
     };

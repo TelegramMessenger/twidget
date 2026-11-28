@@ -1,5 +1,7 @@
 #include "css.h"
 
+#include <litehtml/c_locale.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -243,7 +245,7 @@ std::optional<double> number(std::string_view s) {
     std::string t = trim(s);
     if (t.empty()) return std::nullopt;
     char* end = nullptr;
-    double v = std::strtod(t.c_str(), &end);
+    double v = litehtml::c_strtod(t.c_str(), &end);
     if (end != t.c_str() + t.size() || !std::isfinite(v)) return std::nullopt;
     return v;
 }
@@ -343,8 +345,9 @@ size_t skip_opaque(std::string_view css, size_t i) {
     return i;
 }
 
-std::string resolve_light_dark(std::string_view css, bool dark) {
+std::string resolve_light_dark(std::string_view css, bool dark, int nesting) {
     static constexpr std::string_view KEY = "light-dark(";
+    static constexpr int MAX_NESTING = 32;
     // A function token: outside strings, comments and URLs, and not the end of a longer name.
     auto find = [](std::string_view s, size_t from) {
         for (size_t i = from; i + KEY.size() <= s.size();) {
@@ -358,6 +361,7 @@ std::string resolve_light_dark(std::string_view css, bool dark) {
         return std::string_view::npos;
     };
     if (find(css, 0) == std::string_view::npos) return std::string(css);
+    if (nesting >= MAX_NESTING) return {};
     std::string out;
     size_t pos = 0;
     for (int guard = 0; guard < 4096; guard++) {
@@ -379,7 +383,7 @@ std::string resolve_light_dark(std::string_view css, bool dark) {
         auto parts = split_top_level(css.substr(i, close - i), ',');
         std::string chosen = parts.size() == 2 ? parts[dark ? 1 : 0] : parts.empty() ? std::string() : parts[0];
         // The chosen side may hold another light-dark().
-        out += resolve_light_dark(trim(chosen), dark);
+        out += resolve_light_dark(trim(chosen), dark, nesting + 1);
         pos = close < css.size() ? close + 1 : css.size();
     }
     out.append(css.substr(pos));
@@ -506,7 +510,7 @@ std::string format_number(double value, int digits) {
     if (!std::isfinite(value)) return "0";
     if (value == std::round(value) && std::fabs(value) < 1e9) return std::to_string((long long)value);
     char buf[64];
-    std::snprintf(buf, sizeof buf, "%.*f", digits, value);
+    litehtml::c_snprintf(buf, sizeof buf, "%.*f", digits, value);
     std::string s = buf;
     while (!s.empty() && s.back() == '0') s.pop_back();
     if (!s.empty() && s.back() == '.') s.pop_back();
@@ -544,7 +548,7 @@ Font parse_font(std::string_view font) {
         else if (t.size() == 3 && digit(t[0]) && digit(t[1]) && digit(t[2])) f.weight = std::atoi(t.c_str());
         else if (digit(t[0]) || t[0] == '.') {
             std::string size = t.substr(0, t.find('/'));
-            float v = float(std::atof(size.c_str()));
+            float v = float(litehtml::c_atof(size.c_str()));
             if (ends_with(size, "pt")) v *= 96.0f / 72.0f;
             else if (ends_with(size, "rem") || ends_with(size, "em")) v *= 16.0f;
             else if (ends_with(size, "%")) v *= 16.0f / 100.0f;

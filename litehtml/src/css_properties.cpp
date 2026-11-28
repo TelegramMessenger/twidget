@@ -49,6 +49,9 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     m_el_position = static_cast<element_position>(
         el->get_property<int>(_position_, false, element_position_static, offset(m_el_position)));
     m_display = static_cast<style_display>(el->get_property<int>(_display_, false, display_inline, offset(m_display)));
+    // inline-text is what a text node computes to: a tag that declares it would be laid out as one.
+    if(m_display == display_inline_text)
+        m_display = display_inline;
     m_visibility =
         static_cast<visibility>(el->get_property<int>(_visibility_, true, visibility_visible, offset(m_visibility)));
     m_float = static_cast<element_float>(el->get_property<int>(_float_, false, float_none, offset(m_float)));
@@ -326,7 +329,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     {
         // Fractional, as browsers keep it (LayoutUnit): flooring to whole CSS px made every
         // line of `line-height: 1.3` text up to 1 px short, an error that adds up down the page.
-        m_line_height.computed_value = pixel_t(m_line_height.css_value.val() * font_size.value());
+        m_line_height.computed_value = pixel_t(clamp_length(m_line_height.css_value.val() * font_size.value()));
     } else
     {
         m_line_height.computed_value =
@@ -761,6 +764,14 @@ void litehtml::css_properties::compute_background(const html_tag* el, const docu
 
 void litehtml::css_properties::compute_flex(const html_tag* el, const document::ptr& doc)
 {
+    m_flex_direction       = flex_direction_row;
+    m_flex_wrap            = flex_wrap_nowrap;
+    m_flex_justify_content = flex_justify_content_flex_start;
+    m_flex_align_items     = flex_align_items_stretch;
+    m_flex_align_content   = flex_align_content_stretch;
+    m_flex_grow            = 0;
+    m_flex_shrink          = 1;
+    m_flex_basis           = css_length();
     if(m_display == display_grid || m_display == display_inline_grid)
     {
         m_flex_justify_content = static_cast<flex_justify_content>(el->get_property<int>(
@@ -815,6 +826,13 @@ void litehtml::css_properties::compute_flex(const html_tag* el, const document::
 
 void litehtml::css_properties::compute_grid(const html_tag* el, const document::ptr& doc)
 {
+    m_grid_template_columns = grid_track_list();
+    m_grid_template_rows    = grid_track_list();
+    m_grid_auto_rows        = grid_track_list();
+    m_justify_items         = flex_align_items_normal;
+    m_justify_self          = flex_align_items_auto;
+    m_grid_column           = grid_placement();
+    m_grid_row              = grid_placement();
     if(m_display == display_grid || m_display == display_inline_grid)
     {
         if(const auto* tokens = el->get_token_property(_grid_template_columns_))

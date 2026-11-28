@@ -1,4 +1,6 @@
 #include "table.h"
+#include <algorithm>
+#include <cstdint>
 #include "element.h"
 #include "render_item.h"
 #include "types.h"
@@ -71,6 +73,7 @@ void litehtml::table_grid::finish()
     {
         m_cols_count = std::max(m_cols_count, static_cast<int>(cell.size()));
     }
+    limit_columns();
     for(auto& cell : m_cells)
     {
         for(int j = static_cast<int>(cell.size()); j < m_cols_count; j++)
@@ -145,6 +148,60 @@ void litehtml::table_grid::finish()
             {
                 cell(col, row)->el->src_el()->css_w().set_width(m_columns[col].css_width);
             }
+        }
+    }
+}
+
+void litehtml::table_grid::limit_columns()
+{
+    if(m_cols_count < 2 || m_rows.empty() || !m_rows.front().el_row)
+    {
+        return;
+    }
+    // Padding every row to the widest one makes cells too: they come out of the same budget.
+    auto doc     = m_rows.front().el_row->src_el()->get_document();
+    auto padding = [&](int cols) {
+        int64_t count = 0;
+        for(const auto& row : m_cells)
+        {
+            count += std::max(0, cols - static_cast<int>(row.size()));
+        }
+        return count;
+    };
+    int     kept    = 1;
+    int64_t charged = padding(1);
+    int     step    = 1;
+    while(step <= m_cols_count / 2)
+    {
+        step *= 2;
+    }
+    for(; step > 0; step /= 2)
+    {
+        if(kept + step > m_cols_count)
+        {
+            continue;
+        }
+        const int64_t count = padding(kept + step) - charged;
+        if(count == 0 || (count < (1 << 30) && doc->take_table_cells(static_cast<int>(count))))
+        {
+            kept    += step;
+            charged += count;
+        }
+    }
+    if(kept == m_cols_count)
+    {
+        return;
+    }
+    m_cols_count = kept;
+    for(auto& row : m_cells)
+    {
+        while(static_cast<int>(row.size()) > m_cols_count)
+        {
+            row.pop_back();
+        }
+        for(int col = 0; col < static_cast<int>(row.size()); col++)
+        {
+            row[col].colspan = std::min(row[col].colspan, m_cols_count - col);
         }
     }
 }
@@ -451,10 +508,12 @@ litehtml::pixel_t litehtml::table_grid::calc_table_width(pixel_t block_width, bo
                 available    -= w;
                 total_fixed  -= maxs[col];
                 widths[col]  += w;
+                if(available <= 0 || total_fixed <= 0)
+                    break;
             }
         }
     }
-    if(available > 0 && have_percent && total_percent < 100)
+    if(available > 0 && have_percent && total_percent > 0 && total_percent < 100)
     {
         for(int col = 0; col < n; col++)
         {

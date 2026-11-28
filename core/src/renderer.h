@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -51,12 +52,20 @@ struct BuildStats {
     int scripted = 0;
     /// Paints that handed out the last list again, only layers having moved.
     int reused = 0;
+    size_t names = 0, name_bytes = 0;
+};
+
+/// The time a renderer reads: finite, non-negative and nondecreasing milliseconds, on the renderer's thread.
+class Clock {
+public:
+    virtual ~Clock() = default;
+    virtual double now_ms() = 0;
 };
 
 class Renderer : private CanvasHost {
 public:
-    /// `backend` is owned by the platform layer and must outlive the renderer.
-    Renderer(double width, double dpr, bool dark, Backend& backend);
+    /// `backend`, and `clock` when given (else the steady clock), are owned by the platform layer and must outlive the renderer.
+    Renderer(double width, double dpr, bool dark, Backend& backend, Clock* clock = nullptr);
     ~Renderer();
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
@@ -79,6 +88,8 @@ public:
     /// The CSS cursor where the mouse last was (`hover` or a mouse `touch`): "pointer", "text", … as the
     /// document computes it, "auto" when it says nothing, after the mouse left, or while frozen.
     std::string cursor() const;
+    /// What a press at (x, y) that starts no selection would claim, without pressing; nothing while frozen.
+    twidget::WidgetGestureClaim claim_at(double x, double y);
     /// A wheel or trackpad scroll over the view. `mode`: 0 pixels, 1 lines, 2 pages.
     std::vector<twidget::Json> wheel(double x, double y, double dx, double dy, int mode, int modifiers = 0);
     /// `type` keydown or keyup, with DOM `key` and `code`, aimed at the control being edited, or else
@@ -126,6 +137,8 @@ public:
     /// `user-select: text`, where the widget does not prevent the press, selects it; any other primary press
     /// drops the selection. The host copies it with its own command, and clears it on what it handles itself.
     bool has_selection() const;
+    /// False when nothing is selected, without laying the text out; when true, has_selection() may still be false.
+    bool may_have_selection() const { return !(selection_.anchor == selection_.focus); }
     /// The selected text, with a line break between blocks and at `<br>`; empty without a selection.
     std::string selected_text() const;
     /// Drops the selection; true when there was one, and the next paint draws no highlight.
@@ -159,11 +172,16 @@ public:
     void set_compositing(bool enabled);
     /// The layers that go above the display list `paint()` returned last.
     const Composition& composition() const { return composition_; }
-    /// The renderer clock, in seconds: what `LayerTrack::start` is on.
-    static double clock() { return now_s(); }
+    /// The steady clock, in seconds: what `LayerTrack::start` is on for a renderer given no Clock.
+    static double clock();
     /// A backend that decodes images asynchronously (the web) reports the size of image `id` here;
     /// the document is rebuilt with it. Returns renderer → host messages (a `size`, when it changed).
     std::vector<twidget::Json> image_ready(int id, float w, float h);
+
+    /// An embedder's own canvas fonts: given the renderer's Backend and the CSS `font` unparsed, as the canvas holds it or measureText names it, it fills `metrics`, the em box included, and returns a handle, or 0 for none.
+    using CanvasFontHook = std::function<int(Backend& backend, const std::string& css, FontMetrics& metrics)>;
+    /// From now on canvas text takes every font from `hook`, on the renderer's thread, and the renderer caches and releases none of them; the fonts it had cached are released now. An empty hook gives the cache back.
+    void set_canvas_font_hook(CanvasFontHook hook);
 
     /// Where the content went when the document changed height, for a host that keeps part of the
     /// widget still on screen while it resizes (the Swift renderer's WidgetResizeDiff). Edges are in
@@ -262,9 +280,12 @@ private:
     void adopt(int64_t id, Node* n, const twidget::Json& attrs);
     void detach(Node* n);
     void forget(Node* n);
+    bool hold(const twidget::Json& op);
+    bool take_text(const std::string& old, const std::string& fresh);
+    size_t tree_bytes_ = 0, text_bytes_ = 0, text_pieces_ = 0, sheet_blocks_ = 0;
     // shadow tree → HTML → litehtml
     std::string serialize() const;
-    void serialize_node(const Node* n, std::string& out) const;
+    void serialize_node(const Node* n, std::string& out, int level) const;
     /// `patch`: an ops batch, which may go into the document in place (patch_document).
     void rebuild(bool patch = false);
     /// Builds a document a coalesced batch left stale.
@@ -276,12 +297,22 @@ private:
     struct Meter {
         Renderer& r;
         double start;
-        explicit Meter(Renderer& renderer) : r(renderer), start(r.meter_depth_++ ? 0 : now_s()) {}
+        explicit Meter(Renderer& renderer) : r(renderer), start(r.meter_depth_++ ? 0 : r.now_s()) {}
         ~Meter() {
-            if (--r.meter_depth_ == 0) r.charge(now_s() - start);
+            if (--r.meter_depth_ == 0) r.charge(r.now_s() - start);
         }
     };
     int meter_depth_ = 0;
+    /// Charges the names the outermost call it spans left in litehtml's name table, which never gives one back, counted
+    /// on its own thread: a renderer that runs on another thread meanwhile pays for the names it adds itself.
+    struct NameMeter {
+        Renderer& r;
+        size_t names = 0, bytes = 0;
+        explicit NameMeter(Renderer& renderer);
+        ~NameMeter();
+    };
+    int name_meter_depth_ = 0;
+    void stop_names();
     std::deque<std::pair<double, double>> charges_;  // when, and how long, the passes of the last window took
     double first_charge_ = -1;
     double throttled_until_ = 0;
@@ -342,14 +373,19 @@ private:
     // shadow tree → style attribute, with animation overrides
     void write_style(const Node* n, std::string& out) const;
     // animations
-    static double now_s();
+    double now_ms() const;
+    double now_s() const;
     void build_document(bool patch = false);
     // In-place patching (the Swift renderer's patch log): which attributes and sole texts the ops of
     // a batch changed, for the fork's `update_holes`, so the document is not serialised again.
     struct PatchLog {
+        // By node id, the order the changes go into the document in: a node keeps its id while the log is valid.
+        struct ById {
+            bool operator()(const Node* a, const Node* b) const;
+        };
         bool valid = true;
-        std::map<const Node*, std::set<std::string>> attributes;
-        std::set<const Node*> texts;
+        std::map<const Node*, std::set<std::string>, ById> attributes;
+        std::set<const Node*, ById> texts;
     };
     bool attached(const Node* n) const;
     void note_attribute(const Node* n, const std::string& name);
@@ -433,11 +469,13 @@ private:
     void run_canvas(Canvas& canvas, const twidget::Json& cmds);
     void forget_canvas(int64_t id);
     int canvas_font(const std::string& css, FontMetrics& metrics) override;
+    void release_canvas_fonts();
     /// `measureText`: the text in the canvas font `font` names, the one fillText draws it with.
     twidget::Json measure_text(const std::string& font, const std::string& text);
     float canvas_text_width(int font, const std::string& text) override;
     bool canvas_source(int64_t node, int& image, int& canvas, float& w, float& h) override;
     int64_t canvas_allowance(int id) override;
+    size_t canvas_path_floats(int id) override;
     void freeze(const std::string& reason, bool fatal);
     /// Frozen, or stopped past the paint or the layout limit: nothing animates.
     bool still() const { return frozen_ || paint_stopped_ || layout_stopped_; }
@@ -516,6 +554,7 @@ private:
 
     std::unique_ptr<Container> container_;
     Backend& backend_;
+    Clock* clock_;
     double width_;
     double dpr_;
     bool dark_;
@@ -576,7 +615,7 @@ private:
     } selection_;
     mutable std::tuple<const void*, uint32_t, uint64_t, uint64_t> runs_key_{};
     mutable std::vector<TextRun> runs_;
-    mutable std::pair<const void*, uint64_t> selectable_key_{};
+    mutable std::pair<uint64_t, uint64_t> selectable_key_{};
     mutable bool selectable_ = false;
     std::unordered_set<std::string> prevent_;
     bool frozen_ = false;
@@ -601,7 +640,7 @@ private:
     bool frozen_fatal_ = false;
     std::array<double, 4> last_size_{};  // width, document height, viewport height, dpr as last reported
     uint64_t declared_generation_ = 0;
-    std::unordered_map<int, Touch> touches_;
+    std::map<int, Touch> touches_;  // by pointer, the order a capture call walks them in
     int64_t hover_ = 0;
     double hover_x_ = 0, hover_y_ = 0;
     int click_count_ = 0;
@@ -627,8 +666,10 @@ private:
     uint64_t composition_key_ = 0;
     uint64_t next_version_ = 1;
 
-    std::unordered_map<int64_t, std::unique_ptr<Canvas>> canvases_;
-    std::unordered_map<std::string, std::pair<int, FontMetrics>> canvas_fonts_;
+    std::map<int64_t, std::unique_ptr<Canvas>> canvases_;  // by node id, the order they are released in
+    std::unordered_map<std::string, std::pair<int, FontMetrics>> canvas_fonts_;  // empty while the hook is set
+    std::vector<int> canvas_font_order_;  // canvas_fonts_' handles in the order they were made, the order they are released in
+    CanvasFontHook canvas_font_hook_;
     std::string binary_;  // the binary payload of the query being answered (imageData), base64
 };
 

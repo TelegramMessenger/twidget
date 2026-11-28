@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <clocale>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -15,8 +16,14 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <malloc/malloc.h>
+#endif
+
 using twidget::Json;
 using namespace twlite;
+
+namespace litehtml { double t_strtod(const char* string, char** endPtr); }
 
 namespace {
 
@@ -1172,6 +1179,23 @@ int main() {
         check(!f.editor(), "focus() long after the user's input does not");
     }
 
+    // ── paint the date hint to check the pattern selected by the build ──
+    {
+        auto db = StubBackend();
+        auto d = Renderer(400, 1, false, db);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"input","attrs":[["type","date"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        auto hint = std::string();
+        for (const auto& c : d.paint())
+            if (c.kind == Cmd::Text) hint += c.text;
+#if defined(__APPLE__) && !defined(TW_LITEHTML_NO_CORE_FOUNDATION)
+        check(!hint.empty(), "a date input without a value paints a date hint (got " + hint + ")");
+#else
+        check(hint == "mm/dd/yyyy", "a date input without a value shows mm/dd/yyyy (got " + hint + ")");
+#endif
+    }
+
     // ── widget-sandbox v0.1.0: trusted input, the gesture claim, the theme ──
     {
         StubBackend vb;
@@ -1593,6 +1617,187 @@ int main() {
         check(drawn != 0 && fb.measured_in.size() == 1 && fb.measured_in[0] == drawn, "measureText measures in the font fillText drew with");
     }
 
+    // ── a canvas font hook gets the spelling as written each time, and the renderer caches and releases none of its fonts ──
+#ifndef Renderer  // core_record.cpp renames Renderer to record it, and no recording carries a hook's code to the replay
+    {
+        struct HookBackend : StubBackend {
+            std::vector<std::string> families;
+            std::set<int> made;
+            std::vector<int> deleted;  // canvas fonts only: the document's are released too
+            int create_canvas_font(const std::string& family, float size, int weight, bool italic, FontMetrics& out) override {
+                families.push_back(family);
+                return *made.insert(Backend::create_canvas_font(family, size, weight, italic, out)).first;
+            }
+            void delete_font(int font) override {
+                if (made.count(font)) deleted.push_back(font);
+            }
+        };
+        const std::string page = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},{"op":"el","id":30,"tag":"canvas","attrs":[["width","50"],["height","20"]]},{"op":"ins","parent":4,"id":30,"before":null}]})";
+        auto texts = [](const std::vector<std::string>& fonts) {
+            std::string cmds = R"(["s","textBaseline","top"])";
+            for (const std::string& font : fonts) cmds += R"(,["s","font",")" + font + R"("],["c","fillText","hi",0,10])";
+            return parse(R"({"type":"ops","ops":[{"op":"canvas","id":30,"cmds":[)" + cmds + "]}]}");
+        };
+        auto spellings = [](int from, int count) {
+            std::vector<std::string> out;
+            for (int i = from; i < from + count; i++) out.push_back(std::to_string(i) + "px serif");
+            return out;
+        };
+        auto measured = [](Renderer& r, const std::string& font) {
+            return r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"measureText","font":")" + font + R"(","text":"hi"}})")).back()["result"]["width"].asNumber();
+        };
+        auto drawn = [](const HookBackend& b) {
+            std::vector<std::pair<int, float>> out;
+            if (b.runs.empty()) return out;
+            for (const CanvasOp& op : b.runs.back())
+                if (op.kind == CanvasOp::Text) out.emplace_back(op.font, op.y);
+            return out;
+        };
+        const std::string spelling = "bold 12px  'Fancy  Serif' ,serif";
+
+        // The control, with no hook: one parse and one font per spelling, released once the cache passes 64 and at the end.
+        HookBackend cb;
+        {
+            Renderer c(300, 1, false, cb);
+            c.receive(parse(page));
+            c.receive(texts({spelling, spelling}));
+            const auto texts_drawn = drawn(cb);
+            const double width = measured(c, spelling);
+            check(cb.families == std::vector<std::string>{"'Fancy  Serif' ,serif"} && texts_drawn.size() == 2 && texts_drawn[0].first == texts_drawn[1].first && width == 16,
+                  "without a hook a canvas font is parsed and made once for fillText and measureText alike (" + std::to_string(cb.families.size()) + " made)");
+            check(texts_drawn.size() == 2 && std::fabs(texts_drawn[0].second - 19.59375f) < 1e-4f, "and the renderer gives it the em box the backend did not");
+            c.receive(texts(spellings(1, 64)));
+            check(cb.deleted.empty() && cb.families.size() == 65, "65 spellings are 65 fonts, all kept");
+            c.receive(texts({spelling}));
+            check(cb.deleted.size() == 65 && cb.families.size() == 66, "past 64 the next batch releases them all and makes its own again (" + std::to_string(cb.deleted.size()) + " released)");
+        }
+        check(cb.deleted.size() == 66, "and the renderer releases the one it kept when it goes");
+
+        HookBackend hb;
+        std::vector<std::string> asked;
+        Backend* given = nullptr;
+        int cached = 0, back = 0;
+        {
+            Renderer h(300, 1, false, hb);
+            h.receive(parse(page));
+            h.receive(texts({"10px serif"}));
+            cached = drawn(hb).empty() ? 0 : drawn(hb)[0].first;
+            h.set_canvas_font_hook([&](Backend& backend, const std::string& css, FontMetrics& metrics) {
+                asked.push_back(css);
+                given = &backend;
+                return css.rfind("refused", 0) == 0 ? 0 : backend.create_canvas_font(css, 12, 400, false, metrics);
+            });
+            check(cached != 0 && hb.deleted == std::vector<int>{cached}, "setting a canvas font hook releases the font the renderer cached");
+            h.receive(texts({spelling, spelling}));
+            const auto hooked = drawn(hb);
+            const double width = measured(h, spelling);
+            check(asked == std::vector<std::string>(3, spelling) && given == &hb, "the hook gets the renderer's Backend and the font as the widget wrote it, for each fillText and the measureText (" + std::to_string(asked.size()) + " calls)");
+            check(hb.families == std::vector<std::string>{"serif", spelling, spelling, spelling} && hooked.size() == 2 && hooked[0].first != hooked[1].first && hooked[0].first != cached && width == 16,
+                  "nothing is parsed or cached on the way: each text draws and measures in the font the hook made for it");
+            check(hooked.size() == 2 && hooked[0].second == 10, "and with the metrics the hook gave, em box and all (y " + std::to_string(hooked.empty() ? 0 : hooked[0].second) + ")");
+            h.receive(texts(spellings(1, 70)));
+            check(asked.size() == 73 && hb.deleted.size() == 1, "70 more spellings all reach the hook, and the renderer releases none of its fonts");
+            const size_t runs = hb.runs.size();
+            h.receive(texts({"refused 12px serif"}));
+            const double refused = measured(h, "refused");
+            check(asked.size() == 75 && hb.runs.size() == runs && refused == 0, "a font the hook refuses draws no text and measures 0");
+            h.set_canvas_font_hook({});
+            h.receive(texts({spelling, spelling}));
+            const auto unhooked = drawn(hb);
+            back = unhooked.empty() ? 0 : unhooked[0].first;
+            check(asked.size() == 75 && hb.families.size() == 75 && hb.families.back() == "'Fancy  Serif' ,serif" && unhooked.size() == 2 && unhooked[1].first == back,
+                  "an empty hook gives the cache back: the next spelling is parsed and made once");
+        }
+        check(hb.deleted == std::vector<int>{cached, back}, "at the end the renderer releases only the font it cached itself (" + std::to_string(hb.deleted.size()) + " released)");
+    }
+#endif
+
+    // ── a renderer lets go of its canvases in node order and of its canvas fonts in the order it made them ──
+    {
+        struct ReleaseBackend : StubBackend {
+            int next_canvas_font = 5000;
+            std::vector<int> made, deleted, released;
+            // Counting down: the order they are made in is no order of their handles or their names.
+            int create_canvas_font(const std::string&, float size, int, bool, FontMetrics& out) override {
+                out.ascent = size * 0.8f;
+                out.descent = size * 0.2f;
+                out.height = size * 1.2f;
+                made.push_back(--next_canvas_font);
+                return made.back();
+            }
+            void delete_font(int font) override {
+                if (font < 5000 && font > 4000) deleted.push_back(font);
+            }
+            void canvas_release(int canvas) override { released.push_back(canvas); }
+        };
+        const std::vector<int64_t> nodes = {70, 31, 95, 12, 58};
+        std::string page = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body"})";
+        for (int64_t id : nodes)
+            page += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"canvas","attrs":[["width","40"],["height","20"]]},{"op":"ins","parent":4,"id":)" + std::to_string(id) + R"(,"before":null})";
+        page += "]}";
+        auto draw = [](int64_t id, int from, int count) {
+            std::string cmds = R"(["s","textBaseline","top"])";
+            for (int i = from; i < from + count; i++) cmds += R"(,["s","font",")" + std::to_string(i) + R"(px serif"],["c","fillText","hi",0,10])";
+            return parse(R"({"type":"ops","ops":[{"op":"canvas","id":)" + std::to_string(id) + R"(,"cmds":[)" + cmds + "]}]}");
+        };
+        ReleaseBackend rb;
+        {
+            Renderer r(300, 1, false, rb);
+            r.receive(parse(page));
+            r.receive(draw(95, 30, 40));
+            r.receive(draw(12, 1, 25));
+            const std::vector<int> first(rb.made.begin(), rb.made.end());
+            r.receive(draw(70, 100, 1));
+            check(rb.deleted == first, "past 64 canvas fonts the renderer lets them all go in the order it made them (" + std::to_string(rb.deleted.size()) + " of " + std::to_string(first.size()) + ")");
+            rb.deleted.clear();
+            r.receive(draw(31, 200, 3));
+            r.receive(draw(58, 300, 0));
+        }
+        check(rb.released == std::vector<int>{12, 31, 58, 70, 95}, "a renderer that goes releases its canvases in node order");
+        check(rb.made.size() == 69 && rb.deleted == std::vector<int>(rb.made.end() - 4, rb.made.end()), "and its canvas fonts in the order it made them (" + std::to_string(rb.deleted.size()) + " released)");
+    }
+
+    // ── the animator reports its events and motions in element order, whatever order the declarations come in ──
+    {
+        Animator a;
+        a.set_style_sheets({"@keyframes k{from{opacity:0}to{opacity:1}} @keyframes h{from{filter:blur(2px)}to{filter:blur(6px)}}"});
+        std::vector<int64_t> ids;
+        for (int i = 0; i < 40; i++) ids.push_back(i * 919 % 1000 + 1);
+        auto declare = [&](const std::string& filter) {
+            std::unordered_map<int64_t, Declared> all;
+            for (size_t i = 0; i < ids.size(); i++) all[ids[i]] = {{"animation", i % 2 ? "k 1s linear 2" : "h 1s linear 2"}, {"transition", "filter 0.5s linear"}, {"filter", filter}};
+            return all;
+        };
+        std::vector<int64_t> sorted = ids;
+        std::sort(sorted.begin(), sorted.end());
+        auto targets = [](const std::vector<AnimationEvent>& events) {
+            std::vector<std::pair<std::string, int64_t>> out;
+            for (const AnimationEvent& e : events) out.emplace_back(e.type, e.target);
+            return out;
+        };
+        auto expected = [&](std::vector<std::string> types) {
+            std::vector<std::pair<std::string, int64_t>> out;
+            for (const std::string& type : types)
+                for (int64_t id : sorted) out.emplace_back(type, id);
+            return out;
+        };
+        a.update(declare("blur(1px)"), 0);
+        check(targets(a.take_events()) == expected({"animationstart"}), "animationstart comes element by element in id order");
+        a.update(declare("blur(5px)"), 0.1);
+        std::vector<Animator::Motion> motions;
+        a.heavy_motion(0.2, &motions);
+        std::vector<std::pair<char, int64_t>> motion_ids, motion_expected;
+        for (const Animator::Motion& m : motions) motion_ids.emplace_back(m.kind, m.id);
+        for (int64_t id : sorted) motion_expected.emplace_back('a', id);
+        for (int64_t id : sorted) motion_expected.emplace_back('t', id);
+        check(motion_ids == motion_expected, "heavy motions come animations first, then transitions, each in element order (" + std::to_string(motions.size()) + " motions)");
+        a.sample(1.5);
+        check(targets(a.take_events()) == expected({"animationiteration", "transitionend"}), "animationiteration, then transitionend, each in element order");
+        a.sample(2.5);
+        check(targets(a.take_events()) == expected({"animationend"}), "animationend in element order");
+    }
+
     // ── what a build in paint() says waits for the next tick ──
     {
         StubBackend pb;
@@ -1731,6 +1936,95 @@ int main() {
         }
         s.touch(3, 20, 20, 0, true, false, 0);
         check(claim_x && !claim_y, "a stylesheet's touch-action: pan-y claims horizontal drags");
+
+        const auto checkAlignment = [&](const std::string& property, const std::string& value, const std::string& expected) {
+            const auto display = property == "align-items" ? "display:flex;" : "";
+            auto ops = Json::array().push(Json::object()
+                .set("op", "attr").set("id", 10).set("name", "style")
+                .set("value", display + property + ":" + value + ";color:rgb(1,2,3)"));
+            s.receive(Json::object().set("type", "ops").set("ops", ops));
+            const auto computed = cs(10);
+            check(computed["color"].asString() == "rgb(1, 2, 3)"
+                && computed[property].asString() == expected,
+                property + ": " + value + " survives a full computed-style query (got "
+                    + computed[property].asString() + ")");
+        };
+        for (const auto property : {"align-self", "align-items"}) {
+            for (const auto position : {"center", "start", "end", "self-start", "self-end", "flex-start", "flex-end"}) {
+                for (const auto prefix : {"", "safe ", "unsafe "}) {
+                    const auto value = std::string(prefix) + position;
+                    checkAlignment(property, value, value);
+                }
+            }
+            for (const auto value : {"normal", "stretch", "baseline"}) {
+                checkAlignment(property, value, value);
+            }
+            checkAlignment(property, "first baseline", "baseline");
+            checkAlignment(property, "baseline first", "baseline");
+            checkAlignment(property, "last baseline", "last baseline");
+            checkAlignment(property, "baseline last", "last baseline");
+        }
+        checkAlignment("align-self", "auto", "auto");
+        checkAlignment("align-self", "SaFe /**/ CeNtEr", "safe center");
+        checkAlignment("align-items", "LAST\nBASELINE", "last baseline");
+
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"style","value":""}]})"));
+        for (const auto property : {"align-self", "align-items"}) {
+            for (const auto display : {"flex", "grid"}) {
+                for (const auto value : {"safe center", "unsafe flex-end", "first baseline", "last baseline"}) {
+                    const auto expected = std::string(value) == "first baseline" ? "baseline" : value;
+                    const auto rule = std::string("#a{display:") + display + ";--alignment:" + value + ";"
+                        + property + ":var(--alignment)}#a b,#a::before{display:" + display + ";"
+                        + property + ":inherit}#a::before{content:'x'}";
+                    auto ops = Json::array().push(Json::object().set("op", "css").set("id", 20).set("text", rule));
+                    s.receive(Json::object().set("type", "ops").set("ops", ops));
+                    const auto label = std::string(display) + " " + property + ": " + value;
+                    check(cs(10)[property].asString() == expected, label + " from a stylesheet variable");
+                    check(cs(11)[property].asString() == expected, label + " inherited by a child");
+                    check(cs(10, "::before")[property].asString() == expected, label + " inherited by a pseudo-element");
+                }
+            }
+        }
+    }
+
+    // ── safe and unsafe alignment: the position decides the place ──
+    {
+        StubBackend fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div"},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        auto placed = [&](const std::string& container, const std::string& item, const char* axis) {
+            auto ops = Json::array()
+                .push(Json::object().set("op", "attr").set("id", 10).set("name", "style").set("value", container))
+                .push(Json::object().set("op", "attr").set("id", 11).set("name", "style").set("value", "width:20px;height:20px;" + item));
+            f.receive(Json::object().set("type", "ops").set("ops", ops));
+            for (const Json& m : f.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", 11))))
+                if (m["type"].asString() == "result") return m["result"][axis].asNumber();
+            return -1.0;
+        };
+        auto positions = [&](const char* display, const std::string& box, const char* property, bool on_item, const char* axis, double center, double end) {
+            auto at = [&](const std::string& value) {
+                std::string declaration = std::string(property) + ":" + value;
+                return on_item ? placed(box, declaration, axis) : placed(box + declaration, "", axis);
+            };
+            for (const char* position : {"center", "start", "end", "self-start", "self-end", "flex-start", "flex-end"}) {
+                double alone = at(position), safe = at(std::string("safe ") + position), unsafe = at(std::string("unsafe ") + position);
+                double want = !std::strcmp(position, "center") ? center : !std::strcmp(position, "end") ? end : alone;
+                check(std::fabs(alone - want) < 0.01 && std::fabs(safe - alone) < 0.01 && std::fabs(unsafe - alone) < 0.01,
+                      std::string(display) + " " + property + ": safe and unsafe " + position + " are placed as " + position + " (got " +
+                          std::to_string(safe) + " and " + std::to_string(unsafe) + ", " + position + " alone " + std::to_string(alone) + ")");
+            }
+        };
+        const std::string flex = "display:flex;width:200px;height:100px;";
+        const std::string grid = "display:grid;grid-template-columns:200px;grid-template-rows:100px;width:200px;height:100px;";
+        positions("flex", flex, "align-self", true, "y", 40, 80);
+        positions("flex", flex, "align-items", false, "y", 40, 80);
+        positions("grid", grid, "align-self", true, "y", 40, 80);
+        positions("grid", grid, "align-items", false, "y", 40, 80);
+        positions("grid", grid, "justify-self", true, "x", 90, 180);
+        positions("grid", grid, "justify-items", false, "x", 90, 180);
     }
 
     // ── the boxes of inline elements: their line boxes ──
@@ -2018,6 +2312,28 @@ int main() {
               "a link is --tg-theme-link-color, not underlined (got " + link["color"].asString() + ", " + link["text-decoration-line"].asString() + ")");
     }
 
+    // ── an SVG's paint key names the rules it matched by their sheet and their order there, not by address ──
+    {
+        // A sheet with @media is parsed again for every document, so each document has selectors of its own.
+        const char* page = R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":"@media (min-width:1px){.r{fill:#00a}} .r{stroke:#a00}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","40"],["height","40"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"rect","svg":true,"attrs":[["class","r"],["width","20"],["height","20"]]},{"op":"ins","parent":10,"id":11,"before":null}]})J";
+        auto keys = [](Renderer& r) {
+            std::vector<uint64_t> out;
+            for (const Command& c : r.paint())
+                if (c.kind == Cmd::GroupPush && c.key) out.push_back(c.key);
+            return out;
+        };
+        StubBackend fb, sb;
+        Renderer first(300, 1, false, fb), second(300, 1, false, sb);
+        first.receive(parse(page));
+        second.receive(parse(page));
+        const auto a = keys(first), b = keys(second);
+        check(!a.empty() && a == b, "two documents of one page give their SVG the same paint key, each with its own parse of the sheet (" + std::to_string(a.size()) + " keyed groups)");
+    }
+
     // ── SVG <use>: paint inherits through nested instances, and mutual references end ──
     {
         auto fills = [](const DisplayList& d) {
@@ -2095,6 +2411,84 @@ int main() {
         auto [pressed_on, s4] = run("10", 25);
         check(pressed_on.has_pointer && pressed_on.pointer_to == pressed_on.pointer_from && !pressed_on.keeps_bottom,
               "a press on what grew keeps its top still");
+    }
+
+    // ── repeated backgrounds are tiled while the display list is short ──
+    {
+        struct Images : StubBackend {
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                w = h = 1;
+                return true;
+            }
+        } ib;
+        Renderer t(300, 1, false, ib);
+        std::string layers;
+        for (int i = 0; i < 40; i++) layers += std::string(i ? "," : "") + "url(data:image/png;base64,AA==)";
+        t.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:64px;height:64px;background-size:1px 1px;background-image:)J" + layers + R"J("]]},
+            {"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        size_t commands = t.paint().size();
+        check(commands >= 16 * 4096 && commands < 17 * 4096,
+              "of 40 background layers of 4096 tiles each, 16 are recorded tile by tile and the rest once (" + std::to_string(commands) + " commands)");
+    }
+
+    // ── a transition retargeted over and over between a length and a percentage ──
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":".t{transition:transform 1000s linear}.a{transform:translateX(10px)}.b{transform:translateX(calc(50% + 1px))}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","t a"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        g.tick();
+        size_t longest = 0;
+        for (int i = 0; i < 150; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            g.hover(0, 1, 1);
+            g.receive(parse(std::string(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":")") + (i % 2 ? "t a" : "t b") + R"("}]})"));
+            g.tick();
+            for (const Json& m : g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":10}})")))
+                if (m["type"].asString() == "result") longest = std::max(longest, m["result"]["transform"].asString().size());
+        }
+        check(longest > 0 && longest < 40000, "a transition retargeted 150 times keeps its value bounded (longest " + std::to_string(longest) + " bytes)");
+    }
+
+    // ── an iteration count below zero ──
+    {
+        StubBackend ib;
+        Renderer it(300, 1, false, ib);
+        it.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":"@keyframes k{from{opacity:0}to{opacity:0.5}}.y{animation:k 1ms -1e300 alternate forwards}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","y"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        it.tick();
+        std::string opacity;
+        for (const Json& m : it.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":10}})")))
+            if (m["type"].asString() == "result") opacity = m["result"]["opacity"].asString();
+        check(opacity == "0.5", "an animation with an iteration count of -1e300 ends on its first iteration, forwards (opacity " + opacity + ")");
+    }
+
+    // ── light-dark() nested without end ──
+    {
+        check(css::resolve_light_dark("a{color:light-dark(light-dark(red, blue), light-dark(green, light-dark(white, black)))}", true) == "a{color:black}",
+              "light-dark() inside a chosen side resolves too");
+        auto nested = [](int levels, bool closed) {
+            std::string text = "a{--c:";
+            for (int i = 0; i < levels; i++) text += "light-dark(";
+            text += "red";
+            for (int i = 0; closed && i < levels; i++) text += ",blue)";
+            return text + "}";
+        };
+        check(css::resolve_light_dark(nested(32, true), false) == "a{--c:red}", "light-dark() nested 32 deep resolves");
+        std::string resolved = css::resolve_light_dark(nested(33, true), false);
+        check(resolved == "a{--c:}", "the side of a light-dark() that still nests one 32 levels down is dropped (" + resolved + ")");
+        resolved = css::resolve_light_dark(nested(3000, false), false);
+        check(resolved == "a{--c:", "light-dark() nested 3000 deep and never closed resolves 32 levels down and drops the rest (" + std::to_string(resolved.size()) + " bytes left)");
     }
 
     // ── painting: borders, tiles, object-fit, gradient stops, ellipsis, filters, canvas order ──
@@ -2737,6 +3131,126 @@ int main() {
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             check(ms < 2000, "fifteen nested tables finish (" + std::to_string(int(ms)) + " ms)");
         }
+
+        // A compound that names ::before or ::after matched the generated box too, which got one of its own, without end.
+        for (const char* selector : {":last-child::after", ":not(.a)::before", ":nth-child(1n)::after", ":first-child::before",
+                                     "div::after{content:'x'} -tag-after::after"}) {
+            Renderer g(300, 1, false, backend);
+            widget(g, std::string(selector) + "{content:'x'}", div(10, 4, "width:10px"));
+            int generated = 0;
+            for (const Command& c : g.paint())
+                if (c.kind == Cmd::Text && c.text == "x") generated++;
+            check(generated >= 1 && generated <= 3, std::string(selector) + " generates a box for an element, none for a generated box (" + std::to_string(generated) + ")");
+        }
+
+        // Nothing gets below a float whose height is not finite: the float after it looked for room without end.
+        for (const char* height : {"1e39px", "0e999px"}) {
+            for (const char* side : {"left", "right"}) {
+                Renderer f(300, 1, false, backend);
+                auto started = std::chrono::steady_clock::now();
+                widget(f, "", div(10, 4, std::string("float:") + side + ";width:80%;height:" + height) + div(11, 4, std::string("float:") + side + ";width:50%;height:10px"));
+                f.paint();
+                double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                check(ms < 2000, std::string("a float: ") + side + " after one of height " + height + " is placed (" + std::to_string(int(ms)) + " ms)");
+            }
+        }
+
+        {
+            Renderer f(300, 1, false, backend);
+            auto out = widget(f, "", div(9, 4, "height:0e999px;padding-top:3px") + div(10, 4, "width:1e39px;height:3e38rem") + div(12, 4, "width:1e30%;height:1px") +
+                                         div(13, 12, "width:1e30%;line-height:1e39") + R"(,{"op":"text","id":15,"data":"x"},{"op":"ins","parent":13,"id":15,"before":null})" +
+                                         div(14, 4, "width:calc(1e38px * 3);height:1px"));
+            auto box = [&](int id) {
+                Json r = f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+                return css::format_number(r["width"].asNumber(), 1) + " " + css::format_number(r["height"].asNumber(), 1) + " at " + css::format_number(r["y"].asNumber(), 1);
+            };
+            check(box(9) == "300 3 at 0" && box(10) == "33554432 33554432 at 3",
+                  "0e999px is 0 and a length past 2^25 px is 2^25 px, as written or once its unit is resolved (got " + box(9) + ", " + box(10) + ")");
+            check(box(13).rfind("33554432 33554432 at", 0) == 0, "so are a percentage of a percentage and a line height (got " + box(13) + ")");
+            check(box(14).rfind("33554432 1 at", 0) == 0, "and a calc() product (got " + box(14) + ")");
+            double height = 0;
+            for (const Json& m : out)
+                if (m["type"].asString() == "size") height = m["height"].asNumber();
+            check(height >= 33554432 && height < 1e9, "the host is told a height (got " + css::format_number(height, 1) + ")");
+        }
+
+        // An integer past the range of int was cast as it was: undefined, and on x86 the far end of the range.
+        {
+            struct Features : StubBackend {
+                std::string seen;
+                int create_font(const std::string& family, float size, int weight, bool italic, const std::string& features, FontMetrics& out) override {
+                    seen += features + ";";
+                    return StubBackend::create_font(family, size, weight, italic, features, out);
+                }
+            } fonts;
+            Renderer z(300, 1, false, fonts);
+            widget(z, "", div(10, 4, "position:relative;height:10px") + div(11, 10, "position:absolute;z-index:99999999999;width:10px;height:10px;background:#f00") +
+                              div(12, 10, "position:absolute;z-index:5;width:10px;height:10px;background:#00f") + div(13, 4, "display:flex") +
+                              div(14, 13, "order:99999999999;width:10px;height:5px") + div(15, 13, "order:1;width:10px;height:5px") +
+                              div(16, 4, "display:grid;grid-template-columns:repeat(99999999999,10px)") + div(17, 16, "height:5px") + div(18, 16, "height:5px") +
+                              div(19, 4, "display:grid;grid-template-columns:10px 10px") + div(20, 19, "grid-column:99999999999;height:5px") +
+                              div(21, 4, "font-feature-settings:'tnum' 99999999999;color:hsl(0 0e999% 50%);background:rgb(0e999 0 0)") +
+                              R"(,{"op":"text","id":22,"data":"x"},{"op":"ins","parent":21,"id":22,"before":null})");
+            int red = -1, blue = -1, at = 0;
+            Color text{1, 1, 1, 1}, fill{1, 1, 1, 1};
+            for (const Command& c : z.paint()) {
+                if (c.kind == Cmd::FillRect && c.color.r == 255 && c.color.b == 0) red = at;
+                if (c.kind == Cmd::FillRect && c.color.b == 255) blue = at;
+                if (c.kind == Cmd::FillRect && c.rect.w == 300 && c.rect.h > 10) fill = c.color;
+                if (c.kind == Cmd::Text) text = c.color;
+                at++;
+            }
+            check(blue >= 0 && red > blue, "a z-index past INT_MAX is the highest (" + std::to_string(blue) + ", " + std::to_string(red) + ")");
+            check(rect(z, 14) == "10 10", "an order past INT_MAX is the last (got " + rect(z, 14) + ")");
+            check(rect(z, 18) == "10 10", "repeat() past its limit is the limit, not nothing (got " + rect(z, 18) + ")");
+            check(rect(z, 20) == "299.7 0.3", "a grid line past the limit is the limit (got " + rect(z, 20) + ")");
+            check(fonts.seen.find("tnum=65535") != std::string::npos, "so is a font feature's value (got " + fonts.seen + ")");
+            check(text.r == 0 && text.g == 0 && text.b == 0 && text.a == 255 && fill.r == 0 && fill.g == 0 && fill.b == 0 && fill.a == 255,
+                  "a colour from a number that is none is black (" + std::to_string(text.r) + " " + std::to_string(text.g) + " " + std::to_string(text.b) + " " + std::to_string(text.a) + ", " +
+                      std::to_string(fill.r) + " " + std::to_string(fill.g) + " " + std::to_string(fill.b) + " " + std::to_string(fill.a) + ")");
+        }
+
+        // (index - B) * A was worked out in int: for 65536n+65537 and the first child it wrapped to 0, a match.
+        {
+            Renderer n(300, 1, false, backend);
+            widget(n, "div:nth-child(65536n+65537){width:50px} div:nth-last-child(65536n+65537){width:60px} div:nth-child(-2147483648n+2147483647){width:70px} div:nth-child(2n+1){margin-left:5px}",
+                   div(10, 4, "height:1px") + div(11, 4, "height:1px") + div(12, 4, "height:1px"));
+            check(rect(n, 10) == "5 295" && rect(n, 11) == "0 300" && rect(n, 12) == "5 295",
+                  ":nth-child(An+B) with a product past int matches no more than it should (got " + rect(n, 10) + ", " + rect(n, 11) + ", " + rect(n, 12) + ")");
+        }
+
+        // A flex factor is kept in thousandths in an int: one past that was cast as it was, and two of them overflowed their sum.
+        {
+            Renderer x(300, 1, false, backend);
+            widget(x, "", div(10, 4, "display:flex") + div(11, 10, "flex-grow:99999999999;height:5px") + div(12, 10, "flex-grow:99999999999;height:5px") + div(13, 10, "width:100px;height:5px") +
+                              div(14, 4, "display:flex") + div(15, 14, "flex-shrink:99999999999;width:300px;height:5px") + div(16, 14, "flex-shrink:99999999999;width:300px;height:5px"));
+            check(rect(x, 11) == "0 100" && rect(x, 12) == "100 100" && rect(x, 13) == "200 100", "two items with a huge flex-grow share the free space (got " + rect(x, 11) + ", " + rect(x, 12) + ", " + rect(x, 13) + ")");
+            check(rect(x, 15) == "0 150" && rect(x, 16) == "150 150", "and two with a huge flex-shrink the overflow (got " + rect(x, 15) + ", " + rect(x, 16) + ")");
+        }
+
+        // A height worked out from an aspect ratio is a length like any other: 300 px by 1/1e30 was 3e32 px.
+        {
+            Renderer a(300, 1, false, backend);
+            widget(a, "", div(10, 4, "aspect-ratio:1/1e30") + div(11, 4, "height:1px"));
+            Json r = a.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"];
+            check(r["height"].asNumber() == 33554432, "a height from an aspect ratio stops at 2^25 px (got " + css::format_number(r["height"].asNumber(), 1) + ")");
+        }
+
+        // Each float after an inline box that wrapped doubled the markers that carry the box onto the next line: 2^24 of them here.
+        for (int floats : {8, 24}) {
+            Renderer w(300, 1, false, backend);
+            std::string ops = R"(,{"op":"el","id":10,"tag":"p"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"span","attrs":[["style","background:#f00"]]},)"
+                              R"({"op":"ins","parent":10,"id":11,"before":null},{"op":"text","id":12,"data":"word word word word word word word word word word word word"},{"op":"ins","parent":11,"id":12,"before":null})";
+            for (int i = 0; i < floats; i++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(20 + i) + R"(,"tag":"i","attrs":[["style","float:left"]]},{"op":"ins","parent":10,"id":)" + std::to_string(20 + i) + R"(,"before":null})";
+            auto started = std::chrono::steady_clock::now();
+            widget(w, "", ops);
+            int red = 0;
+            for (const Command& c : w.paint())
+                if (c.kind == Cmd::FillRect && c.color.r == 255 && c.color.g == 0) red++;
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            check(red == 2 && ms < 2000, std::to_string(floats) + " floats after a wrapped span leave it one box a line (" + std::to_string(red) + " boxes, " + std::to_string(int(ms)) + " ms)");
+        }
     }
 
     // ── who gets a press: widget-sandbox's gesture policy ──
@@ -2955,6 +3469,2149 @@ int main() {
         int built = p.stats().builds - builds;
         double width = p.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
         check(built == 1 && width == 70, "which builds the task once (" + std::to_string(built) + " builds)");
+    }
+
+    // ── a pointer move whose restyle runs the layout past its limit ──
+    {
+        StubBackend hb;
+        Renderer h(300, 1, false, hb);
+        std::string ops = R"j({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"body{margin:0}#t{width:100px;min-height:40px;transition:width 1s linear}#t:hover{width:200px}#b{display:none}#t:hover #b{display:block}.g{display:grid}"},
+            {"op":"ins","parent":3,"id":5,"before":null},{"op":"el","id":10,"tag":"div","attrs":[["id","t"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":10,"id":11,"before":null})j";
+        // Twenty nested grids, not displayed until #t is hovered.
+        int parent = 11;
+        for (int i = 0, id = 100; i < 20; i++, id += 3) {
+            std::string g = std::to_string(id), c = std::to_string(id + 1), t = std::to_string(id + 2);
+            ops += R"(,{"op":"el","id":)" + g + R"(,"tag":"div","attrs":[["class","g"]]},{"op":"el","id":)" + c + R"(,"tag":"div","attrs":[]},{"op":"text","id":)" + t +
+                   R"(,"data":"x"},{"op":"ins","parent":)" + c + R"(,"id":)" + t + R"(,"before":null},{"op":"ins","parent":)" + g + R"(,"id":)" + c +
+                   R"(,"before":null},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" + g + R"(,"before":null})";
+            parent = id;
+        }
+        h.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        h.touch(0, 250, 300, 0, true, true);
+        bool stopped = false;
+        for (const Json& m : h.touch(1, 50, 20, 0, true, true))
+            stopped = stopped || (m["type"].asString() == "violation" && m["detail"].asString().find("layout limit") != std::string::npos);
+        check(stopped && events(h.touch(2, 50, 20, 0, true, true)).empty(), "a pointer move that runs the layout past its limit ends with the freeze: its touch is gone");
+    }
+
+    // ── selectable text, and text placed at 1e30 px ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(PAGE));
+        s.receive(parse(R"j({"type":"ops","ops":[{"op":"el","id":64,"tag":"svg","ns":"svg","attrs":[["width","40"],["height","40"]]},{"op":"el","id":65,"tag":"text","ns":"svg","attrs":[["y","1e30"]]},
+            {"op":"text","id":66,"data":"far"},{"op":"ins","parent":65,"id":66,"before":null},{"op":"ins","parent":64,"id":65,"before":null},{"op":"ins","parent":4,"id":64,"before":null},
+            {"op":"el","id":60,"tag":"div","attrs":[["style","user-select:text"]]},{"op":"text","id":61,"data":"selectable"},{"op":"ins","parent":60,"id":61,"before":null},
+            {"op":"el","id":62,"tag":"div","attrs":[["style","aspect-ratio:1/1e30"]]},{"op":"ins","parent":60,"id":62,"before":null},
+            {"op":"text","id":63,"data":"below"},{"op":"ins","parent":60,"id":63,"before":null},{"op":"ins","parent":4,"id":60,"before":null}]})j"));
+        DisplayList list = s.paint();
+        bool far = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Text && c.text == "far" && c.rect.y > 1e29f; });
+        check(far, "text drawn at 1e30 px does not hang the paint of a document with selectable text");
+    }
+
+    // ── canvas geometry a few commands multiply: Path2D.addPath, clip lists, a long path filled again and again ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        c.receive(parse(PAGE));
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        auto draw = [&](const std::string& cmds) {
+            cb.runs.clear();
+            c.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[["r",100,100],)" + cmds + "]}]}"));
+        };
+        std::string cmds = R"(["pn",1,"M0 0L10 10L20 0Z"],["pn",2,"M0 0L10 10L20 0Z"])";
+        for (int i = 0; i < 14; i++) cmds += R"(,["pc",1,"addPath",{"p":2}],["pc",2,"addPath",{"p":1}])";
+        draw(cmds + R"(,["c","fill",{"p":1}])");
+        size_t longest = 0;
+        for (const auto& ops : cb.runs)
+            for (const CanvasOp& op : ops) longest = std::max(longest, op.path.points.size());
+        check(longest > 0 && longest <= (size_t(1) << 20), "two Path2D objects added to each other stop growing (" + std::to_string(longest) + " floats)");
+
+        cmds = R"(["c","beginPath"])";
+        for (int i = 0; i < 500; i++) cmds += R"(,["c","lineTo",)" + std::to_string(i % 100) + "," + std::to_string(i * 7 % 100) + "]";
+        for (int i = 0; i < 300; i++) cmds += R"(,["c","clip"],["c","fillRect",0,0,1,1])";
+        draw(cmds);
+        size_t clipped = 0, fills = 0;
+        for (const auto& ops : cb.runs)
+            for (const CanvasOp& op : ops) {
+                size_t held = 0;
+                if (op.clips)
+                    for (const CanvasClip& clip : *op.clips) held += clip.path.points.size();
+                clipped = std::max(clipped, held);
+                fills += op.kind == CanvasOp::Fill;
+            }
+        check(fills == 300 && clipped <= (size_t(1) << 14), "a clip list of long paths stops growing (" + std::to_string(clipped) + " floats in one)");
+
+        std::string d = "M0 0";
+        for (int i = 0; i < 50000; i++) d += " " + std::to_string(i % 100) + " " + std::to_string(i * 7 % 100);
+        cmds = R"(["pn",3,")" + d + R"("])";
+        for (int i = 0; i < 400; i++) cmds += R"(,["c","fill",{"p":3}])";
+        draw(cmds);
+        size_t drawn = 0;
+        for (const auto& ops : cb.runs)
+            for (const CanvasOp& op : ops) drawn += op.path.points.size();
+        check(drawn >= 100000 && drawn <= (size_t(1) << 24), "one canvas op hands the backend a bounded amount of geometry (" + std::to_string(drawn) + " floats)");
+    }
+
+    // ── generated content: a document's ::before and ::after boxes are bounded ──
+    {
+        const std::string head = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":20,"tag":"style","attrs":[]},{"op":"ins","parent":3,"id":20,"before":null},)";
+        const char* rect = R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})";
+        std::string title;
+        for (int i = 0; i < 500; i++) title += "a ";
+        auto height = [&](int refs) {
+            StubBackend b;
+            Renderer t(300, 1, false, b);
+            std::string content;
+            for (int i = 0; i < refs; i++) content += "attr(title) ";
+            t.receive(parse(head + R"({"op":"css","id":20,"text":".x::before{content:)" + content + R"(}"},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","x"],["title",")" + title + R"("]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+            t.tick();
+            return t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        };
+        const double full = height(20), more = height(80);
+        check(full > 0 && more == full, "80 attr() of a 1000 character title generate the 20000 boxes a document may, as 20 do (heights " + std::to_string(full) + ", " + std::to_string(more) + ")");
+
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(head + R"({"op":"css","id":20,"text":".x::before{content:attr(title)} .x:hover{color:red}"},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","x"],["title",")" + title + R"("]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        t.tick();
+        const double first = t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        for (int i = 0; i < 30; i++) {
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":""}]})"));
+            t.tick();
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"x"}]})"));
+            t.tick();
+        }
+        const double flipped = t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        for (int i = 0; i < 30; i++) {
+            t.hover(0, 10, 10);
+            t.tick();
+            t.hover(0, 10, 5000);
+            t.tick();
+        }
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"title","value":"a a"}]})"));
+        t.tick();
+        const double shorter = t.receive(parse(rect))[0]["result"]["height"].asNumber();
+        check(first > 0 && flipped == first && shorter > 0 && shorter < first, "a box generated again and again gives back what it took (heights " + std::to_string(first) + ", " + std::to_string(flipped) + ", " + std::to_string(shorter) + ")");
+    }
+
+    // ── SVG <use>: all that a document's <svg>s draw through it comes from one budget ──
+    {
+        StubBackend ub;
+        const std::string head = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"defs","ns":"svg"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"g","ns":"svg","attrs":[["id","l0"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"g","ns":"svg","attrs":[["id","l1"]]},{"op":"ins","parent":11,"id":13,"before":null})";
+        std::string ops = head;
+        int id = 20;
+        auto add = [&](const char* tag, const std::string& attrs, int parent) {
+            ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":")" + tag + R"(","ns":"svg","attrs":[)" + attrs + R"(]},{"op":"ins","parent":)" +
+                   std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+            return id++;
+        };
+        auto paths = [](const DisplayList& d) {
+            return size_t(std::count_if(d.begin(), d.end(), [](const Command& c) { return c.kind == Cmd::Path; }));
+        };
+        Renderer fan(300, 1, false, ub);
+        for (int k = 0; k < 100; k++) add("rect", R"(["width","1"],["height","1"])", 12);
+        for (int k = 0; k < 100; k++) add("use", R"(["href","#l0"])", 13);
+        for (int k = 0; k < 5; k++) add("use", R"(["href","#l1"])", add("svg", R"(["width","10"],["height","10"])", 4));
+        fan.receive(parse(ops + "]}"));
+        const size_t first = paths(fan.paint());
+        check(first > 5000 && first <= 10000, "five <svg>s that each use 100 x 100 rects draw from one budget (" + std::to_string(first) + " paths)");
+        const size_t again = paths(fan.paint());
+        check(again == first, "and draw the same when painted again (" + std::to_string(again) + " paths)");
+
+        Renderer spaced(300, 1, false, ub);
+        ops = head;
+        for (int k = 0; k < 3; k++) {
+            ops += R"(,{"op":"text","id":)" + std::to_string(id) + R"(,"data":"\n            "},{"op":"ins","parent":12,"id":)" + std::to_string(id) + R"(,"before":null})";
+            id++;
+            add("rect", R"(["width","1"],["height","1"])", 12);
+        }
+        for (int k = 0; k < 600; k++) add("use", R"(["href","#l0"])", 10);
+        spaced.receive(parse(ops + "]}"));
+        const size_t icons = paths(spaced.paint());
+        check(icons == 1800, "600 uses of three rects with white space between them are all drawn (" + std::to_string(icons) + " paths)");
+
+        Renderer few(300, 1, false, ub);
+        few.receive(parse(R"j({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"symbol","ns":"svg","attrs":[["id","s"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"rect","ns":"svg","attrs":[["width","1"],["height","1"],["fill","url(#g)"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"linearGradient","ns":"svg","attrs":[["id","g"]]},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"stop","ns":"svg","attrs":[["offset","0"],["stop-color","red"]]},{"op":"ins","parent":13,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"use","ns":"svg","attrs":[["href","#s"]]},{"op":"ins","parent":10,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"use","ns":"svg","attrs":[["href","#s"],["x","2"]]},{"op":"ins","parent":10,"id":16,"before":null}]})j"));
+        int gradients = 0;
+        for (const Command& c : few.paint())
+            if (c.kind == Cmd::Path && c.path && c.path->gradient == 1) gradients++;
+        check(gradients == 2, "two uses of a symbol draw its gradient-filled rect twice (" + std::to_string(gradients) + ")");
+    }
+
+    // ── counters: a declaration names 16 of them, and an element counts once however many rules it matches ──
+    {
+        auto drawn = [](const std::string& css, const std::string& third = "c") {
+            StubBackend b;
+            Renderer t(300, 1, false, b);
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + css + R"("},{"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"div","attrs":[["class",")" + third + R"("]]},{"op":"ins","parent":4,"id":12,"before":null},
+                {"op":"el","id":13,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":13,"before":null}]})"));
+            t.tick();
+            std::string text;
+            for (const Command& c : t.paint())
+                if (c.kind == Cmd::Text) text += c.text + " ";
+            return text;
+        };
+        std::string names;
+        for (int i = 0; i < 20; i++) names += " n" + std::to_string(i);
+        std::string seen = drawn(".c{counter-increment:" + names + "}.c::before{content:counter(n15) ' ' counter(n16)}");
+        check(seen == "1 0 2 0 3 0 4 0 ", "the 16th counter of a declaration counts and the 17th does not (drawn " + seen + ")");
+        seen = drawn(".c{counter-increment:n}.c{color:red}.c,div.c{margin:0}.x{padding:0}.c::before{content:counter(n)}.c::before{color:blue}", "c x");
+        check(seen == "1 2 3 4 ", "rules that say nothing new about counters do not count again (drawn " + seen + ")");
+        seen = drawn(".c{counter-increment:n}.r{counter-reset:n 10}.c::before{content:counter(n)}", "c r");
+        check(seen == "1 2 10 11 ", "a counter is counted on from the nearest sibling that set it (drawn " + seen + ")");
+        seen = drawn(".c{counter-increment:n}.c.x{counter-increment:m}.c::after{content:counter(n) ' ' counter(m)}", "c x");
+        check(seen == "1 0 2 0 3 1 4 1 ", "a rule that names another counter still counts it (drawn " + seen + ")");
+    }
+
+    // ── SVG path data: an arc whose angles are not finite is a line ──
+    {
+        StubBackend ab;
+        Renderer arc(300, 1, false, ab);
+        arc.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"path","ns":"svg","attrs":[["d","M0 0A5 5 0 0 0 1e39 1e39"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        size_t ops = 0;
+        bool line = false, nan = false;
+        for (const Command& c : arc.paint())
+            if (c.kind == Cmd::Path && c.path) {
+                ops += c.path->ops.size();
+                line = !c.path->ops.empty() && c.path->ops.back() == Path::Line;
+                for (float v : c.path->points) nan = nan || std::isnan(v);
+            }
+        check(ops == 2 && line && !nan, "an arc to a point that is not finite is a line (" + std::to_string(ops) + " ops)");
+    }
+
+    // ── an inline box that clips pops no clip it did not push ──
+    {
+        auto clips = [](const std::string& inner, const std::string& tag = "span") {
+            StubBackend b;
+            Renderer t(300, 1, false, b);
+            t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","overflow:hidden;width:100px;height:40px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":")" + tag + R"(","attrs":[["style",")" + inner + R"("]]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"text","id":12,"data":"inline"},{"op":"ins","parent":11,"id":12,"before":null},
+                {"op":"el","id":13,"tag":"div","attrs":[["style","width:300px;height:20px;background:red"]]},{"op":"ins","parent":10,"id":13,"before":null}]})"));
+            t.tick();
+            int depth = 0, lowest = 0, text_depth = -1, red_depth = -1;
+            for (const Command& c : t.paint()) {
+                if (c.kind == Cmd::ClipPush) depth++;
+                if (c.kind == Cmd::ClipPop) lowest = std::min(lowest, --depth);
+                if (c.kind == Cmd::Text) text_depth = depth;
+                if (c.kind == Cmd::FillRect && c.color.r == 255 && c.color.g == 0) red_depth = depth;
+            }
+            return "end " + std::to_string(depth) + ", lowest " + std::to_string(lowest) + ", text under " + std::to_string(text_depth) + ", the next block under " + std::to_string(red_depth);
+        };
+        std::string seen = clips("overflow:hidden");
+        check(seen == "end 0, lowest 0, text under 1, the next block under 1", "an overflow: hidden span leaves its block's clip open for what follows it (" + seen + ")");
+        seen = clips("contain:paint");
+        check(seen == "end 0, lowest 0, text under 1, the next block under 1", "and so does a span with contain: paint (" + seen + ")");
+        seen = clips("display:inline-block;overflow:hidden");
+        check(seen == "end 0, lowest 0, text under 2, the next block under 1", "an inline block still clips what is inside it (" + seen + ")");
+    }
+
+    // ── generated content: a box is generated for the first rules that give it content, not for every one ──
+    {
+        auto drawn = [](Renderer& t) {
+            std::string text;
+            for (const Command& c : t.paint())
+                if (c.kind == Cmd::Text) text += c.text;
+            return text;
+        };
+        auto page = [](const std::string& css) {
+            return parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + css + R"("},{"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","x"],["style","width:100px;height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null}]})");
+        };
+        std::string rules;
+        for (int i = 1; i <= 8; i++) rules += ".x::before{content:'r" + std::to_string(i) + "'}.x::before{color:red}";
+        StubBackend b;
+        Renderer eight(300, 1, false, b);
+        eight.receive(page(rules));
+        eight.tick();
+        std::string seen = drawn(eight);
+        check(seen == "r8", "the eighth rule that gives a box content is the one it shows (drawn " + seen + ")");
+        Renderer nine(300, 1, false, b);
+        nine.receive(page(rules + ".x::before{content:'r9'}"));
+        nine.tick();
+        seen = drawn(nine);
+        check(seen == "r8", "and a ninth generates nothing more (drawn " + seen + ")");
+    }
+
+    // ── trees deeper than a document may be ──
+    {
+        auto chain = [](int levels) {
+            std::string ops = R"({"op":"el","id":100000,"tag":"div","attrs":[]})";
+            for (int i = 1; i < levels; i++) {
+                std::string id = std::to_string(100000 + i);
+                ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[]},{"op":"ins","parent":)" + id + R"(,"id":)" + std::to_string(100000 + i - 1) + R"(,"before":null})";
+            }
+            return ops;
+        };
+        const int levels = 100000;
+        const std::string top = std::to_string(100000 + levels - 1);
+        StubBackend db;
+        Renderer d(300, 1, false, db);
+        d.receive(parse(PAGE));
+        d.receive(parse(R"({"type":"ops","ops":[)" + chain(levels) + R"(,{"op":"ins","parent":4,"id":)" + top + R"(,"before":null}]})"));
+        size_t depth = 0, deepest = 0;
+        const std::string& html = d.last_html();
+        for (size_t at = html.find('<'); at != std::string::npos; at = html.find('<', at + 1)) {
+            if (html.compare(at, 4, "<div") == 0) deepest = std::max(deepest, ++depth);
+            else if (html.compare(at, 5, "</div") == 0) depth--;
+        }
+        check(deepest > 0 && deepest <= 1024, "a chain of 100000 nested elements is not built past 1024 levels (" + std::to_string(deepest) + ")");
+        StubBackend fb;
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(PAGE));
+        f.receive(parse(R"({"type":"ops","ops":[)" + chain(levels) + R"(,{"op":"rm","id":)" + top + "}]}"));
+        check(f.last_html().find("id=\"a\"") != std::string::npos, "and a detached one is removed without recursing through it");
+    }
+
+    // ── the clip lists the states of a canvas's stack keep stop growing ──
+    {
+        StubBackend kb;
+        Renderer k(300, 1, false, kb);
+        k.receive(parse(PAGE));
+        k.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        std::string cmds = R"(["c","rect",0,0,9,9])";
+        for (int i = 0; i < 512; i++) cmds += R"(,["c","clip"],["c","save"])";
+        for (int i = 0; i < 512; i++) cmds += R"(,["c","restore"],["c","fillRect",0,0,1,1])";
+        k.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[)" + cmds + "]}]}"));
+        std::set<const void*> lists;
+        size_t kept = 0, fills = 0, nested = 0;
+        for (const auto& ops : kb.runs)
+            for (const CanvasOp& op : ops) {
+                fills += op.kind == CanvasOp::Fill;
+                if (!op.clips || !lists.insert(op.clips.get()).second) continue;
+                nested = std::max(nested, op.clips->size());
+                for (const CanvasClip& clip : *op.clips) kept += clip.path.points.size() + 16;
+            }
+        check(fills == 512 && nested >= 100 && kept <= (size_t(1) << 18) + (size_t(1) << 14),
+              "a stack of 512 states keeps a bounded amount of clip geometry (" + std::to_string(kept) + " floats, " + std::to_string(nested) + " clips nested)");
+    }
+
+    // ── a canvas's state keeps short strings: a font of 512 bytes at most, textAlign and textBaseline by keyword ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(PAGE));
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        std::string big(32000, 'x');
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[["s","font","20px serif"],["s","textAlign","center"],["s","textBaseline","top"],["c","fillText","ab",50,50],)"
+            R"(["s","font","20px )" + big + R"("],["s","textAlign",")" + big + R"("],["s","textBaseline",")" + big + R"("],["c","fillText","ab",50,50]]}]})"));
+        std::vector<CanvasOp> texts;
+        for (const auto& ops : sb.runs)
+            for (const CanvasOp& op : ops)
+                if (op.kind == CanvasOp::Text) texts.push_back(op);
+        check(texts.size() == 2 && texts[1].font == texts[0].font && texts[0].text_dx == -8.0f && texts[1].text_dx == -8.0f && texts[0].y != 50.0f && texts[1].y == texts[0].y,
+              "a canvas ignores a font of 32 K and a textAlign and a textBaseline that are no keyword");
+    }
+
+    // ── a refused image's placeholder is charged for the clip list it copies ──
+    {
+        StubBackend pb;
+        Renderer p(300, 1, false, pb);
+        p.receive(parse(PAGE));
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":50,"tag":"img","attrs":[["src","data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"]]},
+            {"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null}]})"));
+        std::string d = "M0 0";
+        for (int i = 0; i < 8000; i++) d += "L" + std::to_string(i % 9) + " " + std::to_string(i % 7);
+        std::string cmds = R"(["pn",1,")" + d + R"("],["c","clip",{"p":1}])";
+        for (int i = 0; i < 1200; i++) cmds += R"(,["c","drawImage",{"n":50},0,0])";
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":40,"cmds":[)" + cmds + "]}]}"));
+        std::set<const void*> lists;
+        size_t copied = 0, fills = 0;
+        for (const auto& ops : pb.runs)
+            for (const CanvasOp& op : ops) {
+                fills += op.kind == CanvasOp::Fill;
+                if (!op.clips || !lists.insert(op.clips.get()).second) continue;
+                for (const CanvasClip& clip : *op.clips) copied += clip.path.points.size();
+            }
+        check(fills >= 3 && copied <= (size_t(1) << 24), "placeholders drawn under a long clip copy a bounded amount of it (" + std::to_string(copied) + " floats)");
+    }
+
+    // ── the paths a widget's canvases keep are bounded together ──
+    {
+        StubBackend wb;
+        Renderer w(300, 1, false, wb);
+        w.receive(parse(PAGE));
+        std::string ops;
+        for (int i = 0; i < 8; i++) {
+            std::string id = std::to_string(40 + i);
+            std::string cmds = R"(["pn",1,"M0 0L1 1L2 2L3 3"],["pn",2,null],["pn",3,null],["pn",4,null],["pn",5,null])";
+            for (int k = 0; k < 13; k++) cmds += R"(,["pc",2,"addPath",{"p":1}],["pc",1,"addPath",{"p":2}])";
+            cmds += R"(,["pc",3,"addPath",{"p":2}],["pc",4,"addPath",{"p":2}],["pc",5,"addPath",{"p":1}],["c","addPath",{"p":2}])";
+            ops += std::string(i ? "," : "") + R"({"op":"el","id":)" + id + R"(,"tag":"canvas","attrs":[["width","16"],["height","16"]]},{"op":"ins","parent":4,"id":)" + id +
+                R"(,"before":null},{"op":"canvas","id":)" + id + R"(,"cmds":[)" + cmds + "]}";
+        }
+        w.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        size_t kept = 0;
+        for (int i = 0; i < 8; i++) {
+            wb.runs.clear();
+            w.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":)" + std::to_string(40 + i) +
+                R"(,"cmds":[["c","fill",{"p":1}],["c","fill",{"p":2}],["c","fill",{"p":3}],["c","fill",{"p":4}],["c","fill",{"p":5}],["c","fill"]]}]})"));
+            for (const auto& run : wb.runs)
+                for (const CanvasOp& op : run) kept += op.path.points.size();
+        }
+        check(kept >= (size_t(1) << 20) && kept <= (size_t(5) << 20), "eight canvases keep the paths of one together (" + std::to_string(kept) + " floats)");
+    }
+
+    // ── an arc without a finite sweep adds no curve ──
+    {
+        StubBackend ab;
+        Renderer a(300, 1, false, ab);
+        a.receive(parse(PAGE));
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"canvas","id":40,"cmds":[["c","moveTo",1,1],["c","arc",50,50,10,1e308,-1e308],["c","lineTo",2,2],["c","stroke"],["pn",1,"M1e308 0A5 5 0 0 1 -1e308 5"],["c","fill",{"p":1}]]}]})"));
+        bool finite = true;
+        size_t strokes = 0, fills = 0, curves = 0;
+        for (const auto& ops : ab.runs)
+            for (const CanvasOp& op : ops) {
+                strokes += op.kind == CanvasOp::Stroke;
+                fills += op.kind == CanvasOp::Fill;
+                curves += size_t(std::count(op.path.ops.begin(), op.path.ops.end(), Path::Cubic));
+                if (op.kind == CanvasOp::Stroke)
+                    for (float v : op.path.points) finite = finite && std::isfinite(v);
+            }
+        check(strokes == 1 && fills == 1 && curves == 0 && finite, "an arc from 1e308 to -1e308 radians, and an SVG arc between such points, add no curve of NaN");
+    }
+
+    // ── a canvas object made under a number past every int is the one that number names ──
+    {
+        StubBackend ob;
+        Renderer o(300, 1, false, ob);
+        o.receive(parse(PAGE));
+        o.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":40,"tag":"canvas","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"canvas","id":40,"cmds":[["pn",1e300,"M0 0L5 5L0 5Z"],["c","fill",{"p":1e300}],["g",-1e300,"linear",0,0,10,0],["gs",-1e300,0,"#f00"],["s","fillStyle",{"g":-1e300}],
+            ["c","fillRect",0,0,10,10],["c","drawImage",{"n":1e300},0,0]]}]})"));
+        size_t paths = 0, gradients = 0;
+        for (const auto& ops : ob.runs)
+            for (const CanvasOp& op : ops) {
+                if (op.kind != CanvasOp::Fill) continue;
+                paths += op.paint.kind == CanvasPaint::Solid && op.path.points.size() == 6;
+                gradients += op.paint.kind == CanvasPaint::Linear;
+            }
+        check(paths == 1 && gradients == 1, "a path and a gradient made under 1e300 and -1e300 are the ones those numbers name");
+    }
+
+    // ── canvases drawn from one another down a long chain ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        c.receive(parse(PAGE));
+        std::string ops;
+        for (int i = 0; i < 200000; i++)
+            ops += std::string(i ? "," : "") + R"({"op":"canvas","id":)" + std::to_string(1000 + i) + R"(,"cmds":[["c","drawImage",{"n":)" + std::to_string(1001 + i) + "},0,0]]}";
+        c.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        check(c.last_html().find("id=\"a\"") != std::string::npos, "a batch of 200000 canvas ops, each drawing the next one's canvas, does not recurse through them all");
+    }
+
+    // ── a style element where the parser reads markup: its sheet is text, never tags ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","real"],["style","width:40px;height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"svg","ns":"svg","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"g","ns":"svg","attrs":[]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"style","ns":"svg","attrs":[]},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"css","id":13,"text":"#real{margin-left:7px} a::before{content:\"<div data-twid='10' style='width:222px;height:111px'><title>&amp;<plaintext>\"} body>#after{width:77px}"},
+            {"op":"el","id":14,"tag":"div","attrs":[["id","after"],["style","height:5px"]]},{"op":"ins","parent":4,"id":14,"before":null}]})"));
+        t.tick();
+        auto rect = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        check(rect(10)["width"].asNumber() == 40 && rect(10)["height"].asNumber() == 20 && t.last_html().find("<div data-twid='10'") == std::string::npos,
+              "markup in the sheet of a style element in svg content makes no element (node 10 is " + std::to_string(rect(10)["width"].asNumber()) + " wide)");
+        check(rect(10)["x"].asNumber() == 7 && rect(14)["width"].asNumber() == 77,
+              "and the sheet applies, the rules after the string too (got " + std::to_string(rect(10)["x"].asNumber()) + ", " + std::to_string(rect(14)["width"].asNumber()) + ")");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"css","id":13,"text":"#real{margin-left:8px} body>#after{width:77px} /* <div data-twid='10' style='width:222px'> */ <div data-twid='10' style='width:222px'></div> <!--<div data-twid='10' style='width:222px'>-->"}]})"));
+        t.tick();
+        check(rect(10)["width"].asNumber() == 40 && rect(10)["x"].asNumber() == 8, "nor does markup in a comment of the sheet or between its rules (node 10 is " + std::to_string(rect(10)["width"].asNumber()) + " wide at " + std::to_string(rect(10)["x"].asNumber()) + ")");
+
+        // In a select the parser drops the style tag and reads on in the select; an input there ends the select.
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":20,"tag":"select","attrs":[]},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"style","attrs":[]},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"css","id":21,"text":"a{content:\"<input><div data-twid='14' style='width:99px'>\"}"}]})"));
+        t.tick();
+        check(rect(14)["width"].asNumber() == 77 && rect(10)["width"].asNumber() == 40, "nor does markup in the sheet of a style element in a select (node 14 is " + std::to_string(rect(14)["width"].asNumber()) + " wide)");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"style","attrs":[]},{"op":"ins","parent":3,"id":30,"before":null},
+            {"op":"css","id":30,"text":"<!--\n#gen{float:left;height:5px}#gen::before{content:\"<b>\\<&</b>\"}\n-->@media (100px<width){body>#real{margin-left:9px}}"},
+            {"op":"el","id":31,"tag":"div","attrs":[["id","gen"]]},{"op":"ins","parent":4,"id":31,"before":null}]})"));
+        t.tick();
+        check(rect(31)["width"].asNumber() == 72 && t.last_html().find("<b>") == std::string::npos,
+              "a string of a sheet keeps the text it had, written without its `<` (9 characters are " + std::to_string(rect(31)["width"].asNumber()) + " px)");
+        check(rect(10)["x"].asNumber() == 9, "a sheet in an HTML comment and a range query apply as they did (node 10 at " + std::to_string(rect(10)["x"].asNumber()) + ")");
+    }
+
+    // ── a value that arrives through var() is held to the rule of a declared one ──
+    {
+        StubBackend vb;
+        Renderer v(300, 1, false, vb);
+        v.receive(parse(R"x({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":":root{--p:sticky;--d:list-item;--r:relative}#a{position:var(--p)}#b{display:var(--d)}#c{position:var(--none,sticky)}#d{position:sticky}#e{position:var(--r)}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","c"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["id","d"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"div","attrs":[["id","e"]]},{"op":"ins","parent":4,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"div","attrs":[["style","--q:sticky;position:var(--q)"]]},{"op":"ins","parent":4,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"ul","attrs":[]},{"op":"ins","parent":4,"id":16,"before":null},
+            {"op":"el","id":17,"tag":"li","attrs":[]},{"op":"ins","parent":16,"id":17,"before":null}
+        ]})x"));
+        auto computed = [&](int id, const char* name) {
+            return v.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":)" + std::to_string(id) + "}}"))[0]["result"][name].asString();
+        };
+        check(computed(10, "position") == "static", "position: sticky through a custom property is invalid at computed-value time (got " + computed(10, "position") + ")");
+        check(computed(11, "display") == "inline", "display: list-item through a custom property is invalid at computed-value time (got " + computed(11, "display") + ")");
+        check(computed(12, "position") == "static", "position: sticky as a var() fallback is invalid at computed-value time (got " + computed(12, "position") + ")");
+        check(computed(13, "position") == "static", "a declared position: sticky is dropped (got " + computed(13, "position") + ")");
+        check(computed(14, "position") == "relative", "a position of the profile's set passes through var() (got " + computed(14, "position") + ")");
+        check(computed(15, "position") == "static", "position: sticky through an inline custom property is invalid at computed-value time (got " + computed(15, "position") + ")");
+        check(computed(17, "display") == "list-item", "the UA sheet's list items stay list items (got " + computed(17, "display") + ")");
+    }
+
+    // ── an image source that names a canvas the renderer does not hold ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        s.receive(parse(PAGE));
+        s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":60,"tag":"img","attrs":[["src","tw-canvas:7/-5x2000000000"]]},{"op":"ins","parent":4,"id":60,"before":null},
+            {"op":"el","id":61,"tag":"canvas","attrs":[["width","20"],["height","10"]]},{"op":"ins","parent":4,"id":61,"before":null},{"op":"canvas","id":61,"cmds":[["c","fillRect",0,0,5,5]]}]})"));
+        Json rect = s.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":60}})"))[0]["result"];
+        check(rect["width"].asNumber() == 0 && rect["height"].asNumber() == 0, "an <img> takes no size from a tw-canvas: source of its own (got " + rect.dump() + ")");
+        check(s.viewport_height() < 1000, "and the document is not 2e9 px tall (got " + std::to_string(s.viewport_height()) + ")");
+        rect = s.receive(parse(R"({"type":"query","qid":2,"query":{"q":"rect","id":61}})"))[0]["result"];
+        check(rect["width"].asNumber() == 20 && rect["height"].asNumber() == 10, "a canvas the renderer holds keeps its size (got " + rect.dump() + ")");
+    }
+
+    // ── image sources: a widget's table of them is bounded in number and in bytes, and a canvas keeps one ──
+    {
+        struct Loads : StubBackend {
+            int loads = 0;
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                loads++;
+                w = 40;
+                h = 30;
+                return true;
+            }
+        };
+        auto img = [](int id, const std::string& src) {
+            return Json::object().set("op", "el").set("id", id).set("tag", "img").set("attrs", Json::array().push(Json::array().push("src").push(src)));
+        };
+        auto send = [](Renderer& r, Json ops) { return r.receive(Json::object().set("type", "ops").set("ops", std::move(ops))); };
+        auto width = [](Renderer& r, int id) {
+            double w = -1;
+            for (const Json& m : r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}")))
+                if (m["type"].asString() == "result") w = m["result"]["width"].asNumber();
+            return w;
+        };
+        auto limits = [](const std::vector<Json>& out) {
+            int count = 0;
+            for (const Json& m : out) count += m["type"].asString() == "violation" && m["detail"].asString().rfind("image limit", 0) == 0;
+            return count;
+        };
+        {
+            Loads backend;
+            Renderer r(300, 2, false, backend);
+            r.receive(parse(PAGE));
+            Json ops = Json::array();
+            for (int i = 0; i < 4200; i++) {
+                ops.push(img(1000 + i, "data:image/png;base64," + std::to_string(i)));
+                ops.push(Json::object().set("op", "ins").set("parent", 4).set("id", 1000 + i).set("before", Json()));
+            }
+            auto out = send(r, std::move(ops));
+            int errors = 0, loaded = 0;
+            for (const Json& ev : events(out)) {
+                errors += ev["type"].asString() == "error";
+                loaded += ev["type"].asString() == "load";
+            }
+            check(backend.loads == 4096 && loaded == 4096 && errors == 104, "a widget's image sources: 4096 load, the rest fail as images do: " + std::to_string(backend.loads) + " loads, " + std::to_string(errors) + " errors");
+            check(limits(out) == 1, "the image limit is reported once");
+            check(width(r, 1000) == 40 && width(r, 1000 + 4095) == 40 && width(r, 1000 + 4199) == 0, "the images loaded before the limit show, one past it is a broken image");
+            out = send(r, Json::array().push(Json::object().set("op", "attr").set("id", 1000 + 4199).set("name", "src").set("value", "data:image/png;base64,7"))
+                                       .push(Json::object().set("op", "attr").set("id", 1000).set("name", "src").set("value", "data:image/png;base64,new")));
+            check(backend.loads == 4096 && limits(out) == 0, "past the limit a new source loads nothing more, without another report");
+            check(width(r, 1000 + 4199) == 40 && width(r, 1000) == 0, "a source the table holds shows wherever it is named again");
+        }
+        {
+            Loads backend;
+            Renderer r(300, 2, false, backend);
+            r.receive(parse(PAGE));
+            // Detached, as `new Image()`: loaded all the same, and nothing is serialised.
+            Json ops = Json::array();
+            for (int i = 0; i < 33; i++) {
+                std::string src = "data:image/png;base64," + std::to_string(10 + i);
+                src.resize(1 << 20, 'A');
+                ops.push(img(1000 + i, src));
+            }
+            auto out = send(r, std::move(ops));
+            check(backend.loads == 32 && limits(out) == 1, "a widget's image sources hold 32 MB together: " + std::to_string(backend.loads) + " of 33 loads of 1 MB");
+        }
+        {
+            StubBackend plain;
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"canvas","attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":4,"id":30,"before":null},
+                {"op":"canvas","id":30,"cmds":[["c","fillRect",0,0,5,5]]}]})"));
+            check(width(r, 30) == 10, "a canvas shows at its size");
+            std::string html = r.last_html();
+            size_t at = html.find("tw-canvas:");
+            std::string before = at == std::string::npos ? std::string() : html.substr(at, html.find('"', at) - at);
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":30,"name":"width","value":"20"},{"op":"canvas","id":30,"cmds":[["c","fillRect",0,0,5,5]]}]})"));
+            check(width(r, 30) == 20, "and at its new one once resized");
+            send(r, Json::array().push(img(31, before)).push(Json::object().set("op", "ins").set("parent", 4).set("id", 31).set("before", Json())));
+            check(!before.empty() && width(r, 31) == 0 && width(r, 30) == 20, "the source of a size the canvas no longer has is not kept (" + before + ")");
+        }
+    }
+
+    // ── what ops hold: a batch, a document's text, a node's attributes, the sheets' blocks and the nodes' bytes are bounded natively ──
+    {
+        StubBackend plain;
+        auto send = [](Renderer& r, Json ops) { return r.receive(Json::object().set("type", "ops").set("ops", std::move(ops))); };
+        auto refused = [](const std::vector<Json>& out, const char* what) {
+            int count = 0;
+            for (const Json& m : out) count += m["type"].asString() == "violation" && m["detail"].asString().rfind(what, 0) == 0;
+            return count;
+        };
+        auto known = [](Renderer& r, int id) {
+            for (const Json& m : r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}")))
+                if (m["type"].asString() == "result") return !m["result"].find("error");
+            return false;
+        };
+        auto words = [](int count) {
+            std::string text;
+            for (int i = 0; i < count; i++) text += "a ";
+            return text;
+        };
+        // Every node below stays detached: counted as the ops arrive, never laid out.
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            Json ops = Json::array().push(Json::object().set("op", "el").set("id", 9000).set("tag", "div").set("attrs", Json::array()));
+            for (int i = 0; i < 200000; i++) ops.push(Json::object().set("op", "rm").set("id", 1));
+            auto out = send(r, std::move(ops));
+            check(refused(out, "ops limit") == 1 && !known(r, 9000), "a batch of 200,001 ops is not applied");
+            ops = Json::array().push(Json::object().set("op", "el").set("id", 9000).set("tag", "div").set("attrs", Json::array()));
+            for (int i = 0; i < 199999; i++) ops.push(Json::object().set("op", "rm").set("id", 1));
+            out = send(r, std::move(ops));
+            check(refused(out, "ops limit") == 0 && known(r, 9000), "one of 200,000 is");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            auto text = [&](int id, int count) { return send(r, Json::array().push(Json::object().set("op", "text").set("id", id).set("data", words(count)))); };
+            check(refused(text(100, 60000), "text limit") == 1, "a text of 120,000 words and spaces is refused");
+            check(refused(text(101, 40000), "text limit") == 0 && refused(text(102, 20000), "text limit") == 1, "a document's text nodes hold 100,000 together");
+            auto out = send(r, Json::array().push(Json::object().set("op", "data").set("id", 101).set("data", words(60000))));
+            check(refused(out, "text limit") == 1, "a text node does not grow past them");
+            send(r, Json::array().push(Json::object().set("op", "data").set("id", 101).set("data", words(10000))));
+            check(refused(text(102, 20000), "text limit") == 0 && refused(text(103, 20000), "text limit") == 0 && refused(text(104, 20000), "text limit") == 1,
+                  "text made shorter is counted off");
+            send(r, Json::array().push(Json::object().set("op", "rm").set("id", 102)).push(Json::object().set("op", "rm").set("id", 103)));
+            check(refused(text(105, 40000), "text limit") == 0, "and so is text removed");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            Json ops = Json::array().push(Json::object().set("op", "el").set("id", 100).set("tag", "div").set("attrs", Json::array()));
+            for (int i = 0; i < 4097; i++) ops.push(Json::object().set("op", "attr").set("id", 100).set("name", "data-a" + std::to_string(i)).set("value", "1"));
+            for (int i = 0; i < 4097; i++) ops.push(Json::object().set("op", "style").set("id", 100).set("name", "--p" + std::to_string(i)).set("value", "1").set("important", false));
+            ops.push(Json::object().set("op", "attr").set("id", 100).set("name", "data-a7").set("value", "2"));
+            ops.push(Json::object().set("op", "style").set("id", 100).set("name", "--p7").set("value", "2").set("important", false));
+            auto out = send(r, std::move(ops));
+            check(refused(out, "attribute count") == 1 && refused(out, "declaration count") == 1, "an element takes 4096 attributes and 4096 declarations, and still changes those it has");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            std::string rules;
+            for (int i = 0; i < 9000; i++) rules += "a{}";
+            auto sheet = [&](int id, const std::string& css) {
+                return send(r, Json::array().push(Json::object().set("op", "el").set("id", id).set("tag", "style").set("attrs", Json::array()))
+                                            .push(Json::object().set("op", "css").set("id", id).set("text", css)));
+            };
+            check(refused(sheet(100, rules), "stylesheet limit") == 0 && refused(sheet(101, rules), "stylesheet limit") == 1, "a document's sheets hold 16,384 blocks together");
+            send(r, Json::array().push(Json::object().set("op", "css").set("id", 100).set("text", "a{}")));
+            check(refused(sheet(101, rules), "stylesheet limit") == 0, "a sheet replaced is counted off");
+            send(r, Json::array().push(Json::object().set("op", "rm").set("id", 101)));
+            check(refused(sheet(102, rules), "stylesheet limit") == 0, "and so is one removed");
+        }
+        {
+            Renderer r(300, 2, false, plain);
+            r.receive(parse(PAGE));
+            const std::string value(13 << 20, 'A');
+            send(r, Json::array().push(Json::object().set("op", "el").set("id", 100).set("tag", "div").set("attrs", Json::array())));
+            int stopped = 0;
+            for (int i = 0; i < 6; i++) stopped += refused(send(r, Json::array().push(Json::object().set("op", "attr").set("id", 100).set("name", "data-a").set("value", value))), "tree limit");
+            check(stopped == 0 && r.last_html().find("data-tw-badge") == std::string::npos, "78 MB set on one attribute in turn is 13 MB held: the widget goes on");
+            for (int i = 0; i < 5; i++) stopped += refused(send(r, Json::array().push(Json::object().set("op", "attr").set("id", 100).set("name", "data-b" + std::to_string(i)).set("value", value))), "tree limit");
+            check(stopped == 1 && r.last_html().find("data-tw-badge=\"fatal\"") != std::string::npos, "past 48 MB held in its nodes the widget is stopped, as past the layout limit");
+            send(r, Json::array().push(Json::object().set("op", "el").set("id", 200).set("tag", "div").set("attrs", Json::array())));
+            check(!known(r, 200), "and a stopped widget's ops are not applied");
+        }
+    }
+
+    // ── an attribute of the widget's never stands in for the renderer's own data-twid or style, nor for the fork's key ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[["STYLE","--tg-theme-bg-color:#123456 !important"]]},
+            {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:40px;height:20px"],["data-twid","11"],["data-lh-id","k"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":0,"tag":"div","attrs":[["data-twid","10"],["Data-TwId","10"],["style","width:222px;height:111px"]]},{"op":"ins","parent":4,"id":0,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["STYLE","width:99px"],["Style","width:98px"],["style","height:7px"],["Data-LH-Id","k"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        t.tick();
+        auto rect = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        check(rect(10)["width"].asNumber() == 40 && rect(10)["y"].asNumber() == 0 && t.last_html().find("data-twid=\"11\"") == std::string::npos,
+              "an element cannot take a node's id by a data-twid attribute of its own (node 10 is " + std::to_string(rect(10)["width"].asNumber()) + " wide)");
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"height","value":"33px"}]})"));
+        t.tick();
+        check(rect(10)["height"].asNumber() == 33 && rect(10)["y"].asNumber() == 0 && rect(12)["y"].asNumber() >= 33,
+              "and a style op for the node lands on the node's element (at " + std::to_string(rect(10)["y"].asNumber()) + ", " + std::to_string(rect(10)["height"].asNumber()) + " high)");
+        check(rect(12)["width"].asNumber() == 300 && rect(12)["height"].asNumber() == 7 && t.last_html().find("#123456") == std::string::npos,
+              "a style attribute spelt in another case does not replace the one the renderer writes (node 12 is " + std::to_string(rect(12)["width"].asNumber()) + " wide)");
+        std::string html = t.last_html();
+        for (auto& c : html) c = char(std::tolower((unsigned char)c));
+        check(html.find("data-lh-id") == std::string::npos, "the key the fork pairs children by is not an attribute a widget can write");
+    }
+
+    // ── an adopt op that names a live node's id ──
+    {
+        StubBackend ab;
+        Renderer a(300, 1, false, ab);
+        a.receive(parse(PAGE));
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"text","id":30,"data":"kept"},{"op":"ins","parent":11,"id":30,"before":null}]})"));
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":11,"tag":"head","adopt":"head","attrs":[]}]})"));
+        check(a.last_html().find("kept") != std::string::npos, "an adopt op naming a live node's id is ignored: the node stays in the tree");
+        a.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":10}]})"));
+        check(a.last_html().find("kept") == std::string::npos && a.last_html().find("id=\"b\"") != std::string::npos, "and its parent is removed with it afterwards");
+    }
+
+    // ── a byte that continues no character is a character of its own to the CSS tokenizer ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","color:red;width:10px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"x"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto style = [&](const char* name, const std::string& value) {
+            t.receive(Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "style").set("id", 10).set("name", name).set("value", value))));
+            t.tick();
+        };
+        style("color", "\x80");
+        style("width", "20px");
+        Json rect;
+        for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", 10))))
+            if (m["type"].asString() == "result") rect = m["result"];
+        check(rect["width"].asNumber() == 20, "a style value that is not UTF-8 ends its declaration, not the renderer (got " + rect.dump() + ")");
+    }
+
+    // ── a chain of sibling combinators, matched on a pointer move, for a batch of restyled elements and on a change of media ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        const std::string head = R"j({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},{"op":"ins","parent":3,"id":5,"before":null})j";
+        std::string ops = head + R"j(,{"op":"css","id":5,"text":":not(*)~*~*~*~*~*~*~*~*~*~*~*:hover{color:red}:not(*)~*~*~*~*~*~*~*~*~*~*~*.t{color:red}"})j";
+        for (int i = 0; i < 340; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","height:5px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        s.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        s.tick();
+        auto seconds = [](std::chrono::steady_clock::time_point from) { return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count(); };
+        auto start = std::chrono::steady_clock::now();
+        s.hover(0, 10, 197);
+        double moved = seconds(start);
+        check(moved < 5, "a pointer move matches a chain of sibling combinators within one selector budget (" + std::to_string(moved) + " s)");
+        std::string flips;
+        for (int i = 40; i < 340; i++) flips += std::string(flips.empty() ? "" : ",") + R"({"op":"attr","id":)" + std::to_string(100 + i) + R"(,"name":"class","value":"t"})";
+        start = std::chrono::steady_clock::now();
+        s.receive(parse(R"({"type":"ops","ops":[)" + flips + "]}"));
+        s.tick();
+        double restyled = seconds(start);
+        check(restyled < 5, "and the elements a batch restyles share one budget (" + std::to_string(restyled) + " s)");
+
+        StubBackend mb;
+        Renderer m(300, 1, false, mb);
+        ops = head + R"j(,{"op":"css","id":5,"text":"@media (min-height:100px){:not(*)~*~*~*~*~*~*~*~*~*~*~*.t{color:red}}"})j";
+        for (int i = 0; i < 38; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["class","t"],["style","height:5px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        start = std::chrono::steady_clock::now();
+        m.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        m.tick();
+        double media = seconds(start);
+        check(media < 5, "and so do the selectors of a media query that starts to apply as the document grows (" + std::to_string(media) + " s)");
+    }
+
+    // ── SVG presentation attributes: their text reaches the CSS parser as written ──
+    {
+        StubBackend sb;
+        Renderer nested(300, 1, false, sb);
+        nested.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body"},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"path","ns":"svg","attrs":[["d","M0 0h50"],["stroke","red"],["stroke-dasharray",")" + std::string(8192, '[') +
+            R"("]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        size_t paths = 0;
+        for (const Command& c : nested.paint())
+            if (c.kind == Cmd::Path) paths++;
+        check(paths == 1, "a path whose stroke-dasharray nests 8192 blocks is drawn (" + std::to_string(paths) + " paths)");
+    }
+
+    // ── a complex selector of more compounds than a document has levels ──
+    {
+        StubBackend cb;
+        Renderer c(300, 1, false, cb);
+        std::string chain = "div", half = "div", ops;
+        for (int i = 1; i < 200; i++) chain += "+div";
+        for (int i = 1; i < 100; i++) half += "+div";
+        for (int i = 0; i < 210; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","height:1px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"div{width:10px})" + chain + R"({width:20px}:is()" + half + ")+" + half + R"({width:40px}div+div+div{width:30px}"},{"op":"ins","parent":3,"id":5,"before":null})" + ops + "]}"));
+        c.tick();
+        auto width = [&](int id) {
+            return c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(100) == 10 && width(102) == 30 && width(309) == 30,
+              "a selector of 200 compounds, in one chain or nested in :is(), is left out and the rules around it apply (got " + std::to_string(width(100)) +
+                  ", " + std::to_string(width(102)) + ", " + std::to_string(width(309)) + ")");
+    }
+
+    // ── a text changed in place that is not UTF-8 goes through the parser ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"span","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"hello"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto width = [&] {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", 10))))
+                if (m["type"].asString() == "result") return m["result"]["width"].asNumber();
+            return -1.0;
+        };
+        auto data = [&](const std::string& text) {
+            t.receive(Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "data").set("id", 11).set("data", text))));
+            t.tick();
+        };
+        // An overlong NUL is no character to the text splitter and two replacement characters to the parser.
+        data("\xC0\x80");
+        double replaced = width();
+        data("world");
+        check(replaced == 48 && width() == 40, "a text follows one that was not UTF-8 (got " + std::to_string(replaced) + ", " + std::to_string(width()) + ")");
+    }
+
+    // ── formatting elements the parser opens again in every block that follows ──
+    {
+        auto texts = [](int formatting, int blocks, size_t name) {
+            StubBackend cb;
+            Renderer c(300, 1, false, cb);
+            std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":10,"tag":"p","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null})";
+            int parent = 10, id = 11;
+            for (int i = 0; i < formatting; i++, parent = id++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"b","attrs":[["class",")" + std::string(name, 'x') + R"("]]},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+            for (int i = 0; i < blocks; i++, id += 2)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[]},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null},{"op":"text","id":)" + std::to_string(id + 1) + R"(,"data":"x"},{"op":"ins","parent":)" + std::to_string(id) + R"(,"id":)" + std::to_string(id + 1) + R"(,"before":null})";
+            c.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            size_t count = 0;
+            for (const Command& command : c.paint())
+                if (command.kind == Cmd::Text) count++;
+            return count;
+        };
+        size_t few = texts(3, 20, 1), many = texts(124, 925, 2000);
+        check(few == 20 && many > 0 && many <= 8, "a parse clones formatting elements up to the size of its input and 1 MB, then stops (" + std::to_string(few) + " and " + std::to_string(many) + " texts painted)");
+    }
+
+    // ── a font attribute of an <svg> declares the one property it names ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","40"],["font-size","12;position:sticky;display:list-item;top:3px"],
+                ["font-weight","700;float:right"],["font-style","italic;-lh-raw-transition:all 1s"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"text","ns":"svg","attrs":[["font-size","9;fill:red;opacity:0.5"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","40"],["font-size","12"],["font-weight","700"],["font-style","italic"],
+                ["font-family","serif"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        t.tick();
+        auto ask = [&](Json query) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) { return ask(Json::object().set("q", "cs").set("id", id))[prop].asString(); };
+        check(cs(10, "position") == "static" && cs(10, "display") == "inline-block" && cs(10, "float") == "none" && cs(10, "top") == "auto",
+              "a font attribute of an <svg> that goes on past its value declares nothing (got " + cs(10, "position") + ", " + cs(10, "display") + ", " +
+                  cs(10, "float") + ", " + cs(10, "top") + ")");
+        check(cs(11, "opacity") == "1" && cs(11, "fill") == "rgb(0, 0, 0)",
+              "nor does one of an SVG <text> (got " + cs(11, "opacity") + ", " + cs(11, "fill") + ")");
+        check(cs(12, "font-size") == "12px" && cs(12, "font-weight") == "700" && cs(12, "font-style") == "italic" && cs(12, "font-family") == "serif",
+              "the font attributes of an <svg> set its font as before (got " + cs(12, "font-size") + ", " + cs(12, "font-weight") + ", " +
+                  cs(12, "font-style") + ", " + cs(12, "font-family") + ")");
+    }
+
+    // ── the fork's own strtod and an exponent that fits no int ──
+    {
+        char* end = nullptr;
+        const char* text = "1e2147483648";
+        const double big = litehtml::t_strtod(text, &end);
+        const double small = litehtml::t_strtod("1e-2147483649", nullptr);
+        check(std::isinf(big) && end == text + 12 && small == 0 && litehtml::t_strtod("2.5e-3", nullptr) == 0.0025,
+              "an exponent past the range of int reads as infinity or zero, and to its end");
+    }
+
+    // ── chains of sibling combinators over a long row of siblings, matched again on a pointer move ──
+    {
+        StubBackend sb;
+        Renderer s(300, 1, false, sb);
+        std::string chain = "*", css = "div:hover{color:blue}";
+        for (int i = 1; i < 128; i++) chain += "+*";
+        for (int i = 0; i < 12; i++) css += chain + "{outline-offset:" + std::to_string(i) + "px}";
+        std::string ops = R"j({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":")j" + css + R"j("},{"op":"ins","parent":3,"id":5,"before":null})j";
+        for (int i = 0; i < 1950; i++) {
+            std::string id = std::to_string(100 + i);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[["style","height:1px"]]},{"op":"ins","parent":4,"id":)" + id + R"(,"before":null})";
+        }
+        s.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        s.tick();
+        auto start = std::chrono::steady_clock::now();
+        s.hover(0, 10, 10);
+        double moved = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        check(moved < 10, "a pointer move is charged for the siblings its selectors walk, not only for their steps (" + std::to_string(moved) + " s)");
+    }
+
+    // ── a textarea whose value replaced its children, then removed ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(PAGE));
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":50,"tag":"textarea","attrs":[]},{"op":"text","id":51,"data":"old"},{"op":"ins","parent":50,"id":51,"before":null},
+            {"op":"ins","parent":4,"id":50,"before":null},{"op":"prop","id":50,"name":"value","value":"new"},{"op":"rm","id":50}]})"));
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"ins","parent":4,"id":51,"before":null}]})"));
+        check(t.last_html().find("old") != std::string::npos && t.last_html().find("<textarea") == std::string::npos,
+              "the text a textarea's value replaced does not point at the textarea once that is removed");
+    }
+
+    // ── a repeated background far from the origin is tiled by count ──
+    {
+        struct Images : StubBackend {
+            bool load_image(int, const std::string&, float& w, float& h) override {
+                w = h = 1;
+                return true;
+            }
+        } ib;
+        Renderer t(300, 1, false, ib);
+        t.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","transform:translateX(-33554408px)"]]},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","margin-left:33554408px;width:96px;height:6px;background-image:url(data:image/png;base64,AA==);background-size:6px 6px"]]},
+            {"op":"ins","parent":10,"id":11,"before":null},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        int tiles = 0;
+        for (const Command& c : t.paint())
+            if (c.kind == Cmd::Image) tiles++;
+        check(tiles == 16, "a 96 px box across 2^25 px, where a float steps by 4, gets its 16 tiles of 6 px (got " + std::to_string(tiles) + ")");
+    }
+
+    // ── a word broken anywhere measures what fits on its line, not half of the text that is left ──
+    {
+        struct Counting : StubBackend {
+            size_t bytes = 0;
+            float text_width(int font, const std::string& text) override {
+                bytes += text.size();
+                return StubBackend::text_width(font, text);
+            }
+        } wb;
+        Renderer w(300, 1, false, wb);
+        w.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:32px;overflow-wrap:anywhere"]]},{"op":"text","id":11,"data":")" + std::string(20000, 'x') + R"("},
+            {"op":"ins","parent":10,"id":11,"before":null},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[]},{"op":"text","id":13,"data":"x"},{"op":"ins","parent":12,"id":13,"before":null},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        auto height = [&](int id) {
+            return w.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["height"].asNumber();
+        };
+        double lines = height(12) > 0 ? height(10) / height(12) : 0;
+        check(lines == 5000 && wb.bytes < 1000000,
+              "a 20,000 character word broken four to a line is measured line by line (" + std::to_string(int(lines)) + " lines, " + std::to_string(wb.bytes) + " bytes measured)");
+    }
+
+    // ── ids: an element, a text or a second root that names an adopted root's id is ignored ──
+    {
+        StubBackend sb;
+        Renderer d(300, 1, false, sb);
+        d.set_compositing(true);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"@keyframes spin{to{transform:rotate(360deg)}} .k{width:50px;height:50px;animation:spin 1s linear infinite}"},
+            {"op":"ins","parent":3,"id":5,"before":null},{"op":"el","id":10,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":4,"tag":"div","attrs":[["class","k"]]},{"op":"ins","parent":10,"id":4,"before":null},
+            {"op":"text","id":3,"data":"again"},{"op":"ins","parent":10,"id":3,"before":null},
+            {"op":"el","id":2,"tag":"body","adopt":"body","attrs":[]}]})"));
+        const std::string html = d.last_html();
+        bool once = html.find("data-twid=\"4\"") == html.rfind("data-twid=\"4\"") && html.find("<body data-twid=\"4\"") != std::string::npos;
+        check(once, "an element that names the body's id is ignored");
+        check(html.find("again") == std::string::npos, "and a text that names the head's");
+        check(html.find("<html data-twid=\"2\"") != std::string::npos && html.find("<body data-twid=\"2\"") == std::string::npos, "and a root adopted under another root's id keeps its own");
+        // A layer under an ancestor of its own id was its own parent: the walk up from it never ended.
+        if (once) d.hover(0, 10, 10);
+        check(once, "a pointer over the document finds its element");
+    }
+
+    // ── ids: a number that fits no int names no node ──
+    {
+        StubBackend sb;
+        Renderer d(300, 1, false, sb);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},
+            {"op":"el","id":1e300,"tag":"div","attrs":[["class","huge"]]},{"op":"ins","parent":4,"id":1e300,"before":-1e300},
+            {"op":"el","id":-1e300,"tag":"div","attrs":[["class","low"]]},{"op":"ins","parent":4,"id":-1e300,"before":null},
+            {"op":"el","id":4294967306,"tag":"canvas","attrs":[["class","wide"]]},{"op":"ins","parent":4,"id":4294967306,"before":null},
+            {"op":"canvas","id":4294967306,"cmds":[["c","drawImage",{"n":1e300},0,0]]},{"op":"canvas","id":1e300,"cmds":[["c","fillRect",0,0,5,5]]},
+            {"op":"text","id":1e19,"data":"stray"},{"op":"ins","parent":4,"id":1e19,"before":null},{"op":"ins","parent":1e300,"id":4,"before":null},
+            {"op":"el","id":0,"tag":"div","attrs":[["class","zero"]]},{"op":"ins","parent":4,"id":0,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","plain"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        std::string html = d.last_html();
+        check(html.find("huge") == std::string::npos && html.find("low") == std::string::npos && html.find("wide") == std::string::npos && html.find("stray") == std::string::npos,
+              "an id that fits no int makes no node");
+        check(html.find("zero") == std::string::npos && html.find("plain") != std::string::npos, "nor does 0, and the nodes around them are made");
+        auto got = d.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":1e300}})"));
+        check(!got.empty() && got[0]["result"]["error"].asString() == "no such element", "a query with such an id finds no element");
+        d.receive(parse(R"({"type":"anim","now":0,"anims":[{"aid":1e300,"target":10,"keyframes":[{"offset":0,"values":{"opacity":"0"}},{"offset":1,"values":{"opacity":"1"}}],"timing":{"duration":1000,"fill":"both"},"startTime":-500},
+            {"aid":7,"target":-1e300,"css":{"kind":"animation","name":"spin","origin":0},"cancelled":true},{"aid":8,"target":1e300,"keyframes":[]}]})"));
+        bool animated = d.last_html().find("opacity:0.") != std::string::npos;
+        d.receive(parse(R"({"type":"anim","now":0,"anims":[{"aid":2147483647,"remove":true}]})"));
+        check(animated && d.last_html().find("opacity") == std::string::npos, "an animation's id past the range of an int is the end of that range");
+    }
+
+    // ── nodes: a renderer holds at most the 50,000 the validator lets a widget have ──
+    {
+        StubBackend sb;
+        Renderer d(300, 1, false, sb);
+        std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]})";
+        for (int id = 100; id < 100 + 50002; id++) ops += R"(,{"op":"text","id":)" + std::to_string(id) + R"(,"data":"t)" + std::to_string(id) + R"("})";
+        ops += R"(,{"op":"el","id":60000,"tag":"p","attrs":[["class","late"]]},{"op":"ins","parent":4,"id":60000,"before":null})";
+        ops += R"(,{"op":"ins","parent":4,"id":100,"before":null},{"op":"ins","parent":4,"id":50099,"before":null},{"op":"ins","parent":4,"id":50101,"before":null})";
+        d.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        std::string html = d.last_html();
+        check(html.find("t100") != std::string::npos && html.find("t50099") != std::string::npos, "the first 50,000 nodes are made");
+        check(html.find("t50101") == std::string::npos && html.find("late") == std::string::npos, "and no node past them");
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":100},{"op":"el","id":60000,"tag":"p","attrs":[["class","late"]]},{"op":"ins","parent":4,"id":60000,"before":null}]})"));
+        check(d.last_html().find("late") != std::string::npos, "a removed node makes room for a new one");
+    }
+
+    // ── a host's sizes that are no sizes ──
+    {
+        StubBackend nb;
+        Renderer n(NAN, -3, false, nb);
+        n.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","height:5000px"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        check(n.width() == 0 && n.px_width() == 0 && n.dpr() > 0 && n.px_height() > 0, "a width that is no number is no width, and a scale below any screen's is the least one");
+        std::vector<Json> out;
+        n.set_width(-300, out);
+        check(n.width() == 0 && n.px_width() == 0, "a negative width is none");
+        n.set_width(1e30, out);
+        check(n.width() == 1048576 && n.px_width() == 262144, "a width past any view is the widest one, at the least scale");
+        n.set_width(300, out);
+        n.set_max_height(NAN, out);
+        (void)n.paint();
+        check(n.viewport_height() == 50, "a height limit that is no number is the least one (" + std::to_string(n.viewport_height()) + ")");
+        n.set_max_height(INFINITY, out);
+        (void)n.paint();
+        check(n.viewport_height() == 5000 && n.px_height() > 0, "and an endless one the ceiling's (" + std::to_string(n.viewport_height()) + ")");
+    }
+
+    // ── a document patched in place lets go of the fonts it no longer uses ──
+    {
+        struct CountingBackend : StubBackend {
+            int deleted = 0;
+            void delete_font(int) override { deleted++; }
+        } b;
+        Renderer t(300, 1, false, b);
+        Json page = Json::array();
+        page.push(Json::object().set("op", "el").set("id", 2).set("tag", "html").set("adopt", "html").set("attrs", Json::array()));
+        page.push(Json::object().set("op", "el").set("id", 3).set("tag", "head").set("adopt", "head").set("attrs", Json::array()));
+        page.push(Json::object().set("op", "el").set("id", 4).set("tag", "body").set("adopt", "body").set("attrs", Json::array()));
+        for (int k = 0; k < 50; k++) {
+            page.push(Json::object().set("op", "el").set("id", 10 + k).set("tag", "div").set("attrs", Json::array().push(Json::array().push("style").push("font-size:9px"))));
+            page.push(Json::object().set("op", "ins").set("parent", 4).set("id", 10 + k).set("before", Json()));
+        }
+        t.receive(Json::object().set("type", "ops").set("ops", page));
+        t.tick();
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; b.next <= 6000 && std::chrono::steady_clock::now() - start < std::chrono::seconds(30); i++) {
+            Json ops = Json::array();
+            for (int k = 0; k < 50; k++)
+                ops.push(Json::object().set("op", "style").set("id", 10 + k).set("name", "font-size").set("value", std::to_string(10 + (i * 50 + k) * 0.001) + "px"));
+            t.receive(Json::object().set("type", "ops").set("ops", ops));
+            t.tick();
+        }
+        check(b.next > 6000 && b.next - b.deleted < 5000,
+              "6000 font sizes in turn on 50 elements keep fewer than 5000 fonts (made " + std::to_string(b.next) + ", let go of " + std::to_string(b.deleted) + ")");
+    }
+
+    // ── names: a widget that keeps inventing class and property names is stopped, an ordinary one is not ──
+    {
+        StubBackend nb;
+        const char* page = R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"#a{width:100px;height:10px;--accent:red}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null}]})";
+        auto violation = [](const std::vector<Json>& out) {
+            for (const Json& m : out)
+                if (m["type"].asString() == "violation" && m["detail"].asString().rfind("name limit", 0) == 0) return true;
+            return false;
+        };
+        auto stopped_after = [&](const std::string& tag, int classes, size_t length, int properties, std::string& html) {
+            Renderer r(300, 1, false, nb);
+            r.receive(parse(page));
+            r.tick();
+            int stopped = 0;
+            for (int round = 1; round <= 12 && !stopped; round++) {
+                std::string list, sheet;
+                for (int i = 0; i < classes; i++) {
+                    std::string name = tag + std::to_string(round) + "c" + std::to_string(i);
+                    list += name + std::string(length > name.size() ? length - name.size() : 0, 'x') + " ";
+                }
+                for (int i = 0; i < properties; i++) sheet += "--" + tag + std::to_string(round) + "p" + std::to_string(i) + ":1;";
+                bool now = violation(r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":")" + list +
+                                                     R"("},{"op":"css","id":20,"text":"#a{width:100px;height:10px;)" + sheet + R"(}"}]})")));
+                if (violation(r.tick()) || now) stopped = round;
+            }
+            r.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"after-the-stop"}]})"));
+            r.tick();
+            html = r.last_html();
+            return stopped;
+        };
+        std::string many, long_ones;
+        const int by_count = stopped_after("nm", 2500, 0, 500, many), by_bytes = stopped_after("nl", 100, 4000, 0, long_ones);
+        check(by_count == 7 && by_bytes == 3 && many.find("data-tw-badge=\"fatal\"") != std::string::npos && many.find("after-the-stop") == std::string::npos &&
+                  long_ones.find("data-tw-badge=\"fatal\"") != std::string::npos,
+              "a widget that invents 3000 names, or 400 K of names, a batch is stopped past 20000 names or 1 MB, and its names reach the document no more (stopped after " +
+                  std::to_string(by_count) + " and " + std::to_string(by_bytes) + " batches)");
+
+        Renderer plain(300, 1, false, nb);
+        plain.receive(parse(page));
+        plain.tick();
+        bool stopped = false;
+        for (int i = 0; i < 25000; i++) {
+            Json asked = Json::object().set("q", "cs").set("id", 10).set("prop", "--asked" + std::to_string(i));
+            stopped = violation(plain.receive(Json::object().set("type", "query").set("qid", 1).set("query", asked))) || stopped;
+        }
+        stopped = violation(plain.tick()) || stopped;
+        auto answer = [&](Json query) { return plain.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query)))[0]["result"]; };
+        const std::string accent = answer(Json::object().set("q", "cs").set("id", 10).set("prop", "--accent")).asString();
+        const double width = answer(Json::object().set("q", "rect").set("id", 10))["width"].asNumber();
+        check(!stopped && accent == "red" && width == 100 && plain.last_html().find("data-tw-badge") == std::string::npos,
+              "an ordinary widget is not stopped, and 25000 queries for custom properties nobody declared add no names (got " + accent + ", " + std::to_string(width) + ")");
+    }
+
+    // ── names: each renderer is charged the names it adds itself, also while another one adds names on another thread ──
+#ifndef Renderer  // core_record.cpp renames Renderer to record it, and its recording takes one step at a time: the second renderer would wait for the first
+    {
+        // A batch of another renderer's, run to its end on a second thread from inside the next text measurement.
+        struct GateBackend : StubBackend {
+            Renderer* next = nullptr;
+            Json batch;
+            bool ran = false;
+            float text_width(int font, const std::string& text) override {
+                if (Renderer* other = next) {
+                    next = nullptr;
+                    std::thread([&] {
+                        other->receive(batch);
+                        other->tick();
+                    }).join();
+                    ran = true;
+                }
+                return StubBackend::text_width(font, text);
+            }
+        };
+        const char* page = R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","warm"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"warm words"},{"op":"ins","parent":10,"id":11,"before":null}]})";
+        auto text_of = [](const std::string& text) {
+            return Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "data").set("id", 11).set("data", text)));
+        };
+        auto class_of = [](const std::string& name) {
+            return Json::object().set("type", "ops").set("ops", Json::array().push(Json::object().set("op", "attr").set("id", 10).set("name", "class").set("value", name)));
+        };
+        GateBackend ab;
+        StubBackend bb;
+        Renderer a(300, 1, false, ab), b(300, 1, false, bb);
+        a.receive(parse(page));
+        a.tick();
+        b.receive(parse(page));
+        b.tick();
+        auto charges = [&] { return std::vector<size_t>{a.stats().names, a.stats().name_bytes, b.stats().names, b.stats().name_bytes}; };
+        auto since = [&](const std::vector<size_t>& start) {
+            std::vector<size_t> now = charges();
+            for (size_t i = 0; i < now.size(); i++) now[i] -= start[i];
+            return now;
+        };
+        auto shown = [](const std::vector<size_t>& c) {
+            return "A " + std::to_string(c[0]) + " names, " + std::to_string(c[1]) + " bytes; B " + std::to_string(c[2]) + " names, " + std::to_string(c[3]) + " bytes";
+        };
+        // A lays out a text it has not measured on the page it has, B gives its element a class no one has used.
+        const std::string first = "tw-fresh-class-1", second = "tw-fresh-class-2";
+        std::vector<size_t> start = charges();
+        a.receive(text_of("serial words"));
+        a.tick();
+        b.receive(class_of(first));
+        b.tick();
+        const std::vector<size_t> serial = since(start);
+        check(serial == std::vector<size_t>{0, 0, 1, first.size()},
+              "of two renderers taking turns only the one that adds a class is charged its name and bytes (" + shown(serial) + ")");
+        start = charges();
+        ab.next = &b;
+        ab.batch = class_of(second);
+        a.receive(text_of("overlapping words"));
+        a.tick();
+        const std::vector<size_t> overlapped = since(start);
+        check(ab.ran && second.size() == first.size() && overlapped == serial,
+              "a renderer waiting in a text measurement while another adds a class on a second thread is not charged for it (" + shown(overlapped) + ")");
+    }
+#endif
+    // ── numbers are read and written as the C locale has them, whatever LC_NUMERIC the process chose ──
+    {
+        const char* page = R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0.5px"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":"@keyframes m{from{margin-left:0px}to{margin-left:3px}} .m{animation:m 2s linear infinite} .s{background:linear-gradient(red,blue);background-size:20px 10px;background-position:12.5px 0}"},
+            {"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","m"],["style","margin:1.5em;height:10.5px;box-shadow:0 0 0.5px red;opacity:.5"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["class","s"],["style","width:40px;height:10px"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"input","attrs":[["size","7"],["value","x"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"input","attrs":[["type","range"],["min","0"],["max","3"],["value","1"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"svg","svg":true,"attrs":[["width","40.5"],["height","20"],["viewBox","0 0 20.5 10"]]},{"op":"ins","parent":4,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"path","svg":true,"attrs":[["d","M0.5 0.5L10.25 9.75"],["stroke","red"],["stroke-width","1.5"],["opacity","0.5"]]},{"op":"ins","parent":14,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"canvas","attrs":[["width","40"],["height","20"]]},{"op":"ins","parent":4,"id":16,"before":null},
+            {"op":"canvas","id":16,"cmds":[["s","font","12.5px serif"],["c","fillText","hi",0,10]]}]})J";
+        auto run = [&] {
+            StubBackend lb;
+            Renderer l(300, 1, false, lb);
+            l.receive(parse(page));
+            std::string out = l.last_html() + "\n" + to_json(l.paint());
+            for (const char* query : {R"J({"q":"cs","id":10})J", R"J({"q":"rect","id":12})J", R"J({"q":"rect","id":13})J", R"J({"q":"matchMedia","query":"(min-width: 299.5px)"})J",
+                                      R"J({"q":"matchMedia","query":"(min-width: 300.5px)"})J", R"J({"q":"measureText","font":"12.5px serif","text":"hi"})J"})
+                for (const Json& m : l.receive(parse(std::string(R"({"type":"query","qid":1,"query":)") + query + "}")))
+                    out += "\n" + m.dump();
+            // Json writes its numbers in no locale.
+            Json values = Json::array();
+            for (const auto& canvas_run : lb.runs)
+                for (const CanvasOp& op : canvas_run) values.push(Json(double(op.y)));
+            values.push(Json(css::format_number(1.25, 2))).push(Json(css::format_number(2.0 / 3, 4))).push(Json(css::number("1.5").value_or(-1)));
+            values.push(Json(double(css::parse_font("12.5px serif").size))).push(Json(interpolate("0px", "3px", 0.5)));
+            values.push(Json(paint::box_shadow_blurred("0 0 0.5px red")));
+            return out + "\n" + values.dump();
+        };
+        const std::string in_c = run();
+        const char* chosen = nullptr;
+        for (const char* name : {"de-DE", "de_DE.UTF-8", "de_DE.utf8", "de_DE", "ru_RU.UTF-8", "fr_FR.UTF-8", "German"})
+            if (std::setlocale(LC_NUMERIC, name) && std::localeconv()->decimal_point[0] == ',') {
+                chosen = name;
+                break;
+            }
+        if (!chosen) {
+            std::setlocale(LC_NUMERIC, "C");
+            check(css::ends_with(in_c, R"(,"1.25","0.6667",1.5,12.5,"1.5px",true])"), "numbers in the C locale (no locale with a decimal comma here to try)");
+        } else {
+            char text[16];
+            std::snprintf(text, sizeof text, "%.1f", 1.5);
+            const std::string in_comma = run();
+            std::setlocale(LC_NUMERIC, "C");
+            check(std::string(text) == "1,5" && in_comma == in_c, std::string("a widget renders, answers and counts alike under ") + chosen + ", whose decimal point is a comma");
+            check(css::ends_with(in_c, R"(,"1.25","0.6667",1.5,12.5,"1.5px",true])"), "and its numbers are the C locale's");
+        }
+    }
+
+    // ── animations: two value pairs whose texts join alike keep their own entries in the pair cache ──
+    {
+        const std::string first = interpolate("0px\x01", "4px\x01", 0.5), second = interpolate("0px", "\x01" "4px\x01", 0.5);
+        const std::string third = interpolate("10px", "20px", 0.5), fourth = interpolate("1", "0px20px", 0.5);
+        check(first == "2px\x01" && second == "\x01" "4px\x01", "a pair after one whose a, 0x01 and b join alike gets its own tokens: it flips, as it does alone");
+        check(third == "15px" && fourth == "0px20px", "and so does a pair whose a and b join alike with no separator at all");
+    }
+
+    // ── animations: the cache of interpolated value pairs is bounded by the bytes of their text ──
+#if defined(__APPLE__) && defined(__clang__)
+#if !__has_feature(address_sanitizer)
+    {
+        auto in_use = [] {
+            malloc_statistics_t stats{};
+            malloc_zone_statistics(nullptr, &stats);
+            return stats.size_in_use;
+        };
+        interpolate("1px", "2px", 0.5);
+        const size_t before = in_use();
+        for (int i = 0; i < 600; i++) {
+            std::string a = std::to_string(i), b = std::to_string(i + 1);
+            for (int k = 0; k < 1000; k++) {
+                a += " 1";
+                b += " 2";
+            }
+            interpolate(a, b, 0.5);
+        }
+        const size_t kept = in_use() > before ? in_use() - before : 0;
+        check(kept < (24u << 20), "600 value pairs of 1000 numbers each leave the tokens of 256 K of pairs at most (" + std::to_string(kept / 1024) + " KB kept)");
+    }
+#endif
+#endif
+
+    // ── nesting: a document is built 128 levels deep, which is what its walks cost in stack ──
+    {
+        StubBackend nb;
+        Renderer n(300, 1, false, nb);
+        std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]})";
+        for (int i = 0; i < 300; i++) {
+            std::string id = std::to_string(1000 + i), parent = std::to_string(i ? 999 + i : 4);
+            ops += R"(,{"op":"el","id":)" + id + R"(,"tag":"div","attrs":[]},{"op":"ins","parent":)" + parent + R"(,"id":)" + id + R"(,"before":null})";
+            if (i % 100 == 99) ops += R"(,{"op":"text","id":)" + std::to_string(2000 + i) + R"(,"data":"at)" + std::to_string(i + 1) + R"("},{"op":"ins","parent":)" + id + R"(,"id":)" + std::to_string(2000 + i) + R"(,"before":null})";
+        }
+        n.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        std::string texts;
+        for (const Command& c : n.paint())
+            if (c.kind == Cmd::Text) texts += c.text + " ";
+        size_t depth = 0, deepest = 0;
+        const std::string& html = n.last_html();
+        for (size_t at = html.find('<'); at != std::string::npos; at = html.find('<', at + 1)) {
+            if (html.compare(at, 4, "<div") == 0) deepest = std::max(deepest, ++depth);
+            else if (html.compare(at, 5, "</div") == 0) depth--;
+        }
+        check(texts == "at100 " && deepest == 126, "300 nested elements are written and laid out to the 128th level, <html> the first (" + texts + ", " + std::to_string(deepest) + " divs deep)");
+    }
+
+    // ── a float beside a line that a clearing box begins ──
+    {
+        Renderer c(300, 1, false, backend);
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:100px;font:10px/20px sans-serif"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["style","display:inline-block;clear:both"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"text","id":12,"data":"x"},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"text","id":13,"data":" aaaaaaaaaa"},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"span","attrs":[["style","float:left;width:60px;height:10px"]]},{"op":"ins","parent":10,"id":14,"before":null}]})"));
+        c.paint();
+        Json box = c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"];
+        check(box["height"].asNumber() == 40, "the word a float leaves no room for goes to the next line (height " + css::format_number(box["height"].asNumber(), 1) + ")");
+    }
+
+    // ── text-overflow: ellipsis: a long line is cut with a bounded number of measurements ──
+    {
+        struct CountingBackend : StubBackend {
+            size_t measured = 0, bytes = 0;
+            float text_width(int f, const std::string& text) override {
+                measured++;
+                bytes += text.size();
+                return StubBackend::text_width(f, text);
+            }
+        } eb;
+        Renderer e(300, 1, false, eb);
+        e.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","width:100000px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":")" + std::string(20000, 'a') + R"("},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        DisplayList list = e.paint();
+        size_t shown = 0;
+        float mark = 0;
+        for (const Command& c : list) {
+            if (c.kind == Cmd::Text && c.text == "\xE2\x80\xA6") mark = c.x;
+            else if (c.kind == Cmd::Text && !c.text.empty() && c.text[0] == 'a') shown = c.text.size();
+        }
+        check(shown == 12497 && mark == 99976 && eb.measured <= 64 && eb.bytes <= 1000000,
+              "a 20,000-character line is cut where the mark fits, by search (" + std::to_string(shown) + " shown, mark at " + std::to_string(int(mark)) + ", " +
+                  std::to_string(eb.measured) + " measured, " + std::to_string(eb.bytes) + " bytes)");
+    }
+
+    // ── auto margins on the main axis take a flex line's free space in one step ──
+    {
+        StubBackend fb;
+        auto flex = [&](const std::string& style) {
+            Renderer f(300, 1, false, fb);
+            f.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["style","width:50px;height:10px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"div","attrs":[["style","width:50px;height:10px;margin-left:auto"]]},{"op":"ins","parent":10,"id":12,"before":null}]})"));
+            std::string out;
+            for (int id : {11, 12})
+                out += css::format_number(f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["x"].asNumber(), 1) + " ";
+            return out;
+        };
+        std::string t = flex("display:flex");
+        check(t == "0 250 ", "margin-left: auto pushes a flex item to the end of its line (got " + t + ")");
+        t = flex("display:flex;justify-content:center");
+        check(t == "0 250 ", "and leaves justify-content no free space (got " + t + ")");
+        t = flex("display:flex;width:30000000px");
+        check(t == "0 29999950 ", "in a line 30000000px wide too, where a pixel is less than a float's step (got " + t + ")");
+    }
+
+    // ── align-content: stretch gives a flex container's free cross space to its lines in one step ──
+    {
+        StubBackend fb;
+        auto stretch = [&](const std::string& tall, int count, int lines) {
+            Renderer f(300, 1, false, fb);
+            std::string ops = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style","display:flex"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["style","width:10px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"div","attrs":[["style","display:flex;flex-wrap:wrap;width:100px"]]},{"op":"ins","parent":10,"id":12,"before":null})";
+            int id = 100;
+            for (int i = 0; i < count; i++, id++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style",")" + tall + R"("]]},{"op":"ins","parent":11,"id":)" + std::to_string(id) + R"(,"before":null})";
+            const int first = id;
+            for (int i = 0; i < lines; i++, id++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style","width:100%;height:10px"]]},{"op":"ins","parent":12,"id":)" + std::to_string(id) + R"(,"before":null})";
+            f.receive(parse(ops + "]}"));
+            auto rect = [&](int of, const char* key) {
+                for (const Json& m : f.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(of) + "}}")))
+                    if (m["type"].asString() == "result") return m["result"][key].asNumber();
+                return -1.;
+            };
+            std::vector<double> out{rect(12, "height")};
+            for (int i = 0; i < lines; i++) out.push_back(rect(first + i, "y"));
+            return out;
+        };
+        auto shown = [](const std::vector<double>& v) {
+            std::string out;
+            for (double d : v) out += css::format_number(d, 1) + " ";
+            return out;
+        };
+        std::string t = shown(stretch("height:100px", 1, 4));
+        check(t == "100 0 25 50 75 ", "align-content: stretch splits the free cross space between the lines (got " + t + ")");
+        t = shown(stretch("height:100px", 1, 3));
+        check(t == "100 0 33.3 66.7 ", "evenly when it does not divide into whole pixels (got " + t + ")");
+        // 512 grids of 1000 rows of 2^25 px each: a cross size where the rounding of the split leaves more than 2^24 px.
+        const auto far = stretch("display:grid;grid-template-rows:repeat(1000,33554432px);row-gap:33554432px", 512, 250);
+        check(far[0] > 3e13 && far[1] == 0 && std::abs(far[250] / far[0] - 249. / 250) < 1e-4,
+              "and in a container far taller than one length can be, where a pixel is less than a float's step (got " +
+                  css::format_number(far[0], 0) + " " + css::format_number(far[1], 0) + " " + css::format_number(far[250], 0) + ")");
+    }
+
+    // ── SVG <use>: its href names an id, never a selector ──
+    {
+        auto paths = [](const DisplayList& d) {
+            return std::count_if(d.begin(), d.end(), [](const Command& c) { return c.kind == Cmd::Path; });
+        };
+        auto page = [](const std::string& href) {
+            return parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"defs","ns":"svg"},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"el","id":12,"tag":"rect","ns":"svg","attrs":[["id","a"],["width","10"],["height","10"]]},{"op":"ins","parent":11,"id":12,"before":null},
+                {"op":"el","id":14,"tag":"rect","ns":"svg","attrs":[["width","20"],["height","20"]]},{"op":"ins","parent":11,"id":14,"before":null},
+                {"op":"el","id":13,"tag":"use","ns":"svg","attrs":[["href",")" + href + R"("]]},{"op":"ins","parent":10,"id":13,"before":null}]})");
+        };
+        StubBackend ub;
+        Renderer named(300, 1, false, ub);
+        named.receive(page("#a"));
+        check(paths(named.paint()) == 1, "a <use> draws the element its href names");
+        Renderer listed(300, 1, false, ub);
+        listed.receive(page("#a+rect"));
+        check(paths(listed.paint()) == 0, "a <use> whose href is a selector draws nothing");
+        Renderer nested(300, 1, false, ub);
+        nested.receive(page("#a" + std::string(8189, '[')));
+        check(paths(nested.paint()) == 0, "a <use> whose href nests 8189 blocks draws nothing");
+    }
+
+    // ── a table's rows are padded to its widest row out of the cell budget ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"table"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"tbody"},{"op":"ins","parent":10,"id":11,"before":null})";
+        int  next = 100;
+        auto add  = [&](const char* tag, int parent, const char* attrs) {
+            ops += R"(,{"op":"el","id":)" + std::to_string(next) + R"(,"tag":")" + tag + R"(","attrs":[)" + attrs + R"(]},{"op":"ins","parent":)" + std::to_string(parent) + R"(,"id":)" +
+                   std::to_string(next) + R"(,"before":null})";
+            return next++;
+        };
+        int row = add("tr", 11, ""), wide = 0, last = 0;
+        for (int i = 0; i < 150; i++) wide = add("td", row, R"(["colspan","1000"],["style","height:9px"])");
+        for (int i = 0; i < 20; i++) last = add("td", add("tr", 11, ""), R"(["style","height:5px"])");
+        t.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+        auto rect = [&](int id) { return t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]; };
+        double width = rect(10)["width"].asNumber();
+        check(width > 0 && width < 1000, "a table with a row of 150000 columns and 20 short rows keeps the columns its cell budget pads, and the cells in them (" + css::format_number(width, 1) + " px wide)");
+        check(rect(last)["height"].asNumber() > 0 && rect(wide)["x"].asNumber() < width, "and lays its last row out");
+    }
+
+    // ── grid placement: the cells it examines and marks are bounded ──
+    {
+        StubBackend gb;
+        auto place = [&](const std::string& style, const std::string& item, int items, int id) {
+            Renderer g(300, 1, false, gb);
+            std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":4,"id":10,"before":null})";
+            for (int i = 0; i < items; i++)
+                ops += R"(,{"op":"el","id":)" + std::to_string(100 + i) + R"(,"tag":"div","attrs":[["style",")" + item + R"("]]},{"op":"ins","parent":10,"id":)" + std::to_string(100 + i) + R"(,"before":null})";
+            g.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            Json r = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"];
+            return css::format_number(r["x"].asNumber(), 1) + "," + css::format_number(r["y"].asNumber(), 1);
+        };
+        std::string at = place("display:grid;grid-auto-rows:1px", "grid-column:1/span 1000;grid-row:span 1000", 40, 103);
+        check(at == "0,1002", "items past the cells a placement may examine take a row each (the fourth at " + at + ")");
+        at = place("display:grid;grid-auto-rows:1px;grid-template-columns:1fr 1fr", "grid-row:span 2", 5, 104);
+        check(at == "0,4", "which an ordinary grid never reaches (the fifth item at " + at + ")");
+    }
+
+    // ── grid auto-fill: the repetitions are clamped before they are cast ──
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style",")" + std::string("display:grid;width:30000000px;grid-template-columns:repeat(auto-fill,0.0001px)") + R"("]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","grid-column:-1"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        std::string at = css::format_number(g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})"))[0]["result"]["x"].asNumber(), 1);
+        check(at == "0.1", "auto-fill repeats a track of 0.0001px 1000 times, however many would fit (the last line at " + at + ")");
+    }
+
+    // ── counters and list numbers stop at the ends of int ──
+    {
+        auto texts = [&](const std::string& ops) {
+            Renderer n(300, 1, false, backend);
+            n.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]})" + ops + "]}"));
+            std::string seen;
+            for (const Command& c : n.paint())
+                if (c.kind == Cmd::Text) seen += c.text + " ";
+            return seen;
+        };
+        std::string counted = texts(R"(,{"op":"el","id":5,"tag":"style"},{"op":"css","id":5,"text":"div{counter-increment:c 2147483647}div::before{content:counter(c)}"},{"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div"},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"div"},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div"},{"op":"ins","parent":4,"id":12,"before":null})");
+        check(counted == "2147483647 2147483647 2147483647 ", "a counter incremented past the largest int stays there (" + counted + ")");
+        std::string listed = texts(R"(,{"op":"el","id":10,"tag":"ol","attrs":[["start","2147483647"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"li"},{"op":"ins","parent":10,"id":11,"before":null},{"op":"el","id":12,"tag":"li"},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"li"},{"op":"ins","parent":10,"id":13,"before":null})");
+        check(listed == "2147483647. 2147483647. 2147483647. ", "list items numbered past the largest int keep it (" + listed + ")");
+    }
+
+    // ── a table's spare width goes to its fixed columns while their widths have a sum ──
+    {
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"table","attrs":[["style","width:300px"]]},{"op":"ins","parent":4,"id":10,"before":null},{"op":"el","id":11,"tag":"tbody"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"tr"},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"td","attrs":[["style","width:100px;padding:0;height:20px"]]},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"td","attrs":[["style","width:0;padding:0"]]},{"op":"ins","parent":12,"id":14,"before":null}]})"));
+        auto width = [&](int id) { return t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"]; };
+        check(width(10).isNumber() && width(10).asNumber() == 300 && width(14).isNumber() && width(14).asNumber() == 0,
+              "a fixed column of no width after one of 100px leaves a 300px table 300px wide, not NaN (" + width(10).dump() + ", " + width(14).dump() + ")");
+    }
+
+    // ── a font element's relative size past the largest int ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":6,"tag":"font","attrs":[["size","+2147483647"]]},{"op":"text","id":7,"data":"large"},{"op":"ins","parent":6,"id":7,"before":null},{"op":"ins","parent":4,"id":6,"before":null},
+            {"op":"el","id":9,"tag":"font","attrs":[["size","7"]]},{"op":"text","id":10,"data":"seven"},{"op":"ins","parent":9,"id":10,"before":null},{"op":"ins","parent":4,"id":9,"before":null},
+            {"op":"el","id":12,"tag":"font","attrs":[["size","-2147483647"]]},{"op":"text","id":13,"data":"small"},{"op":"ins","parent":12,"id":13,"before":null},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":15,"tag":"font","attrs":[["size","1"]]},{"op":"text","id":16,"data":"one"},{"op":"ins","parent":15,"id":16,"before":null},{"op":"ins","parent":4,"id":15,"before":null}]})"));
+        t.tick();
+        auto size = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"]["font-size"].asString();
+            return std::string();
+        };
+        check(size(6) == size(9) && size(12) == size(15) && size(6) != size(12),
+              "a relative font size past INT_MAX is the largest size, not the smallest (got " + size(6) + " for +2147483647, " + size(9) + " for 7)");
+    }
+
+    // ── <font size> far out of range ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"font","attrs":[["size","+2147483647"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"font","attrs":[["size","7"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"font","attrs":[["size","-2147483648"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"font","attrs":[["size","1"]]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"font","attrs":[["size","+1"]]},{"op":"ins","parent":4,"id":14,"before":null},
+            {"op":"el","id":15,"tag":"font","attrs":[["size","4"]]},{"op":"ins","parent":4,"id":15,"before":null}]})"));
+        t.tick();
+        auto ask = [&](Json query) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto size = [&](int id) { return ask(Json::object().set("q", "cs").set("id", id))["font-size"].asString(); };
+        check(size(10) == size(11) && size(12) == size(13) && size(14) == size(15) && size(10) != size(13),
+              "<font size> of +2147483647 is the largest size and of -2147483648 the smallest (got " + size(10) + ", " + size(11) + ", " + size(12) + ", " +
+                  size(13) + ")");
+    }
+
+    // ── elements that are not tags ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[["id","s"]]},{"op":"css","id":20,"text":".x{color:red}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","x"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"anchor"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto ask = [&](Json query) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", std::move(query))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        auto cs = [&](int id, const char* prop) { return ask(Json::object().set("q", "cs").set("id", id))[prop].asString(); };
+        auto style = [&](const char* op, const char* name, const std::string& value) {
+            auto ops = Json::array().push(Json::object().set("op", op).set("id", 20).set("name", name).set("value", value));
+            t.receive(Json::object().set("type", "ops").set("ops", ops));
+            t.tick();
+        };
+        // Each first write puts the attribute there, each later one goes through the property patch.
+        style("attr", "style", "transform:translateX(1px)");
+        for (const auto value : {"translateX(2px)", "translateX(3px)", "none"}) style("style", "transform", value);
+        for (const auto value : {"0.5", "0.25", "1"}) style("style", "opacity", value);
+        for (const auto value : {"red", "blue"}) style("style", "background-color", value);
+        for (const auto value : {"10px", "20px"}) style("style", "width", value);
+        for (const auto value : {"a", "b", ""}) style("attr", "class", value);
+        check(cs(10, "color") == "rgb(255, 0, 0)" && t.last_html().find("width:20px") != std::string::npos,
+              "inline styles and classes on a <style> element change nothing but its attributes (got " + cs(10, "color") + ")");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"css","id":20,"text":":root{--d:inline-text} .t{display:var(--d)} .u{display:inline-text} .w{padding-left:300px}"},
+            {"op":"el","id":30,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":31,"tag":"span","attrs":[["class","t"]]},{"op":"ins","parent":30,"id":31,"before":null},
+            {"op":"text","id":32,"data":"words"},{"op":"ins","parent":31,"id":32,"before":null},
+            {"op":"el","id":33,"tag":"span","attrs":[["class","u"]]},{"op":"ins","parent":30,"id":33,"before":null},
+            {"op":"text","id":34,"data":"more"},{"op":"ins","parent":33,"id":34,"before":null},
+            {"op":"el","id":40,"tag":"div","attrs":[["style","width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"el","id":41,"tag":"span","attrs":[["class","t w x"]]},{"op":"ins","parent":40,"id":41,"before":null},
+            {"op":"el","id":42,"tag":"img","attrs":[["class","u w"],["width","300"],["height","10"]]},{"op":"ins","parent":40,"id":42,"before":null}]})"));
+        t.tick();
+        auto width = [&](int id) { return ask(Json::object().set("q", "rect").set("id", id))["width"].asNumber(); };
+        check(width(31) == 40 && width(33) == 32 && width(41) == 300,
+              "a tag that declares the display of a text node, by a variable or by name, is laid out as an inline box (got " +
+                  std::to_string(width(31)) + ", " + std::to_string(width(33)) + ", " + std::to_string(width(41)) + ")");
+
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"css","id":20,"text":":root{--w:0-lh-calc} .c{width:calc(50% - 7px)} .v{width:var(--w)} .n{width:1-lh-calc}"},
+            {"op":"el","id":50,"tag":"div","attrs":[["class","c"]]},{"op":"ins","parent":4,"id":50,"before":null},
+            {"op":"el","id":51,"tag":"div","attrs":[["class","v"]]},{"op":"ins","parent":4,"id":51,"before":null},
+            {"op":"el","id":52,"tag":"div","attrs":[["class","n"]]},{"op":"ins","parent":4,"id":52,"before":null}]})"));
+        t.tick();
+        check(width(50) == 143 && width(51) == 300 && width(52) == 300,
+              "a length cannot name the unit that marks a calc expression and take another's value (got " +
+                  std::to_string(width(50)) + ", " + std::to_string(width(51)) + ", " + std::to_string(width(52)) + ")");
+    }
+
+    // ── calc(): a product of many factors is one scaled node, not a chain as deep as the product ──
+    {
+        double chain = 0, mixed = 0;
+        std::thread worker([&] {
+            StubBackend cb;
+            Renderer c(300, 1, false, cb);
+            std::string factors;
+            for (int i = 0; i < 15000; i++) factors += "*1";
+            c.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"#a{width:calc((50% + 10px))" + factors + R"()}#b{width:calc(2*(25% + 5px)*3/4*2)}"},
+                {"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+            c.tick();
+            chain = c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
+            mixed = c.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})"))[0]["result"]["width"].asNumber();
+        });
+        worker.join();
+        check(chain == 160 && mixed == 240, "a calc() product of 15000 factors is laid out on a thread's stack (" + std::to_string(chain) + ", " + std::to_string(mixed) + ")");
+    }
+
+
+    // ── a text that splits into no words leaves its hole without elements ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"span","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"abc"},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto data = [&](const std::string& text) {
+            auto ops = Json::array().push(Json::object().set("op", "data").set("id", 11).set("data", text));
+            t.receive(Json::object().set("type", "ops").set("ops", ops));
+            t.tick();
+        };
+        auto width = [&] {
+            for (const Json& m : t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})")))
+                if (m["type"].asString() == "result") return m["result"]["width"].asNumber();
+            return -1.0;
+        };
+        // An overlong NUL ends the text where it stands: no word, no space, a hole with no element.
+        data("\xE0\x80\x80");
+        data("defg");
+        check(width() == 32, "a text set after one that split into no words is laid out (got " + std::to_string(width()) + ")");
+        data("hi");
+        check(width() == 16, "and patched in place again (got " + std::to_string(width()) + ")");
+    }
+
+    // ── grid: a track list holds at most the 1000 tracks that one repeat() may count to ──
+    {
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        std::string sizes;
+        for (int i = 0; i < 7900; i++) sizes += " 1px";
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"div{display:grid}#a{grid-template-rows:repeat(1000,1px 1px 1px)}#b{grid-template-rows:repeat(1000,)" + sizes + R"()}#c{grid-template-rows:repeat(600,1px) repeat(600,2px) 5px 5px}#d{grid-template-columns:repeat(auto-fill,)" + sizes + R"()}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","c"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["id","d"]]},{"op":"ins","parent":4,"id":13,"before":null}]})"));
+        g.tick();
+        auto height = [&](int id) {
+            return g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["height"].asNumber();
+        };
+        check(height(10) == 999 && height(11) == 0 && height(12) == 1400 && height(13) == 0,
+              "a grid's track list stops at 1000 tracks (" + std::to_string(height(10)) + ", " + std::to_string(height(11)) + ", " + std::to_string(height(12)) + ", " + std::to_string(height(13)) + ")");
+    }
+
+    // ── blocks and functions nested deeper than the CSS parser keeps ──
+    {
+        StubBackend nb;
+        Renderer n(300, 1, false, nb);
+        std::string nested;
+        for (int i = 0; i < 150; i++) nested += ":is(";
+        nested += "#a" + std::string(150, ')');
+        const std::string deeper = std::string(12000, '(') + std::string(12000, ')');
+        n.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style","attrs":[]},
+            {"op":"css","id":5,"text":"div{width:10px})" + nested + R"({width:20px}#b{width:calc)" + deeper + R"(}#c:not)" + deeper + R"({width:40px}#c{width:30px}"},
+            {"op":"ins","parent":3,"id":5,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","c"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        n.tick();
+        auto width = [&](int id) {
+            return n.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(10) == 10 && width(11) == 10 && width(12) == 30,
+              "a selector or a value nested deeper than the CSS parser keeps is left out, and the rules after it still apply (got " +
+                  std::to_string(width(10)) + ", " + std::to_string(width(11)) + ", " + std::to_string(width(12)) + ")");
+    }
+
+    // ── var(): the declarations of one element share one budget of expanded tokens ──
+    {
+        StubBackend vb;
+        Renderer v(300, 1, false, vb);
+        auto times = [](const std::string& what, int n) {
+            std::string out;
+            for (int i = 0; i < n; i++) out += what + " ";
+            return out;
+        };
+        const std::string twice = times("var(--c)", 2);
+        const std::string css = "#a{--a:" + times("x", 16) + ";--b:" + times("var(--a)", 16) + ";--c:" + times("var(--b)", 16) + ";--e1:" + twice + ";--e2:" + twice +
+                                "}#n{--f:" + twice + "}#j{width:var(--e1,55px)}#k{width:var(--e2,77px)}#m{width:var(--f,66px)}";
+        v.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + css + R"("},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","j"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["id","k"]]},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[["id","n"]]},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":13,"id":14,"before":null}]})"));
+        v.tick();
+        auto width = [&](int id) {
+            return v.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(11) == 300 && width(12) == 77 && width(14) == 300,
+              "an element's second 8192-token custom property is invalid, its first and a descendant's own are not (" +
+                  std::to_string(width(11)) + ", " + std::to_string(width(12)) + ", " + std::to_string(width(14)) + ")");
+    }
+
+    // ── an element takes a bounded number of matching selectors ──
+    {
+        StubBackend mb;
+        Renderer m(300, 1, false, mb);
+        std::string list = "*";
+        for (int i = 1; i < 300; i++) list += ",*";
+        m.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":20,"tag":"style","attrs":[]},
+            {"op":"css","id":20,"text":")" + list + R"({color:rgb(1, 2, 3)}*{color:rgb(4, 5, 6)}#a{width:10px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null}]})"));
+        Json style = m.receive(parse(R"({"type":"query","qid":1,"query":{"q":"cs","id":10}})"))[0]["result"];
+        check(style["color"].asString() == "rgb(1, 2, 3)", "past 256 matching selectors an element takes no more (got " + style["color"].asString() + ")");
+    }
+
+    // ── calc(): an expression of more than 128 nodes is no length ──
+    {
+        StubBackend eb;
+        Renderer e(300, 1, false, eb);
+        auto terms = [](int n) {
+            std::string out = "calc(10%";
+            for (int i = 0; i < n; i++) out += " + 1px";
+            return out + ")";
+        };
+        e.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"#a{width:)" + terms(100) + "}#b{width:" + terms(200) + R"(}"},
+            {"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+        e.tick();
+        auto width = [&](int id) {
+            return e.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(10) == 130 && width(11) == 300, "calc() of 101 terms is a length, calc() of 201 terms is not (" + std::to_string(width(10)) + ", " + std::to_string(width(11)) + ")");
+    }
+
+    // ── style: a declaration longer than 512 bytes is not kept by the process-wide declaration cache ──
+#if defined(__APPLE__) && defined(__clang__)
+#if !__has_feature(address_sanitizer)
+    {
+        auto in_use = [] {
+            malloc_statistics_t stats{};
+            malloc_zone_statistics(nullptr, &stats);
+            return stats.size_in_use;
+        };
+        auto widget = [](int round) {
+            StubBackend sb;
+            Renderer s(300, 1, false, sb);
+            std::string ops = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},{"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]})";
+            for (int i = 0; i < 20; i++) {
+                std::string value = "--a:v" + std::to_string(round * 100 + i);
+                for (int k = 0; k < 3900; k++) value += " x";
+                ops += R"(,{"op":"el","id":)" + std::to_string(10 + i) + R"(,"tag":"div","attrs":[["style",")" + value + R"("]]},{"op":"ins","parent":4,"id":)" + std::to_string(10 + i) + R"(,"before":null})";
+            }
+            s.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            s.tick();
+        };
+        widget(0);
+        const size_t before = in_use();
+        for (int round = 1; round <= 10; round++) widget(round);
+        const size_t kept = in_use() > before ? in_use() - before : 0;
+        check(kept < (8u << 20), "ten widgets of twenty 8 K inline styles each leave nothing behind (" + std::to_string(kept / 1024) + " KB kept)");
+    }
+#endif
+#endif
+
+    // ── a cached style sheet: @MEDIA in capitals is a media rule of the document that parsed it ──
+    {
+        StubBackend mb;
+        const char* page = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".mq{height:11px;width:200px}@MEDIA (max-width:400px){.mq{width:50px}}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","mq"]]},{"op":"ins","parent":4,"id":10,"before":null}]})";
+        auto width_at = [&](double viewport) {
+            Renderer r(viewport, 1, false, mb);
+            r.receive(parse(page));
+            r.tick();
+            return r.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
+        };
+        const double narrow = width_at(300), wide = width_at(600), again = width_at(300);
+        check(narrow == 50 && wide == 200 && again == 50,
+              "a sheet with @MEDIA in capitals is matched against each document's own viewport (got " + std::to_string(narrow) + ", " +
+                  std::to_string(wide) + ", " + std::to_string(again) + ")");
+    }
+
+    // ── a class flipped back does not hand a child the style it had before ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".a{color:red}.b{color:blue}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["style","display:block;width:10px"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["class","a"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"text","id":13,"data":"a b"},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"hr","attrs":[]},{"op":"ins","parent":12,"id":14,"before":null},
+            {"op":"text","id":15,"data":"c"},{"op":"ins","parent":12,"id":15,"before":null}]})"));
+        t.tick();
+        auto send = [&](const std::string& ops) {
+            t.receive(parse("{\"type\":\"ops\",\"ops\":[" + ops + "]}"));
+            t.tick();
+        };
+        auto display = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"]["display"].asString();
+            return std::string();
+        };
+        auto flip = [&](int id, const char* value) { send("{\"op\":\"attr\",\"id\":" + std::to_string(id) + ",\"name\":\"class\",\"value\":\"" + value + "\"}"); };
+        flip(10, "b");
+        flip(10, "a");
+        send(R"({"op":"style","id":11,"name":"display","value":"table","important":false})");
+        flip(10, "b");
+        check(display(11) == "table", "a child restyled between two flips of a class keeps its style (got " + display(11) + ")");
+        // Two texts trade their lengths: the same number of children, the tag at another place among them.
+        flip(12, "b");
+        flip(12, "a");
+        send(R"({"op":"data","id":13,"data":"x"},{"op":"data","id":15,"data":"y z"})");
+        flip(12, "b");
+        check(display(14) == "block", "a tag among texts that changed keeps its own style when the class flips (got " + display(14) + ")");
+    }
+
+    // ── :empty is matched against the children an element has when its class changes ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".n:empty{height:7px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","m"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"n"}]})"));
+        t.tick();
+        double height = -1;
+        for (const Json& m : t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})")))
+            if (m["type"].asString() == "result") height = m["result"]["height"].asNumber();
+        check(height == 0, "an element with a child is not :empty after its class changed (got " + std::to_string(height) + ")");
+    }
+
+    // ── an element that is no longer a flex or grid container computes none of one's values ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".gr{display:grid;justify-content:center}.fx{display:flex;flex-direction:column;flex-wrap:wrap}.fx>p{flex:2 3 10px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","gr"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["class","fx"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"p","attrs":[]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"p","attrs":[]},{"op":"ins","parent":13,"id":14,"before":null}]})"));
+        t.tick();
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"x"},{"op":"attr","id":11,"name":"class","value":"x"}]})"));
+        t.tick();
+        auto style = [&](int id, const std::string& name) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "cs").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"][name].asString();
+            return std::string();
+        };
+        check(style(10, "align-items") == style(13, "align-items") && style(10, "justify-content") == style(13, "justify-content"),
+              "a former grid aligns as an element that never was one (got " + style(10, "align-items") + " " + style(10, "justify-content") + ")");
+        check(style(11, "flex-direction") == style(13, "flex-direction") && style(11, "flex-wrap") == style(13, "flex-wrap") && style(11, "align-items") == style(13, "align-items"),
+              "a former flex container keeps no direction or wrap (got " + style(11, "flex-direction") + " " + style(11, "flex-wrap") + " " + style(11, "align-items") + ")");
+        check(style(12, "flex-grow") == style(14, "flex-grow") && style(12, "flex-shrink") == style(14, "flex-shrink") && style(12, "flex-basis") == style(14, "flex-basis"),
+              "a former flex item keeps no flex factors (got " + style(12, "flex-grow") + " " + style(12, "flex-shrink") + " " + style(12, "flex-basis") + ")");
+        {
+            StubBackend b2;
+            Renderer g(300, 1, false, b2);
+            g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".g{display:grid}.c2{grid-template-columns:50px 50px}.p2{grid-column:2}"},{"op":"ins","parent":3,"id":20,"before":null},
+                {"op":"el","id":10,"tag":"div","attrs":[["class","g c2"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"el","id":11,"tag":"div","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null},
+                {"op":"text","id":12,"data":"a"},{"op":"ins","parent":11,"id":12,"before":null},
+                {"op":"el","id":13,"tag":"div","attrs":[["class","p2"]]},{"op":"ins","parent":10,"id":13,"before":null},
+                {"op":"text","id":14,"data":"b"},{"op":"ins","parent":13,"id":14,"before":null}]})"));
+            g.tick();
+            g.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"g"}]})"));
+            g.tick();
+            double width = -1;
+            for (const Json& m : g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})")))
+                if (m["type"].asString() == "result") width = m["result"]["width"].asNumber();
+            check(width == 150, "a grid that drops its column template keeps none of its tracks (got " + std::to_string(width) + ")");
+        }
+    }
+
+    // ── :empty is matched again when an element gains its first child or loses its last ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".n:empty{height:7px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","n"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["class","n"]]},{"op":"ins","parent":4,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"span","attrs":[]},{"op":"ins","parent":12,"id":13,"before":null}]})"));
+        t.tick();
+        auto height = [&](int id) {
+            for (const Json& m : t.receive(Json::object().set("type", "query").set("qid", 1).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"]["height"].asNumber();
+            return -1.0;
+        };
+        check(height(10) == 7 && height(12) == 0, ":empty matches the element without children (got " + std::to_string(height(10)) + ", " + std::to_string(height(12)) + ")");
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":11,"tag":"span","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null},{"op":"rm","id":13}]})"));
+        t.tick();
+        check(height(10) == 0, "an element that gained its first child is not :empty (got " + std::to_string(height(10)) + ")");
+        check(height(12) == 7, "an element that lost its last child is :empty (got " + std::to_string(height(12)) + ")");
+    }
+
+    // ── SVG <use>: a reference that is no selector names nothing ──
+    {
+        // What paint() finds in the stack it has not written yet: 0 is the id of the tag `a`.
+        void (*volatile leave_on_stack)(int) = [](int value) {
+            volatile int words[65536];
+            for (int i = 0; i < 65536; i++) words[i] = value;
+        };
+        auto paths = [](const DisplayList& d) {
+            int n = 0;
+            for (const Command& c : d)
+                if (c.kind == Cmd::Path && c.path && c.path->fill) n++;
+            return n;
+        };
+        const char* ops = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"svg","svg":true,"attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"use","svg":true,"attrs":[["href","#1"],["x","50"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"a","svg":true,"attrs":[]},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"rect","svg":true,"attrs":[["width","10"],["height","10"]]},{"op":"ins","parent":12,"id":13,"before":null}]})";
+        StubBackend zb;
+        Renderer zeros(300, 1, false, zb);
+        zeros.receive(parse(ops));
+        leave_on_stack(0);
+        const int after_zeros = paths(zeros.paint());
+        StubBackend jb;
+        Renderer junk(300, 1, false, jb);
+        junk.receive(parse(ops));
+        leave_on_stack(0x5a5a5a5a);
+        const int after_junk = paths(junk.paint());
+        check(after_zeros == 1 && after_junk == 1,
+              "a <use> of \"#1\", which is no selector, draws nothing whatever the stack held (" +
+                  std::to_string(after_zeros) + " and " + std::to_string(after_junk) + " paths)");
+    }
+
+    // ── style sheets: the process-wide cache of parsed sheets is bounded by the bytes of their text ──
+#if defined(__APPLE__) && defined(__clang__)
+#if !__has_feature(address_sanitizer)
+    {
+        auto in_use = [] {
+            malloc_statistics_t stats{};
+            malloc_zone_statistics(nullptr, &stats);
+            return stats.size_in_use;
+        };
+        auto widget = [](int round) {
+            StubBackend sb;
+            Renderer s(300, 1, false, sb);
+            std::string sheet;
+            for (int i = 0; i < 400; i++) sheet += ".q" + std::to_string(i) + "{width:" + std::to_string(round) + "px;height:" + std::to_string(i) + "px;color:red}";
+            s.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[]},{"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":")" + sheet + R"("},
+                {"op":"ins","parent":3,"id":20,"before":null}]})"));
+            s.tick();
+        };
+        widget(0);
+        const size_t before = in_use();
+        for (int round = 1; round <= 100; round++) widget(round);
+        const size_t kept = in_use() > before ? in_use() - before : 0;
+        check(kept < (12u << 20), "a hundred widgets with a sheet of 400 rules each leave the parses of 256 K of sheets at most (" + std::to_string(kept / 1024) + " KB kept)");
+    }
+#endif
+#endif
+
+    // ── calc(): the expressions one widget wrote leave the next widget's alone ──
+    {
+        StubBackend cb;
+        const char* head = R"({"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]})";
+        {
+            const char* names[] = {"width", "height", "min-width", "max-width", "min-height", "max-height", "margin-left", "margin-right", "margin-top", "margin-bottom",
+                                   "padding-left", "padding-right", "padding-top", "padding-bottom", "top", "left", "right", "bottom", "flex-basis", "text-indent"};
+            std::string ops = head;
+            int n = 0;
+            for (int id = 10; id < 225; id++) {
+                std::string style;
+                for (const char* name : names) style += std::string(name) + ":calc(1% + " + std::to_string(n++) + "px);";
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"div","attrs":[["style",")" + style + R"("]]},{"op":"ins","parent":4,"id":)" + std::to_string(id) + R"(,"before":null})";
+            }
+            Renderer first(300, 1, false, cb);
+            first.receive(parse(R"({"type":"ops","ops":[)" + ops + "]}"));
+            first.tick();
+        }
+        Renderer second(300, 1, false, cb);
+        second.receive(parse(R"({"type":"ops","ops":[)" + std::string(head) + R"(,
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".half{width:calc(50% - 9px)} .card{width:calc(100% - 3em)}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["class","half"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["class","card"]]},{"op":"ins","parent":4,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["style","margin-left:calc(10% + 3px);height:5px"]]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        second.tick();
+        auto width = [&](int id) {
+            return second.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"))[0]["result"]["width"].asNumber();
+        };
+        check(width(10) == 141 && width(11) == 255 && width(12) == 267,
+              "calc() lengths of a widget shown after one with 4300 of them resolve as in a fresh process (got " + std::to_string(width(10)) + ", " +
+                  std::to_string(width(11)) + ", " + std::to_string(width(12)) + ")");
+    }
+
+    // ── generated ::before and ::after are not siblings of an element matched again ──
+    {
+        StubBackend b;
+        Renderer t(300, 1, false, b);
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".f::before{content:'x';display:block}.f::after{content:'y';display:block}.k{margin:0}.k:first-child{height:5px}.k:last-child{width:50px}.k:only-child{padding-left:3px}"},{"op":"ins","parent":3,"id":20,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"p","attrs":[["class","k"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        t.tick();
+        auto box = [&] {
+            for (const Json& m : t.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":11}})")))
+                if (m["type"].asString() == "result") return std::to_string(int(m["result"]["width"].asNumber())) + "x" + std::to_string(int(m["result"]["height"].asNumber()));
+            return std::string();
+        };
+        check(box() == "53x5", "an only child is the first and the last (got " + box() + ")");
+        // The parent gains ::before and ::after while the child's own style changes: the child is matched again.
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"f"},{"op":"style","id":11,"name":"text-align","value":"right","important":false}]})"));
+        t.tick();
+        check(box() == "53x5", "and stays both beside its parent's generated content (got " + box() + ")");
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":11,"name":"text-align","value":"center","important":false}]})"));
+        t.tick();
+        check(box() == "53x5", "also when it is matched again later (got " + box() + ")");
     }
 
     std::printf("%d failure(s)\n", failures);

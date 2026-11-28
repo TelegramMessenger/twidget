@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""The gate every stage passes (rust/PLAN.md): the C++ oracle built from twidget's sources, the tests
+with the comparison against it required, clippy with warnings as errors, rustfmt, and the `unsafe`
+report. Run `python -I tools/gate.py` from anywhere; cargo and cmake come from PATH (on the Telegram
+machines RUSTUP_HOME and CARGO_HOME point at ThirdParty/rust). --release also runs the tests optimized.
+--corpus [DIR] also replays every recording under DIR (TWIDGET_RECORDINGS; by default
+twidget/build-record/recordings, where tools/record/record_corpus.py records the corpus) through the Rust
+renderer end; without it the replay takes the committed recordings alone.
+"""
+
+import os
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RECORDINGS = os.path.join(os.path.dirname(ROOT), "build-record", "recordings")
+ORACLE = os.path.join(ROOT, "oracle")
+BUILD = os.path.join(ORACLE, "build")
+
+
+def step(name, command, env=None):
+    started = time.monotonic()
+    print(f"== {name}: {' '.join(command)}", flush=True)
+    result = subprocess.run(command, cwd=ROOT, env=env)
+    print(f"== {name}: {'ok' if result.returncode == 0 else 'FAILED'} in {time.monotonic() - started:.1f} s", flush=True)
+    return result.returncode == 0
+
+
+def is_oracle(name):
+    exe = ".exe" if os.name == "nt" else ""
+    return name.endswith("_oracle" + exe) or name == "lhdump" + exe
+
+
+def oracle_dir(build, config):
+    for candidate in (os.path.join(build, config), build):
+        if os.path.isdir(candidate) and any(is_oracle(name) for name in os.listdir(candidate)):
+            return candidate
+    return None
+
+
+def build_oracle(config):
+    build = os.path.join(BUILD, "debug") if config == "Debug" else BUILD
+    configure = ["cmake", "-S", ORACLE, "-B", build]
+    if os.name != "nt":
+        configure += ["-DCMAKE_BUILD_TYPE=" + config]
+        if sys.platform == "darwin":
+            deployment = os.environ.get("MACOSX_DEPLOYMENT_TARGET") or "12.0"
+            configure += ["-DCMAKE_OSX_DEPLOYMENT_TARGET=" + deployment]
+    elif not os.path.isdir(build):
+        configure += ["-A", "x64"]
+    # CMAKE_BUILD_PARALLEL_LEVEL caps the jobs; a bare --parallel lets the build tool take every core.
+    jobs = [os.environ["CMAKE_BUILD_PARALLEL_LEVEL"]] if os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL") else []
+    if not (step("oracle configure", configure) and step("oracle build", ["cmake", "--build", build, "--config", config, "--parallel"] + jobs)):
+        print("GATE FAIL: the oracle does not build")
+        return None
+    directory = oracle_dir(build, config)
+    if not directory:
+        print("GATE FAIL: the oracle built, but no program is where the tests look")
+    return directory
+
+
+def main():
+    failed = []
+    # Darwin combines sin and cos in optimized code, with a different last bit.
+    config = "Debug" if sys.platform == "darwin" else "Release"
+    directory = build_oracle(config)
+    if not directory:
+        return 1
+    env = dict(os.environ, TWIDGET_ORACLE_DIR=directory, TWIDGET_ORACLE_REQUIRED="1")
+    if "--corpus" in sys.argv:
+        at = sys.argv.index("--corpus")
+        recordings = sys.argv[at + 1] if at + 1 < len(sys.argv) and not sys.argv[at + 1].startswith("--") else RECORDINGS
+        if not os.path.isdir(recordings):
+            print(f"GATE FAIL: --corpus names {recordings}, which is no directory (tools/record/record_corpus.py records there)")
+            return 1
+        env["TWIDGET_RECORDINGS"] = os.path.abspath(recordings)
+    checks = [
+        # This workspace's packages: --all would walk widget-sandbox's workspace too, which its own gate checks.
+        ("fmt", ["cargo", "fmt", "--check"], None),
+        ("test", ["cargo", "test", "--workspace", "--locked"], env),
+        ("clippy", ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"], None),
+        ("unsafe", [sys.executable, "-I", os.path.join(ROOT, "tools", "unsafe_report.py")], None),
+    ]
+    if "--release" in sys.argv:
+        optimized = build_oracle("Release") if config == "Debug" else directory
+        if not optimized:
+            return 1
+        checks.insert(2, ("test release", ["cargo", "test", "--workspace", "--locked", "--release"], dict(env, TWIDGET_ORACLE_DIR=optimized)))
+    for name, command, extra in checks:
+        if not step(name, command, extra):
+            failed.append(name)
+    if failed:
+        print(f"GATE FAIL: {', '.join(failed)}")
+        return 1
+    print("GATE OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

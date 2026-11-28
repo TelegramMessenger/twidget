@@ -1,0 +1,19 @@
+[package]
+name = "twidget_animations"
+description = "TwidgetCore's animator: CSS animations, transitions and Web Animations, declarations and times in, style overrides and events out"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_css = { path = "../css" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_paint = { path = "../paint" }
+
+[dev-dependencies]
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

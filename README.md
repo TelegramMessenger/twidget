@@ -17,8 +17,8 @@ This repository holds renderers: validated operations come in, events and layout
 | `litehtml/` | The litehtml fork, with its Gumbo parser | TwidgetCore and the Apple renderer |
 | `core/` | TwidgetCore: the protocol, layout on the fork, animations, canvas, compositor layers, the paint limit. `core/include/twidget_litehtml.h` is its C ABI | Every backend in `platforms/` |
 | `platforms/` | One backend per platform: `windows` (DirectWrite, Direct2D), `qt` (QPainter), `apple` (CoreGraphics), `android` (JNI and Kotlin), `web` (WebAssembly and TypeScript) | Clients, the demos and the tools |
-| `tests/` | TwidgetCore's checks, run by `ctest`, and portable checks of the Apple renderer's `lhx` helpers | |
-| `tools/` | `conformance` and `stress` run widget-sandbox's conformance set and stress kit on Windows; `core-run` turns a message log into a PNG on macOS; `build-apple.sh` builds the iOS and macOS static library | |
+| `tests/` | TwidgetCore's checks, run by `ctest`, among them the parity checks that replay recorded renderers through its two ends (the committed corpus recordings are in `tests/recordings`: one on CoreGraphics, one on the recorder's stub Backend that replays on every platform), and portable checks of the Apple renderer's `lhx` helpers | |
+| `tools/` | `conformance` and `stress` run widget-sandbox's conformance set and stress kit on Windows; `record` records widget-sandbox corpus widgets for the parity checks, on CoreGraphics on macOS or on a stub Backend whose answers are fixed functions of the calls anywhere, the whole corpus a recording per widget (`record_corpus.py`); `core-run` turns a message log into a PNG on macOS; `build-apple.sh` builds the iOS and macOS static library | |
 | `demos/` | TwidgetCore in a feed of bubbles: `qt`, `macos` and `android` | |
 | `apple/` | The Apple renderer, the Swift package `Package.swift` describes: its sources, tests, Lab and examples | Telegram for macOS |
 | `docs/` | The documentation below | |
@@ -35,7 +35,7 @@ cmake --build build
 ctest --test-dir build
 ```
 
-This builds `twidget::litehtml`, `twidget::core` and the platform's backend. Android and Emscripten builds go through their toolchain files, and `-DTWIDGET_QT=ON` adds the Qt backend.
+This builds `twidget::litehtml`, `twidget::core`, `twidget::wire` (the binary forms of the paint values, on the standard library alone), `twidget::remote` and `twidget::renderer_end` (TwidgetCore's platform end and renderer end, at the two ends of a byte channel; the platform end links neither litehtml nor the renderer) and the platform's backend. Android and Emscripten builds go through their toolchain files, and `-DTWIDGET_QT=ON` adds the Qt backend.
 
 ## Documentation
 

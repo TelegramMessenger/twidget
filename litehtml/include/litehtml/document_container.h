@@ -47,6 +47,8 @@ namespace litehtml
         virtual void               delete_font(litehtml::uint_ptr hFont)                                            = 0;
         virtual pixel_t            text_width(const char* text, litehtml::uint_ptr hFont)                           = 0;
         virtual std::shared_ptr<text_breaker> create_text_breaker(const std::string&, uint_ptr) { return nullptr; }
+        // el_text may owe its width until it is read, so that a container measures many at once.
+        virtual bool               measures_text_later() const { return false; }
         virtual void               draw_text(litehtml::uint_ptr hdc, const char* text, litehtml::uint_ptr hFont,
                                              litehtml::web_color color, const litehtml::position& pos)              = 0;
         virtual pixel_t            pt_to_px(float pt) const                                                         = 0;

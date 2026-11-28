@@ -1,0 +1,23 @@
+[package]
+name = "twidget_replay"
+description = "twidget_replay on the Rust renderer end: a recording of C++ renderers used directly (tests/recording.h) replayed through RendererEnd and PlatformEnd with the Rust renderer on twidget_document, every step compared with what the recorded renderer gave"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+metered = ["dep:nova_meter"]
+
+[dependencies]
+nova_meter = { path = "../../../../nova-safe/nova_meter", optional = true }
+twidget_document = { path = "../document" }
+twidget_ends = { path = "../ends" }
+twidget_json = { path = "../../../../widget-sandbox/packages/rust/crates/json" }
+twidget_remote = { path = "../remote" }
+twidget_renderer = { path = "../renderer" }
+twidget_wire = { path = "../wire" }

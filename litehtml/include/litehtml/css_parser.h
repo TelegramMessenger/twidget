@@ -12,9 +12,11 @@ namespace litehtml
     {
         css_token_vector m_tokens;
         int              m_index = 0;
+        int              m_depth = 0;
 
         css_token next_token();
         css_token peek_token();
+        void      skip_block(char closing_bracket);
 
       public:
         css_parser() = default;

@@ -3,8 +3,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <mutex>
-#include <unordered_map>
 #include <vector>
 
 namespace litehtml
@@ -28,39 +26,21 @@ namespace litehtml
             std::vector<int8_t>    signs;
         };
 
-        // Expressions are few (a widget's stylesheets, after unit conversion) and live as long as the process.
-        constexpr size_t      MAX_EXPRESSIONS = 4096;
-        std::mutex&           calc_mutex() { static std::mutex& m = *new std::mutex; return m; }
-        std::vector<calc_node>& calc_table() { static auto& t = *new std::vector<calc_node>; return t; }
-        std::unordered_map<std::string, int>& calc_index() { static auto& i = *new std::unordered_map<std::string, int>; return i; }
+        constexpr size_t MAX_NODES = 128;
 
-        void key_of(const calc_node& node, std::string& out)
+        size_t node_count(const calc_node& root)
         {
-            out += std::to_string(node.kind) + ":" + std::to_string(node.value) + ":" + std::to_string(node.unit) + "(";
-            for(size_t i = 0; i < node.args.size(); i++)
+            size_t                        count = 0;
+            std::vector<const calc_node*> pending = {&root};
+            while(!pending.empty())
             {
-                if(!node.signs.empty())
-                    out += node.signs[i] < 0 ? "-" : "+";
-                key_of(node.args[i], out);
-                out += ",";
+                const calc_node* node = pending.back();
+                pending.pop_back();
+                count++;
+                for(const auto& arg : node->args)
+                    pending.push_back(&arg);
             }
-            out += ")";
-        }
-
-        int intern(calc_node node)
-        {
-            std::string key;
-            key_of(node, key);
-            std::lock_guard<std::mutex> lock(calc_mutex());
-            auto& index = calc_index();
-            if(auto it = index.find(key); it != index.end())
-                return it->second;
-            auto& table = calc_table();
-            if(table.size() >= MAX_EXPRESSIONS)
-                return -1;
-            table.push_back(std::move(node));
-            index.emplace(std::move(key), int(table.size() - 1));
-            return int(table.size() - 1);
+            return count;
         }
 
         void skip_whitespace(const css_token_vector& tokens, size_t& i)
@@ -153,7 +133,7 @@ namespace litehtml
                     if(!is_number(right) || (divide && right.value == 0))
                         return false;
                     float factor = divide ? 1 / right.value : right.value;
-                    if(is_number(out))
+                    if(is_number(out) || out.kind == calc_node::scaled)
                     {
                         out.value *= factor;
                         continue;
@@ -245,6 +225,13 @@ namespace litehtml
             return std::any_of(node.args.begin(), node.args.end(), has_percent);
         }
 
+        bool is_converted(const calc_node& node)
+        {
+            if(node.kind == calc_node::leaf)
+                return is_one_of(node.unit, css_units_percentage, css_units_none, css_units_px);
+            return std::all_of(node.args.begin(), node.args.end(), is_converted);
+        }
+
         void convert_leaves(calc_node& node, const calc_convert_fn& convert)
         {
             if(node.kind == calc_node::leaf)
@@ -261,40 +248,39 @@ namespace litehtml
         }
     } // namespace
 
-    pixel_t calc_evaluate(int index, pixel_t percent_base, const calc_convert_fn& convert)
+    struct calc_expression
     {
-        calc_node node;
-        {
-            std::lock_guard<std::mutex> lock(calc_mutex());
-            if(index < 0 || size_t(index) >= calc_table().size())
-                return 0_px;
-            node = calc_table()[index];
-        }
-        float value = evaluate(node, percent_base.value(), convert);
+        calc_node root;
+    };
+
+    pixel_t calc_evaluate(const calc_expression* expression, pixel_t percent_base, const calc_convert_fn& convert)
+    {
+        if(!expression)
+            return 0_px;
+        float value = evaluate(expression->root, percent_base.value(), convert);
         return pixel_t(std::isfinite(value) ? value : 0.f);
     }
 
-    int calc_resolve_units(int index, const calc_convert_fn& convert, float& px)
+    std::shared_ptr<const calc_expression> calc_resolve_units(const std::shared_ptr<const calc_expression>& expression,
+                                                              const calc_convert_fn& convert, float& px)
     {
-        calc_node node;
-        {
-            std::lock_guard<std::mutex> lock(calc_mutex());
-            if(index < 0 || size_t(index) >= calc_table().size())
-            {
-                px = 0;
-                return -1;
-            }
-            node = calc_table()[index];
-        }
-        convert_leaves(node, convert);
+        px = 0;
+        if(!expression)
+            return nullptr;
+        const bool converted = is_converted(expression->root);
+        if(converted && has_percent(expression->root))
+            return expression;
+        calc_node node = expression->root;
+        if(!converted)
+            convert_leaves(node, convert);
         if(!has_percent(node))
         {
             px = evaluate(node, 0, nullptr);
             if(!std::isfinite(px))
                 px = 0;
-            return -1;
+            return nullptr;
         }
-        return intern(std::move(node));
+        return std::make_shared<const calc_expression>(calc_expression{std::move(node)});
     }
 
     bool css_length::from_token(const css_token& token, int options, css_values keywords)
@@ -311,16 +297,11 @@ namespace litehtml
             calc_node node;
             size_t    i = 0;
             css_token_vector single = {token};
-            if(!parse_atom(single, i, node, 0) || is_number(node))
+            if(!parse_atom(single, i, node, 0) || is_number(node) || node_count(node) > MAX_NODES)
             {
                 return false;
             }
-            int index = intern(std::move(node));
-            if(index < 0)
-            {
-                return false;
-            }
-            set_calc(index);
+            set_calc(std::make_shared<const calc_expression>(calc_expression{std::move(node)}));
             return true;
         }
 
@@ -331,8 +312,7 @@ namespace litehtml
             {
                 return false;
             }
-            m_predef        = idx.value();
-            m_is_predefined = true;
+            predef(idx.value());
             return true;
         }
         if(token.type == DIMENSION)
@@ -344,14 +324,12 @@ namespace litehtml
 
             auto idx = css_values(css_units_strings).value_index(lowcase(token.unit()));
             // note: 1none and 1\% are invalid
-            if(!idx.has_value() || idx.value() == css_units_none || idx.value() == css_units_percentage)
+            if(!idx.has_value() || is_one_of(idx.value(), css_units_none, css_units_percentage, css_units_calc))
             {
                 return false;
             }
 
-            m_value         = token.n.number;
-            m_units         = static_cast<css_units>(idx.value());
-            m_is_predefined = false;
+            set_value(token.n.number, static_cast<css_units>(idx.value()));
             return true;
         }
         if(token.type == PERCENTAGE)
@@ -361,9 +339,7 @@ namespace litehtml
                 return false;
             }
 
-            m_value         = token.n.number;
-            m_units         = css_units_percentage;
-            m_is_predefined = false;
+            set_value(token.n.number, css_units_percentage);
             return true;
         }
         if(token.type == NUMBER)
@@ -383,9 +359,7 @@ namespace litehtml
                 return false;
             }
 
-            m_value         = token.n.number;
-            m_units         = css_units_none;
-            m_is_predefined = false;
+            set_value(token.n.number, css_units_none);
             return true;
         }
         return false;

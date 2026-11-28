@@ -9,6 +9,7 @@ namespace litehtml
     {
       public:
         el_before_after_base(const std::shared_ptr<document>& doc, bool before);
+        ~el_before_after_base() override;
 
         void add_style(const style& style) override;
 
@@ -20,6 +21,12 @@ namespace litehtml
         /// open-quote / close-quote: a mark from the inherited `quotes`, the pair chosen by how many <q> enclose this one.
         void               add_quote(bool open);
         static std::string convert_escape(const char* txt);
+        bool               add_generated(const element::ptr& el, size_t bytes);
+
+        static constexpr int max_generations = 8;
+        int    m_generations     = 0;
+        int    m_generated_boxes = 0;
+        size_t m_generated_bytes = 0;
     };
 
     class el_before : public el_before_after_base

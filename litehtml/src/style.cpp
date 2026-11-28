@@ -3,6 +3,7 @@
 #include "style.h"
 #include "document_container.h"
 #include "css_parser.h"
+#include <climits>
 #include <unordered_map>
 #include <mutex>
 #include "internal.h"
@@ -131,6 +132,16 @@ namespace litehtml
         thread_local std::vector<style_op>* recorded_ops = nullptr;
         thread_local bool                   suppress_raw = false;
 
+        template <class T> struct scoped_value
+        {
+            T& slot;
+            T  previous;
+            scoped_value(T& s, T value) : slot(s), previous(s) { slot = value; }
+            ~scoped_value() { slot = previous; }
+            scoped_value(const scoped_value&)            = delete;
+            scoped_value& operator=(const scoped_value&) = delete;
+        };
+
         bool is_animation_layer(const std::string& txt, size_t start)
         {
             if(txt.compare(start, 8, "-lh-anim") != 0)
@@ -141,6 +152,10 @@ namespace litehtml
 
         std::mutex&                                                  declaration_cache_lock = *new std::mutex;
         std::unordered_map<std::string, std::vector<style_op>>&      declaration_cache = *new std::unordered_map<std::string, std::vector<style_op>>;
+        // The cache lives as long as the process: long declarations stay out, and so does more than 1 MB of them.
+        constexpr size_t                                             max_cached_declaration = 512;
+        constexpr size_t                                             max_cached_bytes = 1 << 20;
+        size_t                                                       declaration_cache_bytes = 0;
 
         bool split_declarations(const std::string& txt, std::vector<std::pair<size_t, size_t>>& out)
         {
@@ -212,20 +227,24 @@ namespace litehtml
             if(!hit)
             {
                 style scratch;
-                const bool suppressed = suppress_raw;
-                suppress_raw          = false;
-                recorded_ops          = &ops;
-                auto tokens  = normalize(std::string(txt, d.first, d.second), f_componentize);
-                scratch.add(tokens, baseurl, container);
-                recorded_ops = nullptr;
-                suppress_raw = suppressed;
+                css_token_vector tokens;
+                {
+                    scoped_value<bool>                   raw(suppress_raw, false);
+                    scoped_value<std::vector<style_op>*> record(recorded_ops, &ops);
+                    tokens = normalize(std::string(txt, d.first, d.second), f_componentize);
+                    scratch.add(tokens, baseurl, container);
+                }
                 // Viewport lengths fold to px at the current viewport, so their result holds for this parse only.
-                if(!has_viewport_units(tokens))
+                if(key.size() <= max_cached_declaration && !has_viewport_units(tokens))
                 {
                     std::lock_guard<std::mutex> guard(declaration_cache_lock);
-                    if(declaration_cache.size() > 50000)
+                    if(declaration_cache.size() > 50000 || declaration_cache_bytes > max_cached_bytes)
+                    {
                         declaration_cache.clear();
-                    declaration_cache.emplace(key, ops);
+                        declaration_cache_bytes = 0;
+                    }
+                    if(declaration_cache.emplace(key, ops).second)
+                        declaration_cache_bytes += key.size();
                 }
             }
             for(const auto& op : ops)
@@ -254,7 +273,7 @@ namespace litehtml
             return;
         }
 
-        const bool outer = suppress_raw;
+        scoped_value<bool> raw(suppress_raw, suppress_raw);
         for(auto& decl : decls)
         {
             if(decl.name == "-lh-anim")
@@ -269,7 +288,6 @@ namespace litehtml
             }
             add_property(_id(name), decl.value, baseurl, decl.important, container);
         }
-        suppress_raw = outer;
     }
 
     bool has_var(const css_token_vector& tokens)
@@ -409,7 +427,7 @@ namespace litehtml
             if(item.size() == 2)
             {
                 if(item[1].type == NUMBER && item[1].n.number_type == css_number_integer && item[1].n.number >= 0)
-                    value = std::min(int(item[1].n.number), 0xffff);
+                    value = int(std::min(item[1].n.number, 65535.f));
                 else if(item[1].ident() == "on" || item[1].ident() == "off")
                     value = item[1].ident() == "on" ? 1 : 0;
                 else
@@ -888,7 +906,7 @@ namespace litehtml
         case _order_: // <integer>
             if(val.type == NUMBER && val.n.number_type == css_number_integer)
             {
-                add_parsed_property(name, property_value(static_cast<int>(val.n.number), important));
+                add_parsed_property(name, property_value(static_cast<int>(std::clamp<double>(val.n.number, INT_MIN, INT_MAX)), important));
             }
             break;
 
@@ -2096,7 +2114,7 @@ namespace litehtml
             if(token.type == IDENT)
             {
                 auto idx = css_values(style_text_decoration_line_strings).value_index(token.ident());
-                if(idx.has_value())
+                if(idx.has_value() && idx.value() > 0)
                 {
                     val |= 1 << (idx.value() - 1);
                 }
@@ -2148,7 +2166,7 @@ namespace litehtml
             if(token.type == IDENT)
             {
                 auto idx = css_values(style_text_emphasis_position_strings).value_index(token.ident());
-                if(idx.has_value())
+                if(idx.has_value() && idx.value() > 0)
                 {
                     val |= 1 << (idx.value() - 1);
                 }
@@ -2347,7 +2365,8 @@ namespace litehtml
         auto idx = css_values(self_position_strings).value_index(b);
         if(idx.has_value() && is_one_of(a, "safe", "unsafe"))
         {
-            int value = *idx | (a == "safe" ? flex_align_items_safe : flex_align_items_unsafe);
+            int position = flex_align_items_center + *idx;
+            int value    = position | (a == "safe" ? flex_align_items_safe : flex_align_items_unsafe);
             add_parsed_property(name, property_value(value, important));
         }
     }
@@ -2558,8 +2577,9 @@ namespace litehtml
 
     struct var_budget
     {
-        size_t left    = max_var_substitution_tokens;
-        bool   invalid = false;
+        size_t left      = max_var_substitution_tokens;
+        bool   invalid   = false;
+        bool   exhausted = false;
     };
 
     static size_t deep_token_count(const css_token_vector& tokens, size_t limit)
@@ -2605,7 +2625,8 @@ namespace litehtml
                 const size_t size = deep_token_count(value, budget.left);
                 if(size > budget.left)
                 {
-                    budget.invalid = true;
+                    budget.invalid   = true;
+                    budget.exhausted = true;
                     return false;
                 }
                 budget.left -= size;
@@ -2650,10 +2671,18 @@ namespace litehtml
         }
         std::stable_sort(pending.begin(), pending.end(),
                          [](const auto& a, const auto& b) { return a.second.m_order < b.second.m_order; });
+        // One budget for all the declarations of the element: each keeps what it expands to.
+        var_budget budget;
         for(auto& [name, prop] : pending)
         {
-            auto& value = prop.template get<css_token_vector>();
-            if(!subst_vars_(name, value, el))
+            auto&               value = prop.template get<css_token_vector>();
+            std::set<string_id> chain = {name};
+            budget.invalid            = budget.exhausted;
+            if(!budget.exhausted)
+            {
+                resolve_vars(value, el, chain, 0, budget);
+            }
+            if(budget.invalid)
             {
                 if(_s(name).substr(0, 2) == "--")
                 {
@@ -2663,6 +2692,10 @@ namespace litehtml
                     m_properties[name]    = invalid_value;
                     continue;
                 }
+                value = {css_token(IDENT, "unset")};
+            } else if(auto container = el->get_document()->container();
+                      container && _s(name).substr(0, 2) != "--" && !container->sanitize_declaration(_s(name), value))
+            {
                 value = {css_token(IDENT, "unset")};
             }
             std::vector<std::pair<string_id, property_value>> later;

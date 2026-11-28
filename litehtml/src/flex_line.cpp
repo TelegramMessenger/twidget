@@ -1,6 +1,7 @@
 #include "flex_line.h"
 #include "flex_item.h"
 #include "types.h"
+#include <cstdint>
 
 void litehtml::flex_line::distribute_free_space(pixel_t container_main_size)
 {
@@ -62,7 +63,7 @@ void litehtml::flex_line::distribute_free_space_grow(pixel_t container_main_size
         // If the magnitude of this value is less than the magnitude of the remaining free space, use
         // this as the remaining free space.
 
-        int     sum_flex_grow_factor = 0;
+        int64_t sum_flex_grow_factor = 0;
         pixel_t remaining_free_space = container_main_size;
 
         for(auto& item : items)
@@ -79,7 +80,7 @@ void litehtml::flex_line::distribute_free_space_grow(pixel_t container_main_size
 
         if(sum_flex_grow_factor < 1000)
         {
-            pixel_t adjusted_free_space = initial_free_space * pixel_t(sum_flex_grow_factor) / 1000_px;
+            pixel_t adjusted_free_space = initial_free_space * pixel_t(static_cast<float>(sum_flex_grow_factor)) / 1000_px;
             if(adjusted_free_space < remaining_free_space)
             {
                 remaining_free_space = adjusted_free_space;
@@ -103,7 +104,7 @@ void litehtml::flex_line::distribute_free_space_grow(pixel_t container_main_size
                     // fraction of the remaining free space proportional to the ratio.
 
                     item->main_size =
-                        item->base_size + remaining_free_space * pixel_t(item->grow) / pixel_t(sum_flex_grow_factor);
+                        item->base_size + remaining_free_space * pixel_t(item->grow) / pixel_t(static_cast<float>(sum_flex_grow_factor));
                 }
             }
         }
@@ -160,7 +161,7 @@ void litehtml::flex_line::distribute_free_space_shrink(pixel_t container_main_si
         // If the magnitude of this value is less than the magnitude of the remaining free space, use
         // this as the remaining free space.
 
-        int     sum_flex_shrink_factor        = 0;
+        int64_t sum_flex_shrink_factor        = 0;
         pixel_t sum_scaled_flex_shrink_factor = 0_px;
         pixel_t remaining_free_space          = container_main_size;
 
@@ -179,7 +180,7 @@ void litehtml::flex_line::distribute_free_space_shrink(pixel_t container_main_si
 
         if(sum_flex_shrink_factor < 1000)
         {
-            pixel_t adjusted_free_space = initial_free_space * pixel_t(sum_flex_shrink_factor) / 1000_px;
+            pixel_t adjusted_free_space = initial_free_space * pixel_t(static_cast<float>(sum_flex_shrink_factor)) / 1000_px;
             if(adjusted_free_space > remaining_free_space)
             {
                 remaining_free_space = adjusted_free_space;
@@ -284,7 +285,23 @@ bool litehtml::flex_line::distribute_main_auto_margins(pixel_t free_main_size)
 {
     if(free_main_size > 0_px && (num_auto_margin_main_start || num_auto_margin_main_end))
     {
-        pixel_t add = free_main_size / static_cast<int>(items.size() * 2);
+        int count = 0;
+        for(auto& item : items)
+        {
+            if(!item->auto_margin_main_start.is_default())
+            {
+                count++;
+            }
+            if(!item->auto_margin_main_end.is_default())
+            {
+                count++;
+            }
+        }
+        if(count == 0)
+        {
+            return false;
+        }
+        pixel_t add = free_main_size / count;
         for(auto& item : items)
         {
             if(!item->auto_margin_main_start.is_default())
@@ -292,40 +309,12 @@ bool litehtml::flex_line::distribute_main_auto_margins(pixel_t free_main_size)
                 item->auto_margin_main_start  = add;
                 item->main_size              += add;
                 main_size                    += add;
-                free_main_size               -= add;
             }
             if(!item->auto_margin_main_end.is_default())
             {
                 item->auto_margin_main_end  = add;
                 item->main_size            += add;
                 main_size                  += add;
-                free_main_size             -= add;
-            }
-        }
-
-        pixel_t ditribute_step = 1_px;
-        while(free_main_size > 0_px)
-        {
-            for(auto& item : items)
-            {
-                if(!item->auto_margin_main_start.is_default())
-                {
-                    item->auto_margin_main_start  = pixel_t(item->auto_margin_main_start) + ditribute_step;
-                    free_main_size               -= ditribute_step;
-                    if(free_main_size < ditribute_step)
-                    {
-                        break;
-                    }
-                }
-                if(!item->auto_margin_main_end.is_default())
-                {
-                    item->auto_margin_main_end  = pixel_t(item->auto_margin_main_end) + ditribute_step;
-                    free_main_size             -= ditribute_step;
-                    if(free_main_size < ditribute_step)
-                    {
-                        break;
-                    }
-                }
             }
         }
         return true;

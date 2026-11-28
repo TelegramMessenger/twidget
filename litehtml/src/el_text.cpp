@@ -18,7 +18,16 @@ litehtml::el_text::el_text(const char* text, const document::ptr& doc) :
 
 void litehtml::el_text::get_content_size(size& sz, pixel_t /*max_width*/)
 {
+    measure_width();
     sz = m_size;
+}
+
+void litehtml::el_text::measure_width()
+{
+    if(!m_width_owed)
+        return;
+    m_width_owed = false;
+    m_size.width = get_document()->container()->text_width(display_text().c_str(), m_measured_font);
 }
 
 void litehtml::el_text::get_text(std::string& text) const
@@ -76,6 +85,7 @@ void litehtml::el_text::set_text(const std::string& text)
     m_draw_spaces     = true;
     m_size            = size();
     m_measured_font   = 0;
+    m_width_owed      = false;
     m_breaker.reset();
     mark_layout_dirty();
     css_w()           = css_properties();
@@ -155,6 +165,7 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         m_size.height      = 0;
         m_size.width       = 0;
         m_measured_font    = 0;
+        m_width_owed       = false;
     } else
     {
         m_size.height = fm.height;
@@ -162,10 +173,11 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         if(m_measured_font != font || m_measured_transform != transform)
         {
             m_breaker.reset();
-            m_size.width = get_document()->container()->text_width(
-                m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font);
             m_measured_font      = font;
             m_measured_transform = transform;
+            m_width_owed         = true;
+            if(!get_document()->container()->measures_text_later())
+                measure_width();
         }
     }
     m_draw_spaces = fm.draw_spaces;
@@ -176,6 +188,18 @@ std::shared_ptr<litehtml::text_breaker> litehtml::el_text::breaker()
     if(!m_breaker)
         m_breaker = doc_ptr()->container()->create_text_breaker(display_text(), css().get_font());
     return m_breaker;
+}
+
+bool litehtml::el_text::breaks_in_line() const
+{
+    return !is_space() && !is_break() && css().get_wrapping() != overflow_wrap_normal &&
+           !is_one_of(css().get_white_space(), white_space_nowrap, white_space_pre);
+}
+
+bool litehtml::el_text::breaks_at_narrowest() const
+{
+    return css().get_wrapping() == overflow_wrap_anywhere && !is_one_of(css().get_white_space(), white_space_pre, white_space_nowrap) &&
+           !is_white_space();
 }
 
 void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,

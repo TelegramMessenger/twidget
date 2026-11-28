@@ -62,6 +62,10 @@ static void free_wrapper(void* unused, void* ptr) { free(ptr); }
 const GumboOptions kGumboDefaultOptions = {&malloc_wrapper, &free_wrapper, NULL,
     8, false, -1, GUMBO_TAG_LAST, GUMBO_NAMESPACE_HTML};
 
+// Open elements at once (a tree is at most twice as deep), and bytes cloned on top of the input's length.
+static const unsigned int kMaxOpenElements = 400;
+static const size_t kMaxClonedBytes = 1 << 20;
+
 static const GumboStringPiece kDoctypeHtml = GUMBO_STRING("html");
 static const GumboStringPiece kPublicIdHtml4_0 =
     GUMBO_STRING("-//W3C//DTD HTML 4.0//EN");
@@ -397,6 +401,8 @@ typedef struct GumboInternalParserState {
   // flag appropriately.
   bool _closed_body_tag;
   bool _closed_html_tag;
+
+  size_t _cloned_bytes;
 } GumboParserState;
 
 static bool token_has_attribute(const GumboToken* token, const char* name) {
@@ -467,6 +473,7 @@ static GumboNode* new_document_node(GumboParser* parser) {
 static void output_init(GumboParser* parser) {
   GumboOutput* output = gumbo_parser_allocate(parser, sizeof(GumboOutput));
   output->root = NULL;
+  output->truncated = false;
   output->document = new_document_node(parser);
   parser->_output = output;
   gumbo_init_errors(parser);
@@ -491,6 +498,7 @@ static void parser_state_init(GumboParser* parser) {
   parser_state->_current_token = NULL;
   parser_state->_closed_body_tag = false;
   parser_state->_closed_html_tag = false;
+  parser_state->_cloned_bytes = 0;
   parser->_parser_state = parser_state;
 }
 
@@ -1231,6 +1239,8 @@ GumboNode* clone_node(
     GumboParser* parser, GumboNode* node, GumboParseFlags reason) {
   assert(node->type == GUMBO_NODE_ELEMENT || node->type == GUMBO_NODE_TEMPLATE);
   GumboNode* new_node = gumbo_parser_allocate(parser, sizeof(GumboNode));
+  parser->_parser_state->_cloned_bytes +=
+      sizeof(GumboNode) + node->v.element.original_tag.length;
   *new_node = *node;
   new_node->parent = NULL;
   new_node->index_within_parent = -1;
@@ -4020,6 +4030,12 @@ GumboOutput* gumbo_parse_with_options(
     if (state->_reprocess_current_token) {
       state->_reprocess_current_token = false;
     } else {
+      if (state->_text_node._buffer.length == 0 &&
+          (state->_open_elements.length > kMaxOpenElements ||
+              state->_cloned_bytes > length + kMaxClonedBytes)) {
+        parser._output->truncated = true;
+        break;
+      }
       GumboNode* current_node = get_current_node(&parser);
       gumbo_tokenizer_set_is_current_node_foreign(&parser,
           current_node &&

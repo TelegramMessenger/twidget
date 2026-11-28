@@ -1,0 +1,18 @@
+[package]
+name = "twidget_filters"
+description = "TwidgetCore's CSS filter functions for painters: colour matrices, a chain's reach, and the CPU pass over pixels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+twidget_wire = { path = "../wire" }
+
+[dev-dependencies]
+twidget_css = { path = "../css" }
+twidget_testkit = { path = "../../../../widget-sandbox/packages/rust/crates/testkit" }

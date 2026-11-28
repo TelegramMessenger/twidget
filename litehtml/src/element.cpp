@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <climits>
+#include <cstdint>
 #include "html.h"
 #include "element.h"
 #include "document.h"
@@ -75,7 +77,7 @@ namespace litehtml
         }
         for(const auto& used : m_used_styles)
         {
-            const void* selector = used->m_selector.get();
+            const uint64_t selector = used->m_selector->place();
             mix(&selector, sizeof(selector));
             mix(&used->m_used, sizeof(used->m_used));
         }
@@ -250,6 +252,7 @@ namespace litehtml
 
     bool element::find_styles_changes(const std::function<void(const position&)>& redraw_box)
     {
+        selector_budget budget;
         if(css().get_display() == display_inline_text)
         {
             return false;
@@ -386,17 +389,22 @@ namespace litehtml
             }
 
             // on each level, search previous siblings too
-            std::vector<element::ptr> siblings = current->get_siblings_before();
-            std::reverse(siblings.begin(), siblings.end());
-            for(const element::ptr& sibling : siblings)
+            element::ptr el_parent = current->parent();
+            if(el_parent)
             {
-                map_iterator = sibling->m_counter_values.find(counter_name_id);
-                if(map_iterator != sibling->m_counter_values.end())
+                const auto& siblings = el_parent->children();
+                auto        sibling  = std::find(siblings.begin(), siblings.end(), current);
+                while(sibling != siblings.begin())
                 {
-                    return true;
+                    --sibling;
+                    map_iterator = (*sibling)->m_counter_values.find(counter_name_id);
+                    if(map_iterator != (*sibling)->m_counter_values.end())
+                    {
+                        return true;
+                    }
                 }
             }
-            current = current->parent();
+            current = el_parent;
         }
 
         return false;
@@ -422,8 +430,10 @@ namespace litehtml
     void litehtml::element::parse_counter_tokens(const string_vector& tokens, int default_value,
                                                  const std::function<void(string_id, int)>& handler) const
     {
-        int pos = 0;
-        while(pos < static_cast<int>(tokens.size()))
+        // Each name is looked up through all the previous siblings: 16 keep 2000 siblings cheap.
+        static constexpr int max_names = 16;
+        int pos = 0, names = 0;
+        while(pos < static_cast<int>(tokens.size()) && names++ < max_names)
         {
             const std::string& name  = tokens[pos];
             int                value = default_value;
@@ -444,7 +454,7 @@ namespace litehtml
         std::map<string_id, int>::iterator i;
         if(find_counter(counter_name_id, i))
         {
-            i->second = i->second + increment;
+            i->second = static_cast<int>(std::clamp<int64_t>(static_cast<int64_t>(i->second) + increment, INT_MIN, INT_MAX));
         } else
         {
             // if counter is not found, initialize one on this element

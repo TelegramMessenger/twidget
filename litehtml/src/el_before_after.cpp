@@ -12,12 +12,41 @@ litehtml::el_before_after_base::el_before_after_base(const std::shared_ptr<docum
     m_tag = before ? __tag_before_ : __tag_after_;
 }
 
+litehtml::el_before_after_base::~el_before_after_base()
+{
+    if(auto doc = get_document())
+        doc->release_generated(m_generated_boxes, m_generated_bytes);
+}
+
+bool litehtml::el_before_after_base::add_generated(const element::ptr& el, size_t bytes)
+{
+    auto doc = get_document();
+    if(!doc || !doc->take_generated(bytes))
+        return false;
+    m_generated_boxes++;
+    m_generated_bytes += bytes;
+    appendChild(el);
+    return true;
+}
+
 void litehtml::el_before_after_base::add_style(const style& style)
 {
+    if(m_style.empty())
+        m_generations = 0;
     html_tag::add_style(style);
 
-    auto children = m_children;
+    const auto& generated = style.get_property(_content_);
+    if(!generated.is<std::string>() || generated.get<std::string>().empty() || m_generations >= max_generations)
+        return;
+    m_generations++;
+
+    auto         children = m_children;
+    const int    boxes    = m_generated_boxes;
+    const size_t bytes    = m_generated_bytes;
+    auto         doc      = get_document();
     m_children.clear();
+    m_generated_boxes = 0;
+    m_generated_bytes = 0;
 
     const auto& content_property = style.get_property(_content_);
     if(content_property.is<std::string>() && !content_property.get<std::string>().empty())
@@ -33,6 +62,8 @@ void litehtml::el_before_after_base::add_style(const style& style)
             // escaped quote stays inside its string and only a url token or url() names an image.
             for(const css_token& tok : normalize(str, f_componentize | f_remove_whitespace))
             {
+                if(!doc || doc->generated_limited())
+                    break;
                 std::string url;
                 if(tok.type == STRING)
                 {
@@ -55,7 +86,12 @@ void litehtml::el_before_after_base::add_style(const style& style)
 
     if(m_children.empty())
     {
-        m_children = children;
+        m_children        = children;
+        m_generated_boxes = boxes;
+        m_generated_bytes = bytes;
+    } else if(doc)
+    {
+        doc->release_generated(boxes, bytes);
     }
 }
 
@@ -87,12 +123,14 @@ void litehtml::el_before_after_base::add_text(const std::string& txt, bool escap
                 if(!word.empty())
                 {
                     element::ptr el = std::make_shared<el_text>(word.c_str(), get_document());
-                    appendChild(el);
+                    if(!add_generated(el, word.size()))
+                        return;
                     word.clear();
                 }
                 word            += chr;
                 element::ptr el  = std::make_shared<el_space>(word.c_str(), get_document());
-                appendChild(el);
+                if(!add_generated(el, word.size()))
+                    return;
                 word.clear();
             } else
             {
@@ -108,8 +146,7 @@ void litehtml::el_before_after_base::add_text(const std::string& txt, bool escap
     if(!word.empty())
     {
         element::ptr el = std::make_shared<el_text>(word.c_str(), get_document());
-        appendChild(el);
-        word.clear();
+        add_generated(el, word.size());
     }
 }
 
@@ -205,7 +242,8 @@ void litehtml::el_before_after_base::add_image(const std::string& url)
     el->set_attr("src", url.c_str());
     el->set_attr("style", "display:inline-block");
     el->set_tagName("img");
-    appendChild(el);
+    if(!add_generated(el, url.size()))
+        return;
     el->parse_attributes();
 }
 

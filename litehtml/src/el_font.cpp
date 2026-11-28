@@ -26,7 +26,7 @@ void litehtml::el_font::parse_attributes()
         int sz = atoi(str);
         if(*str == '+' || *str == '-')
         {
-            sz = 3 + sz; // relative size
+            sz = 3 + std::max(-7, std::min(sz, 7)); // relative size
         }
 
         if(sz <= 1)

@@ -1,6 +1,8 @@
 #ifndef LITEHTML_CSS_PROPERTIES_H
 #define LITEHTML_CSS_PROPERTIES_H
 
+#include <algorithm>
+#include <climits>
 #include "string_id.h"
 #include "background.h"
 #include "borders.h"
@@ -75,7 +77,7 @@ namespace litehtml
         css_length            m_font_size = 0;
         std::string           m_font_family;
         css_length            m_font_weight;
-        font_style            m_font_style;
+        font_style            m_font_style = font_style_normal;
         int                   m_text_decoration_line  = text_decoration_line_none;
         text_decoration_style m_text_decoration_style = text_decoration_style_solid;
         css_length            m_text_decoration_thickness;
@@ -464,7 +466,7 @@ namespace litehtml
 
     inline int css_properties::get_z_index() const
     {
-        return static_cast<int>(m_z_index.val());
+        return static_cast<int>(std::clamp<double>(m_z_index.val(), INT_MIN, INT_MAX));
     }
 
     inline void css_properties::set_z_index(int mZIndex)

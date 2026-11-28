@@ -88,6 +88,14 @@ constexpr size_t MAX_STOPS = 256;
 constexpr size_t MAX_STACK = 512;
 constexpr size_t MAX_TEXT = 4096;
 constexpr size_t MAX_COLORS = 256;
+constexpr size_t MAX_FONT = 512;
+// In floats: a path, a canvas's Path2D objects, a state's clips (CLIP_COST each besides their points), one op's copies.
+constexpr size_t MAX_PATH_FLOATS = size_t(1) << 20;
+constexpr size_t MAX_PATHS_FLOATS = size_t(1) << 22;
+constexpr size_t MAX_CLIP_FLOATS = size_t(1) << 14;
+constexpr size_t MAX_STACK_CLIP_FLOATS = size_t(1) << 18;
+constexpr size_t CLIP_COST = 16;
+constexpr size_t MAX_RUN_FLOATS = size_t(1) << 24;
 
 std::vector<uint8_t> base64(const std::string& in) {
     static int8_t table[256];
@@ -133,6 +141,7 @@ Composite composite_of(const std::string& name, bool& known) {
 /// current point with a line when there is one. Angles in radians, y down, clockwise positive.
 template <class Emit>
 void arc_segments(double cx, double cy, double rx, double ry, double rotation, double start, double sweep, Emit emit) {
+    if (!std::isfinite(sweep)) return;
     int segments = std::max(1, int(std::ceil(std::fabs(sweep) / (PI / 2) - 1e-9)));
     double step = sweep / segments;
     double k = 4.0 / 3.0 * std::tan(step / 4);
@@ -271,9 +280,9 @@ struct Canvas::Value {
             v.kind = List;
             for (const Json& x : j.arr()) v.list.push_back(float(x.asNumber()));
         } else if (j.isObject()) {
-            if (const Json* g = j.find("g")) { v.kind = Gradient; v.ref = int64_t(g->asNumber()); }
-            else if (const Json* p = j.find("p")) { v.kind = PathRef; v.ref = int64_t(p->asNumber()); }
-            else if (const Json* n = j.find("n")) { v.kind = Node; v.ref = int64_t(n->asNumber()); }
+            if (const Json* g = j.find("g")) { v.kind = Gradient; v.ref = g->asInt(); }
+            else if (const Json* p = j.find("p")) { v.kind = PathRef; v.ref = p->asInt(); }
+            else if (const Json* n = j.find("n")) { v.kind = Node; v.ref = n->asInt(); }
             else if (const Json* b = j.find("b64"); b && b->isString()) {
                 v.kind = Pixels;
                 v.pixels = std::make_shared<std::vector<uint8_t>>(base64(b->asString()));
@@ -348,8 +357,20 @@ void Canvas::resize(int width, int height, std::vector<CanvasOp>& out) {
     out.push_back(std::move(reset));
 }
 
+size_t Canvas::path_room() const {
+    size_t held = host_.canvas_path_floats(id_) + path_floats();
+    return held < MAX_PATHS_FLOATS ? MAX_PATHS_FLOATS - held : 0;
+}
+
+bool Canvas::spend(size_t floats) {
+    if (floats > MAX_RUN_FLOATS - run_floats_) return false;
+    run_floats_ += floats;
+    return true;
+}
+
 void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
     std::vector<Value> args;
+    run_floats_ = 0;
     for (const Json& cmd : cmds.arr()) {
         const auto& list = cmd.arr();
         if (list.size() < 2 || !list[0].isString()) continue;
@@ -398,12 +419,18 @@ void Canvas::run(const Json& cmds, std::vector<CanvasOp>& out) {
                     b.cy = pts[pts.size() - 1];
                 }
             }
+            auto held = paths_.find(pid);
+            size_t before = held == paths_.end() ? 0 : held->second.geometry.points.size();
+            if (b.geometry.points.size() > MAX_PATH_FLOATS || b.geometry.points.size() > before + path_room()) continue;
+            paths_floats_ += b.geometry.points.size() - before;
             paths_[pid] = std::move(b);
         } else if (kind == "pc") {
             auto it = paths_.find(list[1].asInt());
-            if (it == paths_.end() || list.size() < 3 || !list[2].isString()) continue;
+            if (it == paths_.end() || list.size() < 3 || !list[2].isString() || !path_room()) continue;
             rest(3);
+            size_t before = it->second.geometry.points.size();
             path_method(it->second, Matrix(), list[2].asString(), args);
+            paths_floats_ += it->second.geometry.points.size() - before;
         }
     }
 }
@@ -427,11 +454,13 @@ void Canvas::set(const std::string& p, const Value& v) {
     } else if (q == Property::lineDashOffset) {
         if (v.kind == Value::Number && std::isfinite(v.number)) s.dash_offset = float(v.number);
     } else if (q == Property::font) {
-        if (v.kind == Value::String && !v.string.empty()) s.font = v.string;
+        if (v.kind == Value::String && !v.string.empty() && v.string.size() <= MAX_FONT) s.font = v.string;
     } else if (q == Property::textAlign) {
-        if (v.kind == Value::String) s.align = v.string;
+        static const char* const NAMES[] = {"start", "end", "left", "right", "center"};
+        if (std::find(std::begin(NAMES), std::end(NAMES), v.string) != std::end(NAMES)) s.align = v.string;
     } else if (q == Property::textBaseline) {
-        if (v.kind == Value::String) s.baseline = v.string;
+        static const char* const NAMES[] = {"alphabetic", "top", "hanging", "middle", "ideographic", "bottom"};
+        if (std::find(std::begin(NAMES), std::end(NAMES), v.string) != std::end(NAMES)) s.baseline = v.string;
     } else if (q == Property::globalAlpha) {
         if (v.kind == Value::Number && v.number >= 0 && v.number <= 1) s.alpha = float(v.number);
     } else if (q == Property::globalCompositeOperation) {
@@ -497,7 +526,7 @@ bool Canvas::paint_of(const Paint& paint, CanvasPaint& out) const {
 }
 
 void Canvas::fill(const Geometry& path, bool evenodd, std::vector<CanvasOp>& out) {
-    if (path.empty()) return;
+    if (path.empty() || !spend(path.points.size())) return;
     CanvasOp o = op(CanvasOp::Fill);
     if (!paint_of(state_.fill, o.paint)) return;
     o.path = path;
@@ -506,7 +535,7 @@ void Canvas::fill(const Geometry& path, bool evenodd, std::vector<CanvasOp>& out
 }
 
 void Canvas::stroke(const Geometry& path, std::vector<CanvasOp>& out) {
-    if (path.empty()) return;
+    if (path.empty() || !spend(path.points.size())) return;
     CanvasOp o = op(CanvasOp::Stroke);
     if (!paint_of(state_.stroke, o.paint)) return;
     o.path = path;
@@ -589,6 +618,10 @@ void Canvas::image(const std::vector<Value>& a, std::vector<CanvasOp>& out) {
     double kx = o.dw / sw * w / 48, ky = o.dh / sh * h / 48;
     auto at = [&](double px, double py) { return std::pair{o.dx + (px * w / 48 - sx) * o.dw / sw, o.dy + (py * h / 48 - sy) * o.dh / sh}; };
     auto number = [](double v) { return Value{Value::Number, v}; };
+    size_t held = CLIP_COST;
+    if (state_.clips)
+        for (const CanvasClip& c : *state_.clips) held += c.path.points.size() + CLIP_COST;
+    if (!spend(held)) return;
     auto clips = state_.clips ? std::make_shared<std::vector<CanvasClip>>(*state_.clips) : std::make_shared<std::vector<CanvasClip>>();
     clips->push_back(CanvasClip{rect_geometry(o.dx, o.dy, o.dw, o.dh), false});
     auto draw = [&](Geometry g, Color color) {
@@ -641,6 +674,7 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
         auto it = paths_.find(int(a[0].ref));
         return it == paths_.end() ? nullptr : &it->second;
     };
+    auto fits = [&](const Builder* p) { return p->geometry.points.size() <= MAX_RUN_FLOATS - run_floats_; };
     State& s = state_;
     if (m == Method::save) {
         if (stack_.size() < MAX_STACK) stack_.push_back(s);
@@ -676,24 +710,35 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
     } else if (m == Method::beginPath) {
         path_ = Builder();
     } else if (m == Method::fill) {
-        if (const Builder* p = path_arg()) fill(transformed(p->geometry, s.matrix), evenodd(1), out);
-        else fill(path_.geometry, evenodd(0), out);
-    } else if (m == Method::stroke) {
-        if (const Builder* p = path_arg()) stroke(transformed(p->geometry, s.matrix), out);
-        else stroke(path_.geometry, out);
-    } else if (m == Method::clip) {
-        CanvasClip clip;
         if (const Builder* p = path_arg()) {
-            clip.path = transformed(p->geometry, s.matrix);
-            clip.evenodd = evenodd(1);
-        } else {
-            clip.path = path_.geometry;
-            clip.evenodd = evenodd(0);
+            if (fits(p)) fill(transformed(p->geometry, s.matrix), evenodd(1), out);
+        } else fill(path_.geometry, evenodd(0), out);
+    } else if (m == Method::stroke) {
+        if (const Builder* p = path_arg()) {
+            if (fits(p)) stroke(transformed(p->geometry, s.matrix), out);
+        } else stroke(path_.geometry, out);
+    } else if (m == Method::clip) {
+        const Builder* p = path_arg();
+        const Geometry& path = p ? p->geometry : path_.geometry;
+        size_t held = path.points.size() + CLIP_COST + s.clip_floats;
+        // States saved with no clip() between them share one list.
+        size_t stacked = 0;
+        const void* last = nullptr;
+        for (const State& saved : stack_) {
+            if (saved.clips.get() != last) stacked += saved.clip_floats;
+            last = saved.clips.get();
         }
-        auto clips = s.clips ? std::make_shared<std::vector<CanvasClip>>(*s.clips) : std::make_shared<std::vector<CanvasClip>>();
+        auto clips = std::make_shared<std::vector<CanvasClip>>();
         // An empty path clips everything away.
-        clips->push_back(std::move(clip));
+        if (held <= MAX_CLIP_FLOATS && stacked + held <= MAX_STACK_CLIP_FLOATS && spend(held)) {
+            if (s.clips) *clips = *s.clips;
+            clips->push_back(CanvasClip{p ? transformed(path, s.matrix) : path, evenodd(p ? 1 : 0)});
+        } else {
+            clips->push_back(CanvasClip{});
+            held = CLIP_COST;
+        }
         s.clips = std::move(clips);
+        s.clip_floats = held;
     } else if (m == Method::fillText || m == Method::strokeText) {
         if (!a.empty() && a[0].kind == Value::String) text(a[0].string, n(1), n(2), a.size() > 3 ? &a[3] : nullptr, m == Method::strokeText, out);
     } else if (m == Method::setLineDash) {
@@ -718,12 +763,13 @@ void Canvas::call_method(const std::string& method, const std::vector<Value>& a,
         out.push_back(std::move(o));
     } else if (m == Method::drawImage) {
         image(a, out);
-    } else {
+    } else if (path_room()) {
         path_method(path_, s.matrix, method, a);
     }
 }
 
 void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method, const std::vector<Value>& a) const {
+    if (b.geometry.points.size() >= MAX_PATH_FLOATS) return;
     const Method verb = method_of(method);
     auto n = [&](size_t i, double fallback = 0) { return i < a.size() && a[i].kind == Value::Number && std::isfinite(a[i].number) ? a[i].number : fallback; };
     auto truthy = [&](size_t i) {
@@ -887,7 +933,7 @@ void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method,
     } else if (verb == Method::addPath) {
         if (a.empty() || a[0].kind != Value::PathRef) return;
         auto it = paths_.find(int(a[0].ref));
-        if (it == paths_.end() || &it->second == &b) return;
+        if (it == paths_.end() || &it->second == &b || b.geometry.points.size() + it->second.geometry.points.size() > MAX_PATH_FLOATS) return;
         Geometry g = transformed(it->second.geometry, m);
         b.geometry.ops.insert(b.geometry.ops.end(), g.ops.begin(), g.ops.end());
         b.geometry.points.insert(b.geometry.points.end(), g.points.begin(), g.points.end());

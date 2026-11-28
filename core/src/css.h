@@ -37,7 +37,8 @@ bool is_attribute_name(std::string_view name);
 bool is_property_name(std::string_view name);
 
 /// Replaces every `light-dark(a, b)` with the side the theme picks: litehtml knows no such function.
-std::string resolve_light_dark(std::string_view css, bool dark);
+/// One inside the chosen side is resolved too, 32 levels down; a side that nests deeper is dropped.
+std::string resolve_light_dark(std::string_view css, bool dark, int nesting = 0);
 
 /// A character that continues a CSS identifier.
 bool ident_char(char c);

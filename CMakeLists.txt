@@ -6,6 +6,9 @@
 #   Emscripten   twidget_litehtml.js and .wasm, the C ABI for a page (platforms/web)
 #   Windows      twidget_d2d, the Direct2D backend a host paints with (platforms/windows)
 #   Qt           twidget_qt with -DTWIDGET_QT=ON, the QPainter backend (platforms/qt; demo in demos/qt)
+#   All          twidget_wire, the binary forms of the paint values on the standard library alone (core/src/wire.h)
+#   All          twidget_remote, the two ends' messages and the platform end, on twidget_wire alone (core/src/remote.h, platform_end.h)
+#   All          twidget_renderer_end, the renderer end: TwidgetCore behind a byte channel (core/src/renderer_end.h)
 cmake_minimum_required(VERSION 3.22)
 project(twidget C CXX)
 
@@ -13,8 +16,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Every a*b+c rounds twice, as Rust and MSVC's default /fp:precise compute it: clang and GCC would fuse it where the CPU
+# has FMA (arm64 always), and a layout, a paint or a recording would then differ by platform.
+if(NOT MSVC)
+    add_compile_options(-ffp-contract=off)
+endif()
+
 option(TWIDGET_BUILD_TESTS "Build the TwidgetCore checks" ${PROJECT_IS_TOP_LEVEL})
 option(TWIDGET_QT "Build twidget_qt, the QPainter backend (needs Qt 6)" OFF)
+option(TWIDGET_LITEHTML_NO_CORE_FOUNDATION "Build litehtml without CoreFoundation, using a fixed date pattern" OFF)
 
 # widget-sandbox owns the protocol and its JSON helper. Package.swift finds it the same way: a checkout
 # next to twidget, or the path in TWIDGET_WIDGET_SANDBOX (a URL there is for SwiftPM only).
@@ -61,12 +71,14 @@ add_library(twidget::litehtml ALIAS litehtml)
 target_include_directories(litehtml
     PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
     PRIVATE "${TW_LITEHTML}/src")
-if(APPLE)
+if(TWIDGET_LITEHTML_NO_CORE_FOUNDATION)
+    target_compile_definitions(litehtml PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
+elseif(APPLE)
     target_link_libraries(litehtml PUBLIC "-framework CoreFoundation")
 endif()
 if(MSVC)
     # gumbo expects POSIX strings.h; litehtml is compiled as it comes, without its warnings.
-    target_include_directories(litehtml PRIVATE "$<$<COMPILE_LANGUAGE:C>:${TW_LITEHTML}/src/gumbo/visualc/include>")
+    target_include_directories(litehtml PRIVATE "${TW_LITEHTML}/src/gumbo/visualc/include")
     target_compile_options(litehtml PRIVATE /utf-8 /w)
 else()
     target_compile_options(litehtml PRIVATE -w)
@@ -83,6 +95,7 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/filters.cpp"
     "${TW_CORE}/src/paint_policy.cpp"
     "${TW_CORE}/src/png.cpp"
+    "${TW_CORE}/src/text_widths.cpp"
     "${TW_GESTURE_POLICY}")
 add_library(twidget::core ALIAS twidget_core)
 target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" "${TW_SANDBOX_INCLUDE}" PRIVATE "${TW_GENERATED}")
@@ -93,6 +106,39 @@ if(MSVC)
     target_compile_definitions(twidget_core PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
     target_compile_options(twidget_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+
+# Links nothing, so a program that carries paint between processes needs neither litehtml nor the renderer.
+add_library(twidget_wire STATIC "${TW_CORE}/src/wire.cpp")
+add_library(twidget::wire ALIAS twidget_wire)
+target_include_directories(twidget_wire PUBLIC "${TW_CORE}/src")
+if(MSVC)
+    target_compile_options(twidget_wire PRIVATE /utf-8 /W3)
+else()
+    target_compile_options(twidget_wire PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+
+# The messages of the two ends and the platform end, on twidget::wire alone: the platform end links neither litehtml nor the renderer.
+add_library(twidget_remote STATIC "${TW_CORE}/src/remote.cpp" "${TW_CORE}/src/platform_end.cpp")
+add_library(twidget::remote ALIAS twidget_remote)
+target_include_directories(twidget_remote PUBLIC "${TW_CORE}/src" "${TW_SANDBOX_INCLUDE}")
+target_link_libraries(twidget_remote PUBLIC twidget_wire)
+if(MSVC)
+    target_compile_options(twidget_remote PRIVATE /utf-8 /W3)
+    target_compile_definitions(twidget_remote PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+else()
+    target_compile_options(twidget_remote PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+
+# The renderer end: TwidgetCore whose Backend calls, frames and reports go to a platform end over the embedder's channel.
+add_library(twidget_renderer_end STATIC "${TW_CORE}/src/renderer_end.cpp")
+add_library(twidget::renderer_end ALIAS twidget_renderer_end)
+target_link_libraries(twidget_renderer_end PUBLIC twidget_core twidget_remote)
+if(MSVC)
+    target_compile_options(twidget_renderer_end PRIVATE /utf-8 /W3)
+    target_compile_definitions(twidget_renderer_end PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+else()
+    target_compile_options(twidget_renderer_end PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
 if(ANDROID)
@@ -147,6 +193,11 @@ if(TWIDGET_BUILD_TESTS)
     enable_testing()
     add_executable(twidget_core_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/core_tests.cpp")
     target_link_libraries(twidget_core_tests PRIVATE twidget::core)
+    if(TWIDGET_LITEHTML_NO_CORE_FOUNDATION)
+        target_compile_definitions(twidget_core_tests PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
+    endif()
+    add_executable(twidget_css_keywords_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/css_keywords_tests.cpp")
+    target_link_libraries(twidget_css_keywords_tests PRIVATE twidget::litehtml)
     add_executable(twidget_local_paint_key_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/local_paint_key_tests.cpp")
     target_include_directories(twidget_local_paint_key_tests PRIVATE
         "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include")
@@ -155,12 +206,16 @@ if(TWIDGET_BUILD_TESTS)
     add_executable(twidget_paint_exclusion_rules_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/paint_exclusion_rules_tests.cpp")
     if(MSVC)
         target_compile_options(twidget_core_tests PRIVATE /utf-8)
+        target_compile_options(twidget_css_keywords_tests PRIVATE /utf-8)
         target_compile_options(twidget_local_paint_key_tests PRIVATE /utf-8)
         target_compile_options(twidget_alpha_bounds_tests PRIVATE /utf-8)
         target_compile_options(twidget_paint_exclusion_cache_tests PRIVATE /utf-8)
         target_compile_options(twidget_paint_exclusion_rules_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_core COMMAND twidget_core_tests)
+    add_test(NAME twidget_css_keywords COMMAND twidget_css_keywords_tests)
+    add_test(NAME twidget_unchecked_casts
+        COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/unchecked_casts.cmake")
     # The heavy-box rule against widget-sandbox's shared fixture, the one every client's renderer implements.
     add_executable(twidget_paint_policy_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/paint_policy_tests.cpp")
     target_link_libraries(twidget_paint_policy_tests PRIVATE twidget::core)
@@ -189,6 +244,84 @@ if(TWIDGET_BUILD_TESTS)
     add_test(NAME twidget_alpha_bounds COMMAND twidget_alpha_bounds_tests)
     add_test(NAME twidget_paint_exclusion_cache COMMAND twidget_paint_exclusion_cache_tests)
     add_test(NAME twidget_paint_exclusion_rules COMMAND twidget_paint_exclusion_rules_tests)
+    # The binary forms with nothing but twidget::wire linked: neither litehtml nor the renderer.
+    add_executable(twidget_wire_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/wire_tests.cpp")
+    target_link_libraries(twidget_wire_tests PRIVATE twidget::wire)
+    if(MSVC)
+        target_compile_options(twidget_wire_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_wire COMMAND twidget_wire_tests)
+    set_tests_properties(twidget_wire PROPERTIES ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1")
+    # The two ends' messages and a platform end's session with nothing but twidget::remote linked: neither litehtml nor the renderer.
+    add_executable(twidget_remote_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_tests.cpp")
+    target_link_libraries(twidget_remote_tests PRIVATE twidget::remote)
+    if(MSVC)
+        target_compile_options(twidget_remote_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_remote COMMAND twidget_remote_tests)
+    set_tests_properties(twidget_remote PROPERTIES ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1")
+    # The renderer end and a platform end over an in-memory channel, against a renderer called directly.
+    add_executable(twidget_ends_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ends_tests.cpp")
+    target_link_libraries(twidget_ends_tests PRIVATE twidget::renderer_end)
+    # The native thread library for its worker; an Emscripten build without -pthread leaves the worker out.
+    if(NOT EMSCRIPTEN)
+        set(THREADS_PREFER_PTHREAD_FLAG ON)
+        find_package(Threads REQUIRED)
+        target_link_libraries(twidget_ends_tests PRIVATE Threads::Threads)
+    endif()
+    if(MSVC)
+        target_compile_options(twidget_ends_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_ends COMMAND twidget_ends_tests)
+    # core_tests.cpp and bench.cpp unchanged, each renderer they make recorded call by call for twidget_replay.
+    add_executable(twidget_core_record "${CMAKE_CURRENT_SOURCE_DIR}/tests/core_record.cpp")
+    target_include_directories(twidget_core_record PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(twidget_core_record PRIVATE twidget::core twidget::remote)
+    if(TWIDGET_LITEHTML_NO_CORE_FOUNDATION)
+        target_compile_definitions(twidget_core_record PRIVATE TW_LITEHTML_NO_CORE_FOUNDATION)
+    endif()
+    add_executable(twidget_bench_record "${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_record.cpp")
+    target_include_directories(twidget_bench_record PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(twidget_bench_record PRIVATE twidget::core twidget::remote)
+    if(MSVC)
+        target_compile_options(twidget_core_record PRIVATE /utf-8)
+        target_compile_options(twidget_bench_record PRIVATE /utf-8)
+    endif()
+    # Those recordings through the two ends alone, every step compared with what the recorded renderer gave, then a list, a Backend call and a paint key perturbed and caught.
+    add_executable(twidget_replay "${CMAKE_CURRENT_SOURCE_DIR}/tests/replay.cpp")
+    target_include_directories(twidget_replay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(twidget_replay PRIVATE twidget::renderer_end)
+    if(MSVC)
+        target_compile_options(twidget_replay PRIVATE /utf-8)
+    endif()
+    # Recorded at test time into the build tree and removed after a passing check; core_tests' canvas-limit batches pass remote's 32 MiB message cap.
+    add_test(NAME twidget_parity_core
+        COMMAND "${CMAKE_COMMAND}" "-DRECORDER=$<TARGET_FILE:twidget_core_record>" "-DREPLAY=$<TARGET_FILE:twidget_replay>"
+            "-DRECORDING=${CMAKE_CURRENT_BINARY_DIR}/recordings/core.twrec" -DSOURCE=core
+            "-DNEEDS=sessions,steps,lists,batches,reads,calls,pointers,claims,selections,ticks,resizes,themes,images,keys"
+            -DMESSAGE_BYTES=268435456 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
+    add_test(NAME twidget_parity_bench
+        COMMAND "${CMAKE_COMMAND}" "-DRECORDER=$<TARGET_FILE:twidget_bench_record>" "-DREPLAY=$<TARGET_FILE:twidget_replay>"
+            "-DRECORDING=${CMAKE_CURRENT_BINARY_DIR}/recordings/bench.twrec" -DSOURCE=bench
+            "-DNEEDS=sessions,steps,lists,batches,calls,pointers,ticks" -DSESSIONS=7 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
+    # Corpus widgets recorded once by tools/record on macOS and committed: the recording carries libc++'s hash order, so it replays there only.
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(TW_CORPUS_RECORDING "${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/corpus.twrec")
+        # The recording's 318892 bytes plus a quarter; re-recordings vary in size with timing, and a larger one fails the check.
+        set(TW_CORPUS_BYTES 398615)
+        add_test(NAME twidget_parity_corpus
+            COMMAND "${CMAKE_COMMAND}" "-DREPLAY=$<TARGET_FILE:twidget_replay>" "-DRECORDING=${TW_CORPUS_RECORDING}" -DSOURCE=corpus
+                "-DNEEDS=sessions,steps,lists,batches,calls,pointers,claims,holds,ticks,engine,resizes,themes,images" -DSESSIONS=4
+                -DMAX_BYTES=${TW_CORPUS_BYTES} -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
+    endif()
+    # Corpus widgets recorded by tools/record on its stub Backend (record_corpus.py --curated) and committed: every answer a fixed function of the calls, and the 0.3 orders, so it replays everywhere.
+    set(TW_CORPUS_STUB_RECORDING "${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/corpus-stub.twrec")
+    # The recording's 217252 bytes plus a quarter.
+    set(TW_CORPUS_STUB_BYTES 271565)
+    add_test(NAME twidget_parity_corpus_stub
+        COMMAND "${CMAKE_COMMAND}" "-DREPLAY=$<TARGET_FILE:twidget_replay>" "-DRECORDING=${TW_CORPUS_STUB_RECORDING}" -DSOURCE=corpus-stub
+            "-DNEEDS=sessions,steps,lists,batches,calls,pointers,claims,holds,ticks,engine,resizes,themes,images,keys" -DSESSIONS=7
+            -DMAX_BYTES=${TW_CORPUS_STUB_BYTES} -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/parity.cmake")
     if(TWIDGET_QT)
         add_executable(twidget_qt_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/qt_tests.cpp")
         target_link_libraries(twidget_qt_tests PRIVATE twidget::qt)
@@ -201,6 +334,11 @@ if(TWIDGET_BUILD_TESTS)
         add_executable(twidget_apple_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/apple_tests.cpp")
         target_link_libraries(twidget_apple_tests PRIVATE twidget_litehtml)
         add_test(NAME twidget_apple COMMAND twidget_apple_tests)
+        add_test(NAME twidget_litehtml_core_foundation
+            COMMAND "${CMAKE_COMMAND}" "-DNM=${CMAKE_NM}" "-DLIBRARY=$<TARGET_FILE:litehtml>"
+                "-DPROGRAM=$<TARGET_FILE:twidget_css_keywords_tests>"
+                "-DNO_CORE_FOUNDATION=${TWIDGET_LITEHTML_NO_CORE_FOUNDATION}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/litehtml_core_foundation.cmake")
         # Messages from widget-sandbox's sandbox-node.ts in, the paint out as PNG.
         add_executable(twidget-core-run "${CMAKE_CURRENT_SOURCE_DIR}/tools/core-run/run.cpp")
         target_link_libraries(twidget-core-run PRIVATE twidget_litehtml)

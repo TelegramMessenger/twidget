@@ -328,7 +328,8 @@ litehtml::formatting_context::new_position litehtml::formatting_context::place_t
     bool left_side    = false; // true if floating block at the left side
     bool right_side   = false; // true if floating block at the right side
 
-    while(true)
+    // Every turn but the last moves the box below one more float; geometry that is not finite never gets past one.
+    for(size_t turns = m_floats_left.size() + m_floats_right.size() + 2; turns > 0; turns--)
     {
         std::optional<position> max_left_pos;
         bool                    found    = false;
@@ -417,6 +418,9 @@ litehtml::formatting_context::new_position litehtml::formatting_context::place_t
     // position not found
     new_position pos;
     pos.found = false;
+    pos.top   = el_pos.el_pos.y;
+    pos.left  = el_pos.el_pos.x;
+    pos.width = el_pos.container_width;
     return pos;
 }
 
@@ -432,7 +436,7 @@ litehtml::formatting_context::new_position litehtml::formatting_context::place_t
     bool left_side    = false; // true if floating block at the left side
     bool right_side   = false; // true if floating block at the right side
 
-    while(true)
+    for(size_t turns = m_floats_left.size() + m_floats_right.size() + 2; turns > 0; turns--)
     {
         std::optional<position> min_right_pos;
         bool                    found     = false;
@@ -522,6 +526,9 @@ litehtml::formatting_context::new_position litehtml::formatting_context::place_t
     // position not found
     new_position pos;
     pos.found = false;
+    pos.top   = el_pos.el_pos.y;
+    pos.left  = el_pos.el_pos.x;
+    pos.width = el_pos.container_width;
     return pos;
 }
 
